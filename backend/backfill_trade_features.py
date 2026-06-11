@@ -233,11 +233,9 @@ def run(start: str, end: str, validate_nrows: int | None = None, keep_cache: boo
     # Funding velocity over the span.
     fv = fetch_funding_velocity(keys[0], keys[-1] + MIN_MS)
 
-    # CVD divergence from the per-bar cvd_1m series (causal).
-    cvd1m = np.array([all_bars[k]["cvd_1m"] for k in keys])
-    # need closes; we don't have OHLC here — divergence is computed at MERGE time (N4)
-    # against the training klines' closes. Store cvd_1m so N4 can derive divergence with
-    # the same `cvd_divergence` fn. (Divergence needs price, which lives with the klines.)
+    # CVD divergence is NOT computed here — it needs closes, which live with the
+    # training klines. The per-bar cvd_1m column below is what the merge step (N4)
+    # derives divergence from, via the same shared `cvd_divergence` fn.
 
     rows = []
     for k in keys:

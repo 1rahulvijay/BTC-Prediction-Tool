@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.stats as stats
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 

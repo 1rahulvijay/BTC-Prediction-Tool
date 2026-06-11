@@ -90,8 +90,9 @@ class TradingSimulator:
         self.max_drawdown_usd = 0.0
         self.max_drawdown_pct = 0.0
 
-        # Rolling risk tracking
+        # Rolling risk tracking (times kept aligned with pnls for honest annualization)
         self._pnl_history: deque = deque(maxlen=200)
+        self._pnl_times: deque = deque(maxlen=200)
         self._consecutive_losses = 0
         self._max_consecutive_losses = 0
         
@@ -101,30 +102,36 @@ class TradingSimulator:
         Requires ≥30 historical trades; returns flat 1% until then.
         Heavily capped at 2% max risk per trade pending empirical calibration.
         """
-        if len(self.trade_history) < 30:
+        # Evaluate on RECENT trades only: trade_history grows unbounded, so a stale
+        # losing era (e.g. the pre-retrain model) would otherwise pin sizing down
+        # forever no matter how the current model performs.
+        recent = self.trade_history[-100:]
+        if len(recent) < 30:
             return 0.01  # highly conservative default
 
-        wins = [t for t in self.trade_history if t["net_pnl_usd"] > 0]
-        losses = [t for t in self.trade_history if t["net_pnl_usd"] < 0]
-        
+        wins = [t for t in recent if t["net_pnl_usd"] > 0]
+        losses = [t for t in recent if t["net_pnl_usd"] < 0]
+
         if not wins or not losses:
             return 0.02
 
-        win_rate = len(wins) / len(self.trade_history)
+        win_rate = len(wins) / len(recent)
         avg_win = sum(t["net_pnl_usd"] for t in wins) / len(wins)
         avg_loss = abs(sum(t["net_pnl_usd"] for t in losses) / len(losses))
-        
+
         if avg_loss <= 0:
             return 0.02
 
         win_loss_ratio = avg_win / avg_loss
         # Kelly formula: f* = (p * b - q) / b  where p=win_rate, q=1-p, b=win_loss_ratio
         kelly = (win_rate * win_loss_ratio - (1 - win_rate)) / win_loss_ratio
-        
-        # Half-Kelly for safety, capped at 10%
+
         half_kelly = max(0.0, kelly / 2.0)
-        # Conservative cap at 2% until execution metrics are calibrated out-of-sample
-        return min(half_kelly, 0.02)
+        # PROBE FLOOR (recovery path): a hard 0 here meant no trades opened, so the
+        # history never updated and Kelly stayed 0 PERMANENTLY — even after a retrain
+        # improved the model. A 0.5% paper-probe keeps evidence flowing so sizing can
+        # recover; this is a research simulator, not live money. Cap stays 2%.
+        return min(max(half_kelly, 0.005), 0.02)
 
     def _compute_dynamic_slippage(self, current_price: float, position_size_btc: float,
                                    spread_expansion: float = 1.0, avg_volume: float = 1.0) -> float:
@@ -176,13 +183,25 @@ class TradingSimulator:
         mean_pnl = float(np.mean(arr))
         std_pnl = float(np.std(arr))
         
-        # Sharpe (annualized, assuming ~1440 trades/day for 1m horizon)
-        sharpe = (mean_pnl / std_pnl) * math.sqrt(min(252, n)) if std_pnl > 0 else 0.0
-        
+        # Annualize by MEASURED trade frequency, not sqrt(min(252, n)): the old factor
+        # treated n TRADES as n DAYS, so 30 trades in 2 hours got the same multiplier
+        # as 30 trading days — wildly inflating/deflating the ratio. Proper scaling for
+        # per-trade returns is sqrt(trades_per_year), estimated from the actual time
+        # span of the recent trades; falls back to the un-annualized per-trade ratio
+        # when the span is too short to estimate frequency.
+        times = list(self._pnl_times)
+        ann_factor = 1.0
+        if len(times) >= 5 and times[-1] > times[0]:
+            span_days = (times[-1] - times[0]) / 86400000.0
+            if span_days > 0.01:
+                trades_per_year = ((len(times) - 1) / span_days) * 365.0
+                ann_factor = math.sqrt(trades_per_year)
+        sharpe = (mean_pnl / std_pnl) * ann_factor if std_pnl > 0 else 0.0
+
         # Sortino (downside deviation only)
         downside = arr[arr < 0]
         downside_std = float(np.std(downside)) if len(downside) > 1 else std_pnl
-        sortino = (mean_pnl / downside_std) * math.sqrt(min(252, n)) if downside_std > 0 else 0.0
+        sortino = (mean_pnl / downside_std) * ann_factor if downside_std > 0 else 0.0
         
         # VaR (95th percentile loss)
         var_95 = float(np.percentile(arr, 5)) if n >= 20 else 0.0
@@ -266,10 +285,9 @@ class TradingSimulator:
         effective_fee = exp_calc["effective_fee"]
         kelly_frac = exp_calc["kelly_frac"]
 
-        # Kelly says don't bet (fraction ≈ 0) → do NOT open a $0-size position. Recording
-        # $0-PnL trades silently froze the simulator: $0 PnL is neither a win (>0) nor a
-        # loss (<0), so each one diluted win_rate downward, pinning Kelly at 0 and spamming
-        # zero-size trades forever. Skipping respects Kelly=0 and breaks the spiral.
+        # Degenerate-size guard: never open a ~$0 position (recording $0-PnL trades
+        # once froze the simulator — neither win nor loss, diluting win_rate forever).
+        # Kelly itself now has a 0.5% probe floor, so this only fires on tiny equity.
         if position_size_usd <= 1.0 or position_size_btc <= 0:
             return
 
@@ -329,6 +347,7 @@ class TradingSimulator:
                 
                 # Track PnL for rolling metrics
                 self._pnl_history.append(net_pnl_usd)
+                self._pnl_times.append(now_ms)
                 
                 # Consecutive losses tracking
                 if net_pnl_usd < 0:

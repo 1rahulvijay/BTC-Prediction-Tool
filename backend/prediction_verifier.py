@@ -161,6 +161,13 @@ class PredictionVerifier:
                     hit = avoid_success
                 actual_move_usd = current_price - pred["predicted_price"]
                 actual_abs_move_usd = abs(actual_move_usd)
+                # Pure LEAN sign-truth for the DB's lean_hit column. Unlike `hit`
+                # (dual-semantic: avoid_success on gated rows), this is always
+                # "did the raw lean match the realized direction" — the betting truth.
+                _raw_lean = pred.get("raw_direction", pred.get("direction"))
+                lean_hit = None
+                if _raw_lean in ("UP", "DOWN") and actual_move_usd != 0:
+                    lean_hit = (_raw_lean == "UP") == (actual_move_usd > 0)
                 # SIGNED expected move (target carries the predicted direction). Taking
                 # abs() of each side separately made the magnitude error direction-BLIND:
                 # predict +$500, market does -$500 → abs(500-500)=$0, logging a
@@ -187,6 +194,7 @@ class PredictionVerifier:
                     "price_match": price_match,
                     "actual_change_pct": round(actual_change * 100, 4),
                     "hit": hit,
+                    "lean_hit": lean_hit,
                     "verified_at": current_time_ms,
                 }
                 
@@ -717,6 +725,7 @@ class PredictionVerifier:
             "actual_direction": v["actual_direction"],
             "confidence": v["confidence"],
             "hit": v["hit"],
+            "lean_hit": v.get("lean_hit"),   # pure lean sign-truth (betting correctness)
             "avoid_success": v.get("avoid_success", False),
             "price_match": v.get("price_match", False),
             "expected_move_usd": round(v.get("expected_move_usd", 0), 2),

@@ -159,13 +159,20 @@ def validate_regime_thresholds(horizons=None):
         horizons = [1, 3, 5, 10, 15]
     results = {}
     for horizon in horizons:
+        # LEAN-truth grading (raw_direction vs realized move sign), NOT the `hit` column:
+        # `hit` is dual-semantic (avoid_success=TRUE on gated rows when the lean was WRONG),
+        # which INVERTED this feed into the poor_regimes blocker — regimes whose leans were
+        # consistently wrong-but-gated scored ~100% "accuracy" and stayed unblocked.
         query = f"""
             SELECT regime,
                    COUNT(*) AS n,
-                   ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy,
+                   ROUND(AVG(CASE WHEN (raw_direction='UP'   AND actual_move > 0)
+                                    OR (raw_direction='DOWN' AND actual_move < 0)
+                                  THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy,
                    ROUND(AVG(confidence) * 100, 1) AS avg_confidence
             FROM predictions_{horizon}m
-            WHERE resolved = TRUE AND hit IS NOT NULL
+            WHERE resolved = TRUE AND raw_direction IN ('UP','DOWN')
+              AND actual_move IS NOT NULL
             GROUP BY regime
             HAVING COUNT(*) >= 20
             ORDER BY accuracy DESC
@@ -229,13 +236,18 @@ def analyze_conviction_performance(horizon: int = None):
         try:
             with duckdb.connect(DB_PATH) as conn:
                 print(f"--- Conviction performance for {h}m ---")
+                # Sign-truth grading of the raw lean — these queries select raw-directional
+                # rows, so the dual-semantic `hit` column (avoid_success on gated rows)
+                # would invert the very performance this function is meant to measure.
                 df = conn.execute(f"""
                     SELECT actionable,
                            COUNT(*) n,
-                           ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) hit_rate,
+                           ROUND(AVG(CASE WHEN (raw_direction='UP'   AND actual_move > 0)
+                                            OR (raw_direction='DOWN' AND actual_move < 0)
+                                          THEN 1.0 ELSE 0.0 END) * 100, 1) hit_rate,
                            ROUND(AVG(conviction), 1) avg_conviction
                     FROM predictions_{h}m
-                    WHERE resolved AND raw_direction IN ('UP','DOWN')
+                    WHERE resolved AND raw_direction IN ('UP','DOWN') AND actual_move IS NOT NULL
                     GROUP BY actionable
                 """).df()
                 print(df.to_string(index=False))
@@ -245,9 +257,11 @@ def analyze_conviction_performance(horizon: int = None):
                                 WHEN conviction >= 55 THEN 'B (55-68)'
                                 ELSE 'C/WATCH (<55)' END AS grade,
                            COUNT(*) n,
-                           ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) hit_rate
+                           ROUND(AVG(CASE WHEN (raw_direction='UP'   AND actual_move > 0)
+                                            OR (raw_direction='DOWN' AND actual_move < 0)
+                                          THEN 1.0 ELSE 0.0 END) * 100, 1) hit_rate
                     FROM predictions_{h}m
-                    WHERE resolved AND raw_direction IN ('UP','DOWN')
+                    WHERE resolved AND raw_direction IN ('UP','DOWN') AND actual_move IS NOT NULL
                     GROUP BY grade ORDER BY grade DESC
                 """).df()
                 print(band.to_string(index=False))
@@ -386,7 +400,7 @@ def analyze_expectancy():
     """
     try:
         with duckdb.connect(DB_PATH) as conn:
-            print(f"--- Real-World Expectancy & Costs (Simulated Execution) ---")
+            print("--- Real-World Expectancy & Costs (Simulated Execution) ---")
             df = conn.execute(query).df()
             print(df)
             return df

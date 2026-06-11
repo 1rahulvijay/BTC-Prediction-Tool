@@ -7,7 +7,6 @@ deep microstructure, regime/vol forecasting and institutional alpha feeds.
 """
 
 import os
-import json
 import numpy as np
 from typing import Optional
 
@@ -604,6 +603,24 @@ def compute_adaptive_threshold(closes: np.ndarray, atr_arr: np.ndarray) -> float
     return threshold
 
 
+def _ffill_zeros(arr: np.ndarray) -> np.ndarray:
+    """Forward-fill ZERO gaps in a per-bar price series.
+
+    Cross-asset feeds (ETH/SOL) record 0 during outages/startup; diffing across a
+    0 bar turns one missing sample into two false full-scale moves (e.g. the
+    lead-lag feature saturates its clip at ±1.0 on pure feed noise). Leading zeros
+    are backfilled with the first real value; an all-zero series is returned as-is
+    (constant → zero variance → harmless)."""
+    out = np.asarray(arr, dtype=np.float64).copy()
+    nz = np.flatnonzero(out != 0.0)
+    if nz.size == 0 or nz.size == out.size:
+        return out
+    out[: nz[0]] = out[nz[0]]
+    pos = np.where(out != 0.0, np.arange(out.size), 0)
+    np.maximum.accumulate(pos, out=pos)
+    return out[pos]
+
+
 def build_features_from_klines(
     klines: list[dict],
     order_flow_summary: Optional[dict] = None,
@@ -1026,8 +1043,13 @@ def build_features_from_klines(
     features[:, 85] = np.clip(exflow_raw[1:], -1.0, 1.0)
 
     # Cross-Asset Correlation (86-93)
-    eth_price_raw = series("eth_price", 0.0)
-    sol_price_raw = series("sol_price", 0.0)
+    # PRICE series get zero-gap forward-fill (see _ffill_zeros): a 0 outage bar
+    # floors the ratio features and makes the lead-lag diff (feature 100) emit two
+    # false full-scale spikes. Applied inside this shared build path, so training
+    # and serving stay consistent. Volumes/imbalances keep their honest 0
+    # (real "no data" semantics, bounded effect).
+    eth_price_raw = _ffill_zeros(series("eth_price", 0.0))
+    sol_price_raw = _ffill_zeros(series("sol_price", 0.0))
     eth_vol_raw = series("eth_volume", 0.0)
     sol_vol_raw = series("sol_volume", 0.0)
     eth_imb_raw = series("eth_imbalance", 0.0)

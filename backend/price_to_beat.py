@@ -330,7 +330,8 @@ class PriceToBeatTracker:
                 if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
                     self.latest_round[p["horizon"]] = resolved
                 try:
-                    database.resolve_price_to_beat(p["id"], end_price, actual_dir, hit, move)
+                    database.resolve_price_to_beat(p["id"], end_price, actual_dir, hit, move,
+                                                   late_entry=bool(p.get("late_entry", False)))
                 except Exception as e:
                     logger.debug(f"Price-to-beat resolve failed: {e}")
             else:

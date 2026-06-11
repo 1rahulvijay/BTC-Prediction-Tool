@@ -4,7 +4,6 @@ Options (Deribit), CME Basis proxy, Stablecoin Flows, On-Chain Exchange Flows.
 Each feed is an async poller with graceful fallback to neutral values.
 """
 
-import asyncio
 import logging
 import time
 from typing import Optional

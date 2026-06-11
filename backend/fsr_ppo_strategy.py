@@ -273,8 +273,13 @@ class FSRPPOStrategy:
         side = "BUY" if action.startswith("BUY") else "SELL" if action.startswith("SELL") else "AVOID"
         confidence_score = float(np.clip(0.35 * confidence + 0.30 * signal_quality + 0.20 * max(alignment, 0.0) + 0.15 * state["agreement"], 0.0, 1.0))
 
-        self.last_actions[horizon] = action
-        self.last_action_ts[horizon] = now
+        # Only COMMITTED actions update the overtrade memory: recording AVOID here
+        # overwrote the last real trade, so a BUY→AVOID→SELL flip-flop within the
+        # penalty window looked like a fresh trade (last="AVOID" → no penalty) and
+        # the anti-churn logic never fired. AVOID also must not refresh the timestamp.
+        if action != "AVOID":
+            self.last_actions[horizon] = action
+            self.last_action_ts[horizon] = now
 
         return {
             "horizon": horizon,

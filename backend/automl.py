@@ -8,7 +8,6 @@ than the baseline, it is serialized and can be loaded as the new Challenger.
 """
 
 import os
-import time
 import logging
 import duckdb
 import optuna
@@ -37,12 +36,19 @@ class AutoMLChallenger:
             
         try:
             with duckdb.connect(DB_PATH, read_only=True) as conn:
+                # Label = LEAN sign-truth (raw_direction vs realized move), NOT the `hit`
+                # column: `hit` is dual-semantic — on gated rows it equals avoid_success,
+                # TRUE when the lean was WRONG — so tuning on it optimizes an inverted target.
                 df = conn.execute(f"""
                     SELECT confidence, agreement, ewma_vol, spread_norm,
                            wall_imbalance, sr_compression, liq_imbalance,
-                           quantile_spread, expectancy_usd, hit
+                           quantile_spread, expectancy_usd,
+                           CASE WHEN (raw_direction='UP'   AND actual_move > 0)
+                                  OR (raw_direction='DOWN' AND actual_move < 0)
+                                THEN TRUE ELSE FALSE END AS hit
                     FROM predictions_{horizon}m
-                    WHERE resolved = TRUE AND hit IS NOT NULL AND confidence > 0.4
+                    WHERE resolved = TRUE AND raw_direction IN ('UP','DOWN')
+                      AND actual_move IS NOT NULL AND confidence > 0.4
                     ORDER BY timestamp DESC
                     LIMIT 5000
                 """).df()

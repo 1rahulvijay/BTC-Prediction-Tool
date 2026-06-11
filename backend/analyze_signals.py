@@ -10,7 +10,7 @@ counts and precision (NEUTRAL = "no bet", excluded from precision).
 
 Read-only + lock-tolerant, so it is safe to run while the app is live.
 """
-import os, sys, time, datetime
+import os, time, datetime
 
 os.environ.setdefault("BTC_DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))
 import duckdb

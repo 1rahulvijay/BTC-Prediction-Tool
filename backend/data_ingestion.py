@@ -527,8 +527,8 @@ class CoinbaseWebSocketClient:
                                         "receive_time": int(time.time() * 1000),
                                     },
                                 )
-                        except Exception as e:
-                            pass
+                        except Exception:
+                            pass  # malformed/unknown WS message — skip, keep the stream
 
             except Exception as e:
                 logger.warning(f"Coinbase WS disconnected: {e}")

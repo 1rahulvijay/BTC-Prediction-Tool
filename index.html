@@ -824,6 +824,27 @@
           </div>
           <div id="binance-indicators" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;"></div>
         </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>Model Accuracy (per horizon, committed calls)</h2>
+            <p>Live accuracy of the model's committed UP/DOWN calls per timeframe, with the UP/DOWN split — watch whether v4 escapes the one-sided bias.</p>
+          </div>
+          <div id="binance-accuracy" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.6rem;"></div>
+        </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
+            <h2>Recent Calls — correct / incorrect</h2>
+            <p>Each resolved lean graded by <strong>sign-truth</strong>: did the lean match the realized move's direction. ✓/✗ is the betting truth, independent of whether the gate traded it.</p>
+          </div>
+          <div id="binance-log" class="action-log-wrap"></div>
+        </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ff9800; padding-left:1rem;">
+            <h2>Order Flow &amp; Derivatives (Binance stream)</h2>
+            <p>The live microstructure the model trades on — taker flow, big players, funding/OI. Green = buy-side / bullish pressure.</p>
+          </div>
+          <div id="binance-flow" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;"></div>
+        </section>
       </main>
 
       <!-- ═══ POLYMARKET VIEW (Pyth anchor — 5m/15m binary bets) ═══ -->
@@ -841,8 +862,10 @@
         <section class="analysis-section">
           <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
             <h2>Recent Resolved Rounds &amp; Win Rate</h2>
+            <p>Discipline: bet <strong>model</strong> leans only (fallback leans ≈ coin-flip), prefer grade <strong>A/B</strong> setups, skip CHOP/STRETCH outlooks.</p>
           </div>
           <div id="pm-accuracy" style="margin-bottom:.8rem;"></div>
+          <div id="pm-grade-stats" style="margin-bottom:.8rem;"></div>
           <div id="pm-recent" class="action-log-wrap"></div>
         </section>
       </main>

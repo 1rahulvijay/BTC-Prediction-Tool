@@ -58,7 +58,6 @@ from institutional_feeds import (
 )
 from ab_testing import ABTestRunner, ModelVariant
 from polymarket_client import PolymarketClient
-from polymarket_features import compute_polymarket_features
 from polymarket_model import PolymarketModel
 from polymarket_simulator import PolymarketSimulator
 from polymarket_verifier import PolymarketVerifier
@@ -387,18 +386,34 @@ async def price_to_beat_ticker():
     captures accurate. Model inputs/feature pipeline are unchanged (Binance)."""
     _last_ref = None
     _last_change_t = time.time()
+    _pyth_offset = None  # EWMA of (pyth - binance) while both feeds are fresh
     while True:
         try:
             pyth = data_state.get("pyth_price")
             pyth_fresh = bool(pyth and (time.time() - data_state.get("pyth_price_ts", 0)) < 10.0)
+            binance_live = data_state.get("live_price")
             if pyth_fresh:
                 ref = pyth
                 kl = None  # same-feed: do NOT recover boundary from Binance klines
+                # Track the venue offset while both feeds are healthy, so a later
+                # Pyth outage can fall back to Binance CONVERTED INTO PYTH UNITS.
+                if binance_live:
+                    d = float(pyth) - float(binance_live)
+                    _pyth_offset = d if _pyth_offset is None else (0.98 * _pyth_offset + 0.02 * d)
             else:
-                ref = data_state.get("live_price")
+                ref = binance_live
                 if ref is None and data_state.get("klines"):
                     ref = data_state["klines"][-1].get("close")
-                kl = data_state.get("klines")
+                # MID-ROUND VENUE-MIXING guard: rounds may have anchored on Pyth, so a raw
+                # Binance fallback would resolve them against a different feed (the ~$40-80
+                # venue offset the Pyth anchor exists to remove). Apply the learned offset
+                # so the fallback stays in Pyth units; klines (Binance units) are then
+                # unusable for boundary recovery, so pass None in that case.
+                if ref is not None and _pyth_offset is not None:
+                    ref = float(ref) + _pyth_offset
+                    kl = None
+                else:
+                    kl = data_state.get("klines")
             if ref:
                 # FEED-FRESHNESS guard: a ref unchanged for >10s means the anchor feed is
                 # frozen; still resolve/refresh, but DO NOT open new rounds at a stale price.
@@ -2563,6 +2578,10 @@ async def main_loop():
                             feature_schema_hash=__import__(
                                 "features"
                             ).get_feature_schema()["schema_hash"],
+                            confluence_grade=(p.get("confluence") or {}).get("grade", "")
+                                if isinstance(p.get("confluence"), dict) else "",
+                            expected_precision=p.get("expectedPrecision"),
+                            calibrated_confidence=p.get("calibratedConfidence"),
                         )
                         ppo_h = (
                             (fsr_ppo_block.get("by_horizon") or {}).get(str(h))
@@ -2600,13 +2619,9 @@ async def main_loop():
             model_verifier.check(current_price, now_ms)  # resolve per-model votes
             exchange_verifier.check(current_venue_prices(data_state), now_ms)  # per-venue confirmation
 
-            # Price-to-beat: a Polymarket BTC up/down MIRROR (rule: UP if end >= start).
-            # Polymarket settles on the real Chainlink BTC/USD DATA STREAM (sub-second). Our
-            # only "Chainlink" source is CoinGecko, which is rate-limited + ~30-60s stale —
-            # too coarse for a 5m window. The FRESH Binance aggTrade price (sub-100ms) tracks
-            # the real Chainlink aggregate within a few bps (~$6), far closer than a stale
-            # CoinGecko value (±$50-100 during a move), so it's the better live proxy here.
-            ptb_ref = data_state.get("live_price") or current_price
+            # Price-to-beat rounds are owned by the FAST 1s ticker (price_to_beat_ticker),
+            # which anchors AND resolves on Pyth (§5u) with an offset-corrected Binance
+            # fallback — this loop's only job is handing it the latest predictions below.
             preds_by_h = {p.get("horizon"): p for p in predictions}
             kronos_dir_by_h = {
                 h: (kronos_verifier.last_forecast.get(h) or {}).get("direction", "NONE")
@@ -2649,9 +2664,16 @@ async def main_loop():
                         ab_runner.enabled = False
                         ab_runner.comparison_log.clear()
 
-                # Feed the CascadeMonitor
+                # Feed the CascadeMonitor — grade the RAW lean vs the realized sign,
+                # NOT the `hit` column: on gated rows (the majority) hit=avoid_success,
+                # TRUE when the lean was WRONG, which would invert the cascade-on vs
+                # cascade-off accuracy comparison that auto-enables/disables the cascade.
                 if h in [3, 5]:
-                    cascade_monitor.record_outcome(f"{h}m", cascade_active, hit)
+                    raw_dir = v.get("raw_direction", v.get("direction"))
+                    move = float(v.get("actual_move_usd") or 0.0)
+                    if raw_dir in ("UP", "DOWN") and move != 0.0:
+                        lean_correct = (raw_dir == "UP") == (move > 0)
+                        cascade_monitor.record_outcome(f"{h}m", cascade_active, lean_correct)
 
                 database.update_outcome(
                     pred_id=pred_id,
@@ -2662,6 +2684,7 @@ async def main_loop():
                     price_match=v["price_match"],
                     move_error=v["move_error_usd"],
                     avoid_success=v.get("avoid_success", False),
+                    lean_hit=v.get("lean_hit"),
                 )
 
             # Auto-learning feedback loop (every 10 seconds approx).
@@ -2937,7 +2960,9 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         await websocket.send_text(json.dumps({"type": "connected"}))
         while True:
-            data = await websocket.receive_text()
+            # Broadcast-only socket: inbound text is read to keep the connection
+            # alive / detect disconnects, and intentionally discarded.
+            await websocket.receive_text()
     except WebSocketDisconnect:
         if websocket in clients:
             clients.remove(websocket)

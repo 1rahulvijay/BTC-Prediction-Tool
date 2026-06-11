@@ -110,11 +110,34 @@ def init_db():
             "ADD COLUMN move_range_width DOUBLE DEFAULT NULL",
             "ADD COLUMN model_version VARCHAR DEFAULT 'baseline_v9'",
             "ADD COLUMN feature_schema_hash VARCHAR DEFAULT ''",
+            # Pure LEAN sign-truth (raw_direction vs sign(actual_move)) — NULL until
+            # resolved or when the lean was NEUTRAL. The legacy `hit` column stays
+            # dual-semantic BY DESIGN (final-action quality incl. avoid_success); any
+            # betting-accuracy consumer must use lean_hit, never hit.
+            "ADD COLUMN lean_hit BOOLEAN DEFAULT NULL",
+            # Decision-layer outputs persisted for durable evaluation: the A/B/C setup
+            # grade, the precision engine's measured P(win), and the calibrated
+            # confidence the gate actually compared against.
+            "ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
+            "ADD COLUMN expected_precision DOUBLE DEFAULT NULL",
+            "ADD COLUMN calibrated_confidence DOUBLE DEFAULT NULL",
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions_{tf}m {ddl};")
             except Exception:
                 pass # column already exists
+        # One-time backfill of lean_hit for already-resolved historical rows (no-op
+        # when nothing qualifies; safe to run every boot).
+        try:
+            conn.execute(f"""
+                UPDATE predictions_{tf}m
+                SET lean_hit = ((raw_direction = 'UP'   AND actual_move > 0)
+                             OR (raw_direction = 'DOWN' AND actual_move < 0))
+                WHERE lean_hit IS NULL AND resolved = TRUE
+                  AND raw_direction IN ('UP', 'DOWN') AND actual_move IS NOT NULL
+            """)
+        except Exception:
+            pass
         # Context columns for the trained meta-model (logged now so data accrues).
         for col in ["ewma_vol", "spread_norm", "wall_imbalance",
                     "sr_compression", "liq_imbalance", "quantile_width_pct", "quantile_asymmetry",
@@ -399,6 +422,15 @@ def init_db():
         conn.execute("ALTER TABLE price_to_beat ADD COLUMN lean_source VARCHAR DEFAULT ''")
     except Exception:
         pass
+    # Additive migration: persist the setup grade (A/B/C) and the late-entry flag so
+    # grade-discipline win rates are measurable from the DB, not just the small
+    # in-memory recent-rounds buffer.
+    for _ddl in ["ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
+                 "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE"]:
+        try:
+            conn.execute(f"ALTER TABLE price_to_beat {_ddl}")
+        except Exception:
+            pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fsr_ppo_decisions (
             id VARCHAR PRIMARY KEY,
@@ -583,16 +615,20 @@ def log_price_to_beat(entry: dict):
     conn = None
     try:
         conn = _connect()
+        cfl = entry.get("confluence") or {}
+        grade = str(cfl.get("grade", "")) if isinstance(cfl, dict) else ""
         conn.execute("""
             INSERT OR REPLACE INTO price_to_beat
             (id, timestamp, horizon, price_to_beat, our_direction, signal, conviction,
-             actionable, kronos_direction, target_price, verify_at, lean_source, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+             actionable, kronos_direction, target_price, verify_at, lean_source,
+             confluence_grade, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
         """, (
             entry["id"], entry["timestamp"], entry["horizon"], entry["price_to_beat"],
             entry["our_direction"], entry.get("signal", ""), float(entry.get("conviction", 0.0)),
             bool(entry.get("actionable", False)), entry.get("kronos_direction", ""),
             entry.get("target_price"), entry["verify_at"], entry.get("lean_source", ""),
+            grade,
         ))
     except Exception as e:
         print(f"DuckDB PriceToBeat Insert Error: {e}")
@@ -602,15 +638,16 @@ def log_price_to_beat(entry: dict):
 
 
 def resolve_price_to_beat(pred_id: str, actual_price: float, actual_direction: str,
-                          hit: bool, move: float):
+                          hit: bool, move: float, late_entry: bool = False):
     conn = None
     try:
         conn = _connect()
         conn.execute("""
             UPDATE price_to_beat
-            SET actual_price = ?, actual_direction = ?, hit = ?, move = ?, resolved = TRUE
+            SET actual_price = ?, actual_direction = ?, hit = ?, move = ?,
+                late_entry = ?, resolved = TRUE
             WHERE id = ?
-        """, (actual_price, actual_direction, hit, move, pred_id))
+        """, (actual_price, actual_direction, hit, move, bool(late_entry), pred_id))
     except Exception as e:
         print(f"DuckDB PriceToBeat Resolve Error: {e}")
     finally:
@@ -1060,7 +1097,9 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                    prob_down: float = 0.0, agreement: float = 0.0, model_dirs: dict = None,
                    verify_at: int = 0, expected_move_range: dict = None,
                    expectancy_usd: float = 0.0, expected_slippage_usd: float = 0.0,
-                   model_bundle_id: str = "baseline_v9", feature_schema_hash: str = ""):
+                   model_bundle_id: str = "baseline_v9", feature_schema_hash: str = "",
+                   confluence_grade: str = "", expected_precision: float = None,
+                   calibrated_confidence: float = None):
     conn = None
     try:
         conn = _connect()
@@ -1070,8 +1109,9 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                 confidence, signal, chainlink_price, chainlink_target, resolved, cascade_active, regime,
                 raw_direction, skip_reason, avoid_success, prob_up, prob_down, agreement,
                 model_dirs_json, verify_at, move_range_low, move_range_median,
-                move_range_high, move_range_width, model_version, feature_schema_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                move_range_high, move_range_width, model_version, feature_schema_hash,
+                confluence_grade, expected_precision, calibrated_confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (pred_id, timestamp, horizon, binance_price, target_price, expected_move,
               confidence, signal, chainlink_price, chainlink_target, False, cascade_active, regime,
               raw_direction or signal, skip_reason or "", avoid_success, prob_up, prob_down,
@@ -1081,7 +1121,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
               (expected_move_range or {}).get("high"),
               ((expected_move_range or {}).get("high") - (expected_move_range or {}).get("low"))
               if (expected_move_range or {}).get("high") is not None and (expected_move_range or {}).get("low") is not None
-              else None, model_bundle_id, feature_schema_hash))
+              else None, model_bundle_id, feature_schema_hash,
+              confluence_grade or "", expected_precision, calibrated_confidence))
         # Store prediction-time context for the trained meta-model.
         if context:
             conn.execute(f"""
@@ -1127,17 +1168,19 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
         if conn:
             conn.close()
 
-def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move: float, 
-                   hit: bool, price_match: bool, move_error: float, avoid_success: bool = False):
+def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move: float,
+                   hit: bool, price_match: bool, move_error: float, avoid_success: bool = False,
+                   lean_hit: bool = None):
     conn = None
     try:
         conn = _connect()
         conn.execute(f"""
-            UPDATE predictions_{horizon}m 
+            UPDATE predictions_{horizon}m
             SET actual_price = ?, actual_move = ?, hit = ?, price_match = ?, move_error = ?,
-                avoid_success = ?, resolved = ?
+                avoid_success = ?, lean_hit = ?, resolved = ?
             WHERE id = ?
-        """, (actual_price, actual_move, hit, price_match, move_error, avoid_success, True, pred_id))
+        """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
+              lean_hit, True, pred_id))
     except Exception as e:
         print(f"DuckDB Update Error: {e}")
     finally:

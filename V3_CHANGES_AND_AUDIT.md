@@ -664,6 +664,193 @@ grade-A subset (~80%, small n) and the selectivity machinery. This RAISES the st
 v4 retrain (trend features + P4.3) — v4 must prove it clears 50% at all, measured ONLY by
 sign-truth / the mirror from now on. guide.html's win-rate ladder needs revision after v4.
 
+## 5aa. THE FULL `hit`-CLASS SWEEP — every consumer audited, hunt CLOSED (2026-06-11)
+
+§5z found the dual-semantic `hit` bug; the operator's instinct ("I feel like there are more")
+was right — it was a CLASS. This pass audited **every one of the 15 files** that touch `hit`.
+
+### Poisoned consumers found & FIXED (sign-truth: raw_direction vs sign(actual_move))
+| Consumer | Path type | Damage before fix |
+|---|---|---|
+| `calibration.py` labels (§5z) | live (would auto-activate) | inverted confidence map |
+| `prediction_verifier.get_regime_horizon_quality` (§5z) | live (regime skip rules) | inverted regime quality |
+| `analytics.validate_regime_thresholds` → `poor_regimes` blocker | **live** (server loop imports it) | **INVERTED: 5m TRENDING_UP read 83.3% under `hit`, TRUE = 33.3% (Δ+50)** — the model's worst regime (fading uptrends) looked best, so the blocker never blocked it; TRENDING_DOWN Δ+25, LOW_VOL Δ+16.7. Measured on live DB. |
+| `server.py` → `CascadeMonitor.record_outcome` | **live** (cascade auto-enable/disable + `avg_impact` multiplier on expected-move) | cascade-on vs cascade-off accuracy comparison computed on inverted labels → auto-disable could fire backwards. Now fed lean sign-truth, directional rows only. |
+| `automl.py` challenger tuner label | offline only (never imported by server — verified) | would tune hyperparams to predict the inverted target; fixed as a foot-gun. |
+| `meta_model.py` trainability check (`df["hit"].nunique()`) | live-adjacent | could block/allow training on the wrong column's class balance; now checks the actual `profitable` label. (Its TRAINING label was already clean: cost-aware sign-truth.) |
+| `analytics.analyze_conviction_performance` | report | filtered raw-directional rows but graded them with `hit` — self-contradictory; now sign-truth. |
+
+### Audited CLEAN (no action)
+`get_signal_policy` (grades raw vs actual_direction directly — feeds the gate, clean),
+`get_regime_calibration` + `refit_confidence_calibrators` (committed-rows-only → `hit` unambiguous),
+`ab_testing`, `model_verifier`, `kronos_verifier`, `exchange_verifier`, `analyze_signals.py`
+(reads clean-semantics tables), `price_to_beat`/`database` resolvers (direct comparisons),
+`trading_simulator`/`polymarket_client` (docstrings only).
+
+### Kept `hit` semantics BY DESIGN (final-action panels, labeled as such)
+`prediction_verifier` accuracy panels (grade gate quality), `analytics` avoid-success /
+meta-filter / skip-reason panels. Never to be quoted as betting accuracy.
+
+### Fresh sign-truth scorecard (post-relearn v3 model, all resolved rows)
+1m 49.9% (463) · 3m 46.8% (355) · 5m 51.4% (292) · 7m 48.3% (230) · 10m 51.8% (164) ·
+15m 45.1% (133). Mirror: 5m model-lean 51% (201), 15m model-lean 41% (94). Still coin-flip —
+confirms §5z; the relearn the operator ran today (old code, finished 17:04, saved v3-126)
+did NOT fix it, as predicted. 5m remains a DOWN-machine in the last 24h (156 DOWN / 24 UP).
+
+### Tooling
+`backend/sign_truth_scorecard.py` — permanent measurement script (run with the app STOPPED):
+per-horizon sign-truth accuracy, 24h bias split, mirror split, regime feed old-vs-new
+comparison, freshness. This is THE yardstick for judging v4.
+
+### State at end of this pass
+App STOPPED (~18:00); saved arch `v3-dirfeat-126` (today's relearn) vs code `v4-trend-regime-130`
+→ **next start.bat auto-retrains v4** with: trend features (DOWN-bias fix), P4.3 HMM regime
+alignment, `_model_directions` GLOBAL fallback, Pyth anchor, dual UI views, and ALL grading
+fixes above. One restart ships everything.
+
+## 5ab. Venue-tab hardening, Pyth fallback guard, guide re-base (2026-06-11, late)
+
+### Bugs found & fixed this pass
+1. **Binance tab "Live acc" was permanently blank** — `renderBinanceView` read
+   `data.live_accuracy`/`data.accuracy`, neither of which exists in the payload; per-horizon
+   accuracy lives at `verification.accuracy`. Fixed; it now shows `directional_accuracy`
+   (committed UP/DOWN calls only — the clean subset of `hit`).
+2. **Binance tab regime cell** read `data.regime_info` (payload key is `regime`) — always "—".
+3. **Mid-round VENUE MIXING in the price-to-beat ticker** (real correctness bug): if Pyth
+   went stale (>10s) mid-round, `ref` silently switched to raw Binance — a round ANCHORED on
+   Pyth would RESOLVE against a Binance price (~$40-80 offset → thin rounds mis-graded).
+   Fix: the ticker maintains an EWMA `pyth − binance` offset while both feeds are fresh; the
+   Binance fallback is converted into Pyth units (and kline boundary-recovery is disabled in
+   that mode, since klines are Binance units).
+
+### UI enhancements (both venue tabs, venue-correct datastreams)
+- **Binance tab:** 24h range/volume in the strip; per-card adds measured P(win)
+  (`expectedPrecision`), model agreement, conviction grade; 12-cell indicator grid (adds
+  MACD hist, BB position, CCI, Williams %R, EMA9/21 cross); NEW order-flow/derivatives strip
+  rendered from `training_signals` — the exact per-candle values the model trains on.
+- **Polymarket tab:** Chainlink price added to the strip (settlement reference); lean-source
+  badge (MODEL vs ⚠ WEAK-skip); ⚡ late-entry chip; kline-recovery anchor flag; live-lean
+  drift warning; resolved rounds show the $move; NEW win-rate-by-grade/-source strip
+  (computed from the recent-rounds buffer, labeled as a small-n hint); discipline banner.
+
+### guide.html re-based (the honesty pass)
+- New "What changed 2026-06-11" section: the grading retraction, Pyth anchor, v4, the tabs.
+- Win-rate ladder REWRITTEN on sign-truth: blind 50% · model leans ~51% (not yet an edge —
+  paper-track until 55%+) · grades/A-rounds = hypotheses pending clean-sample re-measure ·
+  late-entry = structurally favored. Stale "~64%" claims corrected in place; footer dated.
+- New "two venue tabs" section: feed-per-job table + why direction is venue-agnostic.
+
+### Validation
+`npm run build` clean (275.6 kB); ALL backend files `py_compile` clean; 130-feature build
+smoke test PASS (X=(599,130), no NaN, trend slots positive in an uptrend); payload field
+audit of both render fns against server.py — every key verified present (`pyth_price`,
+`pyth_price_age_s`, `ticker_24h`, `verification.accuracy`, `training_signals`,
+`price_to_beat.{latest,accuracy,recent}`, round fields incl. `late_entry`,
+`ref_captured_late_ms`, `live_lean`, `move`).
+
+## 5ac. Antigravity remediation plan — verified, triaged, implemented (2026-06-11, late)
+
+Antigravity proposed 4 fixes; each was verified against the actual code before acting
+(their record is mixed — one prior real find, one moot claim). Verdicts:
+
+| # | Claim | Verdict | Action |
+|---|---|---|---|
+| 1 | `lean_hit` column (P5.1) | **Real need, scoped down.** All consumers were already fixed via sign-truth SQL (§5z–5aa); the column adds a safe-by-default source for FUTURE code. Their "unify the UI payload" sub-item = the long-deferred P5 refactor — NOT done now (big cross-cutting change before v4 validates). | Added `lean_hit BOOLEAN` to all `predictions_*m` (NULL = unresolved/neutral lean); boot-time backfill migration for historical rows (idempotent); verifier computes it (pure raw-lean vs sign(actual_move)); `update_outcome` writes it. Proven by test: `hit=TRUE` (good avoid) coexists with `lean_hit=FALSE` — decoupled. Existing sign-truth queries intentionally unchanged (equivalent + proven). |
+| 2 | Kelly freeze | **Half stale, half real.** The $0-trade death spiral was ALREADY fixed (skip guard). But the no-recovery residue was real: Kelly≤0 → no trades → history frozen → sizing pinned at 0 FOREVER (even after a retrain improves the model). Also: unbounded `trade_history` let a stale losing era dominate. | Kelly now evaluates the LAST 100 trades (recency) and floors at a 0.5% paper-probe (cap unchanged 2%) so evidence keeps flowing and sizing can recover. Tested: all-loss history → 0.005; recent winners after ancient losers → 0.02. |
+| 3 | Sharpe time-scaling | **Confirmed real.** `sqrt(min(252, n))` treated n TRADES as n DAYS (30 trades in 2h got the 30-trading-days multiplier). Display-only metric, but wrong math. | Annualization = `sqrt(trades_per_year)` from the MEASURED span of the recent trades (`_pnl_times` deque, aligned with `_pnl_history`); falls back to the per-trade ratio when span too short. Tested: 60 trades/30 days → factor 26.8 (old formula: 7.75). |
+| 4 | Cross-asset 0.0 outliers | **Overstated but real at one spot.** Features 86/87 are CLIPPED ratios (a 0 floors them — no "catastrophic crash"). The real damage: feature 100 (lead-lag) DIFFS the raw ETH series, so one 0 outage bar = two false full-scale ±1.0 spikes. Their NaN+ffill suggestion adapted: NaN must never enter the matrix (training asserts no-NaN), so zeros are forward-filled instead. | `_ffill_zeros()` applied to eth/sol PRICE series inside the shared build path (train/serve consistent; leading zeros backfilled; all-zero series unchanged → zero-variance harmless). Volumes/imbalances keep honest 0. Tested: 3000→0→3000 spikes eliminated. |
+
+Also this pass (operator request): **Chainlink price removed from the Polymarket tab** —
+strip shows Pyth (settlement proxy) + Binance only.
+
+Validation: 4/4 functional tests PASS (migration on a throwaway DB; ffill edge cases; Kelly
+floor + recency; Sharpe factor exact); all touched backend files compile; `npm run build` clean.
+Note: the feature-100 sanitization slightly changes inputs vs what the OLD model trained on
+(outage bars only — rare); the pending v4 retrain bakes it in consistently.
+
+## 5ad. Binance-tab accuracy/log + training-time fixes (2026-06-11, operator screenshots)
+
+Operator's screenshots (taken mid-v4-train) exposed three frontend bugs, all fixed:
+1. **Early return starved the whole tab**: with no predictions (i.e. during the entire
+   ~5h train) `renderBinanceView` returned after the empty-state, so indicators, flow —
+   everything below — stayed blank. Now everything renders regardless; the empty state is
+   training-aware ("Model is training (X%) — …" from `relearn_status`).
+2. **ticker_24h field names**: payload uses snake_case (`price_change_percent`,
+   `high_price`, `low_price`) — the strip read camelCase, so only volume rendered.
+3. Polymarket "anchored via kline recovery" label was wrong under the Pyth anchor (it
+   means LATE CAPTURE there; klines aren't used) — now "late anchor capture +X.Xs".
+
+New on the Binance tab (operator ask: "where are model accuracy and trades log?"):
+- **Model Accuracy panel**: per-horizon committed-call accuracy with sample size, color
+  bands (≥55% green / 48-55 amber / <48 red), the UP/DOWN side split (the v4 bias watch),
+  and the current streak.
+- **Recent Calls log**: every resolved directional lean — time, TF, lean (+ whether the
+  gate traded or waited), confidence, realized move, and ✓ CORRECT / ✗ WRONG graded by
+  SIGN-TRUTH (`lean_hit` from the backend when present; client-side sign fallback for
+  rows from older code, so the log works WITHOUT restarting the in-progress train).
+- `_format_verification` now exposes `lean_hit` (backend side; applies on next natural
+  restart — NOT needed for the log to work).
+
+Operator note: do NOT restart while the v4 train is running — frontend changes need only
+a hard refresh (Ctrl+Shift+R); the one backend line rides along on the next restart.
+
+## 5ae. Antigravity list #2 triage + DB-coverage audit (2026-06-11, late)
+
+### Antigravity's 5-item list: 4 of 5 were ALREADY DONE this session (§5ac)
+Items 1 (lean_hit), 2 (Kelly), 3 (Sharpe), 4 (cross-asset zeros) were implemented and
+unit-proven earlier today — their scan read stale docs. Item 5 was new and REAL (minor):
+- **FSR-PPO overtrade memory** — `last_actions[h]` updated on EVERY call including AVOID,
+  so an AVOID between two committed trades erased the flip-flop memory (BUY→AVOID→SELL
+  saw last="AVOID" → 0 penalty instead of 0.08) and refreshed the timestamp. Now only
+  committed actions update the memory. Tested: flip-flop penalty fires (0.08). Isolated
+  challenger — never touches the live signal — but its reward log is now honest.
+
+### DB-coverage audit (operator: "are we catching ALL signals/analytics in the DB?")
+**Already captured (comprehensive):** every ensemble prediction with full meta context
+(probs, agreement, regime, conviction, quantiles, wf-stats, expectancy, model_dirs,
+raw_direction, hit + lean_hit); per-base-model votes (`model_predictions`, 7 models × 6
+horizons); Kronos calls; price-to-beat rounds (+lean_source); FSR-PPO decisions+rewards;
+simulated trades (Kelly/slippage/fees/PnL); A/B results; SHAP feature importance;
+1/min analysis snapshots; feature-retirement events. Signal history → pkl + backfill parquet.
+
+**Gaps found → FIXED (all additive migrations, auto-applied at next restart):**
+1. `predictions_*m` — the decision layer's outputs were computed but never persisted:
+   `confluence_grade` (A/B/C), `expected_precision` (measured P(win) used by the gate),
+   `calibrated_confidence`. Without these, the grade/calibration machinery could never be
+   evaluated from the DB. Now columns + written at insert (verified the insert call site
+   runs AFTER the grade/calibration block — values are present).
+2. `price_to_beat` — grade + late_entry existed only in the 20-round memory buffer; the
+   grade-discipline win rates (the actual betting strategy) were not durably measurable.
+   Now `confluence_grade` (at open) + `late_entry` (at resolve) columns.
+3. (checked, NOT a bug) `predictions.confluence` DOUBLE vs the grade dict: safe by call
+   order — meta context is built before `p["confluence"]` becomes a dict; the column holds
+   the model's numeric confluence, the new `confluence_grade` holds the grade.
+
+Validation: temp-DB round-trip PASS (grade/precision/calibrated persisted + read back;
+late_entry + grade on price_to_beat); FSR-PPO penalty test PASS; all touched files compile.
+**Operator note:** all of §5ae is backend-only → applies on the NEXT restart. Do NOT
+interrupt the running v4 train for it; the migrations are additive and run safely at boot.
+
+## 5af. Linter sweep — pyflakes now CLEAN (2026-06-11, late)
+
+Antigravity's unused-variable list verified with a real pyflakes run; each flagged item was
+checked for "forgotten use" (the dangerous kind) before deleting. **Verdict: zero logic
+bugs — all dead weight — but one STALE COMMENT was actively misleading.**
+
+| Item | Verdict | Action |
+|---|---|---|
+| `server.py ptb_ref` | dead since the Pyth-anchor refactor; the 7-line comment above it still described the OLD Binance-proxy anchor rationale — misleading for future edits | variable + stale comment removed; replaced with a 3-line accurate note (fast ticker owns the anchor, Pyth + offset-corrected fallback) |
+| `server.py websocket data` | broadcast-only socket; inbound deliberately discarded | unbound + comment |
+| `backfill cvd1m` | dead array build; divergence correctly derives at merge time (comment already said so) | deleted, comment tightened |
+| `data_ingestion e` | silently swallowed parse errors (intentional skip) | unbound + comment |
+| `calibration.py` | CLEAN — only an intentional `c_` unpack; SQL column indices re-verified correct | none |
+| `fix_model.py` | stale one-off patch script hardcoded to the OLD OneDrive path — cannot work, only confuse | **deleted** (in git history) |
+| unused imports (11 files) | cosmetic | removed (incl. server's unused `compute_polymarket_features`; kept `LabelEncoder` that gates HAS_SKLEARN in meta_model) |
+| `analytics.py` f-string w/o placeholders | cosmetic | `f` prefix dropped |
+
+Validation: **pyflakes CLEAN across backend/**, all files compile, import smoke OK
+(automl excluded — `optuna` not installed in this env, pre-existing, server never imports it).
+
 ## 6. Known limitations / honest notes
 - `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
   fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing

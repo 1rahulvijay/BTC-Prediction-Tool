@@ -26,7 +26,6 @@ except ImportError:
     HAS_DUCKDB = False
 
 try:
-    from sklearn.ensemble import GradientBoostingClassifier
     from sklearn.preprocessing import LabelEncoder
     HAS_SKLEARN = True
 except ImportError:
@@ -75,10 +74,6 @@ class TrainedMetaModel:
         if len(df) < self.MIN_SAMPLES:
             return f"insufficient data: {len(df)}/{self.MIN_SAMPLES}"
 
-        # Need both outcomes present to learn anything.
-        if df["hit"].nunique() < 2:
-            return "only one outcome class present"
-
         self.regime_encoder = LabelEncoder()
         df["regime_encoded"] = self.regime_encoder.fit_transform(df["regime"].fillna("RANGE"))
 
@@ -88,8 +83,14 @@ class TrainedMetaModel:
             gross_pnl = direction_sign * row.get("actual_move", 0.0)
             cost_estimate = row.get("binance_price", 0.0) * 0.0010 + row.get("expected_slippage_usd", 0.0)
             return int((gross_pnl - cost_estimate) > 0)
-            
+
         df["profitable"] = df.apply(calc_profitable, axis=1)
+
+        # Need both outcomes present to learn anything — checked on the ACTUAL training
+        # label, not the dual-semantic `hit` column (which can show two classes while
+        # `profitable` has one, or vice versa).
+        if df["profitable"].nunique() < 2:
+            return "only one outcome class present"
         X = df[META_FEATURES].fillna(0).values
         y = df["profitable"].astype(int).values
 

@@ -4,7 +4,7 @@ import logging
 import requests
 import time
 import websockets
-from datetime import datetime, timezone
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 

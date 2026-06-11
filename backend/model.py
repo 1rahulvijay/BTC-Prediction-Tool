@@ -17,7 +17,7 @@ from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict
 from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES
 
 warnings.filterwarnings("ignore", message=".*Falling back to prediction using DMatrix due to mismatched devices.*")

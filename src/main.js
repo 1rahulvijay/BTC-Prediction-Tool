@@ -2575,55 +2575,162 @@ function renderBinanceView(data) {
   if (!grid) return;
   const px = Number(data.price || 0);
   if (strip) {
-    const ch = data.ticker_24h ? Number(data.ticker_24h.priceChangePercent || 0) : null;
+    // ticker_24h uses snake_case keys (see data_ingestion.fetch_ticker_24h)
+    const t = data.ticker_24h || {};
+    const ch = t.price_change_percent != null ? Number(t.price_change_percent) : null;
+    const hi = t.high_price != null ? Number(t.high_price) : null;
+    const lo = t.low_price != null ? Number(t.low_price) : null;
+    const vol = t.volume != null ? Number(t.volume) : null;
     strip.innerHTML = `<span style="color:var(--text-secondary);font-size:.7em;text-transform:uppercase;letter-spacing:.6px">Binance BTCUSDT</span>
       <strong style="font-size:1.4em;margin-left:.5rem">$${px.toLocaleString(undefined,{minimumFractionDigits:2})}</strong>
-      ${ch!=null?`<span style="color:${ch>=0?'#00e676':'#ff5252'};margin-left:.5rem">${ch>=0?'+':''}${ch.toFixed(2)}%</span>`:''}`;
+      ${ch!=null?`<span style="color:${ch>=0?'#00e676':'#ff5252'};margin-left:.5rem">${ch>=0?'+':''}${ch.toFixed(2)}% 24h</span>`:''}
+      ${hi!=null&&lo!=null?`<span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">24h range $${Math.round(lo).toLocaleString()} – $${Math.round(hi).toLocaleString()}</span>`:''}
+      ${vol!=null?`<span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">vol ${Math.round(vol).toLocaleString()} BTC</span>`:''}`;
   }
   const preds = (data.predictions || []).slice().sort((a,b)=>(a.horizon||0)-(b.horizon||0));
-  const accMap = (data.live_accuracy && data.live_accuracy.accuracy) || data.accuracy || {};
-  if (!preds.length) { grid.innerHTML = '<div class="fh-empty">Waiting for model predictions…</div>'; return; }
-  grid.innerHTML = preds.map(p => {
+  // Per-horizon accuracy lives at verification.accuracy (directional_* = committed
+  // UP/DOWN calls only — the clean subset of `hit`, valid for betting decisions).
+  const accMap = ((data.verification || {}).accuracy) || {};
+  if (!preds.length) {
+    // NO early return: indicators / flow / accuracy / calls-log below must still
+    // render (during a (re)train the model has no predictions for hours).
+    const rl = data.relearn_status || {};
+    const pct = rl.progress != null ? ` (${Math.round(rl.progress * 100)}%)` : '';
+    grid.innerHTML = `<div class="fh-empty">${rl.running
+      ? `🧠 Model is training${pct} — ${rl.message || ''}. Predictions appear when it completes; live data below keeps streaming.`
+      : 'Waiting for model predictions…'}</div>`;
+  } else grid.innerHTML = preds.map(p => {
     const dir = p.rawDirection || p.direction || 'NEUTRAL';
     const col = dir==='UP'?'#00e676':dir==='DOWN'?'#ff5252':'#8892a6';
     const sig = p.signal || 'WAIT';
     const action = sig==='TRADE BUY'||sig==='UP'?'BUY':sig==='TRADE SELL'||sig==='DOWN'?'SELL':(p.actionable?'TRADE':'WAIT');
+    const actCol = action==='BUY'?'#00e676':action==='SELL'?'#ff5252':'#8892a6';
     const conf = p.calibratedConfidence!=null?p.calibratedConfidence:p.confidence;
     const expMove = p.expectedMove!=null?p.expectedMove:0;
     const target = px && expMove ? px + (dir==='DOWN'?-1:1)*Math.abs(expMove) : (p.targetPrice||null);
     const cfl = p.confluence||{}; const a = accMap[p.horizon]||accMap[String(p.horizon)]||{};
-    const accStr = a.total?`${((a.directional_accuracy||a.accuracy||0)*100).toFixed(0)}% (${a.directional_total||a.total})`:'—';
+    const accStr = a.directional_total?`${((a.directional_accuracy||0)*100).toFixed(0)}% (${a.directional_total})`:'—';
+    const ep = p.expectedPrecision;        // measured P(win) for this setup cell, when known
+    const agree = p.agreement;
+    const grade = p.convictionGrade || cfl.grade;
     return `<div style="border:1px solid ${col}33;border-left:4px solid ${col};border-radius:10px;padding:.9rem 1.1rem;background:rgba(255,255,255,.02)">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
         <strong style="font-size:1.2em">${p.horizon}m</strong>
-        <span style="color:${col};font-weight:700;font-size:1.1em">${dirArrow(dir)} ${dir}</span>
+        <span style="color:${col};font-weight:700;font-size:1.1em">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN':dir}</span>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin-top:.6rem;font-size:.85em">
-        <div><span style="color:var(--text-secondary)">Action</span><br><strong style="color:${col}">${action}</strong></div>
+        <div><span style="color:var(--text-secondary)">Gated action</span><br><strong style="color:${actCol}">${action}</strong></div>
         <div><span style="color:var(--text-secondary)">${p.calibratedConfidence!=null?'Calib. conf':'Confidence'}</span><br><strong>${conf!=null?(conf*100).toFixed(0)+'%':'—'}</strong></div>
-        <div><span style="color:var(--text-secondary)">Expected move</span><br><strong>${expMove?(expMove>0?'+':'')+'$'+Math.round(Math.abs(expMove)):'—'}</strong></div>
+        <div><span style="color:var(--text-secondary)">Expected move</span><br><strong>${expMove?'±$'+Math.round(Math.abs(expMove)):'—'}</strong></div>
         <div><span style="color:var(--text-secondary)">Target</span><br><strong>${target?'$'+Math.round(target).toLocaleString():'—'}</strong></div>
-        <div><span style="color:var(--text-secondary)">Grade</span><br><strong>${cfl.grade||'—'}${cfl.score!=null?` (${cfl.score}/5)`:''}</strong></div>
-        <div><span style="color:var(--text-secondary)">Live acc</span><br><strong>${accStr}</strong></div>
+        <div><span style="color:var(--text-secondary)">Setup grade</span><br><strong>${grade||'—'}${cfl.score!=null?` (${cfl.score}/5)`:''}</strong></div>
+        <div><span style="color:var(--text-secondary)">Measured P(win)</span><br><strong>${ep!=null?(ep*100).toFixed(0)+'%':'—'}</strong></div>
+        <div><span style="color:var(--text-secondary)">Model agreement</span><br><strong>${agree!=null?(agree*100).toFixed(0)+'%':'—'}</strong></div>
+        <div><span style="color:var(--text-secondary)">Live acc (committed)</span><br><strong>${accStr}</strong></div>
       </div>
     </div>`;
   }).join('');
 
   const ind = document.getElementById('binance-indicators');
+  const i = data.indicators || {};
+  const cell = (label,val,col) => `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.5rem .7rem">
+    <div style="font-size:.7em;color:var(--text-secondary)">${label}</div><div style="font-weight:700;color:${col||'var(--text-primary)'}">${val}</div></div>`;
   if (ind) {
-    const i = data.indicators || {}; const rg = (data.regime_info||{}).regime || '—';
-    const cell = (label,val,col) => `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.5rem .7rem">
-      <div style="font-size:.7em;color:var(--text-secondary)">${label}</div><div style="font-weight:700;color:${col||'var(--text-primary)'}">${val}</div></div>`;
+    const rg = (data.regime||{}).regime || '—';
+    const rgCol = rg.includes('TREND')?'#00e676':rg==='HIGH_VOLATILITY'?'#ffb74d':rg==='LOW_VOLATILITY'?'#8892a6':'';
+    const emaX = (i.ema9!=null&&i.ema21!=null)?(i.ema9>i.ema21?'BULL':'BEAR'):null;
     ind.innerHTML = [
-      cell('Regime', rg, rg==='LOW_VOLATILITY'?'#ff5252':'#00e676'),
+      cell('Regime', rg, rgCol),
       cell('RSI', i.rsi!=null?i.rsi.toFixed(0):'—', i.rsi>70?'#ff5252':i.rsi<30?'#00e676':''),
-      cell('ADX (trend)', i.adx!=null?i.adx.toFixed(0):'—', i.adx>25?'#00e676':''),
-      cell('Stoch RSI', i.stoch_rsi!=null?i.stoch_rsi.toFixed(0):'—'),
-      cell('MFI', i.mfi!=null?i.mfi.toFixed(0):'—'),
-      cell('ATR', i.atr!=null?'$'+i.atr.toFixed(0):'—'),
+      cell('Stoch RSI', i.stoch_rsi!=null?i.stoch_rsi.toFixed(0):'—', i.stoch_rsi>80?'#ff5252':i.stoch_rsi<20?'#00e676':''),
+      cell('MFI', i.mfi!=null?i.mfi.toFixed(0):'—', i.mfi>80?'#ff5252':i.mfi<20?'#00e676':''),
+      cell('CCI', i.cci!=null?i.cci.toFixed(0):'—', i.cci>100?'#ff5252':i.cci<-100?'#00e676':''),
+      cell('ADX (trend)', i.adx!=null?`${i.adx.toFixed(0)} (${i.trend_strength||'—'})`:'—', i.adx>25?'#00e676':''),
+      cell('MACD hist', i.macd_hist!=null?i.macd_hist.toFixed(1):'—', i.macd_hist>0?'#00e676':i.macd_hist<0?'#ff5252':''),
+      cell('BB position', i.bb_position!=null?(i.bb_position*100).toFixed(0)+'%':'—', i.bb_position>0.95?'#ff5252':i.bb_position<0.05?'#00e676':''),
+      cell('ATR (1m)', i.atr!=null?'$'+i.atr.toFixed(0):'—'),
+      cell('EMA 9/21', emaX||'—', emaX==='BULL'?'#00e676':emaX==='BEAR'?'#ff5252':''),
       cell('SuperTrend', i.supertrend!=null?(px>i.supertrend?'UP':'DOWN'):'—', i.supertrend!=null?(px>i.supertrend?'#00e676':'#ff5252'):''),
-      cell('Trend', i.trend_strength||'—'),
+      cell('Williams %R', i.williams_r!=null?i.williams_r.toFixed(0):'—', i.williams_r>-20?'#ff5252':i.williams_r<-80?'#00e676':''),
     ].join('');
+  }
+
+  // Order-flow / derivatives strip — the SAME per-candle values the model trains on
+  // (payload.training_signals), so what you see here is what the model sees.
+  const flow = document.getElementById('binance-flow');
+  if (flow) {
+    const ts = data.training_signals || {};
+    const sCell = (label, key, dp, signed, fmt) => {
+      const raw = ts[key];
+      if (raw == null) return '';
+      const v = Number(raw);
+      const col = !signed ? '' : v > 0 ? '#00e676' : v < 0 ? '#ff5252' : '';
+      const shown = fmt ? fmt(v) : (Math.abs(v) >= 1e6 ? (v/1e6).toFixed(1)+'M' : Math.abs(v) >= 1e4 ? Math.round(v).toLocaleString() : v.toFixed(dp));
+      return cell(label, (signed && v > 0 ? '+' : '') + shown, col);
+    };
+    flow.innerHTML = [
+      sCell('CVD 1m (BTC)', 'cvd_1m', 2, true),
+      sCell('CVD 5m (BTC)', 'cvd_5m', 2, true),
+      sCell('Book imbalance', 'imbalance', 3, true),
+      sCell('OBI top-5', 'obi_5', 3, true),
+      sCell('Large-trade delta', 'large_trade_delta', 3, true),
+      sCell('VPIN (toxicity)', 'vpin', 3, false),
+      sCell('Absorption', 'absorption_ratio', 3, false),
+      sCell('Spread (bps)', 'spread_bps', 2, false),
+      sCell('Funding rate', 'funding_rate', 6, true),
+      sCell('OI change %', 'oi_change', 3, true),
+      sCell('Liq imbalance $', 'liq_imbalance', 0, true),
+      sCell('Coinbase premium $', 'coinbase_premium', 2, true),
+    ].join('') || '<div class="fh-empty">Waiting for live flow data…</div>';
+  }
+
+  // ── Per-horizon model accuracy (committed UP/DOWN calls + side split) ──
+  const accDiv = document.getElementById('binance-accuracy');
+  if (accDiv) {
+    accDiv.innerHTML = ROSTER_HORIZONS.map(h => {
+      const a = accMap[h] || accMap[String(h)] || {};
+      if (!a.directional_total) {
+        return `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.6rem .8rem">
+          <strong>${h}m</strong><div style="color:var(--text-secondary);font-size:.8em">no resolved calls yet</div></div>`;
+      }
+      const d = (a.directional_accuracy || 0) * 100;
+      const dCol = d >= 55 ? '#00e676' : d >= 48 ? '#ffb74d' : '#ff5252';
+      const upS = a.up_total ? `${((a.up_accuracy||0)*100).toFixed(0)}% (${a.up_total})` : '—';
+      const dnS = a.down_total ? `${((a.down_accuracy||0)*100).toFixed(0)}% (${a.down_total})` : '—';
+      const streak = a.current_streak ? `${a.current_streak} ${a.streak_type}` : '';
+      return `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.6rem .8rem">
+        <div style="display:flex;justify-content:space-between"><strong>${h}m</strong>
+          <strong style="color:${dCol}">${d.toFixed(0)}% <span style="font-weight:400;color:var(--text-secondary)">(${a.directional_total})</span></strong></div>
+        <div style="font-size:.78em;color:var(--text-secondary);margin-top:.3rem">
+          UP <span style="color:#00e676">${upS}</span> · DOWN <span style="color:#ff5252">${dnS}</span>${streak?` · streak: ${streak}`:''}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Recent calls log: every resolved lean, graded by SIGN-TRUTH (✓/✗) ──
+  const logDiv = document.getElementById('binance-log');
+  if (logDiv) {
+    const recent = ((data.verification || {}).recent || [])
+      .filter(r => (r.raw_direction === 'UP' || r.raw_direction === 'DOWN'))
+      .slice(0, 18);
+    const rows = recent.map(r => {
+      const move = Number(r.actual_move_usd || 0);
+      // lean_hit from the backend when present; sign-truth fallback for older rows
+      const win = r.lean_hit != null ? r.lean_hit
+        : (move !== 0 ? ((r.raw_direction === 'UP') === (move > 0)) : null);
+      const act = (r.signal === 'NEUTRAL' || r.signal === 'WAIT' || r.direction === 'NEUTRAL') ? 'waited' : 'traded';
+      return `<div class="log-row ${win===true?'log-hit-row':win===false?'log-miss-row':''}">
+        <span>${etTime(r.verified_at || r.timestamp)}</span>
+        <span>${r.horizon}m</span>
+        <span style="color:${r.raw_direction==='UP'?'#00e676':'#ff5252'}">${r.raw_direction} <span style="color:var(--text-secondary)">(${act})</span></span>
+        <span>${r.confidence!=null?(r.confidence*100).toFixed(0)+'%':'—'}</span>
+        <span style="color:${move>=0?'#00e676':'#ff5252'}">${move>=0?'+':''}$${Math.abs(move).toFixed(0)}${move<0?' ↓':' ↑'}</span>
+        <span class="${win===true?'log-hit':win===false?'log-miss':'log-pending'}">${win===true?'✓ CORRECT':win===false?'✗ WRONG':'— flat'}</span>
+      </div>`;
+    }).join('');
+    logDiv.innerHTML = rows
+      ? `<div class="log-row log-head"><span>Time</span><span>TF</span><span>Lean</span><span>Conf</span><span>Realized</span><span>Result</span></div>${rows}`
+      : '<div class="log-empty">No resolved directional calls yet — they appear a few minutes after the model starts predicting.</div>';
   }
 }
 
@@ -2639,10 +2746,10 @@ function renderPolymarketView(data) {
   if (strip) {
     const age = data.pyth_price_age_s;
     const stale = age!=null && age>10;
-    strip.innerHTML = `<span style="color:var(--text-secondary);font-size:.7em;text-transform:uppercase;letter-spacing:.6px">Pyth BTC/USD (settlement)</span>
+    strip.innerHTML = `<span style="color:var(--text-secondary);font-size:.7em;text-transform:uppercase;letter-spacing:.6px">Pyth BTC/USD (Polymarket settlement proxy)</span>
       <strong style="font-size:1.4em;margin-left:.5rem;color:${stale?'#ffb74d':'#00e676'}">${pyth!=null?'$'+pyth.toLocaleString(undefined,{minimumFractionDigits:2}):'connecting…'}</strong>
       ${stale?'<span style="color:#ffb74d;font-size:.7em"> (stale '+age+'s → using Binance)</span>':''}
-      <span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">Binance: $${binance.toLocaleString()}${pyth!=null?` (Δ ${(binance-pyth).toFixed(0)})`:''}</span>`;
+      <span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">Binance: $${binance.toLocaleString()}${pyth!=null?` (Δ ${(binance-pyth)>=0?'+':''}${(binance-pyth).toFixed(0)})`:''}</span>`;
   }
   const ptb = data.price_to_beat || {};
   const latest = ptb.latest || {};
@@ -2657,33 +2764,59 @@ function renderPolymarketView(data) {
     const cfl = r.confluence||{}; const po = r.path_outlook||{}; const adv = r.advice||{};
     const tone = adv.tone==='good'?'#00e676':adv.tone==='bad'?'#ff5252':adv.tone==='warn'?'#ffb74d':'var(--text-secondary)';
     const resolved = r.status==='resolved';
+    const srcBadge = r.lean_source==='fallback'
+      ? '<span style="background:rgba(255,183,77,.15);color:#ffb74d;border-radius:4px;padding:0 .35rem;font-size:.7em">⚠ WEAK (fallback) — skip</span>'
+      : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
+    const lateChip = r.late_entry
+      ? '<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge</span>' : '';
     return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
       <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}</strong>
         <span style="font-size:.8em;color:var(--text-secondary)">${accStr}</span></div>
       <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (Pyth):</span>
-        <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong></div>
-      <div style="font-size:1.2em;color:${col};font-weight:700">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN':dir} ${cfl.grade?`· Grade ${cfl.grade}`:''} ${r.lean_source==='fallback'?'· ⚠ weak':''}</div>
+        <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
+        ${r.ref_captured_late_ms?`<span style="color:#ffb74d;font-size:.7em"> (late anchor capture +${(r.ref_captured_late_ms/1000).toFixed(1)}s)</span>`:''}</div>
+      <div style="font-size:1.2em;color:${col};font-weight:700">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN — no bet':dir} ${cfl.grade?`· Grade ${cfl.grade}`:''} ${srcBadge}${lateChip}</div>
       ${!resolved&&r.current_price!=null?`<div style="margin-top:.4rem;font-size:.9em">Now: <strong>$${Number(r.current_price).toLocaleString()}</strong>
-        <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} ${r.current_position||''})</span>
-        · ${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</div>`:''}
+        <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
+        · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
+        ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
       ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}</div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
-      ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()})</div>`:''}
+      ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
     </div>`;
   }).join('');
 
-  // recent resolved + win rate
+  // win-rate strips: per-horizon model/all split + win rate by setup grade & source
   const rec = ptb.recent || [];
   const accDiv = document.getElementById('pm-accuracy');
   if (accDiv) {
     accDiv.innerHTML = [5,15].map(h=>{const a=acc[h]||acc[String(h)]||{};return a.total?`<span style="margin-right:1.5rem"><strong>${h}m:</strong> model <strong style="color:#00e676">${((a.model_accuracy||0)*100).toFixed(0)}%</strong> (${a.model_total||0}) · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})</span>`:'';}).join('');
   }
+  const gradeDiv = document.getElementById('pm-grade-stats');
+  if (gradeDiv) {
+    // From the recent resolved buffer (small n — treat as a hint, not a stat).
+    const resolvedRows = rec.filter(r=>r.hit!=null);
+    const bucket = (label, rows) => {
+      const n = rows.length; if (!n) return '';
+      const w = rows.filter(r=>r.hit===true).length;
+      return `<span style="margin-right:1.2rem">${label}: <strong style="color:${w/n>=0.5?'#00e676':'#ff5252'}">${(w/n*100).toFixed(0)}%</strong> (${w}/${n})</span>`;
+    };
+    const html = [
+      bucket('Grade A', resolvedRows.filter(r=>((r.confluence||{}).grade||'').startsWith('A'))),
+      bucket('Grade B', resolvedRows.filter(r=>(r.confluence||{}).grade==='B')),
+      bucket('Grade C', resolvedRows.filter(r=>(r.confluence||{}).grade==='C')),
+      bucket('Model leans', resolvedRows.filter(r=>r.lean_source!=='fallback')),
+      bucket('Fallback leans', resolvedRows.filter(r=>r.lean_source==='fallback')),
+    ].join('');
+    gradeDiv.innerHTML = html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${resolvedRows.length} rounds:</span>${html}` : '';
+  }
   const recDiv = document.getElementById('pm-recent');
   if (recDiv) {
     const rows = rec.filter(r=>r.hit!=null).slice(0,15).map(r=>{
       const win=r.hit===true; const col=win?'#00e676':'#ff5252';
+      const src = r.lean_source==='fallback'?' ⚠':'';
       return `<div class="log-row"><span>${etTime(r.timestamp)}</span><span>${r.horizon}m</span>
-        <span style="color:${r.our_direction==='UP'?'#00e676':'#ff5252'}">${r.our_direction}</span>
+        <span style="color:${r.our_direction==='UP'?'#00e676':'#ff5252'}">${r.our_direction}${src}</span>
         <span>${(r.confluence||{}).grade||'-'}</span>
         <span>$${Number(r.price_to_beat||0).toLocaleString()} → $${Number(r.actual_price||0).toLocaleString()}</span>
         <span style="color:${col};font-weight:600">${win?'✓ WON':'✗ LOST'}</span></div>`;

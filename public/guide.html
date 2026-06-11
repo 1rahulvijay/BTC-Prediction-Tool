@@ -51,7 +51,9 @@
 
 <div class="toc">
   <a href="#rules">⭐ The 3 golden rules</a>
+  <a href="#changes">🆕 What changed (2026-06-11)</a>
   <a href="#ladder">📊 The win-rate ladder</a>
+  <a href="#venuetabs">📱 The two venue tabs</a>
   <a href="#polymarket">🎯 The Polymarket panel</a>
   <a href="#recipe">✅ The decision recipe</a>
   <a href="#tab1">📈 Tab 1: Technical + Live Feed</a>
@@ -74,17 +76,42 @@
 </div>
 
 <!-- ============================================================ -->
-<h2 id="ladder">📊 The win-rate ladder (measured on this app's own data)</h2>
+<h2 id="changes">🆕 What changed (2026-06-11) — read this first</h2>
+<div class="card warn">
+<ul>
+  <li><b>The grading correction (the big one).</b> A deep audit found the internal <code>hit</code> column meant two opposite things: "the call was right" on committed calls, but "good thing we didn't trade" on gated ones. Several win rates this guide previously quoted (model leans ~64%, grades 70–82%) were inflated by that artifact and are <b>retracted</b>. Every accuracy number is now graded by <b>sign-truth</b>: did the lean match the realized move's direction. The ladder below shows the honest numbers.</li>
+  <li><b>The honest baseline:</b> the current (v3) model's raw leans measure <b>~45–52% — coin-flip</b> — across all horizons. The selectivity machinery (grades, regimes, late-entry) is real, but its precision claims must be re-measured on clean grading.</li>
+  <li><b>The v4 retrain is the fix attempt:</b> 130 features including new trend-persistence features (so the model can stop fading uptrends — its measured worst habit), regime experts trained on the same regime partition they serve, and several gate bugs fixed. It trains automatically on the next app start (~5h).</li>
+  <li><b>The price-to-beat anchor moved to Pyth</b> (tracks Polymarket's Chainlink settlement within a few $). Your win/loss record now matches what the market would actually pay. If Pyth stalls, the fallback price is offset-corrected into Pyth units, so mid-round venue mixing can't mis-grade a round.</li>
+  <li><b>Two new dedicated tabs</b> — 📈 Binance and 🎯 Polymarket (<a href="#venuetabs" style="color:var(--blue)">below</a>).</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ladder">📊 The win-rate ladder (sign-truth, re-based 2026-06-11)</h2>
 <div class="card">
 <table class="ladder">
-  <tr><th>If you bet…</th><th>Expect to win</th><th>How often you bet</th></tr>
-  <tr><td>Every 5-minute window blindly</td><td style="color:var(--red)">~50–58%</td><td>288×/day</td></tr>
-  <tr><td>Only when the model has a real lean (<span class="chip c-blue">model</span> not <span class="chip c-dim">fallback</span>)</td><td style="color:var(--amber)">~64%</td><td>~80×/day</td></tr>
-  <tr><td>Only <span class="chip c-green">Grade A/B</span> setups in good regimes</td><td style="color:var(--green)">~70–75%</td><td>~15–30×/day</td></tr>
-  <tr><td>Only <span class="chip c-green">Grade A</span> + everything agrees</td><td style="color:var(--green)">~78–82%</td><td>~3–8×/day</td></tr>
-  <tr><td><span class="chip c-green">LATE-ENTRY</span> windows (price already ahead, model agrees, &lt;2 min left)</td><td style="color:var(--green)">~80–90%</td><td>varies — smaller profit each</td></tr>
+  <tr><th>If you bet…</th><th>Measured today (v3)</th><th>After v4 — what to verify</th></tr>
+  <tr><td>Every 5-minute window blindly</td><td style="color:var(--red)">~50%</td><td>always ~50% — never bet this row</td></tr>
+  <tr><td>Only real model leans (<span class="chip c-blue">model</span> not <span class="chip c-dim">fallback</span>)</td><td style="color:var(--amber)">~51% (5m, n≈200) — <b>not yet an edge</b></td><td>must clear <b>55%+</b> to be bettable</td></tr>
+  <tr><td>Only <span class="chip c-green">Grade A/B</span> setups in good regimes</td><td style="color:var(--amber)">small n — unproven on clean grading</td><td>re-measure; target 60%+</td></tr>
+  <tr><td>Only <span class="chip c-green">Grade A</span> + everything agrees</td><td style="color:var(--amber)">~80% historically but tiny n — treat as a hypothesis</td><td>needs 50+ resolved A-rounds to trust</td></tr>
+  <tr><td><span class="chip c-green">LATE-ENTRY</span> windows (price ahead, model agrees, &lt;2 min left)</td><td style="color:var(--green)">structurally favored (persistence bet)</td><td>the most defensible row even pre-v4</td></tr>
 </table>
-<p style="color:var(--dim)">Climbing the ladder costs frequency. That's the deal. There is no setting that gives 80% on every window — anyone selling that is lying.</p>
+<p style="color:var(--dim)">Until the model-leans row clears 55% on the clean scorecard, the honest position is: <b>paper-track, don't bet size</b>. Climbing the ladder costs frequency — there is no setting that gives 80% on every window; anyone selling that is lying.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="venuetabs">📱 The two venue tabs — different feeds, different jobs</h2>
+<div class="card info">
+<table>
+  <tr><th></th><th>📈 Binance tab</th><th>🎯 Polymarket tab</th></tr>
+  <tr><td><b>Price feed</b></td><td>Binance BTCUSDT (the model's native feed)</td><td><b>Pyth BTC/USD</b> — the settlement-oracle proxy; Binance shown alongside with the Δ</td></tr>
+  <tr><td><b>Job</b></td><td>Spot/perp <b>long &amp; short entries</b> — 1/3/5/7/10/15m horizons</td><td><b>Binary up/down bets</b> — the 5m/15m price-to-beat windows</td></tr>
+  <tr><td><b>Per card</b></td><td>Lean, gated action, calibrated confidence, expected move &amp; target, setup grade, measured P(win), model agreement, live accuracy (committed calls)</td><td>Price-to-beat, lean + source badge (MODEL vs ⚠ WEAK), grade, countdown, path outlook, hold/exit advice, ⚡ late-entry flag</td></tr>
+  <tr><td><b>Extras</b></td><td>Full indicator grid + the live order-flow/derivatives strip (the exact values the model trains on)</td><td>Win rate split (model vs all), win rate by grade &amp; lean source, recent resolved rounds</td></tr>
+</table>
+<p style="color:var(--dim)">Why two feeds? The model predicts <b>direction</b>, which is venue-agnostic (venues move together at 5m; only the price <i>level</i> differs ~$40–80). Binance has the depth/microstructure the model eats; Pyth matches what Polymarket actually settles on. Each tab shows the feed that matters for its job.</p>
 </div>
 
 <!-- ============================================================ -->
@@ -99,14 +126,14 @@ The BTC price locked at the start of the 5m/15m window. The market resolves <b>U
 <h3>Our call (UP / DOWN)</h3>
 The side the model favors for this window. Check its <b>source</b>:
 <table>
-  <tr><td><span class="chip c-blue">model lean</span></td><td>The model genuinely committed to a direction. <b>These win ~64% at 5m.</b> These are the ones worth betting.</td></tr>
+  <tr><td><span class="chip c-blue">model lean</span></td><td>The model genuinely committed to a direction. Still the better class of call — but on clean sign-truth grading they currently measure <b>~51% at 5m (v3)</b>. They become bettable only when the live strip shows them clearing ~55%.</td></tr>
   <tr><td><span class="chip c-dim">[Weak lean]</span> in the advice</td><td>The model was near-neutral; the side is just a slight probability tilt. <b>~Coin-flip. Skip these.</b></td></tr>
 </table>
 </div>
 
 <div class="card info">
-<h3>The win-rate strip — "model 64% (87) | all 52% (101)"</h3>
-Two win rates on purpose: <b>"model"</b> counts only real model leans (bet these), <b>"all"</b> includes the weak fallback calls (diluted). Judge the app by the <b>model</b> number.
+<h3>The win-rate strip — "model 51% (201) | all 49% (399)"</h3>
+Two win rates on purpose: <b>"model"</b> counts only real model leans, <b>"all"</b> includes the weak fallback calls (diluted). Judge the app by the <b>model</b> number — and only trust it once the sample size in parentheses is 100+. The strip is live: after the v4 retrain it re-earns its numbers from scratch.
 </div>
 
 <div class="card info">
@@ -373,7 +400,7 @@ Also in the box: <b>Now vs beat</b> (how far price is above/below the reference 
 </div>
 
 <footer>
-  BTC Quantum Trader · plain-English guide · generated 2026-06-10<br>
+  BTC Quantum Trader · plain-English guide · updated 2026-06-11 (sign-truth re-base, venue tabs, Pyth anchor)<br>
   Open this file any time: double-click <code>public/guide.html</code> or visit <code>http://localhost:3000/guide.html</code> while the app is running.
 </footer>
 
