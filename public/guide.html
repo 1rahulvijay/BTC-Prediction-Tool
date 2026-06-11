@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTC Quantum Trader — Plain-English Guide</title>
+<style>
+  :root{
+    --bg:#0b0e17; --card:#121829; --card2:#0e1422; --line:#232c45;
+    --text:#dbe2f1; --dim:#8892a6; --green:#00e676; --red:#ff5252;
+    --amber:#ffb74d; --blue:#64b5f6; --purple:#b388ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,Segoe UI,Arial,sans-serif;padding:0 0 80px}
+  .wrap{max-width:880px;margin:0 auto;padding:0 20px}
+  header{padding:48px 0 8px;text-align:center}
+  h1{font-size:1.9em;margin:0 0 6px}
+  .sub{color:var(--dim)}
+  h2{font-size:1.35em;margin:48px 0 6px;padding-top:18px;border-top:1px solid var(--line)}
+  h3{font-size:1.05em;margin:22px 0 4px;color:var(--blue)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:14px 0}
+  .good{border-left:4px solid var(--green)} .bad{border-left:4px solid var(--red)}
+  .warn{border-left:4px solid var(--amber)} .info{border-left:4px solid var(--blue)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.95em}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.5px}
+  .chip{display:inline-block;padding:1px 10px;border-radius:20px;font-size:.82em;font-weight:700}
+  .c-green{background:rgba(0,230,118,.15);color:var(--green)}
+  .c-red{background:rgba(255,82,82,.15);color:var(--red)}
+  .c-amber{background:rgba(255,183,77,.15);color:var(--amber)}
+  .c-blue{background:rgba(100,181,246,.15);color:var(--blue)}
+  .c-dim{background:rgba(136,146,166,.15);color:var(--dim)}
+  .big{font-size:1.1em;font-weight:700}
+  ol li, ul li{margin:7px 0}
+  .toc{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:18px 0}
+  .toc a{color:var(--blue);text-decoration:none;padding:7px 12px;background:var(--card2);border:1px solid var(--line);border-radius:8px;display:block}
+  .toc a:hover{border-color:var(--blue)}
+  code{background:var(--card2);padding:1px 7px;border-radius:6px;font-size:.9em;color:var(--purple)}
+  .ladder td:nth-child(2){font-weight:700}
+  .key{color:var(--amber);font-weight:700}
+  footer{margin-top:60px;color:var(--dim);text-align:center;font-size:.85em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>📖 How to Read This App</h1>
+  <div class="sub">Every metric, every signal, and exactly how to make a decision — in plain English.</div>
+</header>
+
+<div class="toc">
+  <a href="#rules">⭐ The 3 golden rules</a>
+  <a href="#ladder">📊 The win-rate ladder</a>
+  <a href="#polymarket">🎯 The Polymarket panel</a>
+  <a href="#recipe">✅ The decision recipe</a>
+  <a href="#tab1">📈 Tab 1: Technical + Live Feed</a>
+  <a href="#tab2">🧭 Tab 2: Decision Center</a>
+  <a href="#tab3">🤖 Tab 3: Models &amp; Signals</a>
+  <a href="#nobet">🚫 When NOT to bet</a>
+  <a href="#metrics">🔢 Every metric explained</a>
+  <a href="#grades">🏷️ Setup grades A/B/C</a>
+  <a href="#honest">🧠 Honest expectations</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rules">⭐ The 3 golden rules</h2>
+<div class="card good">
+<ol>
+  <li><span class="big">Bet the LEAN, not the action.</span> The app shows two things: what the model <i>thinks</i> (the lean: UP/DOWN) and whether it would <i>trade</i> it (the action: BUY/SELL/WAIT). For Polymarket, the <b>lean</b> is your product. WAIT does not mean "the model doesn't know" — it means "not worth a leveraged trade after fees".</li>
+  <li><span class="big">Fewer bets = higher win rate.</span> Nobody wins 80% betting every window. You win 80% by only betting the best 5–10% of windows. Every tool below exists to tell you which windows those are.</li>
+  <li><span class="big">Trust measured numbers, not feelings.</span> Every win-rate shown is from real, resolved predictions. If a panel says 64%, that's what actually happened — no backtest tricks.</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ladder">📊 The win-rate ladder (measured on this app's own data)</h2>
+<div class="card">
+<table class="ladder">
+  <tr><th>If you bet…</th><th>Expect to win</th><th>How often you bet</th></tr>
+  <tr><td>Every 5-minute window blindly</td><td style="color:var(--red)">~50–58%</td><td>288×/day</td></tr>
+  <tr><td>Only when the model has a real lean (<span class="chip c-blue">model</span> not <span class="chip c-dim">fallback</span>)</td><td style="color:var(--amber)">~64%</td><td>~80×/day</td></tr>
+  <tr><td>Only <span class="chip c-green">Grade A/B</span> setups in good regimes</td><td style="color:var(--green)">~70–75%</td><td>~15–30×/day</td></tr>
+  <tr><td>Only <span class="chip c-green">Grade A</span> + everything agrees</td><td style="color:var(--green)">~78–82%</td><td>~3–8×/day</td></tr>
+  <tr><td><span class="chip c-green">LATE-ENTRY</span> windows (price already ahead, model agrees, &lt;2 min left)</td><td style="color:var(--green)">~80–90%</td><td>varies — smaller profit each</td></tr>
+</table>
+<p style="color:var(--dim)">Climbing the ladder costs frequency. That's the deal. There is no setting that gives 80% on every window — anyone selling that is lying.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="polymarket">🎯 The Polymarket panel (Price-to-Beat) — field by field</h2>
+
+<div class="card info">
+<h3>Reference price to beat</h3>
+The BTC price locked at the start of the 5m/15m window. The market resolves <b>UP if the end price ≥ this number</b>, DOWN otherwise. Ties go UP. Same rule Polymarket uses.
+</div>
+
+<div class="card info">
+<h3>Our call (UP / DOWN)</h3>
+The side the model favors for this window. Check its <b>source</b>:
+<table>
+  <tr><td><span class="chip c-blue">model lean</span></td><td>The model genuinely committed to a direction. <b>These win ~64% at 5m.</b> These are the ones worth betting.</td></tr>
+  <tr><td><span class="chip c-dim">[Weak lean]</span> in the advice</td><td>The model was near-neutral; the side is just a slight probability tilt. <b>~Coin-flip. Skip these.</b></td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>The win-rate strip — "model 64% (87) | all 52% (101)"</h3>
+Two win rates on purpose: <b>"model"</b> counts only real model leans (bet these), <b>"all"</b> includes the weak fallback calls (diluted). Judge the app by the <b>model</b> number.
+</div>
+
+<div class="card info">
+<h3>Setup grade — [Setup grade A (4/5 confirmations)]</h3>
+How many independent things agree with the call (see <a href="#grades" style="color:var(--blue)">grades</a> below). <b>A = bet-worthy. B = decent. C = skip.</b>
+</div>
+
+<div class="card info">
+<h3>🧭 Path outlook — "how will price travel vs the line"</h3>
+A plain-English forecast of the price <i>journey</i>, not just the ending side:
+<table>
+  <tr><td><span class="chip c-green">HOLD</span></td><td>Price is already on the model's side. Expect wobbles that test the line, but it should hold to the close.</td></tr>
+  <tr><td><span class="chip c-blue">CROSS</span></td><td>Price is on the wrong side, but the model expects enough movement to wobble here first, then cross the line and finish on its side.</td></tr>
+  <tr><td><span class="chip c-amber">STRETCH</span></td><td>The model has a lean, but expects less movement than the distance to the line — making it is a stretch. Skip or wait for price to come closer.</td></tr>
+  <tr><td><span class="chip c-red">CHOP</span></td><td>No real drift expected — oscillation around the line, coin-flip close. Skip.</td></tr>
+</table>
+The odds quoted ("Measured odds for this setup: 71%") come from real past outcomes in the same situation — not guesses.
+</div>
+
+<div class="card info">
+<h3>The live advice box (while a window is open)</h3>
+<table>
+  <tr><td><span class="chip c-green">HOLD</span></td><td>You're ahead and the model still agrees. Let it settle.</td></tr>
+  <tr><td><span class="chip c-amber">LOCK IN</span></td><td>You're ahead but the model's lean faded. Consider selling your shares now to keep the profit.</td></tr>
+  <tr><td><span class="chip c-amber">HOLD / WAIT</span></td><td>You're behind but the model still believes. Reversal possible — hold unless it worsens.</td></tr>
+  <tr><td><span class="chip c-red">EXIT</span></td><td>You're behind AND the model flipped. Cut the loss early.</td></tr>
+  <tr><td><span class="chip c-green">LATE-ENTRY WINDOW</span></td><td><b>The highest-odds moment in the whole app.</b> Less than 2 minutes left, price already clearly on one side, model agrees. Buying that side now is a bet that nothing reverses in 2 minutes — usually 80%+. Trade-off: the shares cost more, so you earn less per win.</td></tr>
+</table>
+Also in the box: <b>Now vs beat</b> (how far price is above/below the reference right now), <b>Model now</b> (current lean — can change mid-window), <b>Exp. move</b> (how big a move the model expects).
+</div>
+
+<!-- ============================================================ -->
+<h2 id="recipe">✅ The decision recipe (do this, in order)</h2>
+<div class="card good">
+<ol>
+  <li><b>Open the Polymarket panel</b> at the start of a 5m window (or watch for late-entry).</li>
+  <li><b>Is the call a real model lean?</b> If the advice says <i>[Weak lean]</i> → <b>stop, skip this window.</b></li>
+  <li><b>Check the setup grade.</b> A → strong candidate. B → ok if you want more action. C → skip.</li>
+  <li><b>Check the regime</b> (Technical tab). LOW_VOLATILITY = the model's weakest spot (~58%) → prefer skipping. RANGE / TRENDING = its best (~73–87%).</li>
+  <li><b>Check expectedPrecision if shown</b> — that's the measured win-rate for this exact situation. Under 60%? Skip.</li>
+  <li><b>Bet small and fixed.</b> Same stake every time. Never chase a loss with a bigger bet.</li>
+  <li><b>While the window runs, follow the advice box</b> — HOLD / LOCK IN / EXIT are computed from live data.</li>
+  <li><b>Prefer late-entry when available:</b> if you see the LATE-ENTRY flag and shares of that side cost &lt; ~85¢, that's the best risk/reward moment of the window.</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tab1">📈 Tab 1: Technical + Live Feed — every value, with ranges</h2>
+
+<div class="card info">
+<h3>Indicators panel (classic technicals)</h3>
+<table>
+  <tr><th>Indicator</th><th>If the value is…</th><th>It means / what tends to happen</th></tr>
+  <tr><td rowspan="3" class="key">RSI</td><td>&lt; 30</td><td>Oversold — selling overdone; bounce UP becomes more likely</td></tr>
+  <tr><td>30 – 70</td><td>Normal — no edge from RSI alone</td></tr>
+  <tr><td>&gt; 70</td><td>Overbought — buying overdone; pullback DOWN becomes more likely</td></tr>
+  <tr><td rowspan="2" class="key">Stoch RSI</td><td>&lt; 20</td><td>Deeply oversold — sharper version of RSI; bounce setups</td></tr>
+  <tr><td>&gt; 80</td><td>Deeply overbought — exhaustion setups</td></tr>
+  <tr><td rowspan="3" class="key">ADX</td><td>&lt; 15</td><td>No trend — price chops; mean-reversion (fading moves) works better</td></tr>
+  <tr><td>15 – 25</td><td>Mild trend forming</td></tr>
+  <tr><td>&gt; 25</td><td>Real trend — momentum (following the move) works better; CROSS scenarios more reliable</td></tr>
+  <tr><td rowspan="3" class="key">Bollinger position</td><td>&lt; 0.05</td><td>Pressed against the lower band — stretched down, snap-back UP common</td></tr>
+  <tr><td>0.2 – 0.8</td><td>Inside the band — normal</td></tr>
+  <tr><td>&gt; 0.95</td><td>Pressed against the upper band — stretched up, snap-back DOWN common</td></tr>
+  <tr><td class="key">MACD histogram</td><td>flips sign</td><td>Momentum changed direction; rising bars = building momentum that way</td></tr>
+  <tr><td class="key">SuperTrend</td><td>line below price</td><td>Uptrend — the line acts as support. Line above price = downtrend resistance</td></tr>
+  <tr><td rowspan="2" class="key">MFI / CCI / Williams %R</td><td>extreme high</td><td>(MFI&gt;80, CCI&gt;100, W%R&gt;-20) overbought — same family as RSI</td></tr>
+  <tr><td>extreme low</td><td>(MFI&lt;20, CCI&lt;-100, W%R&lt;-80) oversold</td></tr>
+</table>
+<p style="color:var(--dim)">⚠️ At 5-minute horizons these are <b>context</b>, not signals — the model already eats them. Use them to understand <i>why</i> the model leans, not to override it.</p>
+</div>
+
+<div class="card info">
+<h3>Live Market Pulse (per-horizon cards)</h3>
+<table>
+  <tr><th>Field</th><th>If it's…</th><th>Meaning</th></tr>
+  <tr><td rowspan="3" class="key">Confidence</td><td>&lt; 0.42</td><td>Below the safety bar — the call will be filtered to WAIT</td></tr>
+  <tr><td>0.42 – 0.50</td><td>Normal zone for this 3-class model (it caps near ~0.50 by design)</td></tr>
+  <tr><td>calibrated &gt; 0.60</td><td>Once calibration activates: a genuinely strong, measured edge</td></tr>
+  <tr><td class="key">Expected price</td><td>far from current</td><td>Bigger expected move = more conviction in the path; tiny gaps flip on noise</td></tr>
+  <tr><td class="key">Direction + signal</td><td>lean UP, action WAIT</td><td>Normal! The model sees direction but the trade isn't worth fees — for Polymarket, the lean still counts</td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>Order-flow panel</h3>
+<table>
+  <tr><th>Value</th><th>If it's…</th><th>Meaning / what tends to happen</th></tr>
+  <tr><td rowspan="2" class="key">CVD (1m/5m)</td><td>clearly positive</td><td>Aggressive buyers in control — supports UP</td></tr>
+  <tr><td>clearly negative</td><td>Aggressive sellers in control — supports DOWN</td></tr>
+  <tr><td rowspan="3" class="key">Book imbalance / OBI</td><td>+0.1 … +0.3</td><td>Mildly bid-heavy — slight UP support</td></tr>
+  <tr><td>&gt; +0.3 or &lt; −0.3</td><td>Strongly one-sided book — real pressure that way (but can be spoofed; check spoof score)</td></tr>
+  <tr><td>−0.1 … +0.1</td><td>Balanced — no edge</td></tr>
+  <tr><td rowspan="2" class="key">Spread (bps)</td><td>&lt; 2</td><td>Tight, healthy market — signals more trustworthy</td></tr>
+  <tr><td>&gt; 5 or 2× normal</td><td>Liquidity vacuum — volatile, slippy; signals less trustworthy, moves overshoot</td></tr>
+  <tr><td class="key">Trade intensity</td><td>spiking</td><td>Something is happening — moves get bigger both ways</td></tr>
+  <tr><td class="key">Whale tape</td><td>large prints one side</td><td>Big players acting — same direction as your lean = confirmation</td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>Derivatives & sentiment</h3>
+<table>
+  <tr><th>Value</th><th>If it's…</th><th>Meaning</th></tr>
+  <tr><td rowspan="2" class="key">Funding rate</td><td>&gt; +0.03%/8h</td><td>Longs crowded & paying — squeeze DOWN risk grows</td></tr>
+  <tr><td>&lt; −0.01%/8h</td><td>Shorts crowded — squeeze UP risk grows</td></tr>
+  <tr><td rowspan="4" class="key">Open Interest + price</td><td>OI↑ price↑</td><td>New longs piling in — trend fuel, but crowding builds</td></tr>
+  <tr><td>OI↓ price↑</td><td>Short covering — rally may fade once covering ends</td></tr>
+  <tr><td>OI↑ price↓</td><td>New shorts — bearish conviction</td></tr>
+  <tr><td>OI↓ price↓</td><td>Longs liquidated/closing — capitulation, often near local bottoms</td></tr>
+  <tr><td rowspan="2" class="key">Liquidations</td><td>long liqs spike</td><td>Forced selling — accelerates DOWN, then often snaps back</td></tr>
+  <tr><td>short liqs spike</td><td>Forced buying — accelerates UP, then often snaps back</td></tr>
+  <tr><td rowspan="2" class="key">Fear &amp; Greed</td><td>&lt; 25</td><td>Extreme fear — contrarian UP zone (slow signal, days not minutes)</td></tr>
+  <tr><td>&gt; 75</td><td>Extreme greed — contrarian DOWN zone</td></tr>
+  <tr><td class="key">Exchange consensus</td><td>venue &gt;10 bps off</td><td>One exchange dislocated — arbitrage flow incoming, expect convergence</td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>Regime chip (measured on this app's own outcomes)</h3>
+<table>
+  <tr><td><span class="chip c-green">RANGE</span></td><td>Sideways market — model's strong zone (~73% on 5m leans)</td></tr>
+  <tr><td><span class="chip c-green">TRENDING UP/DOWN</span></td><td>Clear drift — strong zone (small samples so far, ~75–87%)</td></tr>
+  <tr><td><span class="chip c-red">LOW_VOLATILITY</span></td><td>Dead market — the model's WEAKEST zone (~58%). Prefer skipping bets here</td></tr>
+  <tr><td><span class="chip c-amber">VOLATILE</span></td><td>Wild swings — bigger wins AND bigger misses; reduce stake</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tab2">🧭 Tab 2: Decision Center — every value, with ranges</h2>
+<div class="card info">
+<table>
+  <tr><th>Field</th><th>If it's…</th><th>Meaning / action</th></tr>
+  <tr><td class="key">Verdict line</td><td>any</td><td>The one-sentence summary per timeframe — read this first</td></tr>
+  <tr><td rowspan="3" class="key">Action</td><td>TRADE BUY / SELL</td><td>Passed every gate — the strongest events the app produces (rare)</td></tr>
+  <tr><td>ABSTAIN / WAIT</td><td>A gate blocked it. Check the reason — it's always shown. For Polymarket the lean may still be usable</td></tr>
+  <tr><td>AVOID</td><td>Actively bad conditions — skip even on Polymarket</td></tr>
+  <tr><td rowspan="5" class="key">Conviction grade</td><td>A+ (≥80)</td><td>Everything aligned — but note: live data shows mid beats high so far (uncalibrated), so check expectedPrecision too</td></tr>
+  <tr><td>A (68–80)</td><td>Strong agreement</td></tr>
+  <tr><td>B (55–68)</td><td>Decent — currently the BEST performing band (73% at 5m)</td></tr>
+  <tr><td>C (45–55)</td><td>Weak</td></tr>
+  <tr><td>WATCH (&lt;45)</td><td>Informational only</td></tr>
+  <tr><td rowspan="2" class="key">Required confidence (safety bar)</td><td>≤ 0.50</td><td>Normal — the bar self-calibrates and is hard-capped at 0.50</td></tr>
+  <tr><td>—</td><td>The skip reason "Confidence X below safety bar Y" means the call was real but not strong enough to act on</td></tr>
+  <tr><td rowspan="2" class="key">Quantile spread</td><td>&lt; 1.0</td><td>Tight target range — the model is sure about SIZE of move</td></tr>
+  <tr><td>&gt; 2.5</td><td>Very wide range — size is a guess; expect anything</td></tr>
+  <tr><td rowspan="2" class="key">Expectancy ($)</td><td>positive</td><td>This horizon has been profitable after modeled costs</td></tr>
+  <tr><td>negative</td><td>After fees/slippage this horizon loses as a leveraged trade — that's why so many WAITs (Polymarket betting has different costs)</td></tr>
+  <tr><td class="key">Accuracy cards</td><td>n &lt; 50</td><td>Sample too small — treat the % as provisional, not truth</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tab3">🤖 Tab 3: Models &amp; Signals — every value, with ranges</h2>
+
+<div class="card info">
+<h3>Live Training Signals (NEW) — the model's food, live</h3>
+<p>These are the <b>exact values recorded every minute</b> that become training features. Watching them tells you what the model "sees" right now:</p>
+<table>
+  <tr><th>Signal</th><th>If it's…</th><th>Meaning</th></tr>
+  <tr><td class="key">CVD 1m / 5m</td><td>+green / −red</td><td>Net aggressive buying / selling (in BTC). Same sign as your lean = confirmation</td></tr>
+  <tr><td rowspan="3" class="key">VPIN</td><td>&lt; 0.2</td><td>Calm, balanced flow</td></tr>
+  <tr><td>0.2 – 0.45</td><td>Normal market</td></tr>
+  <tr><td>&gt; 0.45</td><td>Toxic, one-sided informed flow — a bigger move is brewing (direction unknown). Reduce stake or wait</td></tr>
+  <tr><td class="key">Large-trade delta</td><td>±</td><td>Whales' net aggression as a share of all volume. Strong + with an UP lean is one of the best confirmations</td></tr>
+  <tr><td rowspan="2" class="key">Microprice edge (bps)</td><td>&gt; +0.5</td><td>The order book is leaning UP — next tick more likely up</td></tr>
+  <tr><td>&lt; −0.5</td><td>Book leaning DOWN</td></tr>
+  <tr><td class="key">OFI best-level</td><td>±</td><td>Pressure from order ADDS/CANCELS at the touch — sustained sign = real intent</td></tr>
+  <tr><td rowspan="2" class="key">Spoof score</td><td>&lt; 0.3</td><td>Book is honest</td></tr>
+  <tr><td>&gt; 0.5</td><td>Fake walls appearing/vanishing — DON'T trust book imbalance right now</td></tr>
+  <tr><td class="key">Absorption</td><td>high (&gt;2)</td><td>Heavy volume but price won't move — someone big is absorbing; often precedes a reversal of the pushing side</td></tr>
+  <tr><td class="key">Queue pressure</td><td>±</td><td>Which side's resting orders are being eaten faster (+ = asks eaten = UP pressure)</td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>Feed Health &amp; Coverage</h3>
+<table>
+  <tr><td><span class="chip c-green">alive</span></td><td>Feature is flowing and varying — the model can learn from it</td></tr>
+  <tr><td><span class="chip c-amber">sparse</span></td><td>Present but mostly zero — needs more uptime</td></tr>
+  <tr><td><span class="chip c-red">dead / absent</span></td><td>Not varying / not present — contributes nothing yet</td></tr>
+  <tr><td class="key">Coverage %</td><td colspan="2">How much of the training window has recorded live signals. <b>This is the #1 number that grows the model's future skill — keep the app running.</b></td></tr>
+</table>
+</div>
+
+<div class="card info">
+<h3>Model Roster, Scorecard &amp; Logs</h3>
+<table>
+  <tr><th>Panel</th><th>How to read it</th></tr>
+  <tr><td class="key">Model roster</td><td>Per-model live accuracy. Individual models look weak at 3–15m (~30–40%) — that's expected; the ENSEMBLE of their disagreements is what wins (64–72%). Judge the ensemble, not the parts</td></tr>
+  <tr><td class="key">Forecast scorecard</td><td>Ensemble vs Kronos. If Kronos shows "proven: false" it's being correctly IGNORED by decisions until it earns &gt;53% on 20+ calls</td></tr>
+  <tr><td class="key">Directional calls log</td><td>Every UP/DOWN lean and its outcome — your cleanest view of real betting performance</td></tr>
+  <tr><td class="key">Action log skip reasons</td><td>"Below safety bar" = not confident enough · "Negative expectancy" = not worth fees as a trade · "High entropy" = model confused · "Poor regime" = this horizon historically loses in this regime</td></tr>
+  <tr><td class="key">Best Long / Best Short</td><td>The strongest UP and DOWN lean across all horizons right now — directional view, NOT risk-gated</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="nobet">🚫 Automatic "do not bet" signs</h2>
+<div class="card bad">
+<ul>
+  <li>Advice says <b>[Weak lean — best skipped]</b> → the model basically said "I don't know".</li>
+  <li><b>Setup grade C</b> → almost nothing confirms the call.</li>
+  <li><b>Regime = LOW_VOLATILITY</b> → historically the model's coin-flip zone.</li>
+  <li><b>The win-rate strip "model" number is under ~58%</b> for that horizon → the edge is too thin to beat typical share prices.</li>
+  <li><b>The feed just reconnected / app just restarted</b> → give it ~30–60 min to warm up (order-flow features and VPIN need live data to fill).</li>
+  <li><b>You're emotional after a loss</b> → the math doesn't care; bad bets after losses are how bankrolls die.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="metrics">🔢 Every metric, in one table</h2>
+<div class="card">
+<table>
+  <tr><th>Metric</th><th>What it means</th><th>How to use it</th></tr>
+  <tr><td class="key">Lean (rawDirection)</td><td>What the model thinks: UP / DOWN / NEUTRAL</td><td>Your Polymarket bet side — when it's UP or DOWN</td></tr>
+  <tr><td class="key">Action / Signal</td><td>Whether it would <i>trade</i> it after fees: TRADE BUY / TRADE SELL / ABSTAIN</td><td>For leveraged trading, not Polymarket. ABSTAIN ≠ "no opinion"</td></tr>
+  <tr><td class="key">Confidence</td><td>Model's raw probability for its top class (caps ~0.50 — that's normal for 3 classes)</td><td>Alone, weak. Wait for calibratedConfidence (below)</td></tr>
+  <tr><td class="key">Calibrated confidence</td><td>Confidence corrected by real outcomes, so "0.65" really wins ~65%. Auto-activates once a horizon has 150 resolved calls</td><td><b>The number to trust once it appears.</b> Bet when high</td></tr>
+  <tr><td class="key">expectedPrecision</td><td>Measured win-rate of past calls in this exact situation (horizon + regime + conviction)</td><td>Under 0.60 → skip; 0.70+ → strong</td></tr>
+  <tr><td class="key">Conviction (0–100)</td><td>Blend of model strength + how many confirmations agree</td><td>Caution: mid (40–65) has beaten high (65+) so far — trust expectedPrecision over raw conviction</td></tr>
+  <tr><td class="key">Setup grade A/B/C</td><td>Count of independent confirmations (lean + regime + 3 flow checks)</td><td>A = bet, B = maybe, C = skip</td></tr>
+  <tr><td class="key">Expected move / Target</td><td>How far (in $) the model expects price to travel</td><td>Bigger expected move = more room to be right. Tiny moves can flip on noise</td></tr>
+  <tr><td class="key">Regime</td><td>The market's current "mood": TRENDING_UP / TRENDING_DOWN / RANGE / LOW_VOLATILITY / VOLATILE</td><td>The model is best in RANGE & TRENDING, weakest in LOW_VOLATILITY</td></tr>
+  <tr><td class="key">Agreement</td><td>What fraction of the 7 base models vote the same way</td><td>Higher = a more unanimous committee</td></tr>
+  <tr><td class="key">CVD / delta</td><td>Buying minus selling pressure from real trades</td><td>Positive + UP lean = confirmation (counted in the grade)</td></tr>
+  <tr><td class="key">Large-trade delta</td><td>The same, but only the biggest players' trades</td><td>Whales agreeing with your side is a good sign</td></tr>
+  <tr><td class="key">VPIN</td><td>"Toxicity" — how one-sided and informed the flow is (0–1)</td><td>High VPIN = a big move is brewing (direction unknown). A volatility warning, not a side</td></tr>
+  <tr><td class="key">Book imbalance (OBI)</td><td>More resting buy orders vs sell orders in the order book</td><td>Confirmation signal (in the grade)</td></tr>
+  <tr><td class="key">Kronos</td><td>A separate forecasting model giving a second opinion</td><td>Only counted when it has PROVEN itself live (>53% on 20+ calls). "kronosProven: false" = it's being ignored, correctly</td></tr>
+  <tr><td class="key">Win-rate panels</td><td>Real resolved outcomes per horizon / per model</td><td>1m & 3m are the strongest horizons so far; 15m the weakest</td></tr>
+  <tr><td class="key">Feed health / coverage</td><td>How much live microstructure history has been recorded</td><td>More uptime = smarter features = better future retrains. Leave the app running</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="grades">🏷️ Setup grades, exactly</h2>
+<div class="card">
+<p>Each call gets up to 5 checkmarks:</p>
+<ol>
+  <li>✔ The lean is a <b>real model lean</b> (not a weak fallback tilt)</li>
+  <li>✔ The <b>regime</b> is one the model is good in (not LOW_VOLATILITY)</li>
+  <li>✔ <b>CVD agrees</b> — net trade flow pushes the same way</li>
+  <li>✔ <b>Large trades agree</b> — whale flow pushes the same way</li>
+  <li>✔ <b>Order book agrees</b> — resting liquidity tilts the same way</li>
+</ol>
+<table>
+  <tr><td><span class="chip c-green">Grade A</span></td><td>4–5 checks → the high-precision subset. These are your bets.</td></tr>
+  <tr><td><span class="chip c-amber">Grade B</span></td><td>3 checks → decent; fine if you want more volume.</td></tr>
+  <tr><td><span class="chip c-red">Grade C</span></td><td>0–2 checks → noise territory. Skip.</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="honest">🧠 Honest expectations (read once, remember forever)</h2>
+<div class="card warn">
+<ul>
+  <li><b>5-minute BTC direction is mostly noise.</b> A real, durable edge here is 58–65% — that's genuinely good. 80%+ exists only on a tiny, carefully-selected slice of windows.</li>
+  <li><b>Win rate isn't profit.</b> On Polymarket, profit = win rate vs share price. Winning 64% but paying 70¢ a share loses money. Winning 64% paying 55¢ prints. Cheaper entry beats more predictions.</li>
+  <li><b>Small samples lie.</b> A win-rate over 20 bets means little; over 200 it means something. The app shows the sample size next to every percentage — read it.</li>
+  <li><b>The model improves in steps, not magic:</b> more uptime → more recorded data → calibration activates → the gate picks better bets → retrain with richer features. Patience is a feature.</li>
+  <li><b>Never bet money you can't lose.</b> This is decision support, not a money printer.</li>
+</ul>
+</div>
+
+<footer>
+  BTC Quantum Trader · plain-English guide · generated 2026-06-10<br>
+  Open this file any time: double-click <code>public/guide.html</code> or visit <code>http://localhost:3000/guide.html</code> while the app is running.
+</footer>
+
+</div>
+</body>
+</html>

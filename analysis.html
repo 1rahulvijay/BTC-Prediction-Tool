@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BTC Quantum Trader — Plain-English Analysis</title>
+<style>
+  :root{
+    --bg:#0a0e17; --bg2:#111722; --card:#151c2b; --card2:#1b2433;
+    --line:#222c3f; --txt:#e6ecf5; --muted:#93a1b8; --dim:#6b7a93;
+    --cyan:#00d4ff; --violet:#7b2ff7; --green:#00e676; --red:#ff3b5c;
+    --amber:#ffc043; --pink:#ff006e;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--txt);
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  a{color:var(--cyan); text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{
+    background:#0c1119; border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font-family:'JetBrains Mono',ui-monospace,monospace;
+    font-size:.85em; color:#9fe6ff;
+  }
+  .wrap{max-width:1000px; margin:0 auto; padding:0 22px 120px}
+
+  /* Hero */
+  header.hero{
+    padding:70px 22px 50px; text-align:center;
+    background:
+      radial-gradient(900px 400px at 50% -10%, rgba(123,47,247,.22), transparent 60%),
+      radial-gradient(700px 350px at 50% 10%, rgba(0,212,255,.14), transparent 60%);
+    border-bottom:1px solid var(--line);
+  }
+  .hero h1{
+    font-size:42px; font-weight:900; margin:0 0 10px; letter-spacing:-1px;
+    background:linear-gradient(90deg,#00d4ff,#7b2ff7 60%,#ff006e);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .hero p{color:var(--muted); font-size:19px; max-width:680px; margin:0 auto}
+  .hero .tag{
+    display:inline-block; margin-top:18px; font-size:12.5px; letter-spacing:1.5px;
+    text-transform:uppercase; color:var(--dim); border:1px solid var(--line);
+    padding:6px 14px; border-radius:99px;
+  }
+
+  /* TOC */
+  nav.toc{
+    background:var(--bg2); border:1px solid var(--line); border-radius:14px;
+    padding:20px 24px; margin:34px 0 10px;
+  }
+  nav.toc h4{margin:0 0 12px; font-size:12px; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim)}
+  nav.toc ol{margin:0; padding-left:20px; columns:2; column-gap:34px}
+  nav.toc li{margin:5px 0; break-inside:avoid}
+
+  section{margin-top:56px; scroll-margin-top:20px}
+  h2{
+    font-size:27px; font-weight:800; margin:0 0 6px; letter-spacing:-.5px;
+    display:flex; align-items:center; gap:12px;
+  }
+  h2 .num{
+    font-size:15px; font-weight:700; color:var(--bg); background:linear-gradient(135deg,#00d4ff,#7b2ff7);
+    width:32px; height:32px; border-radius:9px; display:inline-flex; align-items:center; justify-content:center;
+    flex:0 0 auto;
+  }
+  h3{font-size:19px; font-weight:700; margin:30px 0 8px; color:#fff}
+  .lead{color:var(--muted); font-size:17px; margin:4px 0 0}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin:18px 0}
+  .card.soft{background:var(--card2)}
+
+  .analogy{
+    border-left:3px solid var(--cyan); background:rgba(0,212,255,.06);
+    padding:14px 18px; border-radius:0 10px 10px 0; margin:16px 0; color:#d6e6f5;
+  }
+  .analogy b{color:var(--cyan)}
+
+  .note{border-left:3px solid var(--amber); background:rgba(255,192,67,.07); padding:14px 18px; border-radius:0 10px 10px 0; margin:16px 0}
+  .warn{border-left:3px solid var(--red); background:rgba(255,59,92,.07); padding:14px 18px; border-radius:0 10px 10px 0; margin:16px 0}
+  .good{border-left:3px solid var(--green); background:rgba(0,230,118,.07); padding:14px 18px; border-radius:0 10px 10px 0; margin:16px 0}
+  .note b{color:var(--amber)} .warn b{color:var(--red)} .good b{color:var(--green)}
+
+  /* pipeline steps */
+  .step{display:flex; gap:16px; margin:14px 0; align-items:flex-start}
+  .step .dot{
+    flex:0 0 auto; width:34px; height:34px; border-radius:50%; background:var(--card2);
+    border:1px solid var(--line); display:flex; align-items:center; justify-content:center;
+    font-weight:800; color:var(--cyan); font-size:14px;
+  }
+  .step .body{flex:1}
+  .step .body h4{margin:4px 0 3px; font-size:16.5px}
+  .step .body p{margin:0; color:var(--muted); font-size:15px}
+  .step .file{font-size:12px; color:var(--dim); font-family:'JetBrains Mono',monospace}
+
+  table{width:100%; border-collapse:collapse; margin:16px 0; font-size:14.5px}
+  th,td{text-align:left; padding:11px 12px; border-bottom:1px solid var(--line)}
+  th{color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.6px; font-weight:600}
+  td .bar{height:7px; border-radius:4px; background:var(--line); position:relative; min-width:90px; max-width:140px}
+  td .bar > i{position:absolute; left:0; top:0; bottom:0; border-radius:4px; background:linear-gradient(90deg,#00d4ff,#7b2ff7)}
+  .score{font-weight:800; font-family:'JetBrains Mono',monospace}
+  .s-hi{color:var(--green)} .s-mid{color:var(--amber)} .s-lo{color:var(--red)}
+
+  .pri{border:1px solid var(--line); border-radius:13px; margin:14px 0; overflow:hidden}
+  .pri .top{display:flex; align-items:center; gap:14px; padding:15px 20px; background:var(--card2)}
+  .pri .rank{font-family:'JetBrains Mono',monospace; font-weight:800; font-size:13px; color:var(--bg);
+    background:linear-gradient(135deg,#00e676,#00d4ff); padding:4px 10px; border-radius:7px; flex:0 0 auto}
+  .pri .rank.b{background:linear-gradient(135deg,#ffc043,#ff006e)}
+  .pri .rank.c{background:linear-gradient(135deg,#7b2ff7,#00d4ff)}
+  .pri .top h4{margin:0; font-size:17px}
+  .pri .top .gain{margin-left:auto; font-size:12.5px; color:var(--green); font-family:'JetBrains Mono',monospace; flex:0 0 auto}
+  .pri .inner{padding:16px 20px}
+  .pri .inner .row{margin:9px 0}
+  .pri .inner .row b{color:#fff}
+  .pri .inner .row .lbl{display:inline-block; min-width:96px; color:var(--dim); font-size:13px; vertical-align:top}
+
+  .gloss{display:grid; grid-template-columns:1fr; gap:0}
+  .gloss .g{padding:13px 0; border-bottom:1px solid var(--line)}
+  .gloss .g b{color:var(--cyan); font-size:15.5px}
+  .gloss .g span{display:block; color:var(--muted); font-size:14.5px; margin-top:2px}
+
+  .pill{display:inline-block; font-size:11.5px; padding:2px 9px; border-radius:99px; font-weight:600; letter-spacing:.3px}
+  .pill.built{background:rgba(0,230,118,.14); color:var(--green); border:1px solid rgba(0,230,118,.3)}
+  .pill.bug{background:rgba(255,59,92,.14); color:var(--red); border:1px solid rgba(255,59,92,.3)}
+  .pill.idea{background:rgba(0,212,255,.13); color:var(--cyan); border:1px solid rgba(0,212,255,.3)}
+
+  hr.sep{border:0; border-top:1px solid var(--line); margin:40px 0}
+  .foot{margin-top:70px; padding-top:24px; border-top:1px solid var(--line); color:var(--dim); font-size:13.5px; text-align:center}
+  ul.clean{margin:8px 0; padding-left:22px} ul.clean li{margin:6px 0; color:var(--muted)}
+  ul.clean li b{color:var(--txt)}
+  .kpi{display:flex; flex-wrap:wrap; gap:12px; margin:18px 0}
+  .kpi .k{flex:1; min-width:150px; background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:16px}
+  .kpi .k .n{font-size:26px; font-weight:800; font-family:'JetBrains Mono',monospace; background:linear-gradient(90deg,#00d4ff,#7b2ff7); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
+  .kpi .k .l{font-size:13px; color:var(--muted); margin-top:2px}
+  @media(max-width:680px){ nav.toc ol{columns:1} .hero h1{font-size:32px} }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>BTC Quantum Trader</h1>
+  <p>A plain-English tour of what this tool actually is, how every piece works, and where it can go next — written so anyone can follow it, no trading knowledge required.</p>
+  <div class="tag">Analysis · No jargon · Read top to bottom</div>
+</header>
+
+<div class="wrap">
+
+  <nav class="toc">
+    <h4>What's inside</h4>
+    <ol>
+      <li><a href="#what">What this tool is</a></li>
+      <li><a href="#how">How the machine works</a></li>
+      <li><a href="#brains">The four "brains"</a></li>
+      <li><a href="#grades">How it grades itself</a></li>
+      <li><a href="#score">Maturity scorecard</a></li>
+      <li><a href="#phase6">The Coinbase + Bybit upgrade</a></li>
+      <li><a href="#improve">How to make it better</a></li>
+      <li><a href="#reality">Honest reality check</a></li>
+      <li><a href="#glossary">Glossary of every term</a></li>
+    </ol>
+  </nav>
+
+  <!-- ───────────────────────────── 1 ───────────────────────────── -->
+  <section id="what">
+    <h2><span class="num">1</span> What this tool actually is</h2>
+    <p class="lead">In one sentence: it's a <b>weather forecaster for the Bitcoin price</b>.</p>
+
+    <div class="analogy">
+      <b>The weather analogy.</b> A weather app doesn't <i>know</i> if it'll rain tomorrow. It looks at today's
+      temperature, wind, humidity and pressure, compares that to thousands of past days, and says
+      "70% chance of rain." This tool does exactly the same thing — but instead of clouds and wind, it watches
+      the Bitcoin market, and instead of "rain," it predicts whether the price will go <b>up</b>, <b>down</b>,
+      or <b>stay flat</b> over the next 1 to 15 minutes.
+    </div>
+
+    <p>It runs as two parts working together:</p>
+    <ul class="clean">
+      <li><b>A backend</b> (the engine, written in Python) — it pulls in live market data, does the maths, and makes the forecasts.</li>
+      <li><b>A frontend</b> (the dashboard, what you see in the browser) — charts, numbers, and the up/down/flat predictions, refreshing live.</li>
+    </ul>
+
+    <p>It makes forecasts for <b>six different time windows at once</b> — 1, 3, 5, 7, 10 and 15 minutes ahead — because a "this minute" signal and a "next quarter hour" signal are different questions.</p>
+
+    <div class="kpi">
+      <div class="k"><div class="n">40</div><div class="l">pieces of information ("features") it reads every tick</div></div>
+      <div class="k"><div class="n">4</div><div class="l">independent prediction models voting together</div></div>
+      <div class="k"><div class="n">6</div><div class="l">time horizons forecast simultaneously</div></div>
+      <div class="k"><div class="n">3</div><div class="l">exchanges watched: Binance, Coinbase, Bybit</div></div>
+    </div>
+
+    <div class="warn"><b>Important, up front:</b> this is an <b>educational / research tool</b>. Short-term price prediction is genuinely one of the hardest problems in finance — even excellent systems are right only slightly more than a coin flip. Nothing here is financial advice, and the tool itself says so in its own footer.</div>
+  </section>
+
+  <!-- ───────────────────────────── 2 ───────────────────────────── -->
+  <section id="how">
+    <h2><span class="num">2</span> How the machine works, step by step</h2>
+    <p class="lead">Think of it as a factory assembly line. Raw data goes in one end, a polished forecast comes out the other. Here are the stations on the line.</p>
+
+    <div class="card">
+      <div class="step"><div class="dot">1</div><div class="body">
+        <h4>Collect the raw data <span class="file">data_ingestion.py</span></h4>
+        <p>Connects live to <b>Binance</b> (the world's biggest crypto exchange) and listens to every trade, every change in the order book, and every new price candle. It also calls <b>Coinbase</b> (a big US exchange) and <b>Bybit</b> (a big derivatives exchange), plus a "Fear &amp; Greed" mood index. If a connection drops, it automatically reconnects.</p>
+      </div></div>
+
+      <div class="step"><div class="dot">2</div><div class="body">
+        <h4>Measure the "order flow" <span class="file">order_flow.py</span></h4>
+        <p>This is the tool's edge over a basic charting app. Instead of only looking at price, it watches the <i>pressure behind</i> the price: are buyers or sellers more aggressive right now? Are there big walls of buy/sell orders waiting? How fast are trades happening? Are any "whales" (large traders) active?</p>
+      </div></div>
+
+      <div class="step"><div class="dot">3</div><div class="body">
+        <h4>Turn everything into numbers <span class="file">features.py</span></h4>
+        <p>Computers can't read "the market feels bullish." So this station converts everything into <b>40 tidy numbers</b> — classic chart indicators (RSI, MACD, etc.), the order-flow pressure readings, derivatives data, and a few "combination" numbers. Every number is squeezed into a small range so no single one drowns out the others.</p>
+      </div></div>
+
+      <div class="step"><div class="dot">4</div><div class="body">
+        <h4>Read the "weather regime" <span class="file">regime.py</span></h4>
+        <p>The market behaves differently in different moods. This station labels the current environment as <b>Trending Up</b>, <b>Trending Down</b>, <b>Range</b> (going sideways), <b>High Volatility</b> (wild) or <b>Low Volatility</b> (calm). A strategy that works in a calm market fails in a wild one, so knowing the regime matters.</p>
+      </div></div>
+
+      <div class="step"><div class="dot">5</div><div class="body">
+        <h4>Make the forecast <span class="file">model.py</span></h4>
+        <p>The 40 numbers (plus the last hour of history) are fed to four prediction models that each vote up / down / flat. Their votes are blended into one answer per time window. Covered in detail in the next section.</p>
+      </div></div>
+
+      <div class="step"><div class="dot">6</div><div class="body">
+        <h4>Grade past forecasts <span class="file">prediction_verifier.py + backtester.py</span></h4>
+        <p>Every forecast is remembered. Once its time window passes, the tool checks: <b>was it right?</b> This running report card is shown live and — crucially — fed back so the system can adjust itself.</p>
+      </div></div>
+
+      <div class="step"><div class="dot">7</div><div class="body">
+        <h4>Serve it to the screen <span class="file">server.py</span></h4>
+        <p>The conductor of the orchestra. Every 2 seconds it gathers the latest of everything, runs the forecasts, updates the report card, and pushes the whole bundle to your browser dashboard.</p>
+      </div></div>
+    </div>
+
+    <div class="analogy"><b>The "triple-barrier" trick.</b> Most simple tools ask "will the price be higher in 5 minutes?" This one asks a smarter, more realistic question: <b>"will the price hit my profit target before it hits my stop-loss?"</b> Imagine a race between a finish line above the price and a trap-door below it — whichever gets touched first is the answer. This matches how a real trader actually wins or loses money, not just where the price happens to land at the buzzer.</div>
+  </section>
+
+  <!-- ───────────────────────────── 3 ───────────────────────────── -->
+  <section id="brains">
+    <h2><span class="num">3</span> The four "brains" that vote</h2>
+    <p class="lead">No single model is trusted on its own. Four very different ones each give an opinion, and the system blends them — like a panel of advisors instead of one guru.</p>
+
+    <div class="card">
+      <h3>The panel of advisors</h3>
+      <ul class="clean">
+        <li><b>XGBoost</b> — the star analyst. Brilliant at spotting complex, tangled patterns. Gets the biggest vote (~35%).</li>
+        <li><b>LightGBM</b> — same family as XGBoost but faster; a strong second opinion (~25%).</li>
+        <li><b>Random Forest</b> — the steady, cautious one. Rarely brilliant, rarely disastrous; keeps the panel grounded (~20%).</li>
+        <li><b>Logistic Regression</b> — the simple, old-school advisor. A sanity check so the clever ones don't over-think a situation that's actually simple (~10%).</li>
+      </ul>
+    </div>
+
+    <h3>Two clever touches most hobby tools skip</h3>
+    <div class="good"><b>Honesty calibration.</b> A lot of prediction tools cry wolf — they say "90% sure!" when they're really right 60% of the time. This tool runs a correction (called <i>isotonic calibration</i>) so that when it says 70%, it has historically been right about 70% of the time. That makes the confidence number actually <i>mean</i> something.</div>
+
+    <div class="good"><b>Anti-flicker locking.</b> Without a brake, the forecast would flip "UP! DOWN! UP!" every couple of seconds and be useless. So each time window <b>locks</b> its answer for a sensible period (the 1-minute view holds ~55 seconds, the 15-minute view holds ~15 minutes) and only flips early if the opposite signal becomes <i>overwhelmingly</i> strong for several readings in a row. It's a stubbornness dial that prevents nervous twitching.</div>
+
+    <p>On top of the four models, the final answer also mixes in five "gut-feel" signals: order-flow pressure, derivatives positioning, plain chart reading, market mood, and whale activity. The models get the majority say (~55%); these add colour.</p>
+  </section>
+
+  <!-- ───────────────────────────── 4 ───────────────────────────── -->
+  <section id="grades">
+    <h2><span class="num">4</span> How it grades and teaches itself</h2>
+    <p class="lead">This is the most genuinely advanced part of the whole tool — and the easiest to appreciate without any trading knowledge.</p>
+
+    <div class="step"><div class="dot">A</div><div class="body">
+      <h4>It keeps a report card</h4>
+      <p>Every prediction is logged with a timestamp. When its time window elapses, the tool compares prediction vs. what actually happened and marks it a <b>hit</b> or <b>miss</b> — split out by time window, by direction (was it better at calling ups or downs?), and by how confident it was.</p>
+    </div></div>
+
+    <div class="step"><div class="dot">B</div><div class="body">
+      <h4>It rewards whoever is hot right now</h4>
+      <p>If Random Forest has been the most accurate <i>this hour</i>, its vote automatically gets bigger. If a model goes cold, its vote shrinks. The panel re-weights itself based on live results, not just old test scores.</p>
+    </div></div>
+
+    <div class="step"><div class="dot">C</div><div class="body">
+      <h4>It retrains when it's slipping</h4>
+      <p>If accuracy for a time window is both <i>low</i> and <i>getting worse</i>, the system flags itself and re-studies the recent data from scratch. It also automatically retrains every 30 minutes regardless, to stay current.</p>
+    </div></div>
+
+    <div class="step"><div class="dot">D</div><div class="body">
+      <h4>It adjusts its own caution</h4>
+      <p>When it's doing badly it turns up the "smoothing" (becomes more conservative, changes its mind less). When it's doing well it loosens up. It tunes its own personality based on results.</p>
+    </div></div>
+
+    <div class="analogy"><b>In plain terms:</b> it's a student who marks their own homework after every test, gives more trust to whichever study method is currently working, and re-reads the textbook the moment grades start to drop. That feedback loop is rare in hobby projects and is the system's strongest feature.</div>
+  </section>
+
+  <!-- ───────────────────────────── 5 ───────────────────────────── -->
+  <section id="score">
+    <h2><span class="num">5</span> Maturity scorecard</h2>
+    <p class="lead">Where the tool is strong and where it's thin, scored out of 10. Green = a real strength, amber = decent, red = the biggest opportunities.</p>
+
+    <table>
+      <thead><tr><th>Area</th><th>What it means in plain English</th><th>Score</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Verification system</td><td>Does it honestly track if it was right?</td><td class="score s-hi">9/10</td><td><div class="bar"><i style="width:90%"></i></div></td></tr>
+        <tr><td>Dashboard / monitoring</td><td>Can you see what it's doing, live?</td><td class="score s-hi">9/10</td><td><div class="bar"><i style="width:90%"></i></div></td></tr>
+        <tr><td>Feature engineering</td><td>Quality of the numbers it reads</td><td class="score s-hi">8/10</td><td><div class="bar"><i style="width:80%"></i></div></td></tr>
+        <tr><td>Ensemble models</td><td>The "panel of advisors" setup</td><td class="score s-hi">8/10</td><td><div class="bar"><i style="width:80%"></i></div></td></tr>
+        <tr><td>Auto-learning</td><td>Teaching itself from results</td><td class="score s-hi">8/10</td><td><div class="bar"><i style="width:80%"></i></div></td></tr>
+        <tr><td>Labeling method</td><td>How it defines a "correct" answer</td><td class="score s-mid">4/10</td><td><div class="bar"><i style="width:40%"></i></div></td></tr>
+        <tr><td>Quant research framework</td><td>Tools to test ideas rigorously</td><td class="score s-mid">4/10</td><td><div class="bar"><i style="width:40%"></i></div></td></tr>
+        <tr><td>Market microstructure</td><td>Deep order-book intelligence</td><td class="score s-lo">3/10</td><td><div class="bar"><i style="width:30%"></i></div></td></tr>
+        <tr><td>Regime intelligence</td><td>Understanding market "moods"</td><td class="score s-lo">3/10</td><td><div class="bar"><i style="width:30%"></i></div></td></tr>
+        <tr><td>Institutional data sources</td><td>Pro-grade extra data feeds</td><td class="score s-lo">2/10</td><td><div class="bar"><i style="width:20%"></i></div></td></tr>
+      </tbody>
+    </table>
+
+    <div class="note"><b>The headline:</b> the <i>engineering</i> (how it's built, monitored and self-corrects) is genuinely strong — prosumer/small-fund quality. The <i>edge</i> (the depth of market understanding that actually predicts moves) is where the remaining gains live. In short: <b>stop adding more chart indicators; start adding deeper, smarter data.</b></div>
+  </section>
+
+  <!-- ───────────────────────────── 6 ───────────────────────────── -->
+  <section id="phase6">
+    <h2><span class="num">6</span> The Coinbase + Bybit upgrade ("Phase 6")</h2>
+    <p class="lead">The plan was to look beyond one exchange. Here's the idea in plain English — and a surprise about its status.</p>
+
+    <div class="good"><b>Surprise: it's already built.</b> The plan describes Phase 6 as "proposed," but the code already has it. There are now <b>40 features</b> (up from 38), a working Coinbase connection, and a Bybit data fetcher running on a 30-second timer. So this is less "should we do it" and more "let's finish and polish it."</div>
+
+    <h3>The two new ideas, explained simply</h3>
+    <div class="card soft">
+      <h4 style="color:var(--cyan)">1. Coinbase Premium</h4>
+      <p style="color:var(--muted); margin:4px 0 0">Coinbase is where many <b>US institutions</b> buy Bitcoin. When the price on Coinbase runs slightly <i>higher</i> than on Binance, it often means big American money is buying aggressively — frequently <i>before</i> the rest of the market catches up. So this gap is an early-warning signal of serious buying or selling.</p>
+    </div>
+    <div class="card soft">
+      <h4 style="color:var(--violet)">2. Global Open Interest (Binance + Bybit)</h4>
+      <p style="color:var(--muted); margin:4px 0 0">"Open Interest" = how much money is currently bet in the futures market. Watching it across two big exchanges instead of one gives a fuller picture of how leveraged (and therefore how fragile) the market is.</p>
+    </div>
+
+    <div class="note"><b>Two expert tweaks worth adding</b> (and both are genuinely high-value):
+      <ul class="clean" style="margin-top:8px">
+        <li><b>Premium <i>velocity</i></b> — don't just track the gap, track <i>how fast it's changing</i>. "+$18 and rising fast" is a far stronger signal than the +$18 alone.</li>
+        <li><b>OI <i>divergence</i></b> — when Binance and Bybit's bets move in <i>opposite</i> directions, that disagreement is often more predictive than either number on its own.</li>
+      </ul>
+    </div>
+
+    <h3>Answers to the plan's open questions</h3>
+    <ul class="clean">
+      <li><b>Is 30-second polling OK?</b> Yes. Funding and open-interest data change slowly; 30 seconds is comfortably fresh and safe on rate limits.</li>
+      <li><b>Track the Binance-vs-Bybit OI difference separately?</b> Yes — that "divergence" is exactly the kind of signal worth having.</li>
+      <li><b>Combine or show exchanges separately in the UI?</b> Show them <b>separately</b> (Binance OI, Bybit OI, Global OI, and the gap). Seeing the disagreement is the whole point.</li>
+    </ul>
+  </section>
+
+  <!-- ───────────────────────────── 7 ───────────────────────────── -->
+  <section id="improve">
+    <h2><span class="num">7</span> How to make it better — the roadmap</h2>
+    <p class="lead">Ranked by "biggest improvement for the effort." Each one explains <i>what it is</i>, <i>why it helps</i>, and an everyday <i>analogy</i>. You don't need to understand the maths to grasp the value.</p>
+
+    <div class="pri">
+      <div class="top"><span class="rank">#1</span><h4>Smarter market-mood detection (Regime Engine v2)</h4><span class="gain">+4–8% accuracy</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Upgrade the "mood detector" to be richer and let the forecast genuinely change strategy per mood — be bold in trends, cautious in choppy markets.</div>
+        <div class="row"><span class="lbl">Why</span> The single biggest remaining accuracy gain. The same signal means opposite things in a calm market vs. a panicking one.</div>
+        <div class="row"><span class="lbl">Analogy</span> A driver who actually slows down in fog instead of driving the same speed in all weather.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank">#2</span><h4>Add liquidation data <span class="pill idea">highest-value new data</span></h4><span class="gain">large for crypto</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Track "liquidations" — forced auto-closures when over-leveraged traders get wiped out. These cause violent cascades.</div>
+        <div class="row"><span class="lbl">Why</span> In crypto specifically, a wave of liquidations often <i>drives</i> the next big move. This is frequently more predictive than all the classic chart indicators combined.</div>
+        <div class="row"><span class="lbl">Analogy</span> Spotting a row of dominoes already starting to topple — you know which way the rest will fall.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank">#3</span><h4>A "should I even trust this?" filter (Meta-Model)</h4><span class="gain">fewer bad calls</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> A second model whose only job is to judge the first model's prediction and say "act on it" or "skip — too uncertain."</div>
+        <div class="row"><span class="lbl">Why</span> Pros often gain more from <i>skipping</i> the weak signals than from improving the strong ones. Knowing when to stay out is half the game.</div>
+        <div class="row"><span class="lbl">Analogy</span> A wise editor who kills the shaky stories so only the solid ones get published.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank b">#4</span><h4>Deeper order-book intelligence</h4><span class="gain">strong for 1–3 min</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Detect big "walls" of orders, measure whether support sits below or resistance above, and spot when liquidity suddenly vanishes (which precedes fast moves).</div>
+        <div class="row"><span class="lbl">Why</span> For very short forecasts, the shape of the order book is one of the strongest predictors there is.</div>
+        <div class="row"><span class="lbl">Analogy</span> Reading the crowd at a door — where people are bunched up tells you which way the rush will go.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank b">#5</span><h4>Add an "agreement score"</h4><span class="gain">quick win</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Measure how much the four advisors agree. All four shouting "UP" = strong; two up, two down = weak.</div>
+        <div class="row"><span class="lbl">Why</span> A cheap, powerful confidence signal that's currently missing, and feeds neatly into the #3 trust-filter.</div>
+        <div class="row"><span class="lbl">Analogy</span> A unanimous jury verdict means a lot more than a hung jury.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank b">#6</span><h4>Forecast volatility, don't just label it</h4><span class="gain">better confidence</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Right now it labels the market "calm" or "wild." Upgrade it to predict <i>how wild it's about to get</i>.</div>
+        <div class="row"><span class="lbl">Why</span> Knowing a storm is coming lets it size its confidence and risk sensibly.</div>
+        <div class="row"><span class="lbl">Analogy</span> A barometer that warns of the storm before it arrives, not a window that confirms it's already raining.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank c">#7</span><h4>Better "right vs wrong" scoring (Brier score + calibration curve)</h4><span class="gain">trustworthy metrics</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> Add proper measures of whether the confidence numbers are honest, and break accuracy down by market mood.</div>
+        <div class="row"><span class="lbl">Why</span> You'll discover <i>where</i> it actually makes money (e.g. "great in trends, useless in chop") and fix only what's broken.</div>
+        <div class="row"><span class="lbl">Analogy</span> A detailed school report per subject, instead of a single blurry average grade.</div>
+      </div>
+    </div>
+
+    <div class="pri">
+      <div class="top"><span class="rank c">#8</span><h4>Long-term: self-driving controller (Reinforcement Learning)</h4><span class="gain">research-grade</span></div>
+      <div class="inner">
+        <div class="row"><span class="lbl">What</span> An AI agent that tunes all the dials (weights, caution, thresholds) on its own to maximise results.</div>
+        <div class="row"><span class="lbl">Why</span> The frontier — this is roughly how modern systematic hedge funds operate. Big effort, do it last.</div>
+        <div class="row"><span class="lbl">Analogy</span> Cruise control that learns the road and adjusts itself, instead of you nudging the pedals.</div>
+      </div>
+    </div>
+
+    <div class="note"><b>If you only do five things:</b> #1 mood detection, #2 liquidations, #4 order-book depth, #5 agreement score, and #3 the trust-filter. That cluster is where almost all the remaining edge is hiding.</div>
+  </section>
+
+  <!-- ───────────────────────────── 8 ───────────────────────────── -->
+  <section id="reality">
+    <h2><span class="num">8</span> Honest reality check (and real bugs I found)</h2>
+    <p class="lead">A fair tool review names the problems too. These are grounded in the actual code, explained plainly.</p>
+
+    <h3>Real issues found in the code</h3>
+
+    <div class="warn">
+      <b>Bug — two time windows have no real brain. <span class="pill bug">confirmed</span></b><br>
+      The tool shows forecasts for 1, 3, 5, 7, 10 and 15 minutes. But it only ever <i>trains</i> models for 1, 5, 10 and 15. The <b>3-minute and 7-minute</b> forecasts have no trained model behind them — they fall back to the simpler "gut-feel" signals only. (Confirmed: the saved-models folder contains files for 1, 5, 10, 15 — none for 3 or 7.) <i>Fix: train all six windows, or stop displaying the two untrained ones as equals.</i>
+    </div>
+
+    <div class="warn">
+      <b>Bug — the star analyst is mostly missing. <span class="pill bug">confirmed</span></b><br>
+      XGBoost is described as the primary model (biggest vote). But only <code>xgb_1.pkl</code> exists on disk — the 5/10/15-minute windows have <b>no saved XGBoost</b>, so they quietly run on the other three models. The system is designed to degrade gracefully, so it doesn't crash — but it's silently running below its intended strength. <i>Fix: investigate why XGBoost isn't training/saving for those windows.</i>
+    </div>
+
+    <div class="note">
+      <b>Weak spot — "approximate" history in testing. <span class="pill idea">improve</span></b><br>
+      When it grades itself on historical data, it doesn't have the true high/low of each past minute, so it <i>fakes</i> them (price ±0.1%). The clever "race to the target" labelling is therefore running on rough estimates, which makes the accuracy scores less trustworthy than they look. <i>Fix: feed the real high/low values, which it already collects, into the grader.</i>
+    </div>
+
+    <div class="note">
+      <b>Weak spot — some data is collected but barely used. <span class="pill idea">improve</span></b><br>
+      Bybit's funding rate is fetched but never turned into a signal. "Funding velocity" is a listed feature but is hard-wired to zero. Liquidation data is downloaded but only shown on screen, never fed to the models. There's collected-but-unused value sitting on the table.
+    </div>
+
+    <div class="note">
+      <b>Weak spot — it learns from very little data. <span class="pill idea">improve</span></b><br>
+      It retrains on roughly the last 1,000 one-minute candles (~16 hours). That's a thin slice of history to learn from, and it can make the models jumpy. More history (or smarter sampling) would steady them.
+    </div>
+
+    <h3>What's genuinely good</h3>
+    <div class="good">
+      <ul class="clean" style="margin:0">
+        <li><b>The self-grading + self-teaching loop</b> is the real standout — most projects at this level don't have it.</li>
+        <li><b>Honesty calibration</b> on the confidence numbers shows real maturity.</li>
+        <li><b>The anti-flicker locking</b> is a thoughtful, practical touch that makes the output usable.</li>
+        <li><b>Order-flow awareness</b> already puts it well ahead of a basic "draw some indicators" charting app.</li>
+        <li><b>Clean, modular code</b> — each job lives in its own file, so all the upgrades above are realistic to add.</li>
+      </ul>
+    </div>
+
+    <div class="warn"><b>The unavoidable truth.</b> Predicting Bitcoin 1–15 minutes ahead is extraordinarily hard. The honest ceiling for a tool like this is being right <i>modestly</i> more often than chance — and even that is valuable and difficult. The gap to a top-tier fund isn't a missing feature; it's proprietary ultra-fast data, execution infrastructure, and years of research. Treat this as a serious learning platform and a solid research base, not a money printer.</div>
+  </section>
+
+  <!-- ───────────────────────────── 9 ───────────────────────────── -->
+  <section id="glossary">
+    <h2><span class="num">9</span> Glossary — every term, in plain English</h2>
+    <p class="lead">If a word in this page (or the app) confused you, it's defined here. No prior knowledge assumed.</p>
+
+    <div class="card gloss">
+      <div class="g"><b>Bitcoin / BTC / BTCUSDT</b><span>BTC is Bitcoin. "BTCUSDT" just means "the price of Bitcoin measured in (a) US dollars" — the thing the tool predicts.</span></div>
+      <div class="g"><b>Exchange (Binance, Coinbase, Bybit)</b><span>Online marketplaces where people buy and sell crypto. The tool listens to three of the biggest.</span></div>
+      <div class="g"><b>Order book</b><span>The live list of all the buy and sell orders waiting to be filled. Its shape hints at which way price may move.</span></div>
+      <div class="g"><b>Order flow</b><span>The pressure behind the price — are buyers or sellers being more aggressive right now.</span></div>
+      <div class="g"><b>CVD (Cumulative Volume Delta)</b><span>A running tally of aggressive buying minus aggressive selling. Rising = buyers in control.</span></div>
+      <div class="g"><b>Order Book Imbalance (OBI)</b><span>Whether there are more buy orders or sell orders stacked up. More buys = mild upward hint.</span></div>
+      <div class="g"><b>Spread</b><span>The tiny gap between the best buy price and best sell price. A wide gap signals nervous, thin trading.</span></div>
+      <div class="g"><b>Whale</b><span>A trader placing very large orders. Their moves can shove the price around, so the tool watches them.</span></div>
+      <div class="g"><b>Volatility</b><span>How wild and jumpy the price is. High volatility = big fast swings; low = calm.</span></div>
+      <div class="g"><b>Open Interest (OI)</b><span>The total amount of money currently bet in the futures market. High OI = lots of leverage = more fragile.</span></div>
+      <div class="g"><b>Funding rate</b><span>A small recurring fee between futures traders that reveals whether the crowd is leaning bullish or bearish.</span></div>
+      <div class="g"><b>Long / Short</b><span>"Long" = betting price goes up. "Short" = betting it goes down. The long/short ratio shows which way the crowd leans.</span></div>
+      <div class="g"><b>Liquidation</b><span>When an over-leveraged trader's bet is force-closed by the exchange. Waves of these cause violent price cascades.</span></div>
+      <div class="g"><b>Coinbase Premium</b><span>How much higher (or lower) Bitcoin trades on Coinbase vs Binance — a tell for big US institutional buying/selling.</span></div>
+      <div class="g"><b>Derivatives / Futures</b><span>Contracts to bet on Bitcoin's price without owning it. This is where most of the leverage (and risk) lives.</span></div>
+      <div class="g"><b>Feature</b><span>A single number describing the market that the AI reads. This tool reads 40 of them at once.</span></div>
+      <div class="g"><b>Indicator (RSI, MACD, ADX, ATR…)</b><span>Classic formulas that summarise price/volume into one number — e.g. RSI hints at "overbought," ADX measures trend strength, ATR measures volatility.</span></div>
+      <div class="g"><b>Model</b><span>A piece of AI that has studied past data and makes predictions. This tool uses four different ones together.</span></div>
+      <div class="g"><b>Ensemble</b><span>Combining several models so their blended answer beats any single one — the "panel of advisors."</span></div>
+      <div class="g"><b>Confidence / Calibration</b><span>How sure the tool is (e.g. 70%). "Calibration" makes sure that 70% really means right-7-times-in-10.</span></div>
+      <div class="g"><b>Horizon</b><span>How far ahead a forecast looks — 1, 3, 5, 7, 10 or 15 minutes here.</span></div>
+      <div class="g"><b>Regime</b><span>The market's current "mood": trending, ranging, calm or wild. Strategy should change with it.</span></div>
+      <div class="g"><b>Backtest</b><span>Replaying history to check how the strategy <i>would</i> have done — a practice exam on past data.</span></div>
+      <div class="g"><b>Triple-barrier labelling</b><span>Defining "correct" as hitting a profit target before a stop-loss — the realistic, trader-style way to score a prediction.</span></div>
+      <div class="g"><b>Stop-loss / Take-profit</b><span>Pre-set exit prices: one caps your loss, the other locks in your gain.</span></div>
+      <div class="g"><b>Sharpe ratio / Win rate / Profit factor</b><span>Report-card stats: Sharpe = return vs. riskiness; win rate = % of winning calls; profit factor = total wins ÷ total losses.</span></div>
+      <div class="g"><b>Fear &amp; Greed Index</b><span>A 0–100 gauge of overall market emotion. Extreme fear or greed often marks turning points.</span></div>
+    </div>
+  </section>
+
+  <div class="foot">
+    BTC Quantum Trader — plain-English analysis &amp; roadmap · For learning and research only, not financial advice.<br>
+    Generated from a full read of the backend code (data_ingestion, order_flow, features, regime, model, prediction_verifier, backtester, server).
+  </div>
+
+</div>
+</body>
+</html>

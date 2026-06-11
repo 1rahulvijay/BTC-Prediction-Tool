@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+websockets==13.1
+aiohttp==3.11.0
+numpy==2.1.0
+pandas==2.2.3
+scikit-learn==1.5.2
+xgboost==2.1.1
+lightgbm==4.5.0
+catboost==1.2.10
+joblib==1.4.2
+ta==0.11.0
+duckdb==1.4.4
+shap==0.52.0

@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BTC Quantum Trader — Institutional-Grade BTCUSDT Prediction Engine</title>
+  <meta name="description" content="Citadel-grade Bitcoin price prediction system with multi-model ensemble, real-time verification, candlestick charting, and institutional analytics." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Loading screen -->
+    <div id="loading-screen" class="loading-screen">
+      <div class="loading-content">
+        <div class="loading-logo">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <circle cx="32" cy="32" r="30" stroke="url(#lg1)" stroke-width="2" />
+            <circle cx="32" cy="32" r="20" stroke="url(#lg2)" stroke-width="1.5" opacity="0.6" />
+            <path d="M28 20v24M36 20v24M24 26h16M24 32h16M24 38h16" stroke="url(#lg1)" stroke-width="2" stroke-linecap="round"/>
+            <defs>
+              <linearGradient id="lg1" x1="0" y1="0" x2="64" y2="64">
+                <stop stop-color="#00d4ff"/><stop offset="1" stop-color="#7b2ff7"/>
+              </linearGradient>
+              <linearGradient id="lg2" x1="0" y1="0" x2="64" y2="64">
+                <stop stop-color="#ff006e"/><stop offset="1" stop-color="#ffd700"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <h1 class="loading-title">BTC QUANTUM TRADER</h1>
+        <p class="loading-subtitle" id="loading-status">Initializing prediction engine...</p>
+        <div class="loading-bar-container">
+          <div class="loading-bar" id="loading-bar"></div>
+        </div>
+        <div class="loading-steps" id="loading-steps">
+          <div class="loading-step" id="step-data">◇ Fetching historical data</div>
+          <div class="loading-step" id="step-features">◇ Computing features</div>
+          <div class="loading-step" id="step-model">◇ Training multi-model ensemble</div>
+          <div class="loading-step" id="step-backtest">◇ Running backtests</div>
+          <div class="loading-step" id="step-connect">◇ Connecting live streams</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="dashboard hidden">
+      <!-- Top Bar -->
+      <header class="top-bar" id="top-bar">
+        <div class="top-bar-left">
+          <div class="logo-mark">
+            <svg width="28" height="28" viewBox="0 0 64 64" fill="none">
+              <circle cx="32" cy="32" r="30" stroke="url(#lg1b)" stroke-width="2.5"/>
+              <path d="M28 20v24M36 20v24M24 26h16M24 32h16M24 38h16" stroke="url(#lg1b)" stroke-width="2.5" stroke-linecap="round"/>
+              <defs><linearGradient id="lg1b" x1="0" y1="0" x2="64" y2="64"><stop stop-color="#00d4ff"/><stop offset="1" stop-color="#7b2ff7"/></linearGradient></defs>
+            </svg>
+          </div>
+          <span class="brand-name">BTC QUANTUM TRADER</span>
+          <span class="separator">|</span>
+          <span class="pair-label">BTCUSDT</span>
+          <span class="live-dot" id="live-dot"></span>
+          <span class="live-label">LIVE</span>
+        </div>
+        <div class="top-bar-center">
+          <div class="price-display" id="price-display">
+            <span class="price-value" id="current-price">--,---.--</span>
+            <span class="price-change" id="price-change">+0.00%</span>
+          </div>
+        </div>
+        <div class="top-bar-right">
+          <div class="stat-chip" id="stat-volume">
+            <span class="stat-label">24h Vol</span>
+            <span class="stat-value" id="volume-24h">---</span>
+          </div>
+          <div class="stat-chip" id="stat-high">
+            <span class="stat-label">High</span>
+            <span class="stat-value" id="high-24h">---</span>
+          </div>
+          <div class="stat-chip" id="stat-low">
+            <span class="stat-label">Low</span>
+            <span class="stat-value" id="low-24h">---</span>
+          </div>
+          <div class="model-health-badge" id="model-health-badge">
+            <span class="health-label">Model</span>
+            <span class="health-grade" id="model-grade">--</span>
+          </div>
+          <div class="stat-chip" id="stat-boot">
+            <span class="stat-label">Boot</span>
+            <span class="stat-value" id="boot-time">---</span>
+          </div>
+          <div class="stat-chip stat-chip-wide" id="stat-backtest">
+            <span class="stat-label">Backtest</span>
+            <span class="stat-value" id="backtest-status">Idle</span>
+          </div>
+          <button class="top-action-button" id="run-backtest-btn" type="button">
+            Run Backtest
+          </button>
+          <div class="stat-chip stat-chip-wide" id="stat-relearn">
+            <span class="stat-label">Relearn</span>
+            <span class="stat-value" id="relearn-status">Idle</span>
+          </div>
+          <button class="top-action-button" id="relearn-models-btn" type="button">
+            Relearn Models
+          </button>
+        </div>
+      </header>
+
+      <nav class="app-tabs" aria-label="Dashboard views">
+        <button class="app-tab active" data-view="technical">Technical + Live Feed</button>
+        <button class="app-tab" data-view="analysis">Decision Center</button>
+        <button class="app-tab" data-view="models">Models &amp; Signals</button>
+        <button class="app-tab" data-view="binance">📈 Binance</button>
+        <button class="app-tab" data-view="polymarket">🎯 Polymarket</button>
+        <a class="app-tab" href="/guide.html" target="_blank" rel="noopener"
+           style="text-decoration:none" title="Plain-English guide: every metric, every signal, how to decide">📖 Guide</a>
+      </nav>
+
+      <!-- Dashboard Grid -->
+      <main class="dashboard-grid" id="technical-view">
+        <!-- ═══ LEFT COLUMN: Chart ═══ -->
+        <section class="panel chart-panel" id="chart-panel">
+          <div class="panel-header">
+            <h2>Price Action</h2>
+            <div class="panel-controls">
+              <span class="regime-badge" id="regime-badge">---</span>
+            </div>
+          </div>
+          <div class="chart-container" id="chart-container"></div>
+          <!-- RSI Sub-chart -->
+          <div class="sub-chart-container" id="rsi-chart-container">
+            <div class="sub-chart-label">RSI <span id="rsi-value-label" class="sub-chart-value-label">--</span></div>
+            <div class="sub-chart-area" id="rsi-chart"></div>
+          </div>
+          <!-- MACD Sub-chart -->
+          <div class="sub-chart-container" id="macd-chart-container">
+            <div class="sub-chart-label">MACD <span id="macd-value-label" class="sub-chart-value-label">--</span></div>
+            <div class="sub-chart-area" id="macd-chart"></div>
+          </div>
+        </section>
+
+        <!-- ═══ MIDDLE COLUMN: Predictions + Alerts ═══ -->
+        <div class="middle-column">
+          <!-- Directional Analysis Panel -->
+          <section class="panel direction-panel" id="direction-panel">
+            <div class="panel-header">
+              <h2>Directional Analysis</h2>
+              <span class="panel-badge">Multi-Model</span>
+            </div>
+            <div class="direction-consensus" id="direction-consensus">
+              <div class="consensus-arrow" id="consensus-arrow">
+                <svg width="48" height="48" viewBox="0 0 48 48" id="consensus-arrow-svg">
+                  <polygon points="24,4 44,28 34,28 34,44 14,44 14,28 4,28" fill="currentColor"/>
+                </svg>
+              </div>
+              <div class="consensus-label" id="consensus-label">NEUTRAL</div>
+              <div class="consensus-conf" id="consensus-conf">0%</div>
+            </div>
+            <div class="direction-grid" id="direction-grid">
+              <!-- 4 direction rows injected by JS -->
+            </div>
+          </section>
+
+          <!-- Prediction Cards -->
+          <section class="panel predictions-panel" id="predictions-panel">
+            <div class="panel-header">
+              <h2>Forecasts</h2>
+              <span class="panel-badge">AI Ensemble</span>
+            </div>
+            <div class="predictions-grid" id="predictions-grid">
+              <!-- 4 prediction cards injected by JS -->
+            </div>
+          </section>
+
+          <!-- Overbought / Oversold Alerts -->
+          <section class="panel alerts-panel" id="alerts-panel">
+            <div class="panel-header">
+              <h2>OB / OS Alerts</h2>
+              <span class="panel-badge alert-badge-status" id="alert-status-badge">MONITORING</span>
+            </div>
+            <div class="alerts-grid" id="alerts-grid">
+              <!-- Alert indicators injected by JS -->
+            </div>
+          </section>
+
+          <!-- Prediction Verification & History -->
+          <section class="panel verify-panel" id="verify-panel">
+            <div class="panel-header">
+              <h2>Prediction Verification & History</h2>
+              <span class="verify-pending" id="verify-pending">0 pending</span>
+            </div>
+            
+            <div class="verify-tabs" id="verify-tabs">
+              <button class="verify-tab active" data-horizon="all">All</button>
+              <button class="verify-tab" data-horizon="1">1m</button>
+              <button class="verify-tab" data-horizon="3">3m</button>
+              <button class="verify-tab" data-horizon="5">5m</button>
+              <button class="verify-tab" data-horizon="7">7m</button>
+              <button class="verify-tab" data-horizon="10">10m</button>
+              <button class="verify-tab" data-horizon="15">15m</button>
+            </div>
+
+            <!-- Detailed Metrics (hidden in 'All' view, shown in specific horizons) -->
+            <div class="verify-detailed-metrics hidden" id="verify-detailed-metrics">
+              <div class="v-metric"><span class="v-label">Overall Acc</span><span class="v-value" id="vm-overall">--</span></div>
+              <div class="v-metric"><span class="v-label">UP Acc</span><span class="v-value" id="vm-up">--</span></div>
+              <div class="v-metric"><span class="v-label">DOWN Acc</span><span class="v-value" id="vm-down">--</span></div>
+              <div class="v-metric"><span class="v-label">Total Hits</span><span class="v-value" id="vm-hits">--</span></div>
+              <div class="v-metric"><span class="v-label">Total Misses</span><span class="v-value" id="vm-misses">--</span></div>
+              <div class="v-metric"><span class="v-label">Streak</span><span class="v-value" id="vm-streak">--</span></div>
+            </div>
+
+            <div class="verify-accuracy-row" id="verify-accuracy-row">
+              <!-- High-level accuracy stats injected by JS for 'All' view -->
+            </div>
+            <div class="verify-log" id="verify-log">
+              <!-- Verification entries injected by JS -->
+            </div>
+          </section>
+        </div>
+
+        <!-- ═══ RIGHT COLUMN: Intelligence ═══ -->
+        <div class="right-column">
+          <!-- Trade Tape + CVD -->
+          <section class="panel tape-panel" id="tape-panel">
+            <div class="panel-header">
+              <h2>Trade Flow</h2>
+              <div class="cvd-mini" id="cvd-mini">
+                <span class="cvd-label">CVD</span>
+                <span class="cvd-value" id="cvd-value">0.00</span>
+              </div>
+            </div>
+            <div class="tape-container" id="tape-container">
+              <div class="tape-scroll" id="tape-scroll"></div>
+            </div>
+          </section>
+
+          <!-- Order Book -->
+          <section class="panel orderbook-panel" id="orderbook-panel">
+            <div class="panel-header">
+              <h2>Order Book</h2>
+              <div class="imbalance-indicator" id="imbalance-indicator">
+                <span class="imbalance-label">Imbal</span>
+                <div class="imbalance-bar-container">
+                  <div class="imbalance-bar-fill" id="imbalance-bar"></div>
+                </div>
+                <span class="imbalance-value" id="imbalance-value">0.0</span>
+              </div>
+            </div>
+            <div class="orderbook-container" id="orderbook-container">
+              <canvas id="depth-chart"></canvas>
+            </div>
+          </section>
+
+          <!-- Market Intelligence -->
+          <section class="panel metrics-panel" id="metrics-panel">
+            <div class="panel-header">
+              <h2>Market Intelligence</h2>
+            </div>
+            <div class="metrics-grid" id="metrics-grid">
+              <div class="metric-card" id="metric-funding">
+                <span class="metric-label">Funding Rate</span>
+                <span class="metric-value" id="funding-rate-val">---</span>
+              </div>
+              <div class="metric-card" id="metric-oi">
+                <span class="metric-label">Global BTC OI</span>
+                <span class="metric-value" id="oi-val">---</span>
+              </div>
+              <div class="metric-card" id="metric-coinbase">
+                <span class="metric-label">Coinbase Prem</span>
+                <span class="metric-value" id="coinbase-prem-val">---</span>
+              </div>
+              <div class="metric-card" id="metric-ls">
+                <span class="metric-label">Long/Short</span>
+                <span class="metric-value" id="ls-ratio-val">---</span>
+              </div>
+              <div class="metric-card" id="metric-liquidations">
+                <span class="metric-label">Recent Liqs</span>
+                <span class="metric-value" id="liquidations-val">---</span>
+              </div>
+              <div class="metric-card metric-card-wide" id="metric-fear-greed">
+                <span class="metric-label">Fear & Greed</span>
+                <div class="fear-greed-inline">
+                  <span class="fg-value" id="fear-greed-value">--</span>
+                  <span class="fg-text" id="fear-greed-text">---</span>
+                </div>
+              </div>
+              
+              <!-- Auto-Learning Status -->
+              <div class="metric-card metric-card-wide learning-card" id="metric-learning">
+                <div class="learning-header">
+                  <span class="metric-label">Auto-Learning Engine</span>
+                  <span class="learning-pulse" id="learning-pulse"></span>
+                </div>
+                <div class="learning-stats">
+                  <div class="l-stat"><span>Retrains</span><span id="l-retrains">0</span></div>
+                  <div class="l-stat"><span>Smoothing</span><span id="l-smooth">0.120</span></div>
+                  <div class="l-stat"><span>Conf. Thresh</span><span id="l-conf">0.550</span></div>
+                </div>
+              </div>
+              <!-- Backtest -->
+              <div class="metric-card metric-card-wide" id="metric-backtest">
+                <span class="metric-label">Backtest Performance</span>
+                <div class="backtest-grid" id="backtest-grid">
+                  <div class="bt-row"><span>1m Acc</span><span id="bt-1m">--%</span></div>
+                  <div class="bt-row"><span>5m Acc</span><span id="bt-5m">--%</span></div>
+                  <div class="bt-row"><span>10m Acc</span><span id="bt-10m">--%</span></div>
+                  <div class="bt-row"><span>15m Acc</span><span id="bt-15m">--%</span></div>
+                  <div class="bt-row"><span>Sharpe</span><span id="bt-sharpe">--</span></div>
+                  <div class="bt-row"><span>Win Rate</span><span id="bt-winrate">--%</span></div>
+                  <div class="bt-row"><span>Profit Factor</span><span id="bt-pf">--</span></div>
+                  <div class="bt-row"><span>Max DD</span><span id="bt-mdd">--%</span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Trading Signal -->
+          <section class="panel signal-panel" id="signal-panel">
+            <div class="panel-header">
+              <h2>Trading Signal</h2>
+            </div>
+            <div class="signal-content" id="signal-content">
+              <div class="signal-main" id="signal-main">
+                <div class="signal-direction" id="signal-direction">NEUTRAL</div>
+                <div class="signal-confidence" id="signal-confidence">
+                  <span class="conf-label">Confidence</span>
+                  <div class="conf-bar-container">
+                    <div class="conf-bar" id="conf-bar"></div>
+                  </div>
+                  <span class="conf-value" id="conf-value">0%</span>
+                </div>
+              </div>
+              <div class="signal-details">
+                <div class="signal-row">
+                  <span>Position</span>
+                  <span id="position-size">0%</span>
+                </div>
+                <div class="signal-row">
+                  <span>Stop Loss</span>
+                  <span id="stop-loss">---</span>
+                </div>
+                <div class="signal-row">
+                  <span>Take Profit</span>
+                  <span id="take-profit">---</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <!-- Plain-English Analysis Tab -->
+      <main class="analysis-view hidden" id="analysis-view">
+
+        <!-- Decision-first cockpit: the simplest top-level flow -->
+        <section class="decision-cockpit" id="decision-cockpit">
+          <div class="decision-cockpit-head">
+            <div class="decision-title-block">
+              <span class="plain-eyebrow">Decision Center</span>
+              <h1 id="decision-primary-action">WAIT</h1>
+              <p id="decision-primary-message">Waiting for a live forecast before giving a market decision.</p>
+            </div>
+            <div class="decision-time-box">
+              <span>Choose decision timeframe</span>
+              <div class="tf-subtabs" id="tf-subtabs">
+                <button class="tf-tab active" data-tf="1">1 Min</button>
+                <button class="tf-tab" data-tf="3">3 Min</button>
+                <button class="tf-tab" data-tf="5">5 Min</button>
+                <button class="tf-tab" data-tf="7">7 Min</button>
+                <button class="tf-tab" data-tf="10">10 Min</button>
+                <button class="tf-tab" data-tf="15">15 Min</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="decision-cockpit-grid">
+            <div class="decision-main-card" id="decision-main-card">
+              <span>1. Action</span>
+              <strong id="decision-cockpit-action">WAIT</strong>
+              <p id="decision-cockpit-action-detail">No action until the model, market flow, and trust checks align.</p>
+            </div>
+            <div class="decision-main-card">
+              <span>2. Expected zone</span>
+              <strong id="decision-cockpit-target">--</strong>
+              <p id="decision-cockpit-target-detail">Expected price target and move size will appear here.</p>
+            </div>
+            <div class="decision-main-card">
+              <span>3. Trust rating</span>
+              <strong id="decision-cockpit-trust">--</strong>
+              <p id="decision-cockpit-trust-detail">Uses confidence, agreement, live accuracy, price error, and filters.</p>
+            </div>
+            <div class="decision-main-card">
+              <span>4. Risk rule</span>
+              <strong id="decision-cockpit-risk">--</strong>
+              <p id="decision-cockpit-risk-detail">Shows what can make this decision fail.</p>
+            </div>
+          </div>
+
+          <div class="decision-ladder-grid">
+            <div class="decision-ladder-card">
+              <span>Why this call?</span>
+              <strong id="decision-cockpit-why">Waiting</strong>
+              <p id="decision-cockpit-why-detail">The strongest reason will appear here.</p>
+            </div>
+            <div class="decision-ladder-card">
+              <span>Do not act if...</span>
+              <strong id="decision-cockpit-invalid">Waiting</strong>
+              <p id="decision-cockpit-invalid-detail">The invalidation condition will appear here.</p>
+            </div>
+            <div class="decision-ladder-card">
+              <span>Next confirmation</span>
+              <strong id="decision-cockpit-next">Waiting</strong>
+              <p id="decision-cockpit-next-detail">The next thing to watch will appear here.</p>
+            </div>
+          </div>
+
+          <div class="decision-checklist" id="decision-checklist">
+            <!-- Populated by JS: models, Kronos, flow, regime, live record, data freshness -->
+          </div>
+        </section>
+
+        <section class="analysis-section fsr-ppo-section" id="fsr-ppo-section">
+          <div class="analysis-section-header">
+            <h2>FSR-PPO Strategy Challenger</h2>
+            <p>A separate reinforcement-learning style policy that reads denoised BTC signals, then suggests trade/skip and size. It is measured first, not allowed to override the main ensemble.</p>
+          </div>
+          <div class="fsr-ppo-grid" id="fsr-ppo-grid"></div>
+          <div class="fsr-ppo-recent" id="fsr-ppo-recent"></div>
+        </section>
+        
+        <!-- Persistent Global Overview Board -->
+        <section class="global-overview-board">
+          <div class="analysis-section-header">
+            <h2>Live Market Pulse</h2>
+            <p>Final ensemble decision for each horizon. AVOID means the model may still estimate a move, but the safety gate says not to act.</p>
+          </div>
+          <div class="pulse-grid" id="global-pulse-grid">
+            <!-- Populated by JS: columns for 1m, 3m, 5m, 7m, 10m, 15m showing direction and confidence -->
+          </div>
+        </section>
+
+        <!-- Kronos Price Projection Area -->
+        <section class="forecast-prediction-board">
+          <div class="analysis-section-header">
+            <h2>Kronos Forecast Targets</h2>
+            <p>Separate Kronos/fallback future-price path. This is a cross-check, not the same thing as the ensemble action.</p>
+          </div>
+          <div class="forecast-current-price">
+            <span>Current BTC Price: </span>
+            <strong id="forecast-current-price">Loading...</strong>
+          </div>
+          <p class="kronos-status" id="kronos-status">Forecast engine status: waiting for backend.</p>
+          <div class="pulse-grid forecast-grid" id="forecast-pulse-grid">
+            <!-- Populated by JS with projected BTC targets per timeframe -->
+          </div>
+        </section>
+
+        <section class="analysis-section signal-flow-section">
+          <div class="analysis-section-header">
+            <h2>Signal Flow</h2>
+            <p>The selected timeframe in plain order: model lean, safety decision, Kronos cross-check, and how the result will be judged.</p>
+          </div>
+          <div class="signal-flow-grid" id="signal-flow-grid">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+
+        <!-- Dynamic Content Container based on selected Timeframe -->
+        <div class="tf-dynamic-content" id="tf-dynamic-content">
+          <section class="plain-hero">
+            <div class="plain-verdict">
+              <span class="plain-eyebrow">Deep Analysis: <span id="active-tf-label">1 Min</span> Forecast</span>
+              <h2 class="plain-verdict-title neutral" id="analysis-verdict">Waiting for forecast</h2>
+              <p id="analysis-meaning">The model is collecting live market data before summarizing the signal.</p>
+              <div class="plain-impact" id="analysis-impact">Impact: wait</div>
+            </div>
+            <div class="quantile-curve-wrapper" id="quantile-curve-wrapper">
+              <div class="curve-header">
+                <span>Volatility Risk Premium (VRP)</span>
+                <strong id="curve-status">--</strong>
+              </div>
+              <div id="quantile-curve-container" class="quantile-curve-container">
+                <!-- SVG curve injected via main.js -->
+              </div>
+            </div>
+            <div class="plain-confidence">
+              <span>Timeframe confidence</span>
+              <strong id="analysis-confidence">--</strong>
+            </div>
+          </section>
+
+        <section class="analysis-section decision-guide-section">
+          <div class="analysis-section-header">
+            <h2>Decision Guide</h2>
+            <p>Plain-language reading of the selected timeframe: what it suggests, what could confirm it, and what could invalidate it.</p>
+          </div>
+          <div class="decision-grid" id="decision-guide-grid">
+            <div class="decision-card primary"><span>Action read</span><strong id="decision-action">Wait</strong><p id="decision-action-detail">Waiting for the next forecast.</p></div>
+            <div class="decision-card"><span>Main reason</span><strong id="decision-reason">--</strong><p id="decision-reason-detail">The app will explain the strongest live driver here.</p></div>
+            <div class="decision-card"><span>Risk note</span><strong id="decision-risk">--</strong><p id="decision-risk-detail">The app will explain what could make this forecast fail.</p></div>
+            <div class="decision-card"><span>Next check</span><strong id="decision-next">--</strong><p id="decision-next-detail">The app will explain what to watch before trusting the signal.</p></div>
+          </div>
+        </section>
+
+        <section class="analysis-section trust-section">
+          <div class="analysis-section-header">
+            <h2>Can I Trust This?</h2>
+            <p>This combines confidence, agreement, live sample size, price-error history, and skip filters into one simple trust read.</p>
+          </div>
+          <div class="trust-grid">
+            <div class="trust-score-card">
+              <span>Trust score</span>
+              <strong id="trust-score">--</strong>
+              <p id="trust-label">Waiting for enough live evidence.</p>
+            </div>
+            <div class="trust-reasons" id="trust-reasons"></div>
+          </div>
+        </section>
+
+        <details class="pa-group" open>
+          <summary>Performance &amp; accuracy — is this timeframe getting it right?</summary>
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Why This Action?</h2>
+            <p>Explains why the app reads BUY/UP, SELL/DOWN, or AVOID/SKIP using simple market reasons.</p>
+          </div>
+          <div class="action-reason-grid" id="action-reasons"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Prediction Rates</h2>
+            <p>Direction accuracy says whether UP/DOWN was right. Price match says whether the expected dollar move was close.</p>
+          </div>
+          <div class="simulator-disclaimer" style="margin-bottom: 1rem; padding: 0.75rem; background: rgba(255,165,0,0.1); border-left: 3px solid orange; font-size: 0.85rem; color: #ffca28;">
+            <strong>Simulator Notice:</strong> Expectancy assumes conservative taker-fees (0.05%) and 2-tick dynamic slippage. Past expectancy does not guarantee future live fills.
+          </div>
+          <div class="plain-rate-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+            <div class="plain-rate-card"><span>Signal Expectancy (USD)</span><strong id="analysis-expectancy">--</strong><p>Average expected net value per trade after slippage and fees.</p></div>
+            <div class="plain-rate-card"><span>Miss rate</span><strong id="analysis-miss-rate">--</strong><p>How often the model picked the wrong side.</p></div>
+            <div class="plain-rate-card"><span>Direction right</span><strong id="analysis-accuracy">--</strong><p>How often the model picked the correct side.</p></div>
+            <div class="plain-rate-card"><span>Avg price error</span><strong id="analysis-avg-error">--</strong><p>Average distance between expected and actual move.</p></div>
+            <div class="plain-rate-card"><span>UP error</span><strong id="analysis-up-error">--</strong><p>Average dollar error on UP calls.</p></div>
+            <div class="plain-rate-card"><span>DOWN error</span><strong id="analysis-down-error">--</strong><p>Average dollar error on DOWN calls.</p></div>
+          </div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Action Accuracy</h2>
+            <p>Separate scorecards for all signals, BUY/UP calls, SELL/DOWN calls, and AVOID/SKIP calls.</p>
+          </div>
+          <div class="action-metric-grid" id="action-metrics"></div>
+        </section>
+        </details>
+
+        <details class="pa-group">
+          <summary>Risk &amp; capital preservation — what is being avoided, and the challenger lab</summary>
+        <section class="analysis-section avoid-success-section">
+          <div class="analysis-section-header">
+            <h2>Capital Preservation (Avoid Success)</h2>
+            <p>A breakdown of exactly how much money the Chief Risk Officer layer saved you by intercepting and rejecting weak, low-expectancy trades before execution.</p>
+          </div>
+          <div class="avoid-dashboard-grid" id="avoid-dashboard-grid">
+            <div class="avoid-hero-card">
+              <span>Capital Preserved (USD)</span>
+              <strong id="avoid-capital-saved">--</strong>
+              <p>Total dollar move avoided across 1 BTC positions.</p>
+            </div>
+            <div class="avoid-stats-col">
+              <div class="avoid-stat-row">
+                <span>Trades Avoided</span><strong id="avoid-total">--</strong>
+              </div>
+              <div class="avoid-stat-row">
+                <span>Good Avoids (Flat/Choppy)</span><strong id="avoid-hits">--</strong>
+              </div>
+              <div class="avoid-stat-row">
+                <span>Avoid Success Rate</span><strong id="avoid-rate">--</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Regime Health & Profit Factor</h2>
+            <p>Risk parameters evaluating the current market state and historical profitability.</p>
+          </div>
+          <div class="plain-rate-grid" id="regime-health-grid">
+            <div class="plain-rate-card"><span>Current Regime</span><strong id="regime-health-state">--</strong><p>The active market behavior classification.</p></div>
+            <div class="plain-rate-card"><span>Profit Factor</span><strong id="regime-health-pf">--</strong><p>Gross profit divided by gross loss (target > 1.2).</p></div>
+            <div class="plain-rate-card"><span>Max Drawdown</span><strong id="regime-health-dd">--</strong><p>Largest observed equity drop.</p></div>
+          </div>
+        </section>
+
+        <section class="analysis-section challenger-lab-section">
+          <div class="analysis-section-header">
+            <h2>Challenger Lab (A/B Testing)</h2>
+            <p>We are quietly testing a new strategy in the background. Once it proves its edge, it will automatically take over.</p>
+          </div>
+          <div class="challenger-grid" id="challenger-grid">
+            <div class="challenger-card"><span>Primary Model</span><strong id="lab-primary-acc">--</strong><p id="lab-primary-desc">Current baseline.</p></div>
+            <div class="challenger-card"><span>Challenger Model</span><strong id="lab-challenger-acc">--</strong><p id="lab-challenger-desc">Testing new features.</p></div>
+            <div class="challenger-card"><span>Significance</span><strong id="lab-significance">--</strong><p id="lab-sig-desc">Confidence that the difference is real.</p></div>
+          </div>
+        </section>
+
+        </details>
+
+        <details class="pa-group">
+          <summary>Signals &amp; indicators — the live drivers, error examples and support/resistance</summary>
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Live Signals</h2>
+            <p>Each card explains what the machine is seeing and what it could mean for buy pressure, sell pressure, up moves, or down moves.</p>
+          </div>
+          <div class="plain-signal-grid" id="analysis-signals"></div>
+        </section>
+
+        <section class="analysis-section two-col-analysis">
+          <div>
+            <div class="analysis-section-header">
+              <h2>Error Examples</h2>
+              <p>UP/DOWN rows score direction and dollar error. AVOID rows score whether skipping protected you, not whether UP/DOWN was predicted.</p>
+            </div>
+            <div class="plain-error-list" id="analysis-errors"></div>
+          </div>
+          <div>
+            <div class="analysis-section-header">
+              <h2>Support / Resistance</h2>
+              <p>Support is a nearby area where falling price may slow. Resistance is where rising price may slow.</p>
+            </div>
+            <div class="support-grid">
+              <div class="support-card">
+                <span>Nearest support</span>
+                <strong id="support-level">--</strong>
+                <p id="support-meaning">Needs more candles.</p>
+              </div>
+              <div class="support-card">
+                <span>Nearest resistance</span>
+                <strong id="resistance-level">--</strong>
+                <p id="resistance-meaning">Needs more candles.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Top Indicator Analysis</h2>
+            <p>Readable translations of the strongest technical and market-flow inputs right now.</p>
+          </div>
+          <div class="plain-indicator-list" id="indicator-analysis"></div>
+        </section>
+        </details>
+
+        </div> <!-- End tf-dynamic-content -->
+        
+        <!-- BTC Direction Scoreboard (5m / 15m) — our model vs Kronos, conviction-gated -->
+        <section class="analysis-section scoreboard-section" id="scoreboard-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>BTC Direction Scoreboard — 5m &amp; 15m</h2>
+            <p>Only <strong>high-conviction</strong> calls (our ensemble, Kronos, order flow and regime all agreeing) are marked actionable. Trade fewer, win more.</p>
+          </div>
+          <div class="scoreboard-grid" id="scoreboard-grid">
+            <!-- Populated by JS: 5m and 15m cards -->
+          </div>
+        </section>
+
+        <!-- Multi-Exchange Consensus -->
+        <section class="analysis-section exchange-section" id="exchange-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00d4ff; padding-left:1rem;">
+            <h2>Multi-Exchange Consensus</h2>
+            <p>Live BTC spot across venues. A venue above consensus shows where aggressive demand is leading (deviation in basis points).</p>
+          </div>
+          <div class="exchange-strip" id="exchange-strip">
+            <!-- Populated by JS: per-venue price + deviation -->
+          </div>
+        </section>
+
+      </main>
+
+      <!-- Models & Signals Tab -->
+      <main class="models-view hidden" id="models-view">
+
+        <!-- Feed Health & Feature Coverage (read-only audit) -->
+        <section class="analysis-section" id="feed-health-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>Feed Health &amp; Feature Coverage</h2>
+            <p>How "data-starved" the models are right now. Live microstructure/derivative features only become useful once this coverage climbs over days of continuous runtime. <strong>Measurement only — changes nothing about the signals.</strong></p>
+          </div>
+          <div class="fh-summary" id="feed-health-summary"></div>
+          <div class="fh-grid" id="feed-health-grid"></div>
+        </section>
+
+        <!-- Live Training Signals: the exact feature values being recorded for the model -->
+        <section class="analysis-section" id="training-signals-section">
+          <div class="analysis-section-header" style="border-left:4px solid #64b5f6; padding-left:1rem;">
+            <h2>Live Training Signals</h2>
+            <p>The <strong>exact values recorded each minute</strong> as the model's training features —
+               shown live. Green/red = direction of the pressure. These are what the model will
+               learn from at the next retrain; the 📖 Guide explains how to read each one.</p>
+          </div>
+          <div class="ts-grid" id="training-signals-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.6rem;">
+            <!-- Populated by JS from payload.training_signals -->
+          </div>
+        </section>
+
+        <!-- Best Long / Best Short (directional lean on demand) -->
+        <section class="analysis-section" id="longshort-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
+            <h2>Best Long &amp; Best Short Right Now</h2>
+            <p>Want to go long or short? These surface the strongest UP and DOWN lean across all timeframes by the model's own probabilities — a <strong>directional view, not the risk-gated recommendation</strong>. The tool's default is still AVOID when expected value after costs is negative.</p>
+          </div>
+          <div class="longshort-grid" id="longshort-grid">
+            <!-- Populated by JS: best long + best short cards -->
+          </div>
+        </section>
+
+        <!-- Forecast Scorecard: Ensemble vs Kronos (accuracy + error) -->
+        <section class="analysis-section" id="forecast-scorecard-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00d4ff; padding-left:1rem;">
+            <h2>Forecast Scorecard — Ensemble vs Kronos</h2>
+            <p>Live direction accuracy and average price error (how far the forecast was from the actual price) for our ensemble and for Kronos, side by side.</p>
+          </div>
+          <div class="scorecard-wrap" id="forecast-scorecard">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+
+        <!-- Price-to-Beat 5m & 15m -->
+        <section class="analysis-section" id="ptb-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>Price to Beat — 5m &amp; 15m</h2>
+            <p>At each round we lock a <strong>price to beat</strong>, our models call UP or DOWN, then we check whether BTC finished above or below it. Action items and results below.</p>
+          </div>
+          <div class="ptb-tabs" id="ptb-tabs">
+            <button class="ptb-tab active" data-ptb="5">5 Min</button>
+            <button class="ptb-tab" data-ptb="15">15 Min</button>
+          </div>
+          <div class="ptb-grid" id="ptb-grid">
+            <!-- Populated by JS: 5m and 15m round cards -->
+          </div>
+          <div class="ptb-recent" id="ptb-recent">
+            <!-- Populated by JS: recent resolved rounds -->
+          </div>
+        </section>
+
+        <!-- Price-to-Beat Confluence Scoreboard -->
+        <section class="analysis-section" id="ptb-confluence-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
+            <h2>Price-to-Beat Signal Rating</h2>
+            <p>Reconciles Ensemble, Kronos, live flow, and regime into one plain signal rating for the 5m and 15m price-to-beat rounds.</p>
+          </div>
+          <div class="ptb-confluence-grid" id="ptb-confluence-grid">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+
+        <!-- Model Roster & Live Accuracy -->
+        <section class="analysis-section" id="model-roster-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00d4ff; padding-left:1rem;">
+            <h2>Model Roster &amp; Live Accuracy</h2>
+            <p>Every model in the ensemble, its current vote per horizon, and how often that model has been right on resolved live predictions.</p>
+          </div>
+          <div class="model-roster-wrap" id="model-roster">
+            <!-- Populated by JS: per-model rows -->
+          </div>
+        </section>
+
+        <!-- Directional Calls Log (BUY/SELL leans only) -->
+        <section class="analysis-section" id="directional-log-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>Directional Calls — UP / DOWN</h2>
+            <p>Only the moments the model actually leaned UP or DOWN: its lean, whether it
+               committed to a BUY/SELL or held WAIT, and how it resolved — latest first.</p>
+          </div>
+          <div class="action-log-wrap" id="directional-log">
+            <!-- Populated by JS from /api/action-log (filtered to directional leans) -->
+          </div>
+        </section>
+
+        <!-- Action & Trade Log -->
+        <section class="analysis-section" id="action-log-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
+            <h2>Action &amp; Trade Log</h2>
+            <p>What the tool advised, what it expected, and what actually happened — latest first.</p>
+          </div>
+          <div class="action-log-wrap" id="action-log">
+            <!-- Populated by JS from /api/action-log -->
+          </div>
+        </section>
+
+        <!-- Model Inventory -->
+        <section class="analysis-section" id="model-inventory-section">
+          <div class="analysis-section-header" style="border-left:4px solid #7b2ff7; padding-left:1rem;">
+            <h2>Model Inventory</h2>
+            <p>Which models are installed and trained right now, and the LightGBM execution device.</p>
+          </div>
+          <div class="inventory-grid" id="model-inventory-grid">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+      </main>
+
+      <!-- ═══ BINANCE VIEW (spot/perp model — long/short entries, 6 horizons) ═══ -->
+      <main class="models-view hidden" id="binance-view">
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #f3ba2f; padding-left:1rem;">
+            <h2>📈 Binance — Model Predictions (1/3/5/7/10/15m)</h2>
+            <p>Everything here is on the <strong>Binance</strong> feed — for spot/perp long &amp; short entries.
+               Each card: the model's direction, calibrated confidence, expected move &amp; target, the gated
+               action, conviction grade, and live accuracy for that horizon.</p>
+          </div>
+          <div id="binance-price-strip" style="margin:0 0 1rem;font-size:1.1em;"></div>
+          <div id="binance-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.8rem;"></div>
+        </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00d4ff; padding-left:1rem;">
+            <h2>Indicators &amp; Regime (Binance)</h2>
+          </div>
+          <div id="binance-indicators" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;"></div>
+        </section>
+      </main>
+
+      <!-- ═══ POLYMARKET VIEW (Pyth anchor — 5m/15m binary bets) ═══ -->
+      <main class="models-view hidden" id="polymarket-view">
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>🎯 Polymarket — Price to Beat (Pyth anchor)</h2>
+            <p>Dedicated to the Polymarket BTC up/down 5m &amp; 15m markets. Prices are from <strong>Pyth</strong>
+               (the settlement-oracle proxy) — both the live price and the price-to-beat. Model lean, setup
+               grade, path outlook, hold/exit advice, and the mirror win rate.</p>
+          </div>
+          <div id="pm-price-strip" style="margin:0 0 1rem;font-size:1.1em;"></div>
+          <div id="pm-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:.8rem;"></div>
+        </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
+            <h2>Recent Resolved Rounds &amp; Win Rate</h2>
+          </div>
+          <div id="pm-accuracy" style="margin-bottom:.8rem;"></div>
+          <div id="pm-recent" class="action-log-wrap"></div>
+        </section>
+      </main>
+
+      <!-- Footer -->
+      <footer class="bottom-bar">
+        <span class="disclaimer">⚠ Educational tool only — not financial advice. Past performance does not guarantee future results.</span>
+        <span class="connection-status" id="connection-status">● Disconnected</span>
+      </footer>
+    </div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

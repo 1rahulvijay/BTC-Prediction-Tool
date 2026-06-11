@@ -1,0 +1,40 @@
+{
+  "//": "Stop the IDE language server from indexing/watching the large generated data files",
+  "//2": "(analytics.duckdb is ~1.4GB and changes constantly as the app writes). Without this",
+  "//3": "the indexer balloons to ~4.6GB RAM and locks the DuckDB file. Reload the IDE window",
+  "//4": "after this lands (Command Palette -> 'Reload Window') for it to take effect.",
+
+  "files.watcherExclude": {
+    "**/data/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/__pycache__/**": true,
+    "**/backend/cache/**": true,
+    "**/*.duckdb": true,
+    "**/*.duckdb.wal": true,
+    "**/*.parquet": true,
+    "**/*.pkl": true
+  },
+  "search.exclude": {
+    "**/data": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/__pycache__": true
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.duckdb": true,
+    "**/*.parquet": true
+  },
+
+  "python.analysis.exclude": [
+    "**/data/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/__pycache__/**"
+  ],
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.indexing": false,
+
+  "files.associations": { "*.duckdb": "plaintext" }
+}
