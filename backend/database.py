@@ -886,6 +886,83 @@ def fetch_price_to_beat_history(horizon: int, limit: int = 500) -> list:
     return out
 
 
+def cleanup_orphan_pending_rows() -> dict:
+    """Boot-time janitor: delete pending rows that can never resolve.
+
+    price_to_beat / model_predictions / kronos_predictions keep their pending state
+    in MEMORY only — after a restart, any row still resolved=FALSE whose verify_at
+    has already passed is permanently dead (its resolver is gone). They don't poison
+    metrics (readers filter resolved=TRUE) but accumulate forever. predictions_*m is
+    deliberately NOT touched: the verifier rehydrates those pendings at boot.
+    """
+    out = {}
+    cutoff = int((time.time() - 600) * 1000)  # 10-min grace for clock skew
+    conn = None
+    try:
+        conn = _connect()
+        for tbl in ("price_to_beat", "model_predictions", "kronos_predictions"):
+            try:
+                n = conn.execute(f"""
+                    DELETE FROM {tbl}
+                    WHERE resolved = FALSE AND verify_at > 0 AND verify_at < ?
+                """, (cutoff,)).fetchone()
+                out[tbl] = int(n[0]) if n else 0
+            except Exception:
+                out[tbl] = -1  # table missing/no column — skip silently
+    except Exception as e:
+        print(f"DuckDB orphan cleanup error: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return out
+
+
+def fetch_price_to_beat_recent(limit: int = 20) -> list:
+    """Rehydrate the resolved-rounds UI table after a restart (newest-first round
+    dicts shaped like the tracker's in-memory resolved rounds). Same model-era
+    filter as fetch_price_to_beat_history — the table must describe ONE model."""
+    out = []
+    conn = None
+    try:
+        min_ts = 0
+        try:
+            _vp = os.path.join(os.path.dirname(DB_PATH), "saved_models",
+                               "architecture_version.pkl")
+            if os.path.exists(_vp):
+                min_ts = int(os.path.getmtime(_vp) * 1000)
+        except Exception:
+            pass
+        conn = _connect()
+        rows = conn.execute(f"""
+            SELECT id, timestamp, horizon, price_to_beat, our_direction,
+                   COALESCE(lean_source, '') AS lean_source,
+                   COALESCE(confluence_grade, '') AS grade,
+                   actual_price, actual_direction, hit, move,
+                   COALESCE(late_entry, FALSE) AS late_entry
+            FROM price_to_beat
+            WHERE resolved AND our_direction IN ('UP','DOWN')
+              AND timestamp >= {int(min_ts)}
+            ORDER BY timestamp DESC LIMIT {int(limit)}
+        """).fetchall()
+        for (rid, ts, h, ptb, d, src, grade, ap, ad, hit, move, late) in rows:
+            out.append({
+                "id": rid, "timestamp": int(ts), "horizon": int(h),
+                "price_to_beat": float(ptb or 0.0), "our_direction": d,
+                "lean_source": src if src in ("model", "fallback") else "model",
+                "confluence": {"grade": grade} if grade else None,
+                "actual_price": float(ap or 0.0), "actual_direction": ad,
+                "hit": (bool(hit) if hit is not None else None),
+                "move": float(move or 0.0), "late_entry": bool(late),
+                "status": "resolved",
+            })
+    except Exception as e:
+        print(f"DuckDB PTB Recent Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return out
+
+
 def fetch_action_log(limit: int = 50) -> list:
     """Union recent predictions across all horizons for the UI action feed."""
     timeframes = [1, 3, 5, 7, 10, 15]

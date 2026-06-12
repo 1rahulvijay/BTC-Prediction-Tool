@@ -851,6 +851,405 @@ bugs — all dead weight — but one STALE COMMENT was actively misleading.**
 Validation: **pyflakes CLEAN across backend/**, all files compile, import smoke OK
 (automl excluded — `optuna` not installed in this env, pre-existing, server never imports it).
 
+## 5ag. Deep audit #6 — label alignment, train/serve skew, backtest honesty (2026-06-12)
+
+Targeted the classic quant killers that hadn't been line-audited: label construction,
+index alignment, and evaluation contamination. Verdicts:
+
+**CLEAN (verified correct, no action):**
+- Triple-barrier labels (`build_sequences`): entry = decision candle's close, barrier scan
+  starts strictly at i+1 (no entry-candle leakage), dual-touch resolved by bar net
+  direction, sample range excludes the partial tail candle.
+- P4.3 regime labels: indexed by the same decision-candle range as X, with a length guard.
+- Regime training loop: `regime_indices` built only over [:split_idx] → `X_flat[reg_idx]`,
+  `y_train[reg_idx]`, `recency_w[reg_idx]` all consistent. No misalignment.
+- Purged walk-forward: embargoed (LOOKBACK+h), per-fold fits — honest by construction.
+
+**FIXED:**
+- **In-sample backtest contamination** — after a fresh train, the latest-12000 backtest
+  window overlapped ~28% training rows (43461 candles, 80% train ≈ 34.8k; 12000 > the
+  ~8.7k held-out tail). All reported backtest accuracies were inflated. Now: training
+  records the split-boundary candle ts (persisted to `saved_models/train_boundary.json`,
+  restored at boot when models load from disk), and `run_backtest` scores only
+  post-boundary candles with a max-horizon embargo; warns loudly if <500 held-out candles
+  or all candles pre-boundary. Applies from the NEXT backtest run after restart — the
+  boundary json gets written on the next training; until then the restored-boundary path
+  is inactive (legacy bundle → old behavior, by design).
+
+**MEASURED BEFORE FIXING (instrumented, not changed):**
+- **Partial-candle train/serve skew**: `handle_kline` updates the forming candle in place,
+  so serve-time predictions use a partial final bar vs training's complete bars.
+  Deliberately NOT changed now (would skew against the just-trained v4). The scorecard's
+  new §6 buckets 5m sign-accuracy by second-of-minute; a clear early-minute deficit
+  (≥4 pts) confirms the skew → V5 bar-progress normalization (V5.md §2.5c).
+
+**V5-DEFERRED (documented in V5.md §2.5):**
+- Scalar triple-barrier threshold → per-candle ATR-scaled barriers (label quality).
+- Conformal residuals computed in-sample → held-out residuals (band honesty; affects the
+  new projected-close display's implied confidence).
+
+Validation: server.py + scorecard compile clean. No frontend changes this pass.
+
+## 5ah. Lean sign-truth in the accuracy panel (2026-06-12, operator screenshots)
+
+Operator saw "no resolved calls yet" across the whole Model Accuracy panel while the
+Recent Calls log showed resolved leans. Cause (by design, but misleading): the panel read
+`directional_*` = COMMITTED calls only, and v4's gate (correctly) waited on every
+low-confidence early lean — so the panel would stay empty for days on a cautious gate.
+
+Fix: `prediction_verifier` accuracy cache now also computes **lean sign-truth** counters
+(`lean_accuracy/total`, `lean_up_*`, `lean_down_*`) over EVERY raw lean — `lean_hit` when
+present, sign fallback for legacy rows. The Binance panel now leads with lean sign-truth
+(+ UP/DOWN split for the bias watch) and shows committed-call accuracy as the secondary
+line ("gate: all waits so far" until it fires). Backend part applies on next restart;
+panel works against the running process via the recent-calls fallback in the interim.
+
+Operator context note (v4 first hours): 7 resolved leans, +3.47% surge day, mixed UP and
+DOWN leans present (the old model was 89% DOWN — bias diversity visibly improved), gate
+waited on all of them. n=7 is noise; judgment point remains the 24h scorecard.
+
+## 5ai. Auto-learning was steered by the poisoned metric — 8th hit-class consumer (2026-06-12)
+
+Operator asked "should I turn auto-learning off?" — auditing before answering found the
+LAST unconverted consumer of the dual-semantic `hit` accuracy:
+
+`get_learning_feedback` fed `apply_learning_feedback` the BLENDED accuracy
+(`accuracy_cache[h]["accuracy"]`, where gated rows count avoid_success as a hit). Live
+failure mode with v4's cautious gate: nearly all rows are NEUTRAL avoids; in chop,
+avoid_success is high even when the leans are WRONG → blended acc > 0.6 → auto-learning
+LOWERED the confidence threshold (toward 0.38) and smoothing — i.e. it opened the trade
+gate wider because the leans were failing. Exactly backwards.
+
+Fix: auto-learning now runs on **lean sign-truth** (`lean_accuracy`/`lean_total`, the
+counters added in §5ah), including the UP/DOWN split, the retrain trend (history rows now
+carry `lean_accuracy`; legacy rows fall back), and the needs_retrain rule. The adjusted
+parameters are bounded (smoothing 0.08–0.20, threshold 0.38–0.52) and reset at restart,
+so any past drift from the poisoned signal is already gone after the operator's restart.
+
+Verdict for the operator: KEEP auto-learning ON — after this fix it nudges in the right
+direction (low lean-accuracy → raise the bar; high → relax slightly), is bounded, and
+self-resets. Backend-only; applies on next restart (until then its inputs are too sparse
+on the fresh DB to fire anyway: needs total ≥ 10–15 per horizon).
+
+## 5aj. Resolved-rounds table rehydration (2026-06-12, operator screenshot)
+
+Symptom: win-rate strip showed "5m: model 40% (5)" while the Recent Resolved Rounds table
+said "No resolved rounds yet." Cause: at boot the tracker rehydrates its win/loss
+COUNTERS from the DB (`fetch_price_to_beat_history`) but `recent_rounds` (the UI table's
+source) was memory-only — every restart emptied the table while the counts survived.
+
+Fix: new `fetch_price_to_beat_recent(20)` (same model-era filter as the history fetch —
+the table must describe ONE model) returns newest-first round dicts shaped like the
+tracker's in-memory resolved rounds, including the now-persisted `confluence_grade`
+(→ `confluence: {grade}`) and `late_entry`; boot appends them into `recent_rounds`.
+Grade-discipline stats strip repopulates too (it computes from the same rows).
+Functional test PASS (temp DB round-trip). Applies on next restart.
+
+## 5ak. Deep scan #7 — data hygiene + storage audit (2026-06-12)
+
+Operator suspected unclean data storage. Audit results:
+
+**CLEAN (verified, no action):**
+- `signal_history.pkl` saves ATOMICALLY (tmp + os.replace) — the irreplaceable coverage
+  file survives a crash mid-save.
+- Depth/tick parquet logging disabled by default (`BTC_LOG_TICKS_PARQUET=1` to enable) —
+  no disk bloat from the orderbook stream.
+- Price-to-beat round IDs are deterministic (`ptb_{h}m_{win_start}`) — restarts within a
+  window dedupe via INSERT OR REPLACE, no duplicate rounds.
+- predictions_*m pendings rehydrate at boot (48h window) — no orphan class there.
+- pyflakes: backend still fully clean (re-run).
+
+**FIXED — orphaned pending rows (the "not storing cleanly" instinct was right):**
+`price_to_beat`, `model_predictions`, `kronos_predictions` keep pending state in memory
+only; rows left `resolved=FALSE` at shutdown can never resolve and accumulated forever
+(every restart added more). New `cleanup_orphan_pending_rows()` boot janitor deletes
+pending rows whose `verify_at` already passed (10-min grace; readers were never poisoned
+— they filter resolved=TRUE — this is pure hygiene). Tested on a temp DB: deletes only
+dead pendings, keeps live pendings and resolved rows. predictions_*m deliberately
+untouched (its pendings restore legitimately).
+
+**90-day training question** → answered in V5.md §2.6 (env knob exists; RAM/backfill
+caveats; run as its own measured change after class-balance).
+
+## 5al. Magnitude display honesty + grade-label contradiction (2026-06-12, operator)
+
+Operator observed: expected move "always ~$40-45" while real windows swing $100+, and one
+card showing header "Grade C" with advice "[Setup grade A (5/5)]".
+
+**Magnitude (verified, not a wiring bug — a presentation lie):** the move-size regressor
+is squared-error on |move| (60 iters × 15 leaves) → predicts ≈ the conditional mean ≈ the
+average 5m move (~$40 at current vol) for nearly every window; the band adds FIXED
+per-regime residual quantiles and is **q25–q75 = 50% coverage only**. So the number is
+honest *as a typical-move estimate* but was DISPLAYED as a path forecast. UI now reads
+"Typical rise/drop for this setup ≈ $X · 50% band $lo–$hi (tails run larger)" + an
+explicit note that $100+ windows land outside the band ~50% of the time by design.
+Real fix (conditional quantile regressors, breathing band) documented in V5.md §2.5b-ii
+with an acceptance test (band width must correlate with realized |move| out-of-sample).
+
+**Grade contradiction (fixed):** card header shows the grade AT OPEN (frozen with the
+bet); the advice box appended the LIVE grade unlabeled — header C vs advice A looked
+broken but both were true at different times. The advice now reads
+"[Live grade A (5/5, opened C).]" — labeled, with the delta when they differ.
+
+Validation: compile + build clean. Backend half applies on next restart; UI on refresh.
+
+## 5am. INCIDENT: smoke test corrupted the saved-bundle metadata (2026-06-12 01:50)
+
+**Cause (Claude's error, on record):** the v5 training smoke test redirected
+`BTC_DB_PATH` to a temp dir but NOT the model directory. Its `train()` call (degenerate
+all-NEUTRAL synthetic labels → every component skipped) still reached `_save_models()`,
+which at 01:50:01 overwrote the REAL bundle's metadata in `data/saved_models/` — empty
+`stackers.pkl` / `class_priors.pkl` / `conformal_residuals.pkl` / `accuracies.pkl` /
+`move_size_stats.pkl` / `feature_reference.pkl` — and stamped `architecture_version.pkl`
+as `v5-classbal` with NO v5 training having run.
+
+**Blast radius:** the lying arch stamp made every subsequent boot "match" v5 → models
+LOADED (v4 components + empty metadata Franken-bundle) → **the operator's intended
+overnight v5 retrain silently never started.** Two app instances ended up alive
+(01:26:59 owning port 8000 with old code; 02:00:50 loaded the corrupt bundle, couldn't
+bind). The operator's relearn click hit the old process and was ignored (is_training
+guard + idle).
+
+**Recovery (02:40):** killed both processes; deleted the seven corrupted metadata pkls
+(component pkls left in place — harmlessly orphaned without the arch file and overwritten
+by the retrain); deleted the smoke script. Next `start.bat`: no arch file → "startup
+training required" → clean full v5-classbal train.
+
+**Lessons (binding for future sessions):**
+1. Any test that constructs `MultiModelEnsemble` and calls `train()` MUST redirect the
+   model dir (or monkeypatch `_save_models`) — `BTC_DB_PATH` alone is NOT isolation.
+2. `train()` saving unconditionally at the end — even when every component was skipped —
+   is itself a footgun; a future hardening: skip `_save_models()` when zero components
+   trained. (Not changed tonight — no code edits between the operator's retrain attempt
+   and morning measurement.)
+
+## 5an. RUN RECORD — v5-classbal training (2026-06-12, 02:40–~07:25)
+
+**Config actually executed:** 40 days (NOT the 35 in start.bat — GOTCHA: the operator's
+console session still had BTC_HISTORICAL_DAYS=40 from the earlier run, and start.bat
+uses `if not defined`, which keeps a pre-existing env var. To change the window, edit
+start.bat AND open a fresh console, or set `$env:BTC_HISTORICAL_DAYS` explicitly).
+57,600 candles → 57,525 samples (46,020 train) · 130 features · threads 12 · full data
+budgets (caps off per the accuracy-first constraint) · arch `2026-06-12-v5-classbal-130-tcn`.
+
+**Pre-train:** the backfill parquet was REBUILT FROM SCRATCH and captured the FULL
+window — May 3 → June 10, every day downloaded (56,160 bars). June 11 404'd (not yet
+published) and the new skip-day patch worked exactly as designed (one log line, run
+continued, parquet written). June 11 price/klines ARE in training; only its flow
+overlay arrives at the next start.bat after Binance publishes it.
+
+**v5 features confirmed live in the log:**
+- Class weights fired per horizon, adapting to each horizon's imbalance:
+  1m [1.378, 0.5, 1.532] · 3m [1.28, 0.5, 1.383] · 5m [1.166, 0.58, 1.254] ·
+  7m [1.068, 0.805, 1.127] · 10m [0.916, 1.124, 0.961] · 15m [0.695, 1.58, 0.725]
+  (UP boosted at short horizons per the bearish window; NEUTRAL boosted at 10/15m
+  where the triple-barrier makes it the rare class — the balancer adapts correctly).
+- Held-out conformal residuals ACTIVE: every magnitude bucket logged
+  `MoveSizeRegressorFast_conformal[held-out]`.
+- P4.3 HMM bucketing active: TREND 28,537 / RANGE 27,500 / VOLATILE 1,488 (VOLATILE
+  again <1000 in-train → GLOBAL fallback, expected).
+
+**Observations (full analysis + decision gates in MODEL_ROSTER_PLAN.md):**
+- SGD catastrophic: OOF 0.228 (5m G) / 0.136 (7m G) / 0.124 (10m G) — anti-signal.
+- Tree quartet (xgb/lgb/cat/histgb) OOF ≈ identical everywhere — clones.
+- TCN trains 18× but is EXCLUDED from the stacker features — half a seat.
+- LightGBM ran on GPU → the box has a working GPU; XGB/CatBoost/TCN still on CPU.
+- NB: balanced training lowers raw 3-class OOF vs majority-class cheating BY DESIGN
+  (1m RANGE 0.95 ≈ NEUTRAL base rate, not skill). Judge by live sign-truth only.
+- Duration: 02:41 → ~07:25 (~4h45m at 40d / 12 threads / full budgets).
+
+**Measurement protocol for today:** leave it running, no relearn clicks. Watch the
+accuracy panel's UP/DOWN lean split (bias check — visible within hours). Run
+`python backend/sign_truth_scorecard.py` (app stopped briefly) BEFORE ~02:00 tonight —
+the 24h auto-relearn fires ~02:40 and would reset the model era mid-measurement
+(alternative: set BTC_FREEZE_MODEL=1 to extend the window). Decision gates on the
+result: MODEL_ROSTER_PLAN.md §5.
+
+## 5ao. Advice/outlook coherence fix (2026-06-12, operator screenshot)
+
+Operator caught the card disagreeing with itself: UP lean, −$250 below the line, 55s
+left, typical travel ~$70 — the magnitude line correctly projected "DOWN resolves" and
+the outlook correctly said STRETCH/skip, but the ADVICE box still said "HOLD / WAIT —
+reversal possible." `_advice` consulted lean+position but not the magnitude math the
+card itself displays. A lean can be RIGHT about direction and still unable to cross
+the line in time — for a binary window that is a losing hold.
+
+Fix: when the path outlook is STRETCH, the advice is overridden to **EXIT / SKIP**
+("counted out for THIS window: ~$70 travel vs $250 gap with 55s left"). Display-only —
+touches no lean, grade, or recorded metric, so the v5 measurement is unaffected.
+Activates at next natural restart (no restart needed mid-measurement).
+
+Note: the same screenshot showed three honesty features working as designed —
+magnitude projection contradicting the lean, STRETCH outlook, and the live-grade delta
+("Live grade C (0/5, opened B)" = flows abandoned the setup mid-round, correctly shown).
+The deeper fix for the lean-vs-line gap remains A2 (`p_up` = P(close ≥ beat) — the
+bet's actual probability, where a +$70 lean against a $250 gap prices to ≈0).
+
+## 5ap. Mid-day auto-relearn split the measurement window (2026-06-12)
+
+The 13:49 era stamp in the live scorecard revealed an UNNOTICED second retrain
+(~09:00→13:49). Cause chain: the operator's ~08:00 restart reset the in-memory
+`last_train_time` → the auto-relearn COOLDOWN (24h) restarted from zero → the
+(now sign-truth-driven) needs_retrain flag fired shortly after boot (7m was at 35%,
+degrading) → full retrain → era split. `BTC_FREEZE_MODEL=0` permitted it.
+
+Consequences: the day's evidence spans TWO v5 model instances (07:22 and 13:49 eras).
+Era-filtered readers (scorecard, calibration, mirror REHYDRATION) handled it
+correctly by design; the in-memory mirror strip (since ~08:00) blends both eras —
+explains strip-vs-scorecard divergences the operator observed.
+
+Standing gap (plan item): `last_train_time` is not persisted, so any restart zeroes
+the relearn cooldown — with FREEZE=0 this guarantees era fragmentation. Options:
+persist it beside train_boundary.json, or run FREEZE=1 between deliberate retrains
+(recommended for measurement discipline; retrains become operator decisions).
+
+**Findings that SURVIVED the era split (consistent across both v5 instances, the
+day's real discovery):**
+- **DOWN-lean edge: ~65%** (morning 63%, afternoon 65%, pooled n≈70) — when the
+  model fights the up-drift to call DOWN, it's right ~2/3 of the time.
+- **UP leans ~45%** (heavy majority of leans on an up-day — momentum-following noise).
+- **Mirror > raw**: 5m mirror (committed boundary bets) 58% vs raw all-leans 50.9% —
+  the selectivity machinery adds ~7 points. The gates earn their keep.
+
+## 5aq. 1m/3m practice mirrors + per-model scorecard + log tabs (2026-06-12, evening)
+
+Operator request. NO RETRAIN NEEDED (the model already serves all six horizons; this
+is tracking/UI only). Activates at next restart + hard refresh.
+
+- **1m/3m price-to-beat mirrors** added to the tracker (1,3,5,15). HONESTY LABEL:
+  Polymarket's shortest real BTC market is 5m — the 1m/3m cards carry a visible
+  "PRACTICE — no real market" badge and a footnote on the win-rate strip. Their
+  purpose is evidence velocity (~60+20 rounds/hour vs 12+4), not betting.
+- **Late-entry window now scales with horizon** (final ~40% of the window, cap 120s;
+  min-ahead $5 for 1m/3m vs $10 for 5m/15m) — the fixed 15-120s rule would have
+  flagged nearly an entire 1m round as "late entry".
+- **Per-timeframe tabs on the resolved-rounds log** (All/1m/3m/5m/15m with counts,
+  win/loss row borders); payload recent feed 20→40 so slow horizons stay visible.
+- **Per-base-model accuracy section** in /api/scorecard + the script (new section 3):
+  era-filtered directional accuracy per model per horizon from `model_predictions`
+  (the per-model vote verifier's resolved rows) — the live "which model earns its
+  seat" view that the roster surgery (R2/R5/TCN decisions) will be judged against.
+
+Validation: pyflakes clean, compile clean, build clean.
+
+## 5ar. v6 ROSTER SURGERY implemented on disk (2026-06-12, late) — activates at the
+## operator's next natural restart (running session untouched)
+
+Operator directive: implement everything possible now, no restart; the next natural
+restart triggers the v6 retrain (arch bumped → auto-retrain). Retrain-#2 items (path
+labels, time features, quantile bands) deliberately NOT included — they stack a second
+experiment; they ship after v6 is measured.
+
+**Implemented (Retrain-#1 bundle):**
+- **R2 SGD retired** — removed from: store init, training block, stacker inputs, blend
+  weights, dynamic weights, agreement votes + pairwise concordance, inventory,
+  model_verifier MODELS, frontend label. Its `hit` rows remain in DB (era-filtered out).
+- **A6 TCN promoted** — epochs 3→12; FULL stacker seat (special-cased fold construction:
+  the PyTorch wrapper isn't sklearn-clonable → fresh instance per fold at half budget;
+  the existing per-model try/except means a dl failure degrades gracefully, never
+  crashes the stacker). TCN already used CUDA when available.
+- **F1 GPU probes** — XGBoost CUDA + CatBoost GPU probed at import (LightGBM-probe
+  pattern, silent CPU fallback). **SMOKE RESULT ON THIS MACHINE: XGB=cuda (NVIDIA
+  confirmed!), CatBoost=CPU (pip build lacks GPU), LGB=gpu.** XGBoost was the slowest
+  component (~235s/bucket) — expect a large training speedup.
+- **R1 Kronos removed (backend-complete)** — imports, verifier, inference task, payload
+  fields (kronos_forecasts/status/accuracy), scoreboard kronos columns, analysis
+  snapshot fields; `kronos_model.py` + `kronos_verifier.py` DELETED (git history holds
+  them). model.py's Kronos hooks left in place BY DESIGN: they self-gate on
+  `kronos_accuracy` (absent → inert) — zero behavior, zero risk to the decision block.
+  Frontend Kronos panels DEFERRED: all defensive (`|| {}`/`|| []`) → degrade to
+  'waiting/fallback/NONE' placeholders safely; cosmetic cleanup rides the next UI pass.
+- **R3 FSR-PPO mothballed** — `BTC_FSR_PPO=0` default (start.bat + env guard); payload
+  carries a stub; code + tables intact for revival.
+- **Arch bump:** `2026-06-12-v6-classbal-roster-130-tcn` — "classbal" kept in the string
+  ON PURPOSE: the prior-division retirement is keyed on that substring.
+
+**Also implemented (restart-only, no retrain):**
+- **A2-lite p_up fair value** — P(close ≥ beat) from the projected close + conformal IQR
+  (σ = IQR/1.349, floored): the Polymarket card now shows "Fair value: UP ≈ 62¢ ·
+  DOWN ≈ 38¢ — buy a side only when the market asks LESS."
+- **A13 early-exit hints** — at p_up ≥ 0.97 (or ≤ 0.03) the advice adds "[EXIT-EDGE:
+  selling near 97¢ locks the win without tail risk]".
+
+**Validation:** pyflakes CLEAN across backend; all files compile; full
+`import server` + `MultiModelEnsemble()` smoke in a subprocess (temp DB/data dirs —
+the §5am lesson applied): arch v6 confirmed, SGD absent from stores, FSR disabled,
+GPU probes resolved. Frontend build clean.
+
+**Activation:** everything above goes live at the operator's next natural restart,
+which also auto-retrains v6 (~2.5-3.5h expected with XGB on CUDA). The running v5
+session is untouched and keeps accruing evidence until then.
+
+**RE-AUDIT (operator-requested, same night) — one REAL logic gap found & fixed:**
+the TCN wrapper's `fit()` ACCEPTED `sample_weight` but silently IGNORED it — the
+class-balanced loss (v5's headline fix) never reached TCN while the other five
+classifiers trained balanced; in v6, with TCN promoted to a stacker seat, that gap
+mattered. Fixed: per-sample weights folded into per-class CrossEntropyLoss weights
+(exact for our class-constant × recency weights), 25k-cap slice now also slices the
+weights. Smoke-proven: weights [1.125, 0.375, 1.5] reach the loss for a 2.0/0.5/1.5
+weighting. Everything else re-verified clean: SGD = comments only; roster iterates
+MODEL_LABELS keys (sgd row vanishes safely against BOTH old and new backends);
+XGBoost train-on-GPU/infer-on-CPU handoff intact in both calibrated and fallback
+paths; p_up correctly scoped and computed before the advice chain; EXIT-EDGE
+direction-matched; build_scoreboard single definition + call; zero kronos code refs
+(one docstring mention); model.py kronos decision hooks confirmed self-gating.
+
+## 5as. Re-audit pass #3 (operator-requested, 2026-06-13) — 3 more findings, all fixed
+
+1. **STRETCH override DIRECTION BUG (operator's screenshot = the proof):** §5ao's
+   coherence override keyed only on the outlook scenario, but the outlook describes
+   the LIVE lean — when the lean flips mid-round, the stretched lean is the
+   OPPONENT of the held side. A DOWN bet ahead $91 was told "EXIT / SKIP — do not
+   enter" while being near-certain to WIN. Fixed side-aware: lean==bet → exit/skip;
+   lean flipped while bet leads → "HOLD — opponent counted out" (tone good).
+   This bug was LIVE in the running session; fix activates at the v6 restart.
+2. **⚡ LATE-ENTRY flagged on ⚠ fallback leans** — "persistence odds strongly favor
+   UP" rendered on a card whose own badge said "WEAK — skip" (operator's 1m
+   screenshot). Gated to committed model leans only.
+3. **OOF stacker folds trained OFF-GPU** — fold refits inherited the post-fit
+   inference downgrade (device='cpu') from the saved estimator, so the single
+   biggest training block (~400s × 18 buckets) would have missed the CUDA speedup.
+   Folds now train on the probed XGB_DEVICE.
+   Also re-verified: the FSR-PPO frontend is fully defensive against the mothball
+   stub (`block.by_horizon || {}` → clean empty state) — no patch needed.
+4. **Practice-mirror DILUTION of the headline stats (operator's strip):** the 1m/3m
+   mirrors fire ~5x faster and flooded the "Last 40 rounds" window (25/40 were 1m
+   practice), so "Fallback 65% vs Model 44%" described practice luck + an n=9 model
+   bucket — a blended statistic of exactly the kind this project keeps killing.
+   Fixed (frontend-only, applies on hard refresh — no restart needed): headline
+   grade/lean stats now compute over REAL markets (5m/15m) only, with a separate
+   muted practice line. Cumulative per-horizon numbers were always clean (per-horizon).
+
+## 5at. Redundant v5 relearn caught mid-flight + 7m/10m mirrors + 33h analysis (2026-06-13)
+
+**Operational finding:** the 24h scheduled auto-relearn fired inside the RUNNING
+process (~22:20) — and a running process trains the code it BOOTED with: the log shows
+SGDLogLoss training, TCN at 3 CPU epochs, 'sgd' in the stacker = the OLD v5
+architecture, NOT the v6 surgery on disk. That train would burn ~4.5h CPU and be
+discarded at the next restart anyway (arch v5 ≠ v6 → v6 retrains).
+**Recommendation given: restart NOW** — cancels the redundant train (sunk cost ~25min),
+boots v6, retrains on GPU in ~2-3h. Standing lesson: with code-on-disk ahead of the
+running process, scheduled relearns train stale code; set BTC_FREEZE_MODEL=1 between
+deliberate restarts (also §5ap).
+
+**7m/10m practice mirrors added** (operator request): tracker now (1,3,5,7,10,15);
+practice badges on everything except the real 5m/15m markets; six log tabs; headline
+stats stay 5m/15m-only (§5as fix); endpoint + scorecard extended; recent feed 40→60.
+Activates at the same restart.
+
+**33h era analysis (scorecard, n now meaningful):**
+- **5m committed mirror 58% (104)** — borderline statistically significant (z≈1.6).
+  The product's core (selectivity over raw leans: 58% vs 48.6% raw) keeps proving out.
+- **DOWN-lean edge persists at scale**: DOWN ≈60% pooled (n=89) vs UP ≈47% (n=331)
+  across horizons — consistent across three model instances now.
+- **Problem horizons:** 3m raw 49% with a 136:11 UP flood (short-horizon UP-tilt is
+  structural); 15m UP leans 14% (7/36 era rows) — 15m UP calls are near-inverse.
+- **Per-model live table (3-class acc vs ~43%/57% NEUTRAL-rate ceilings — judge
+  RELATIVE per column):** sgd LAST nearly everywhere (1m 5%, 5m 18%) — live data
+  vindicates R2; **dl (TCN) top-3 at 5m/7m on 3 CPU epochs** — vindicates A6 before
+  its budget even landed; lr massively overcommits at 1m (247 directional votes, 9%).
+- Partial-candle buckets: 56/52/32/52 — odd 30-44s dip, n≈22/bucket, no verdict yet.
+
 ## 6. Known limitations / honest notes
 - `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
   fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing

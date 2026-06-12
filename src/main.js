@@ -2561,7 +2561,7 @@ function renderExchanges(data) {
 // ══════════════════════════════════════════════
 const MODEL_LABELS = {
   xgb: 'XGBoost', lgb: 'LightGBM', cat: 'CatBoost', histgb: 'HistGradientBoosting',
-  dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression', sgd: 'SGD log-loss',
+  dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression',
 };
 const PTB_HORIZONS = [5, 15];
 const ROSTER_HORIZONS = [1, 3, 5, 7, 10, 15];
@@ -2684,25 +2684,29 @@ function renderBinanceView(data) {
     ].join('') || '<div class="fh-empty">Waiting for live flow data…</div>';
   }
 
-  // ── Per-horizon model accuracy (committed UP/DOWN calls + side split) ──
+  // ── Per-horizon model accuracy — LEAN sign-truth first (every raw lean, the
+  // betting metric), committed-call accuracy second (only when the gate fired).
   const accDiv = document.getElementById('binance-accuracy');
   if (accDiv) {
     accDiv.innerHTML = ROSTER_HORIZONS.map(h => {
       const a = accMap[h] || accMap[String(h)] || {};
-      if (!a.directional_total) {
+      if (!a.lean_total && !a.directional_total) {
         return `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.6rem .8rem">
-          <strong>${h}m</strong><div style="color:var(--text-secondary);font-size:.8em">no resolved calls yet</div></div>`;
+          <strong>${h}m</strong><div style="color:var(--text-secondary);font-size:.8em">no resolved leans yet</div></div>`;
       }
-      const d = (a.directional_accuracy || 0) * 100;
-      const dCol = d >= 55 ? '#00e676' : d >= 48 ? '#ffb74d' : '#ff5252';
-      const upS = a.up_total ? `${((a.up_accuracy||0)*100).toFixed(0)}% (${a.up_total})` : '—';
-      const dnS = a.down_total ? `${((a.down_accuracy||0)*100).toFixed(0)}% (${a.down_total})` : '—';
-      const streak = a.current_streak ? `${a.current_streak} ${a.streak_type}` : '';
+      const l = (a.lean_accuracy || 0) * 100;
+      const lCol = l >= 55 ? '#00e676' : l >= 48 ? '#ffb74d' : '#ff5252';
+      const upS = a.lean_up_total ? `${((a.lean_up_accuracy||0)*100).toFixed(0)}% (${a.lean_up_total})` : '—';
+      const dnS = a.lean_down_total ? `${((a.lean_down_accuracy||0)*100).toFixed(0)}% (${a.lean_down_total})` : '—';
+      const com = a.directional_total
+        ? `committed ${((a.directional_accuracy||0)*100).toFixed(0)}% (${a.directional_total})`
+        : 'gate: all waits so far';
       return `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.6rem .8rem">
         <div style="display:flex;justify-content:space-between"><strong>${h}m</strong>
-          <strong style="color:${dCol}">${d.toFixed(0)}% <span style="font-weight:400;color:var(--text-secondary)">(${a.directional_total})</span></strong></div>
+          <strong style="color:${a.lean_total?lCol:'var(--text-secondary)'}">${a.lean_total?`${l.toFixed(0)}% <span style="font-weight:400;color:var(--text-secondary)">(${a.lean_total} leans)</span>`:'—'}</strong></div>
         <div style="font-size:.78em;color:var(--text-secondary);margin-top:.3rem">
-          UP <span style="color:#00e676">${upS}</span> · DOWN <span style="color:#ff5252">${dnS}</span>${streak?` · streak: ${streak}`:''}</div>
+          UP <span style="color:#00e676">${upS}</span> · DOWN <span style="color:#ff5252">${dnS}</span></div>
+        <div style="font-size:.72em;color:var(--text-secondary);margin-top:.2rem">${com}</div>
       </div>`;
     }).join('');
   }
@@ -2754,7 +2758,9 @@ function renderPolymarketView(data) {
   const ptb = data.price_to_beat || {};
   const latest = ptb.latest || {};
   const acc = ptb.accuracy || {};
-  grid.innerHTML = [5,15].map(h => {
+  // Only 5m/15m are real Polymarket markets; 1m/3m/7m/10m are PRACTICE mirrors —
+  // same rule + grading, fast evidence, not bettable.
+  grid.innerHTML = [1,3,5,7,10,15].map(h => {
     const r = latest[h] || latest[String(h)];
     const a = acc[h] || acc[String(h)] || {};
     const accStr = a.total ? `model ${((a.model_accuracy||0)*100).toFixed(0)}% (${a.model_total||0}) · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})` : 'no rounds yet';
@@ -2769,8 +2775,9 @@ function renderPolymarketView(data) {
       : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
     const lateChip = r.late_entry
       ? '<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge</span>' : '';
+    const practice = (h!==5&&h!==15) ? ' <span style="background:rgba(255,255,255,.08);color:var(--text-secondary);border-radius:4px;padding:0 .35rem;font-size:.6em;vertical-align:middle">PRACTICE — no real market</span>' : '';
     return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
-      <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}</strong>
+      <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}${practice}</strong>
         <span style="font-size:.8em;color:var(--text-secondary)">${accStr}</span></div>
       <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (Pyth):</span>
         <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
@@ -2780,6 +2787,12 @@ function renderPolymarketView(data) {
         <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
+      ${!resolved&&r.live_expected_move!=null&&dir!=='NEUTRAL'?`<div style="margin-top:.4rem;padding:.4rem .6rem;border-radius:6px;background:rgba(255,255,255,.03);font-size:.85em">
+        📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· 50% band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))} (tails run larger)</span>`:''}
+        ${r.projected_close!=null?`→ projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong>
+          <span style="color:${(r.projected_vs_beat||0)>=0?'#00e676':'#ff5252'}">(${(r.projected_vs_beat||0)>=0?'+':''}$${Math.round(r.projected_vs_beat||0)} vs beat → ${(r.projected_vs_beat||0)>=0?'UP':'DOWN'} resolves)</span>`:''}
+        ${r.p_up!=null?`<div style="margin-top:.25rem">💰 Fair value: <strong style="color:#00e676">UP ≈ ${(r.p_up*100).toFixed(0)}¢</strong> · <strong style="color:#ff5252">DOWN ≈ ${((1-r.p_up)*100).toFixed(0)}¢</strong> <span style="color:var(--text-secondary)">— buy a side only when the market asks LESS than this</span></div>`:''}
+        <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">This is the median move size for current conditions, not a path call — a $100+ window lands outside the band ~50% of the time by design.</div></div>`:''}
       ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}</div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
       ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
@@ -2790,40 +2803,93 @@ function renderPolymarketView(data) {
   const rec = ptb.recent || [];
   const accDiv = document.getElementById('pm-accuracy');
   if (accDiv) {
-    accDiv.innerHTML = [5,15].map(h=>{const a=acc[h]||acc[String(h)]||{};return a.total?`<span style="margin-right:1.5rem"><strong>${h}m:</strong> model <strong style="color:#00e676">${((a.model_accuracy||0)*100).toFixed(0)}%</strong> (${a.model_total||0}) · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})</span>`:'';}).join('');
+    accDiv.innerHTML = [1,3,5,7,10,15].map(h=>{
+      const a=acc[h]||acc[String(h)]||{};
+      if(!a.total) return '';
+      // "model 0% (0)" read as a recording failure — show "—" when the model has
+      // never committed a lean at this horizon (1m: NEUTRAL is usually its honest
+      // answer, so the mirror runs on ⚠ fallback tilts only).
+      const m = a.model_total ? `<strong style="color:#00e676">${((a.model_accuracy||0)*100).toFixed(0)}%</strong> (${a.model_total})` : `<span style="color:var(--text-secondary)">— (no committed leans)</span>`;
+      return `<span style="margin-right:1.5rem"><strong>${h}m${(h!==5&&h!==15)?'*':''}:</strong> model ${m} · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})</span>`;
+    }).join('')
+      + '<span style="color:var(--text-secondary);font-size:.75em">* practice mirror — not a real Polymarket market</span>';
   }
   const gradeDiv = document.getElementById('pm-grade-stats');
   if (gradeDiv) {
-    // From the recent resolved buffer (small n — treat as a hint, not a stat).
+    // Headline stats over REAL markets ONLY (5m/15m). The 1m/3m practice mirrors
+    // fire ~5x faster and were flooding the rolling window (25 of "last 40"),
+    // making the grade/lean summary describe practice luck instead of bettable
+    // markets. Practice gets its own muted line.
     const resolvedRows = rec.filter(r=>r.hit!=null);
+    const realRows = resolvedRows.filter(r=>r.horizon===5||r.horizon===15);
+    const pracRows = resolvedRows.filter(r=>r.horizon!==5&&r.horizon!==15);
     const bucket = (label, rows) => {
       const n = rows.length; if (!n) return '';
       const w = rows.filter(r=>r.hit===true).length;
       return `<span style="margin-right:1.2rem">${label}: <strong style="color:${w/n>=0.5?'#00e676':'#ff5252'}">${(w/n*100).toFixed(0)}%</strong> (${w}/${n})</span>`;
     };
     const html = [
-      bucket('Grade A', resolvedRows.filter(r=>((r.confluence||{}).grade||'').startsWith('A'))),
-      bucket('Grade B', resolvedRows.filter(r=>(r.confluence||{}).grade==='B')),
-      bucket('Grade C', resolvedRows.filter(r=>(r.confluence||{}).grade==='C')),
-      bucket('Model leans', resolvedRows.filter(r=>r.lean_source!=='fallback')),
-      bucket('Fallback leans', resolvedRows.filter(r=>r.lean_source==='fallback')),
+      bucket('Grade A', realRows.filter(r=>((r.confluence||{}).grade||'').startsWith('A'))),
+      bucket('Grade B', realRows.filter(r=>(r.confluence||{}).grade==='B')),
+      bucket('Grade C', realRows.filter(r=>(r.confluence||{}).grade==='C')),
+      bucket('Model leans', realRows.filter(r=>r.lean_source!=='fallback')),
+      bucket('Fallback leans', realRows.filter(r=>r.lean_source==='fallback')),
     ].join('');
-    gradeDiv.innerHTML = html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${resolvedRows.length} rounds:</span>${html}` : '';
+    const prac = pracRows.length
+      ? `<div style="color:var(--text-secondary);font-size:.75em;margin-top:.15rem">practice mirrors (1m/3m/7m/10m, not bettable): ${bucket('model', pracRows.filter(r=>r.lean_source!=='fallback'))}${bucket('⚠ fallback', pracRows.filter(r=>r.lean_source==='fallback'))}</div>`
+      : '';
+    gradeDiv.innerHTML = (html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${realRows.length} REAL rounds (5m/15m):</span>${html}` : '') + prac;
   }
   const recDiv = document.getElementById('pm-recent');
   if (recDiv) {
-    const rows = rec.filter(r=>r.hit!=null).slice(0,15).map(r=>{
+    const resolved = rec.filter(r=>r.hit!=null);
+    const tfs = ['all', 1, 3, 5, 7, 10, 15];
+    const tabs = tfs.map(tf => {
+      const cnt = tf==='all' ? resolved.length : resolved.filter(r=>r.horizon===tf).length;
+      const on = String(pmLogTF)===String(tf);
+      return `<button onclick="window.__pmLogTF('${tf}')" style="background:${on?'rgba(100,181,246,.2)':'rgba(255,255,255,.04)'};
+        border:1px solid ${on?'#64b5f6':'rgba(255,255,255,.1)'};color:${on?'#64b5f6':'var(--text-secondary)'};
+        border-radius:6px;padding:.15rem .7rem;margin-right:.4rem;cursor:pointer;font-size:.8em">${tf==='all'?'All':tf+'m'} (${cnt})</button>`;
+    }).join('');
+    const tfRows = (pmLogTF==='all' ? resolved : resolved.filter(r=>String(r.horizon)===String(pmLogTF)));
+    // Per-tab W/L summary: gives every timeframe (incl. 1m, where the model never
+    // commits) its full win/lose record, split by lean source — without faking a
+    // "model %" where no committed leans exist.
+    let tfSummary = '';
+    if (tfRows.length) {
+      const w = tfRows.filter(r=>r.hit===true).length;
+      const mdl = tfRows.filter(r=>r.lean_source!=='fallback');
+      const fb = tfRows.filter(r=>r.lean_source==='fallback');
+      const mw = mdl.filter(r=>r.hit===true).length, fw = fb.filter(r=>r.hit===true).length;
+      const pct = (a,b)=>b?`${(a/b*100).toFixed(0)}%`:'—';
+      tfSummary = `<div style="margin:.2rem 0 .5rem;font-size:.85em;color:var(--text-secondary)">
+        <strong style="color:var(--text-primary)">${tfRows.length} rounds</strong> ·
+        <span style="color:#00e676">${w} WON</span> / <span style="color:#ff5252">${tfRows.length-w} LOST</span> (${pct(w,tfRows.length)})
+        · model: ${mdl.length?`<strong style="color:#00e676">${pct(mw,mdl.length)}</strong> (${mw}/${mdl.length})`:'<span>— none committed</span>'}
+        · ⚠ fallback: ${fb.length?`${pct(fw,fb.length)} (${fw}/${fb.length})`:'—'}</div>`;
+    }
+    const shown = tfRows.slice(0,20);
+    const rows = shown.map(r=>{
       const win=r.hit===true; const col=win?'#00e676':'#ff5252';
       const src = r.lean_source==='fallback'?' ⚠':'';
-      return `<div class="log-row"><span>${etTime(r.timestamp)}</span><span>${r.horizon}m</span>
+      return `<div class="log-row ${win?'log-hit-row':'log-miss-row'}"><span>${etTime(r.timestamp)}</span><span>${r.horizon}m</span>
         <span style="color:${r.our_direction==='UP'?'#00e676':'#ff5252'}">${r.our_direction}${src}</span>
         <span>${(r.confluence||{}).grade||'-'}</span>
         <span>$${Number(r.price_to_beat||0).toLocaleString()} → $${Number(r.actual_price||0).toLocaleString()}</span>
         <span style="color:${col};font-weight:600">${win?'✓ WON':'✗ LOST'}</span></div>`;
     }).join('');
-    recDiv.innerHTML = rows ? `<div class="log-row log-head"><span>Time</span><span>TF</span><span>Lean</span><span>Grade</span><span>Beat → Close</span><span>Result</span></div>${rows}` : '<div class="log-empty">No resolved rounds yet.</div>';
+    recDiv.innerHTML = `<div style="margin-bottom:.5rem">${tabs}</div>${tfSummary}`
+      + (rows ? `<div class="log-row log-head"><span>Time</span><span>TF</span><span>Lean</span><span>Grade</span><span>Beat → Close</span><span>Result</span></div>${rows}`
+              : '<div class="log-empty">No resolved rounds for this timeframe yet.</div>');
   }
 }
+
+// Per-timeframe filter for the Polymarket resolved-rounds log
+let pmLogTF = 'all';
+window.__pmLogTF = (tf) => {
+  pmLogTF = (tf === 'all') ? 'all' : Number(tf);
+  if (lastPlainData) renderPolymarketView(lastPlainData);
+};
 
 function renderModelsView(data) {
   renderFeedHealth(data);

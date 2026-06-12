@@ -1,5 +1,15 @@
 # BTC Quantum Trader: Current System Architecture
 
+> ⚠️ **STALE — partially out of date as of 2026-06-12.** This document describes the
+> ~109-feature v3 era. Since then: **130 features** (trend-persistence batch),
+> **v5 class-balanced training** (arch `v5-classbal-130`), Pyth price-to-beat anchor,
+> sign-truth grading rebuild, `lean_hit` column, out-of-sample backtest boundary, and
+> the venue tabs. For current truth read `docs/active/V3_CHANGES_AND_AUDIT.md` (what
+> happened) and `docs/active/MODEL_ROSTER_PLAN.md` (what's next). A full rewrite is
+> queued AFTER the v5 measurement settles the model roster — no point documenting an
+> architecture about to change. The maturity scores below also predate the discovery
+> that `hit`-based accuracy panels were inflated (§5z) — read them skeptically.
+
 This document is the canonical source of truth for the current codebase. It replaces the older four-model / 61-feature architecture description.
 
 Status: research and decision-support platform, not a proven production trading system. It uses serious quant concepts, but live edge still has to be proven over enough out-of-sample predictions.

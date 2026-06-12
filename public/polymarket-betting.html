@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Betting Decision Guide</title>
+<style>
+  :root{
+    --bg:#0a0e17; --card:#121826; --card2:#0e131f; --text:#e6ebf5; --dim:#8892a6;
+    --muted:#5a6478; --green:#00e676; --amber:#ffb74d; --red:#ff5252; --blue:#64b5f6;
+    --gold:#ffd700; --border:rgba(255,255,255,.08);
+    --font-body:'Segoe UI',system-ui,sans-serif; --font-mono:'Consolas',monospace;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-body);margin:0;line-height:1.6}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 24px 80px}
+  header{border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:28px}
+  h1{font-size:1.8em;margin:0 0 6px}
+  .sub{color:var(--dim)}
+  h2{font-size:1.3em;margin:36px 0 14px;padding-left:12px;border-left:4px solid var(--blue)}
+  h3{font-size:1.05em;margin:18px 0 8px}
+  .toc{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px 18px;display:flex;flex-wrap:wrap;gap:8px 20px}
+  .toc a{color:var(--blue);text-decoration:none;font-size:.9em}
+  .toc a:hover{text-decoration:underline}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin:14px 0}
+  .tier{border-radius:12px;padding:16px 20px;margin:14px 0;border:1px solid var(--border);border-left-width:6px}
+  .t-best{border-left-color:var(--green);background:linear-gradient(90deg,rgba(0,230,118,.06),transparent)}
+  .t-good{border-left-color:var(--blue);background:linear-gradient(90deg,rgba(100,181,246,.06),transparent)}
+  .t-ok{border-left-color:var(--amber);background:linear-gradient(90deg,rgba(255,183,77,.06),transparent)}
+  .t-skip{border-left-color:var(--red);background:linear-gradient(90deg,rgba(255,82,82,.06),transparent)}
+  .tier-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+  .tier-rank{font-size:1.5em;font-weight:800}
+  .tier-name{font-size:1.15em;font-weight:700}
+  .tier-verdict{margin-left:auto;font-size:.85em;font-weight:700;padding:3px 10px;border-radius:20px}
+  .v-bet{background:rgba(0,230,118,.15);color:var(--green)}
+  .v-small{background:rgba(100,181,246,.15);color:var(--blue)}
+  .v-maybe{background:rgba(255,183,77,.15);color:var(--amber)}
+  .v-no{background:rgba(255,82,82,.15);color:var(--red)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.9em}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.4px}
+  code{font-family:var(--font-mono);background:rgba(255,255,255,.06);padding:1px 6px;border-radius:4px;font-size:.88em}
+  .chip{display:inline-block;padding:1px 8px;border-radius:20px;font-size:.8em;font-weight:600}
+  .c-green{background:rgba(0,230,118,.15);color:var(--green)}
+  .c-amber{background:rgba(255,183,77,.15);color:var(--amber)}
+  .c-red{background:rgba(255,82,82,.15);color:var(--red)}
+  .c-blue{background:rgba(100,181,246,.15);color:var(--blue)}
+  .c-dim{background:rgba(255,255,255,.06);color:var(--dim)}
+  .big{color:var(--gold);font-weight:700}
+  ul,ol{padding-left:22px}
+  .flow{font-family:var(--font-mono);font-size:.86em;background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:16px 20px;white-space:pre-wrap;line-height:1.7}
+  .warn{border-left:4px solid var(--amber);background:rgba(255,183,77,.05)}
+  footer{margin-top:50px;color:var(--muted);text-align:center;font-size:.85em;border-top:1px solid var(--border);padding-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>🎯 Polymarket Betting Decision Guide</h1>
+  <div class="sub">How to turn the model's outputs into a bet — ranked best to worst, with every grade and indicator explained.</div>
+</header>
+
+<div class="toc">
+  <a href="#tldr">⚡ 30-second version</a>
+  <a href="#tiers">🏆 The decision tiers (best → worst)</a>
+  <a href="#fields">🔢 Every field on the card</a>
+  <a href="#flow">🧭 The decision flowchart</a>
+  <a href="#magnitude">📐 Reading the magnitude forecast</a>
+  <a href="#mistakes">🚫 Bet-killers</a>
+  <a href="#honest">🧠 Honest math</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tldr">⚡ The 30-second version</h2>
+<div class="card t-best tier">
+<ol>
+  <li><b>Only bet when source = <span class="chip c-blue">MODEL lean</span></b> (never <span class="chip c-amber">⚠ WEAK / fallback</span> — those are coin-flips).</li>
+  <li><b>Prefer <span class="chip c-green">Grade A</span> &gt; <span class="chip c-amber">B</span> &gt; skip <span class="chip c-red">C</span>.</b></li>
+  <li><b>The magnitude must project PAST the line</b> — "expects drop of $40 → projects $30 below beat" is a real edge; "$8 drop, $20 to the line" is not.</li>
+  <li><b>Skip CHOP / STRETCH path outlooks.</b></li>
+  <li><b>The bet only profits if your win-rate &gt; the share price you pay.</b> 60% wins at 65¢ loses money.</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tiers">🏆 The decision tiers — best to worst</h2>
+<p>Read the card top-down and find the <i>lowest</i> tier it fails. That's your bet quality.</p>
+
+<div class="tier t-best">
+  <div class="tier-head"><span class="tier-rank">S</span><span class="tier-name">LATE-ENTRY persistence</span>
+    <span class="tier-verdict v-bet">BET — biggest size</span></div>
+  <p>The <span class="chip c-green">⚡ LATE-ENTRY edge</span> chip is showing: &lt;2 min left, price already <b>$10+ ahead on the leaned side</b>, and the model still agrees. The bet has become "no reversal in N seconds" — the most reliable structure that exists.</p>
+  <table>
+    <tr><th>Field</th><th>What you want</th></tr>
+    <tr><td>Source</td><td><span class="chip c-blue">MODEL lean</span></td></tr>
+    <tr><td>Current move</td><td>Already <b>+$10 or more</b> on the lean side</td></tr>
+    <tr><td>Seconds left</td><td>15–120s</td></tr>
+    <tr><td>Live lean</td><td>Still matches the original lean</td></tr>
+  </table>
+  <p><b>Caveat:</b> the share price is usually expensive here (market sees it too) — profit per bet is small. Size up, expect thin margins.</p>
+</div>
+
+<div class="tier t-best">
+  <div class="tier-head"><span class="tier-rank">A</span><span class="tier-name">Grade-A model lean, magnitude clears the line</span>
+    <span class="tier-verdict v-bet">BET — full size</span></div>
+  <table>
+    <tr><th>Field</th><th>What you want</th></tr>
+    <tr><td>Source</td><td><span class="chip c-blue">MODEL lean</span> (committed, not fallback)</td></tr>
+    <tr><td>Setup grade</td><td><span class="chip c-green">A</span> (4–5 confirmations)</td></tr>
+    <tr><td>Magnitude</td><td>📐 Projected close clears the beat <b>by more than the band's low</b></td></tr>
+    <tr><td>Path outlook</td><td>HOLD or BREAKOUT toward the lean</td></tr>
+    <tr><td>Regime</td><td>Anything except LOW_VOLATILITY</td></tr>
+  </table>
+</div>
+
+<div class="tier t-good">
+  <div class="tier-head"><span class="tier-rank">B</span><span class="tier-name">Grade-B model lean, magnitude agrees</span>
+    <span class="tier-verdict v-small">BET — half size</span></div>
+  <p>Model lean, <span class="chip c-amber">Grade B</span> (3 confirmations), and the magnitude forecast still projects past the line. Decent volume play, lower conviction than A.</p>
+</div>
+
+<div class="tier t-ok">
+  <div class="tier-head"><span class="tier-rank">C</span><span class="tier-name">Model lean, but magnitude is marginal</span>
+    <span class="tier-verdict v-maybe">ONLY if cheap shares</span></div>
+  <p>The sign is a real model lean, but 📐 the projected close barely clears the beat (inside the band's uncertainty). The direction is right but the move may not be big enough. <b>Only bet if the share price is cheap enough to cover the coin-flip-ish magnitude</b> — i.e. the market is underpricing it.</p>
+</div>
+
+<div class="tier t-skip">
+  <div class="tier-head"><span class="tier-rank">D</span><span class="tier-name">Weak / fallback lean</span>
+    <span class="tier-verdict v-no">SKIP</span></div>
+  <p><span class="chip c-amber">⚠ WEAK (fallback)</span> means the model was near-neutral and the side is just a probability tilt. <b>Measured ≈ coin-flip.</b> No grade, no magnitude, no bet — regardless of how tempting the price looks.</p>
+</div>
+
+<div class="tier t-skip">
+  <div class="tier-head"><span class="tier-rank">F</span><span class="tier-name">NO LEAN / CHOP / training</span>
+    <span class="tier-verdict v-no">SIT OUT</span></div>
+  <ul>
+    <li><b>NO LEAN — no bet:</b> the model is genuinely neutral. There is no play.</li>
+    <li><b>🧭 CHOP outlook:</b> "price will wobble ±$5 around the line, closing side near coin-flip." The line is exactly where the noise lives.</li>
+    <li><b>Model is training:</b> during a retrain the model can't commit. Every window is NO LEAN. Wait for it to finish.</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="fields">🔢 Every field on the card, decoded</h2>
+<div class="card">
+<table>
+  <tr><th>Field</th><th>Meaning</th><th>Bet signal</th></tr>
+  <tr><td><b>Price to beat (Pyth)</b></td><td>The locked line. Resolves UP if close ≥ this, DOWN otherwise. From Pyth (the settlement proxy), not Binance.</td><td>—</td></tr>
+  <tr><td><b>Lean + arrow</b></td><td>The side the model favors.</td><td>Must be UP or DOWN, not NO LEAN</td></tr>
+  <tr><td><b>Source badge</b></td><td><span class="chip c-blue">MODEL</span> = committed lean (~the bettable class). <span class="chip c-amber">⚠ WEAK</span> = two-way tilt (coin-flip).</td><td><span class="chip c-green">MODEL only</span></td></tr>
+  <tr><td><b>Setup grade</b></td><td>A/B/C — how many independent flows confirm the lean (regime, CVD, large trades, book).</td><td><span class="chip c-green">A</span> best, <span class="chip c-amber">B</span> ok, <span class="chip c-red">C</span> skip</td></tr>
+  <tr><td><b>📐 Expected move + band</b></td><td>The move-size regressor's forecast magnitude and its conformal low–high band.</td><td>Band low should still clear the line</td></tr>
+  <tr><td><b>Projected close vs beat</b></td><td>Now-price + the signed expected move, compared to the line.</td><td>Want it clearly on your side</td></tr>
+  <tr><td><b>🧭 Path outlook</b></td><td>Plain-English journey: HOLD / BREAKOUT / CHOP / STRETCH.</td><td>HOLD or BREAKOUT good; CHOP/STRETCH skip</td></tr>
+  <tr><td><b>Now / current move</b></td><td>Live price and signed $ vs the line right now.</td><td>Ahead on lean side = stronger</td></tr>
+  <tr><td><b>Seconds left</b></td><td>Time to resolution. Powers the late-entry structure.</td><td>15–120s + ahead = late-entry</td></tr>
+  <tr><td><b>Win-rate strip</b></td><td>"model X% (n) · all Y% (n)". Judge by <b>model</b>, trust only at n≥100.</td><td>model &gt; 55% with real n</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="flow">🧭 The decision flowchart</h2>
+<div class="flow">START: a 5m / 15m window is open
+│
+├─ Is the model TRAINING?  ─────────────────► YES → SIT OUT (no commits during retrain)
+│        │ no
+├─ Source = MODEL lean?  ───────────────────► NO (weak/fallback/no-lean) → SKIP
+│        │ yes
+├─ Path outlook = CHOP or STRETCH?  ────────► YES → SKIP (noise lives at the line)
+│        │ no
+├─ 📐 Does projected close clear the beat
+│   by MORE than the band's low edge?  ─────► NO → only bet if shares are cheap (Tier C)
+│        │ yes
+├─ Setup grade?
+│        ├─ C  → SKIP
+│        ├─ B  → BET HALF size
+│        └─ A  → continue
+│
+├─ ⚡ LATE-ENTRY chip showing?  ────────────► YES → BET BIGGEST (persistence edge)
+│        │ no
+└─ BET FULL size  ──────────────────────────► (Grade-A model lean, magnitude clears)
+
+ALWAYS LAST CHECK:  is your win-rate > the share price you pay?
+                    60% wins @ 65¢ = losing.  60% wins @ 50¢ = printing.</div>
+
+<!-- ============================================================ -->
+<h2 id="magnitude">📐 Reading the magnitude forecast (new)</h2>
+<div class="card">
+<p>The model doesn't just pick a side — its move-size regressor forecasts <b>how far</b> price travels, with a confidence band (conformal low / median / high). The card shows:</p>
+<p style="font-family:var(--font-mono);background:var(--card2);padding:12px 16px;border-radius:8px;border:1px solid var(--border)">
+📐 Model expects a <span style="color:var(--red)">drop of ≈ $40</span> (band $22–$61) → projects close <b>$62,296</b> <span style="color:var(--red)">(−$30 vs beat → DOWN resolves)</span></p>
+<h3>How to use it</h3>
+<ul>
+  <li><b>Edge = projected-vs-beat distance.</b> The bigger the projection clears the line, the safer the directional bet.</li>
+  <li><b>The band is your risk.</b> If the band's <i>near</i> edge ($22 here) still clears the line, the move is reliably big enough. If the band straddles the line, the magnitude is a coin-flip even when the sign is right → drop to Tier C.</li>
+  <li><b>Sign vs magnitude can disagree with "where it is now."</b> Price can be on the UP side right now but the model expects a $40 drop — that's a <i>fade</i> setup; trust the projection over the current tick only on Grade A.</li>
+</ul>
+<div class="card warn" style="margin-top:12px">
+<b>Coming in V5:</b> this point-forecast becomes a true probability — <code>P(close ≥ beat)</code> — which maps directly to a fair share price. Until then, use the band-clears-line rule as the manual version of that math.
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mistakes">🚫 Bet-killers (instant skip, no matter what else looks good)</h2>
+<div class="card t-skip tier">
+<ul>
+  <li><b>Fallback lean.</b> ⚠ WEAK = coin-flip. The price can look like free money; it isn't.</li>
+  <li><b>CHOP outlook.</b> The model is telling you the closing side is random. Believe it.</li>
+  <li><b>LOW_VOLATILITY regime.</b> The weakest cell in live evidence — the line and the noise overlap.</li>
+  <li><b>Band straddles the line on a Grade-C setup.</b> Right sign, wrong size, weak confirmation — three strikes.</li>
+  <li><b>Tiny sample win-rate.</b> "model 100% (2)" means nothing. Wait for n≥100 before trusting the strip.</li>
+  <li><b>Paying above your edge.</b> The single most common way to lose while being "right" — win-rate must beat the share price.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="honest">🧠 Honest math</h2>
+<div class="card warn">
+<ul>
+  <li><b>5-minute BTC direction is mostly noise.</b> The current model's raw leans measure ~51% (coin-flip). The edge lives in the <i>selected</i> slice: model leans + Grade A + magnitude clearing the line + good regime. Selectivity is the whole game.</li>
+  <li><b>Win-rate is not profit.</b> Profit = win-rate vs share price. Cheaper entry beats more predictions. Always.</li>
+  <li><b>Fewer bets = higher win-rate.</b> Nobody wins 70% betting every window. You win 70% by betting the best 5–10% of windows and sitting out the rest.</li>
+  <li><b>The model is being retrained toward less bias (v5).</b> Until the win-rate strip shows model-leans clearing 55% on a real sample, treat this as <b>paper-tracking</b>, not sized betting.</li>
+  <li><b>Not financial advice.</b> Educational decision-support only. Never bet money you can't lose.</li>
+</ul>
+</div>
+
+<footer>
+  BTC Quantum Trader · Polymarket betting decision guide · 2026-06-12<br>
+  Companion to <code>guide.html</code>. Open while the app runs: <code>http://localhost:3000/polymarket-betting.html</code>
+</footer>
+
+</div>
+</body>
+</html>

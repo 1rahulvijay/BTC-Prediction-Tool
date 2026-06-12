@@ -258,6 +258,26 @@ class PredictionVerifier:
             avoid_hits = sum(1 for v in avoid_preds if v.get("avoid_success") or v["hit"])
             avoid_total = len(avoid_preds)
 
+            # LEAN sign-truth accuracy — the headline betting metric. Counts every raw
+            # lean (committed AND gated), graded purely by realized move sign. Without
+            # this, a cautious gate (all WAITs) leaves the accuracy panel empty forever
+            # while leans resolve in plain sight. lean_hit when present; sign fallback
+            # for rows verified by older code.
+            def _lean_ok(v):
+                if v.get("lean_hit") is not None:
+                    return v["lean_hit"]
+                rd = v.get("raw_direction")
+                mv = v.get("actual_move_usd", 0.0)
+                if rd in ("UP", "DOWN") and mv:
+                    return (rd == "UP") == (mv > 0)
+                return None
+            _lean_rows = [(v, _lean_ok(v)) for v in h_preds]
+            lean_rows = [(v, ok) for v, ok in _lean_rows if ok is not None]
+            lean_total = len(lean_rows)
+            lean_hits = sum(1 for _, ok in lean_rows if ok)
+            lean_up = [(v, ok) for v, ok in lean_rows if v.get("raw_direction") == "UP"]
+            lean_down = [(v, ok) for v, ok in lean_rows if v.get("raw_direction") == "DOWN"]
+
             # By confidence level
             high_conf = [v for v in h_preds if v["confidence"] >= 0.65]
             high_hits = sum(1 for v in high_conf if v["hit"])
@@ -323,6 +343,14 @@ class PredictionVerifier:
                 "avoid_accuracy": round(avoid_hits / avoid_total, 4) if avoid_total > 0 else 0,
                 "avoid_total": avoid_total,
                 "avoid_hits": avoid_hits,
+                "lean_accuracy": round(lean_hits / lean_total, 4) if lean_total else 0,
+                "lean_total": lean_total,
+                "lean_up_accuracy": (round(sum(1 for _, ok in lean_up if ok) / len(lean_up), 4)
+                                     if lean_up else 0),
+                "lean_up_total": len(lean_up),
+                "lean_down_accuracy": (round(sum(1 for _, ok in lean_down if ok) / len(lean_down), 4)
+                                       if lean_down else 0),
+                "lean_down_total": len(lean_down),
                 "high_conf_accuracy": round(high_hits / len(high_conf), 4) if high_conf else 0,
                 "high_conf_total": len(high_conf),
                 "mid_conf_accuracy": round(mid_hits / len(mid_conf), 4) if mid_conf else 0,
@@ -339,11 +367,15 @@ class PredictionVerifier:
                 "streak_type": streak_type or "none",
             }
             
-            # Track accuracy over time for auto-learning feedback
+            # Track accuracy over time for auto-learning feedback. lean_* is the
+            # clean sign-truth series the trend must be computed on; the legacy
+            # blended `accuracy` stays for display/back-compat only.
             self.accuracy_history[h].append({
                 "time": int(time.time() * 1000),
                 "accuracy": acc,
                 "total": total,
+                "lean_accuracy": round(lean_hits / lean_total, 4) if lean_total else None,
+                "lean_total": lean_total,
             })
             # Keep last 100 accuracy snapshots
             if len(self.accuracy_history[h]) > 100:
@@ -763,38 +795,44 @@ class PredictionVerifier:
         feedback = {}
         for h in ALL_HORIZONS:
             acc = self.accuracy_cache.get(h, {})
-            if not acc or acc.get("total", 0) < 5:
+            # AUTO-LEARNING runs on LEAN SIGN-TRUTH, not the blended `hit` accuracy.
+            # The blended metric counts avoid_success as a hit, so a cautious gate in
+            # chop scored >0.6 while the leans were WRONG — auto-learning then LOWERED
+            # the confidence threshold (more trades on a coin-flip model). Exactly
+            # backwards. (8th consumer of the dual-semantic hit bug — see §5z/§5ai.)
+            if not acc or acc.get("lean_total", 0) < 5:
                 continue
-            
-            # Compute accuracy trend (improving or degrading?)
+
+            # Trend on the clean lean series (legacy history rows fall back to blended).
             history = self.accuracy_history.get(h, [])
             trend = "stable"
-            if len(history) >= 3:
-                recent_acc = [x["accuracy"] for x in history[-3:]]
-                older_acc = [x["accuracy"] for x in history[:max(1, len(history)-3)]]
-                avg_recent = sum(recent_acc) / len(recent_acc)
-                avg_older = sum(older_acc) / len(older_acc)
+            _hv = [x.get("lean_accuracy") if x.get("lean_accuracy") is not None
+                   else x["accuracy"] for x in history]
+            if len(_hv) >= 3:
+                avg_recent = sum(_hv[-3:]) / 3
+                older = _hv[:max(1, len(_hv) - 3)]
+                avg_older = sum(older) / len(older)
                 if avg_recent > avg_older + 0.03:
                     trend = "improving"
                 elif avg_recent < avg_older - 0.03:
                     trend = "degrading"
 
             feedback[h] = {
-                "accuracy": acc["accuracy"],
+                "accuracy": acc["lean_accuracy"],
                 "trend": trend,
-                "up_accuracy": acc.get("up_accuracy", 0),
-                "down_accuracy": acc.get("down_accuracy", 0),
+                "up_accuracy": acc.get("lean_up_accuracy", 0),
+                "down_accuracy": acc.get("lean_down_accuracy", 0),
                 "miss_rate": acc.get("miss_rate", 0),
                 "price_match_rate": acc.get("price_match_rate", 0),
                 "avg_move_error_usd": acc.get("avg_move_error_usd", 0),
-                "total": acc["total"],
+                "total": acc["lean_total"],
                 "needs_retrain": (
-                    trend == "degrading" and acc["accuracy"] < 0.45
+                    trend == "degrading" and acc["lean_accuracy"] < 0.45
                 ) or (
-                    acc.get("total", 0) >= 10
+                    acc.get("lean_total", 0) >= 10
                     and acc.get("price_match_rate", 1) < 0.35
                     and acc.get("avg_move_error_usd", 0) > 75
                 ),
             }
-        
+
         return feedback

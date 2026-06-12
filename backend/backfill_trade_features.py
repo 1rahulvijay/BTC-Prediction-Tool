@@ -212,7 +212,17 @@ def run(start: str, end: str, validate_nrows: int | None = None, keep_cache: boo
     bv = None
     for date in _daterange(start, end):
         print(f"[{date}]", flush=True)
-        csv = download_day(date)
+        try:
+            csv = download_day(date)
+        except urllib.error.HTTPError as e:
+            # Binance publishes each day's file with a lag — a 404 for the most
+            # recent day is NORMAL, not an error. Skip the day instead of aborting
+            # the whole run (an abort threw away every other day's work and exited
+            # nonzero, which looked like a failure at app startup).
+            if e.code == 404:
+                print(f"  not published yet on data.binance.vision (404) — skipping {date}", flush=True)
+                continue
+            raise
         ts, price, qty, m = load_aggtrades(csv, nrows=validate_nrows)
         print(f"  {len(ts):,} trades", flush=True)
         bars, bv = compute_day_bars(ts, price, qty, m, bucket_volume_btc=bv)

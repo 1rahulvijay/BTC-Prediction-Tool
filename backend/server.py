@@ -38,8 +38,6 @@ from features import (
     NUM_FEATURES,
     atr as compute_atr,
 )
-from kronos_model import kronos_wrapper
-from kronos_verifier import KronosDirectionVerifier
 from model_verifier import PerModelVerifier
 from price_to_beat import PriceToBeatTracker
 from exchange_verifier import PerVenueVerifier
@@ -149,8 +147,25 @@ async def lifespan(app: FastAPI):
                 _ptb_restored += len(_hist)
         if _ptb_restored:
             logger.info(f"Restored {_ptb_restored} price-to-beat outcomes from DuckDB")
+        # Also rehydrate the resolved-rounds UI table (newest-first) — the win-rate
+        # COUNTERS survived restarts but the table showed "No resolved rounds yet"
+        # because recent_rounds was memory-only.
+        _recent = database.fetch_price_to_beat_recent(20)
+        for _r in _recent:
+            price_to_beat_tracker.recent_rounds.append(_r)  # newest-first preserved
+        if _recent:
+            logger.info(f"Restored {len(_recent)} resolved price-to-beat rounds for the UI")
     except Exception as _pe:
         logger.debug(f"PTB history rehydrate skipped: {_pe}")
+    # Data hygiene: purge pending rows orphaned by the previous shutdown (their
+    # resolvers were memory-only; they can never resolve now).
+    try:
+        _orph = database.cleanup_orphan_pending_rows()
+        _tot = sum(v for v in _orph.values() if v > 0)
+        if _tot:
+            logger.info(f"Cleaned {_tot} orphaned pending rows: {_orph}")
+    except Exception as _oe:
+        logger.debug(f"Orphan cleanup skipped: {_oe}")
 
     ws_client.on("trade", handle_trade)
     ws_client.on("depth", handle_depth)
@@ -235,9 +250,11 @@ cascade_monitor = CascadeMonitor()
 model.cascade_monitor = cascade_monitor
 backtester = Backtester()
 verifier = PredictionVerifier()
-kronos_verifier = KronosDirectionVerifier(horizons=(5, 15))
 model_verifier = PerModelVerifier(horizons=(1, 3, 5, 7, 10, 15))
-price_to_beat_tracker = PriceToBeatTracker(horizons=(5, 15))
+# 1m/3m/7m/10m are PRACTICE mirrors (Polymarket's real BTC windows are 5m/15m):
+# same rule, same grading — they accrue evidence fast and map every horizon's
+# betting behavior; only 5m/15m are real markets.
+price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15))
 exchange_verifier = PerVenueVerifier(horizons=(5, 15))
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
@@ -274,6 +291,8 @@ pm_model = PolymarketModel()
 pm_simulator = PolymarketSimulator()
 pm_verifier = PolymarketVerifier()
 fsr_ppo_strategy = FSRPPOStrategy()
+# v6 R3: mothballed by default — a strategy challenger is premature pre-edge.
+FSR_PPO_ENABLED = os.getenv("BTC_FSR_PPO", "0") == "1"
 
 global_oi_history = []  # rolling history of combined OI in USD
 binance_oi_history = []  # rolling history of Binance OI in USD
@@ -425,7 +444,7 @@ async def price_to_beat_ticker():
                     int(time.time() * 1000),
                     float(ref),
                     data_state.get("_ptb_preds") or {},
-                    data_state.get("_ptb_kronos") or {},
+                    {},  # kronos removed in v6 — tracker records "NONE"
                     klines=kl,
                     feed_fresh=feed_fresh,
                 )
@@ -907,16 +926,14 @@ def build_exchanges_block(data_state: dict) -> dict:
     return out
 
 
-def build_scoreboard(predictions: list, verification: dict, kronos_acc: dict) -> dict:
-    """Compact 5m/15m decision board: our call + conviction + Kronos, side by side."""
+def build_scoreboard(predictions: list, verification: dict) -> dict:
+    """Compact 5m/15m decision board: our call + conviction (kronos removed in v6)."""
     by_h = {p.get("horizon"): p for p in (predictions or [])}
     acc = _safe_dict(verification.get("accuracy")) if verification else {}
     board = {}
     for h in (5, 15):
         p = by_h.get(h) or {}
         a = _safe_dict(acc.get(h) or acc.get(str(h)))
-        k = _safe_dict((kronos_acc or {}).get(h) or (kronos_acc or {}).get(str(h)))
-        kl = _safe_dict(k.get("latest"))
         board[h] = {
             "direction": p.get("direction", "NEUTRAL"),
             "rawDirection": p.get("rawDirection", p.get("direction", "NEUTRAL")),
@@ -932,14 +949,6 @@ def build_scoreboard(predictions: list, verification: dict, kronos_acc: dict) ->
             # our live record
             "ourAccuracy": a.get("directional_accuracy", a.get("accuracy", 0.0)),
             "ourSamples": a.get("directional_total", a.get("total", 0)),
-            # kronos record + current call
-            "kronosDirection": p.get("kronosDirection", kl.get("direction", "NONE")),
-            "kronosAccuracy": k.get("accuracy", 0.0),
-            "kronosSamples": k.get("total", 0),
-            "kronosForecastPrice": kl.get("forecast_price"),
-            # agreement flag
-            "kronosAgrees": p.get("direction") in ("UP", "DOWN")
-                            and p.get("kronosDirection") == p.get("direction"),
         }
     return board
 
@@ -1240,6 +1249,24 @@ async def train_model(target_model=None):
         finally:
             backend_state["is_training"] = False
         backend_state["last_train_time"] = time.time()
+        # Record the TRAIN-SPLIT BOUNDARY so the backtest can evaluate strictly
+        # held-out candles. train() fits on the first 80% of samples; sample k's
+        # decision candle is kl_snapshot[LOOKBACK + k], so the last in-sample
+        # decision candle is LOOKBACK + 0.8*n - 1. Without this, a latest-12000
+        # backtest right after training overlaps ~28% TRAINING rows — silently
+        # inflating every reported accuracy. Persisted so a restart that loads
+        # models from disk (no retrain) keeps the same honest boundary.
+        try:
+            _n_samp = int(X.shape[0])
+            _b_idx = min(LOOKBACK + int(_n_samp * 0.8) - 1, len(kl_snapshot) - 1)
+            _b_ts = int(kl_snapshot[_b_idx]["time"])
+            backend_state["train_boundary_ts"] = _b_ts
+            with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
+                      "w", encoding="utf-8") as _bf:
+                json.dump({"train_boundary_ts": _b_ts}, _bf)
+            logger.info("[TRAIN] Out-of-sample boundary recorded at candle ts=%s", _b_ts)
+        except Exception as _be:
+            logger.warning(f"[TRAIN] Could not record train boundary: {_be}")
         logger.info("[TRAIN] Model training complete in %.1fs", time.time() - train_started)
         # Release training intermediates back to the OS promptly. The sequence tensor alone
         # is ~1.3GB (43k × 60 × 126 float32) and the OOF/stacker arrays add more; they are
@@ -1394,6 +1421,29 @@ async def run_backtest(reason: str = "manual"):
                 len(bt_klines),
             )
             bt_klines = bt_klines[-BACKTEST_MAX_ROWS:]
+        # OUT-OF-SAMPLE GUARD: score only candles AFTER the training split boundary
+        # (+ a max-horizon embargo so the last train labels' look-ahead windows can't
+        # touch scored rows). Right after a fresh train, "latest 12000" overlapped
+        # ~28% training rows — every backtest number was silently optimistic.
+        _btb = backend_state.get("train_boundary_ts")
+        if _btb:
+            _emb = max(model.horizons)
+            _first = next((j for j, k in enumerate(bt_klines) if k["time"] > _btb), None)
+            if _first is None:
+                logger.warning("[BACKTEST] ALL candles precede the train boundary — "
+                               "metrics would be fully IN-SAMPLE; proceeding unfiltered (flagged).")
+            else:
+                _first = min(_first + _emb, len(bt_klines) - 1)
+                _start = max(0, _first - LOOKBACK)  # keep lookback warm-up; scoring begins post-boundary
+                _held = len(bt_klines) - _first
+                if _held >= 500:
+                    if _start > 0:
+                        bt_klines = bt_klines[_start:]
+                    logger.info("[BACKTEST] Out-of-sample only: %s held-out candles scored "
+                                "(boundary ts=%s, embargo=%s candles).", _held, _btb, _emb)
+                else:
+                    logger.warning("[BACKTEST] Only %s held-out candles (<500) — keeping full "
+                                   "window; treat metrics as partially in-sample.", _held)
 
         logger.info("[BACKTEST] Building validation feature matrix from %s candles", len(bt_klines))
         prepare_derivatives_data()
@@ -2094,6 +2144,17 @@ async def main_loop():
     step_t0 = time.time()
     logger.info("[BOOT 5/7] Loading saved models from disk...")
     loaded = model.load_models()
+    if loaded:
+        # Restore the saved model's out-of-sample boundary so backtests stay honest
+        # across restarts (models loaded from disk, no retrain → boundary from json).
+        try:
+            with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
+                      "r", encoding="utf-8") as _bf:
+                backend_state["train_boundary_ts"] = int(json.load(_bf)["train_boundary_ts"])
+                logger.info("[BOOT] Restored out-of-sample boundary ts=%s",
+                            backend_state["train_boundary_ts"])
+        except Exception:
+            pass  # legacy bundle without a boundary file — backtest falls back to old behavior
     startup_train_bg = None  # set to the bg training task when a fresh train is needed
 
     if not loaded:
@@ -2260,19 +2321,8 @@ async def main_loop():
                 data_state["macro"] = {"dxy": macro_client.data.get("dxy"),
                                        "us10y": macro_client.data.get("us10y")}
 
-            # Kronos Background Inference every 60s
-            if tick_count % 30 == 0:
-                if len(data_state["klines"]) > 10:
-                    try:
-                        forecast = await kronos_wrapper.generate_forecast(
-                            data_state["klines"], pred_len=60
-                        )
-                        data_state["kronos_forecasts"] = forecast
-                        # Record Kronos's directional view at 5m/15m for verification.
-                        kref = data_state["klines"][-1]["close"]
-                        kronos_verifier.record(forecast, kref, int(time.time() * 1000))
-                    except Exception as e:
-                        logger.error(f"Kronos inference task error: {e}")
+            # (Kronos removed in v6 — the module was never installed; its fallback
+            # emitted noise that we maintained a verifier + UI for. See §5ar / R1.)
 
             # Precision-engine refresh (cheap aggregate query, off the event loop). Runs
             # shortly after boot (tick 5) then re-checks every ~5 min; the engine itself
@@ -2402,8 +2452,8 @@ async def main_loop():
                 )
                 # Per-regime confidence calibration (honest confidence per regime).
                 data_state["regime_calibration"] = verifier.get_regime_calibration()
-                # Kronos live accuracy so the ensemble can weight Kronos's confirmation.
-                data_state["kronos_accuracy"] = kronos_verifier.accuracy()
+                # (kronos_accuracy no longer populated — model.py's Kronos hooks are
+                # self-gating on it and go inert with it absent.)
                 # Live isotonic confidence calibrators (raw conf -> realized hit rate).
                 data_state["confidence_calibrators"] = verifier.get_confidence_calibrators()
                 # Adaptive precision policy from resolved raw UP/DOWN leans. This lets
@@ -2487,18 +2537,25 @@ async def main_loop():
                     predictions.append(p)
                     cascade_data[h] = p
 
-            fsr_ppo_block = fsr_ppo_strategy.recommend(
-                data_state,
-                predictions,
-                verifier.get_accuracy_summary(),
-            ) if predictions else {
-                "status": fsr_ppo_strategy.status(),
-                "fsr": fsr_ppo_strategy.signal_representation(data_state.get("klines") or []),
-                "by_horizon": {},
-                "best": None,
-                "summary": "PPO challenger is waiting for ensemble predictions.",
-            }
-            data_state["fsr_ppo"] = fsr_ppo_block
+            # FSR-PPO mothballed in v6 (R3): a challenger strategy layer is premature
+            # until the core model proves its edge. Re-enable with BTC_FSR_PPO=1 —
+            # code + DB tables intact, just not invoked (saves a compute pass/loop).
+            if FSR_PPO_ENABLED:
+                fsr_ppo_block = fsr_ppo_strategy.recommend(
+                    data_state,
+                    predictions,
+                    verifier.get_accuracy_summary(),
+                ) if predictions else {
+                    "status": fsr_ppo_strategy.status(),
+                    "fsr": fsr_ppo_strategy.signal_representation(data_state.get("klines") or []),
+                    "by_horizon": {},
+                    "best": None,
+                    "summary": "PPO challenger is waiting for ensemble predictions.",
+                }
+                data_state["fsr_ppo"] = fsr_ppo_block
+            else:
+                data_state["fsr_ppo"] = {"status": {"enabled": False},
+                                         "summary": "FSR-PPO mothballed (v6 roster surgery). Set BTC_FSR_PPO=1 to revive."}
 
             # Record predictions per-horizon cadence
             now_ms = int(time.time() * 1000)
@@ -2615,7 +2672,6 @@ async def main_loop():
             # Check pending verifications
             current_price = data_state["klines"][-1]["close"]
             newly_verified = verifier.check_and_verify(current_price, now_ms)
-            kronos_verifier.check(current_price, now_ms)  # resolve Kronos directional forecasts
             model_verifier.check(current_price, now_ms)  # resolve per-model votes
             exchange_verifier.check(current_venue_prices(data_state), now_ms)  # per-venue confirmation
 
@@ -2623,16 +2679,11 @@ async def main_loop():
             # which anchors AND resolves on Pyth (§5u) with an offset-corrected Binance
             # fallback — this loop's only job is handing it the latest predictions below.
             preds_by_h = {p.get("horizon"): p for p in predictions}
-            kronos_dir_by_h = {
-                h: (kronos_verifier.last_forecast.get(h) or {}).get("direction", "NONE")
-                for h in (5, 15)
-            }
             # Hand the latest predictions to the FAST price-to-beat ticker (1s cadence,
-            # decoupled from this heavy loop) so the 5m/15m windows resolve + open and the
+            # decoupled from this heavy loop) so the windows resolve + open and the
             # HOLD/EXIT advice refresh within ~1s of the boundary — regardless of how slow
             # a prediction cycle gets on a loaded/throttled machine. (instant-window fix)
             data_state["_ptb_preds"] = preds_by_h
-            data_state["_ptb_kronos"] = kronos_dir_by_h
 
             # Update simulator (closes expired trades, applies slippage, logs PnL)
             simulator.update(current_price, now_ms)
@@ -2839,15 +2890,11 @@ async def main_loop():
                 "training_signals": training_signals,
                 "klines": format_klines_for_chart(data_state["klines"]),
                 "volume_data": format_volume_for_chart(data_state["klines"]),
-                "kronos_forecasts": data_state.get("kronos_forecasts", []),
-                "kronos_status": kronos_wrapper.status(),
-                "kronos_accuracy": kronos_verifier.accuracy(),
                 "exchange_accuracy": exchange_verifier.accuracy(),
                 "exchanges": build_exchanges_block(data_state),
                 "scoreboard": build_scoreboard(
                     predictions,
                     {"accuracy": accuracy_summary},
-                    kronos_verifier.accuracy(),
                 ),
                 "model_accuracy": model_verifier.accuracy(),
                 "fsr_ppo": data_state.get("fsr_ppo", {}),
@@ -2855,7 +2902,8 @@ async def main_loop():
                 "price_to_beat": {
                     "latest": price_to_beat_tracker.latest(),
                     "accuracy": price_to_beat_tracker.accuracy(),
-                    "recent": price_to_beat_tracker.recent(20),
+                    # 60: six mirror horizons now resolve rounds; keep slow ones visible
+                    "recent": price_to_beat_tracker.recent(60),
                 },
             }
 
@@ -2883,8 +2931,6 @@ async def main_loop():
                         "drift": drift_state,
                         "support_resistance": support_resistance,
                         "indicator_snapshot": indicators,
-                        "kronos_status": kronos_wrapper.status(),
-                        "kronos_accuracy": kronos_verifier.accuracy(),
                         "exchange_accuracy": exchange_verifier.accuracy(),
                         "fsr_ppo": {
                             "current": data_state.get("fsr_ppo", {}),
@@ -2951,6 +2997,98 @@ async def api_action_log(limit: int = 50):
     except Exception as e:
         logger.warning("action-log fetch failed (returning empty): %s", e)
         return {"items": [], "error": "temporarily_unavailable"}
+
+
+@app.get("/api/scorecard")
+async def get_scorecard():
+    """Sign-truth scorecard via the live process — Windows DuckDB locks are exclusive
+    (outside processes can't even COPY the file), so the app itself serves the
+    measurement. Same era-filtered queries as backend/sign_truth_scorecard.py."""
+    def _run():
+        era = 0
+        try:
+            _vp = os.path.join(DATA_DIR, "saved_models", "architecture_version.pkl")
+            if os.path.exists(_vp):
+                era = int(os.path.getmtime(_vp) * 1000)
+        except Exception:
+            pass
+        out = {"era_ts": era, "generated_at": int(time.time() * 1000),
+               "horizons": {}, "mirror": {}, "partial_candle_buckets": []}
+        conn = database._connect()
+        try:
+            for h in [1, 3, 5, 7, 10, 15]:
+                try:
+                    r = conn.execute(f"""
+                        SELECT COUNT(*),
+                               SUM(CASE WHEN (raw_direction='UP' AND actual_move>0)
+                                          OR (raw_direction='DOWN' AND actual_move<0) THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN raw_direction='UP' THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN raw_direction='DOWN' THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN raw_direction='UP' AND actual_move>0 THEN 1 ELSE 0 END),
+                               SUM(CASE WHEN raw_direction='DOWN' AND actual_move<0 THEN 1 ELSE 0 END)
+                        FROM predictions_{h}m
+                        WHERE resolved AND raw_direction IN ('UP','DOWN') AND actual_move IS NOT NULL
+                          AND timestamp >= {era}
+                    """).fetchone()
+                    n, w, u, d, uw, dw = (int(x or 0) for x in r)
+                    out["horizons"][h] = {
+                        "n": n, "wins": w, "acc": round(w / n, 4) if n else None,
+                        "up_n": u, "up_acc": round(uw / u, 4) if u else None,
+                        "down_n": d, "down_acc": round(dw / d, 4) if d else None,
+                    }
+                except Exception as e:
+                    out["horizons"][h] = {"error": str(e)}
+            for h in (1, 3, 5, 7, 10, 15):
+                try:
+                    rows = conn.execute(f"""
+                        SELECT COALESCE(lean_source,'model'), COUNT(*),
+                               SUM(CASE WHEN hit THEN 1 ELSE 0 END)
+                        FROM price_to_beat
+                        WHERE horizon={h} AND resolved AND our_direction IN ('UP','DOWN')
+                          AND timestamp >= {era}
+                        GROUP BY 1
+                    """).fetchall()
+                    out["mirror"][h] = {s: {"n": int(n), "wins": int(w or 0),
+                                            "acc": round((w or 0) / n, 4) if n else None}
+                                        for s, n, w in rows}
+                except Exception as e:
+                    out["mirror"][h] = {"error": str(e)}
+            # Per-BASE-MODEL directional accuracy (which model earns its seat) —
+            # from the per-model vote verifier's resolved rows, era-filtered.
+            out["models"] = {}
+            try:
+                rows = conn.execute(f"""
+                    SELECT model, horizon, COUNT(*),
+                           SUM(CASE WHEN hit THEN 1 ELSE 0 END)
+                    FROM model_predictions
+                    WHERE resolved AND direction IN ('UP','DOWN')
+                      AND timestamp >= {era}
+                    GROUP BY 1, 2 ORDER BY 1, 2
+                """).fetchall()
+                for m, h, n, w in rows:
+                    out["models"].setdefault(str(m), {})[int(h)] = {
+                        "n": int(n), "acc": round((w or 0) / n, 4) if n else None}
+            except Exception as e:
+                out["models"] = {"error": str(e)}
+            try:
+                rows = conn.execute(f"""
+                    SELECT CAST(FLOOR((timestamp % 60000) / 15000.0) AS INT), COUNT(*),
+                           ROUND(AVG(CASE WHEN (raw_direction='UP' AND actual_move>0)
+                                            OR (raw_direction='DOWN' AND actual_move<0)
+                                          THEN 1.0 ELSE 0.0 END), 4)
+                    FROM predictions_5m
+                    WHERE resolved AND raw_direction IN ('UP','DOWN') AND actual_move IS NOT NULL
+                      AND timestamp >= {era}
+                    GROUP BY 1 ORDER BY 1
+                """).fetchall()
+                out["partial_candle_buckets"] = [
+                    {"bucket": int(b), "n": int(n), "acc": float(a)} for b, n, a in rows]
+            except Exception:
+                pass
+        finally:
+            conn.close()
+        return out
+    return await asyncio.get_event_loop().run_in_executor(None, _run)
 
 
 @app.websocket("/ws")

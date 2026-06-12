@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # class index -> direction label (matches model._model_directions / training labels)
 _CLASS_DIR = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
-MODELS = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd"]
+MODELS = ["xgb", "lgb", "cat", "histgb", "dl", "lr"]  # sgd retired in v6
 
 
 class PerModelVerifier:

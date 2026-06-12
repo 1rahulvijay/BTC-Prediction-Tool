@@ -7,15 +7,14 @@ REM this project's data\ folder. IMPORTANT: keep OneDrive sync OFF for the Docum
 REM so its sync service / IDE indexers cannot lock these files mid-write.
 set "BTC_DATA_DIR=%PROJECT_ROOT%data"
 REM === TRAINING WINDOW (DAYS) ============================================
-REM Historical training window in DAYS. 30 = the real evidence run (current).
+REM Historical training window in DAYS. 40 = current (v5-classbal run, 2026-06-12):
+REM   +33%% samples vs 30, dilutes the one-sided -21%% month, no RAM risk on 16GB
+REM   (~1.8GB tensor), train ~5.5-6.5h. 90 needs 10-16GB + a 90-day backfill (V5.md §2.6).
 REM   1  = ~24h DEBUG smoke-test only (fast, NOT accurate).
-REM   30 = recommended sweet spot: ~32k training rows, reflects the CURRENT regime,
-REM        tolerable train time. 45 = more regime variety; 60 = diminishing returns + staler.
-REM HEADS-UP: the tree models are UNCAPPED, so 30 days = a MULTI-HOUR train (possibly
-REM overnight), and the TREND/RANGE/VOLATILE regime buckets now train too. The dashboard
-REM stays usable throughout (non-blocking boot). The microstructure features only fill
-REM from UPTIME, so after training, LEAVE IT RUNNING for days to accrue real coverage.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=30"
+REM HEADS-UP: a MULTI-HOUR train (overnight), and the TREND/RANGE/VOLATILE regime buckets
+REM train too. The dashboard stays usable throughout (non-blocking boot). The
+REM microstructure features only fill from UPTIME, so after training, LEAVE IT RUNNING.
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=50"
 REM =======================================================================
 REM Run a validation backtest automatically on startup (1 = on, 0 = off).
 REM It runs in the BACKGROUND after the app is ready, so it does not block live trading.
@@ -27,32 +26,38 @@ REM model is STABLE and the live feed NEVER freezes (a background retrain pegs a
 REM hours and this box has no headroom for that). 0 = auto-improve, but on 16GB the feed WILL
 REM freeze during each ~4.6h retrain. To improve the model, retrain manually (POST /api/relearn
 REM or set this to 0 briefly) when you can leave it overnight with the IDE/browser closed.
-set "BTC_FREEZE_MODEL=0"
+set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
 set "BTC_MAIN_LOOP_SEC=3"
 REM Booster thread cap: training uses this many cores, leaving the rest for the live app.
-REM 10 of 16 -> 6 cores reserved for price/feeds/UI during a retrain (was 12/4: the live
-REM Polymarket ticker + WS feeds visibly stuttered during the startup retrain). Retrain
-REM takes ~20%% longer but the app stays usable. Raise back to 12 for a pure overnight
-REM run with the browser closed.
-if not defined BTC_TRAIN_THREADS set "BTC_TRAIN_THREADS=10"
+REM 12 = overnight mode (browser/IDE closed): ~20-25%% faster train, feeds still get 4
+REM cores so the signal recorder keeps accruing coverage during the train. Drop to 10 if
+REM you want to actively use the dashboard while it trains.
+if not defined BTC_TRAIN_THREADS set "BTC_TRAIN_THREADS=12"
 REM Cap the OTHER parallel libs (HistGradientBoosting/numpy/BLAS use OpenMP, NOT n_jobs) to
 REM the same budget — without this they'd still grab all 16 cores and freeze the feed.
-if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=10"
-if not defined OPENBLAS_NUM_THREADS set "OPENBLAS_NUM_THREADS=10"
-if not defined MKL_NUM_THREADS set "MKL_NUM_THREADS=10"
+if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=12"
+if not defined OPENBLAS_NUM_THREADS set "OPENBLAS_NUM_THREADS=12"
+if not defined MKL_NUM_THREADS set "MKL_NUM_THREADS=12"
 REM Retrain at most ~once a day so each retrain learns from a meaningful chunk of NEW data
 REM (and the UI isn't freezing every few hours). 86400s = 24h.
 if not defined BTC_AUTO_RELEARN_COOLDOWN_SEC set "BTC_AUTO_RELEARN_COOLDOWN_SEC=86400"
 if not defined BTC_SCHEDULED_RELEARN_SEC set "BTC_SCHEDULED_RELEARN_SEC=86400"
-REM Speed knobs for laptop training:
-REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
+REM FSR-PPO challenger: mothballed in v6 (strategy layer premature pre-edge). 1 = revive.
+if not defined BTC_FSR_PPO set "BTC_FSR_PPO=0"
+REM Speed knobs — DELIBERATELY OFF (operator decision 2026-06-12: accuracy/precision is
+REM the absolute priority; no sample or iteration caps below the model.py defaults).
+REM Training runs at full data budgets (12000 linear/magnitude/quantile, 6000 stacker,
+REM 350 SGD iters). Speed comes ONLY from accuracy-neutral levers: thread count above,
+REM and (future, V5.md §4.5) structural cuts IF each proves accuracy-neutral on the
+REM held-out scorecard first.
 REM set "BTC_QUANTILE_MAX_SAMPLES=6000"
 REM set "BTC_MOVE_SIZE_MAX_SAMPLES=6000"
 REM set "BTC_LINEAR_MAX_SAMPLES=8000"
 REM set "BTC_STACKER_MAX_SAMPLES=4000"
 REM set "BTC_SGD_MAX_ITER=250"
+REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
 
 echo Starting BTC Quantum Trader...
 
@@ -68,7 +73,7 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     echo [0/3] Backfill skipped: BTC_SKIP_BACKFILL=1.
 ) else (
     echo [0/3] Updating trade-feature backfill data...
-    python backend\backfill_trade_features.py --auto
+    python backend\backfill_trade_features.py --auto --days %BTC_HISTORICAL_DAYS%
     if errorlevel 1 echo [0/3] Backfill failed - continuing with existing data.
 )
 REM =======================================================================

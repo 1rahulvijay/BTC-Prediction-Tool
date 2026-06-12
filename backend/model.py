@@ -2,7 +2,7 @@
 Multi-model ensemble prediction engine.
 Current base models: XGBoost, LightGBM, optional CatBoost,
 HistGradientBoosting, optional PyTorch TCN/sequence model, Logistic Regression,
-and fast SGD log-loss classification.
+and a TCN sequence model (full stacker seat since v6; SGD retired as anti-signal).
 Includes direction locking, hysteresis, prediction cooldown, and persistence.
 """
 
@@ -13,7 +13,7 @@ import numpy as np
 import warnings
 import xgboost as xgb
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-from sklearn.linear_model import LogisticRegression, SGDClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
@@ -39,7 +39,7 @@ QUANTILE_MAX_SAMPLES = _env_int("BTC_QUANTILE_MAX_SAMPLES", 12000)
 MOVE_SIZE_MAX_ITER = _env_int("BTC_MOVE_SIZE_MAX_ITER", 60)
 QUANTILE_MAX_ITER = _env_int("BTC_QUANTILE_MAX_ITER", 45)
 LINEAR_MAX_SAMPLES = _env_int("BTC_LINEAR_MAX_SAMPLES", 12000)
-SGD_MAX_ITER = _env_int("BTC_SGD_MAX_ITER", 350)
+# (SGD_MAX_ITER removed in v6 — SGD retired from the roster)
 STACKER_MAX_SAMPLES = _env_int("BTC_STACKER_MAX_SAMPLES", 6000)
 # Cap booster training threads so a background retrain does NOT saturate every core —
 # leave headroom for the asyncio event loop (live price + charts + WebSocket feeds) so the
@@ -77,6 +77,35 @@ try:
 except ImportError:
     HAS_CATBOOST = False
     logger.warning("CatBoost not installed. Ensemble will skip CatBoost.")
+
+# Probe XGBoost CUDA once at import (same pattern as the LightGBM probe above —
+# pip xgboost wheels ship GPU support but need an NVIDIA/CUDA device; OpenCL-only
+# GPUs serve LightGBM but not XGBoost). Falls back to CPU silently and safely.
+XGB_DEVICE = "cpu"
+try:
+    import numpy as _np_xprobe
+    _xp = xgb.XGBClassifier(n_estimators=1, tree_method="hist", device="cuda",
+                            verbosity=0)
+    _xp.fit(_np_xprobe.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
+    XGB_DEVICE = "cuda"
+    logger.info("XGBoost CUDA support detected — training with device='cuda'.")
+except Exception:
+    XGB_DEVICE = "cpu"
+    logger.info("XGBoost CUDA not available — training on CPU.")
+
+# Probe CatBoost GPU once at import (CUDA-only, like XGBoost).
+CAT_DEVICE = "CPU"
+if HAS_CATBOOST:
+    try:
+        import numpy as _np_cprobe
+        _cp = CatBoostClassifier(iterations=1, task_type="GPU", devices="0",
+                                 verbose=False, allow_writing_files=False)
+        _cp.fit(_np_cprobe.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
+        CAT_DEVICE = "GPU"
+        logger.info("CatBoost GPU support detected — training with task_type='GPU'.")
+    except Exception:
+        CAT_DEVICE = "CPU"
+        logger.info("CatBoost GPU not available — training on CPU.")
 
 # Optional joblib for model persistence
 try:
@@ -134,7 +163,7 @@ try:
             return self.fc(out)
 
     class PyTorchSequenceModel:
-        def __init__(self, input_dim: int, lookback: int, device: str = "cuda" if torch.cuda.is_available() else "cpu", epochs: int = 3, batch_size: int = 1024):
+        def __init__(self, input_dim: int, lookback: int, device: str = "cuda" if torch.cuda.is_available() else "cpu", epochs: int = 12, batch_size: int = 1024):
             self.input_dim = input_dim
             self.lookback = lookback
             self.device = device
@@ -154,7 +183,24 @@ try:
             if N > 25000:
                 X_3d = X_3d[-25000:]
                 y = y[-25000:]
-            
+                if sample_weight is not None:
+                    sample_weight = sample_weight[-25000:]
+
+            # v6 fix (operator-caught audit): sample_weight was ACCEPTED but silently
+            # IGNORED — the class-balanced loss (v5's headline) never reached TCN while
+            # the other five classifiers trained balanced. Fold the per-sample weights
+            # into per-class weights for CrossEntropyLoss (mean weight per class —
+            # exact for our weights, which are class-constant × recency).
+            if sample_weight is not None and len(sample_weight) == len(y):
+                _cw = np.ones(3, dtype=np.float32)
+                for _c in (0, 1, 2):
+                    _m_ = (np.asarray(y) == _c)
+                    if _m_.any():
+                        _cw[_c] = float(np.mean(np.asarray(sample_weight)[_m_]))
+                _cw = _cw / max(1e-9, _cw.mean())
+                self.criterion = nn.CrossEntropyLoss(
+                    weight=torch.tensor(_cw, dtype=torch.float32).to(self.device))
+
             X_tensor = torch.tensor(X_3d, dtype=torch.float32).to(self.device)
             y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
             
@@ -216,7 +262,11 @@ MODEL_DIR = os.path.join(
 # v2: target-construction fixes — label/serve alignment (entry = last-feature candle),
 # cost-floored adaptive threshold, verification graded on the same band. Forces one
 # retrain so saved bundles aren't silently loaded with the old (mis-aligned) target.
-MODEL_ARCH_VERSION = f"2026-06-11-v4-trend-regime-130-{DL_ARCH.lower()}"
+# v6 roster surgery (2026-06-12 §5ar): SGD retired (measured anti-signal: 0.124-0.23
+# OOF in live-relevant buckets), TCN promoted to a full stacker seat with a real
+# epoch budget, XGBoost/CatBoost GPU probes. "classbal" MUST stay in this string —
+# the inference-time prior-division retirement is keyed on it.
+MODEL_ARCH_VERSION = f"2026-06-12-v6-classbal-roster-130-{DL_ARCH.lower()}"
 
 CASCADE_MIN_ACCURACY = 0.62
 CASCADE_MIN_PREDICTIONS = 30
@@ -357,7 +407,6 @@ class MultiModelEnsemble:
                 "histgb": {},
                 "dl": {},
                 "lr": {},
-                "sgd": {},
                 "mag": {},
                 
             } for reg in self.regimes
@@ -383,7 +432,6 @@ class MultiModelEnsemble:
             "dl": 0.20 if HAS_TORCH else 0.0,
             "histgb": 0.10,
             "lr": 0.05,
-            "sgd": 0.05,
         })
         # Sub-signal weights
         self.sub_weights = {
@@ -482,7 +530,7 @@ class MultiModelEnsemble:
 
         self._build_move_size_stats(Ymag, regime_indices, split_idx)
 
-        direction_models = ["XGBoost", "HistGradientBoosting", "LogisticRegression", "SGDLogLoss"]
+        direction_models = ["XGBoost", "HistGradientBoosting", "LogisticRegression"]
         if HAS_LGBM:
             direction_models.append(f"LightGBM({LGB_DEVICE})")
         if HAS_CATBOOST:
@@ -604,16 +652,32 @@ class MultiModelEnsemble:
 
             y_classes = np.argmax(Y[h], axis=1)
             y_train = y_classes[:split_idx]
-            
+
+            # V5 §1 — CLASS-BALANCED LOSS (root-cause fix for the one-sided lean).
+            # Recency-only weights let the window's majority class dominate the loss,
+            # so the model learned to fade the minority side (the measured DOWN-machine:
+            # 89% DOWN leans out of a net-bearish window). Inverse-frequency weights
+            # (mean-normalized, clipped so a thin class can't dominate) make a missed UP
+            # cost exactly what a missed DOWN costs. Directional classifiers only — the
+            # magnitude regressor below keeps recency-only weights (magnitude isn't
+            # class-imbalanced). The inference-time prior division is retired with this
+            # (see predict: dividing balanced outputs by DATA priors would re-bias them
+            # the other way).
+            _cnt = np.bincount(y_train, minlength=3).astype(float)
+            _inv = _cnt.sum() / (3.0 * np.maximum(_cnt, 1.0))
+            class_w = np.clip(_inv / _inv.mean(), 0.5, 2.0)
+            logger.info("[TRAIN] h=%sm class weights (DOWN/NEUT/UP): %s",
+                        h, [round(float(w), 3) for w in class_w])
+
             for reg in self.regimes:
                 reg_idx = np.array(regime_indices[reg])
                 if reg != "GLOBAL" and len(reg_idx) < 1000:
                     logger.info(f"Skipping {reg} for {h}m (only {len(reg_idx)} samples). Will fallback to GLOBAL.")
                     continue
-                    
+
                 X_train_h = X_flat[reg_idx]
                 y_train_h = y_train[reg_idx]
-                sw = recency_w[reg_idx]
+                sw = recency_w[reg_idx] * class_w[y_train_h]
 
                 if len(np.unique(y_train_h)) < 2:
                     continue
@@ -646,7 +710,7 @@ class MultiModelEnsemble:
                         objective='multi:softprob', num_class=3, n_jobs=TRAIN_THREADS,
                         random_state=42, eval_metric="mlogloss",
                         subsample=0.8, colsample_bytree=0.8,
-                        tree_method='hist', device='cpu'
+                        tree_method='hist', device=XGB_DEVICE
                     )
                     try:
                         xgb_model = CalibratedClassifierCV(estimator=base_xgb, method='isotonic', cv=3)
@@ -723,7 +787,8 @@ class MultiModelEnsemble:
                             random_seed=47,
                             verbose=False,
                             allow_writing_files=False,
-                            thread_count=TRAIN_THREADS,
+                            task_type=CAT_DEVICE,
+                            **({"thread_count": TRAIN_THREADS} if CAT_DEVICE == "CPU" else {"devices": "0"}),
                         )
                         cat_model.fit(X_train_h, y_train_h, sample_weight=sw)
                         self.models_by_regime[reg]["cat"][h] = cat_model
@@ -768,27 +833,8 @@ class MultiModelEnsemble:
                 except Exception as e:
                     logger.error(f"LR training failed for h={h} reg={reg}: {e}")
 
-                # 4.5 SGD Log-Loss (fast adaptive linear vote)
-                try:
-                    X_sgd, y_sgd, sw_sgd = recent_classification_slice(X_train_h, y_train_h, sw, LINEAR_MAX_SAMPLES)
-                    _t0 = log_component_start(h, reg, "SGDLogLoss", len(X_sgd))
-                    sgd_model = SGDClassifier(
-                        loss="log_loss",
-                        penalty="elasticnet",
-                        alpha=0.0005,
-                        l1_ratio=0.05,
-                        max_iter=SGD_MAX_ITER,
-                        tol=1e-3,
-                        early_stopping=False,
-                        n_iter_no_change=5,
-                        average=True,
-                        random_state=48,
-                    )
-                    sgd_model.fit(X_sgd, y_sgd, sample_weight=sw_sgd)
-                    self.models_by_regime[reg]["sgd"][h] = sgd_model
-                    log_component_done(h, reg, "SGDLogLoss", _t0)
-                except Exception as e:
-                    logger.error(f"SGDLogLoss training failed for h={h} reg={reg}: {e}")
+                # (SGD retired in v6 — measured anti-signal, see MODEL_ROSTER_PLAN R2.
+                # Its linear seat stays with LR; its diversity seat went to TCN.)
 
                 # 5. Magnitude regressor
                 if Ymag and h in Ymag and len(Ymag[h]) >= split_idx:
@@ -825,16 +871,32 @@ class MultiModelEnsemble:
                         )
                         reg_mag.fit(X_reg, mag_target, sample_weight=sw_reg)
                         self.models_by_regime[reg]["mag"][h] = reg_mag
-                        
-                        # Conformal Residuals
-                        preds = reg_mag.predict(X_reg)
-                        residuals = mag_target - preds
+
+                        # Conformal residuals on the HELD-OUT slice (V5 §2.5b): residuals
+                        # on the model's own training rows made the band systematically
+                        # too narrow (overstating the "projects past the line" confidence).
+                        # Validation rows for this regime when HMM labels cover them;
+                        # falls back to in-sample (logged) when the held-out cut is thin.
+                        _val_idx = np.arange(split_idx, n_samples)
+                        if reg != "GLOBAL":
+                            _val_idx = (np.array([i for i in _val_idx
+                                                  if regime_labels[i] == reg], dtype=int)
+                                        if _use_hmm and len(regime_labels) >= n_samples
+                                        else np.array([], dtype=int))
+                        _conf_src = "held-out"
+                        if len(_val_idx) >= 200 and len(Ymag[h]) >= n_samples:
+                            _vp = reg_mag.predict(X_flat[_val_idx])
+                            residuals = np.asarray(Ymag[h])[_val_idx] - _vp
+                        else:
+                            residuals = mag_target - reg_mag.predict(X_reg)
+                            _conf_src = "in-sample-fallback"
                         self.conformal_residuals[reg][h] = {
                             "q25": float(np.quantile(residuals, 0.25)),
                             "q50": float(np.quantile(residuals, 0.50)),
                             "q75": float(np.quantile(residuals, 0.75)),
                         }
-                        log_component_done(h, reg, "MoveSizeRegressorFast_with_Conformal", _t0)
+                        log_component_done(
+                            h, reg, f"MoveSizeRegressorFast_conformal[{_conf_src}]", _t0)
                     except SkipComponent:
                         pass
                     except Exception as e:
@@ -853,12 +915,15 @@ class MultiModelEnsemble:
                         "xgb": (reg_store.get("xgb") or {}).get(h),
                         "histgb": (reg_store.get("histgb") or {}).get(h),
                         "lr": (reg_store.get("lr") or {}).get(h),
-                        "sgd": (reg_store.get("sgd") or {}).get(h),
                     }
                     if HAS_LGBM:
                         base_models["lgb"] = (reg_store.get("lgb") or {}).get(h)
                     if HAS_CATBOOST:
                         base_models["cat"] = (reg_store.get("cat") or {}).get(h)
+                    if HAS_TORCH:
+                        # v6: TCN gets a FULL stacker seat — the only architecturally
+                        # different learner; previously trained but never stacked.
+                        base_models["dl"] = (reg_store.get("dl") or {}).get(h)
 
                     valid_models = {k: v for k, v in base_models.items() if v is not None}
                     
@@ -884,7 +949,16 @@ class MultiModelEnsemble:
                                         class_to_local = {int(c): i for i, c in enumerate(fit_classes)}
                                         y_tr_local = np.array([class_to_local[int(c)] for c in y_tr_global])
 
-                                        fold_model = clone(base_est)
+                                        if name == "dl":
+                                            # The PyTorch wrapper isn't sklearn-clonable —
+                                            # build a fresh fold instance (half budget: the
+                                            # fold sets are small and refit 3x per bucket).
+                                            fold_model = type(model)(
+                                                model.input_dim, model.lookback,
+                                                epochs=max(6, int(model.epochs * 0.5)),
+                                                batch_size=model.batch_size)
+                                        else:
+                                            fold_model = clone(base_est)
                                         try:
                                             if isinstance(fold_model, xgb.XGBClassifier):
                                                 xgb_params = fold_model.get_params()
@@ -897,7 +971,12 @@ class MultiModelEnsemble:
                                                     "n_jobs": xgb_params.get("n_jobs", -1),
                                                     "random_state": xgb_params.get("random_state", 42),
                                                     "tree_method": xgb_params.get("tree_method", "hist"),
-                                                    "device": xgb_params.get("device", "cpu"),
+                                                    # The post-fit inference downgrade sets the saved
+                                                    # model's device to 'cpu' — inheriting it here kept
+                                                    # every OOF fold refit OFF the GPU (the stacker is
+                                                    # the single biggest training block). Train folds
+                                                    # on the probed device instead.
+                                                    "device": XGB_DEVICE,
                                                 }
                                                 if len(fit_classes) <= 2:
                                                     fold_model = xgb.XGBClassifier(
@@ -1126,7 +1205,7 @@ class MultiModelEnsemble:
 
     def _get_dynamic_weights(self, horizon: int, data_state: dict = None) -> dict:
         """Compute model weights dynamically based on backtest accuracy and real-time live performance, and regime."""
-        model_names = ["xgboost", "lightgbm", "catboost", "histgb", "dl", "lr", "sgd"]
+        model_names = ["xgboost", "lightgbm", "catboost", "histgb", "dl", "lr"]
         weights = {
             model_name: max(0.0, float(self.base_weights.get(model_name, 0.0)))
             for model_name in model_names
@@ -1167,7 +1246,7 @@ class MultiModelEnsemble:
                 live_boost = base * (live_acc / 0.5) if live_acc > 0 else base
                 if "TREND" in regime and model_name in ["xgboost", "lightgbm", "catboost"]:
                     live_boost *= 1.2
-                elif "RANGE" in regime and model_name in ["histgb", "dl", "sgd"]:
+                elif "RANGE" in regime and model_name in ["histgb", "dl"]:
                     live_boost *= 1.2
                 blended[model_name] = base * 0.3 + backtest_component * 0.4 + live_boost * 0.3
             weights = blended
@@ -1179,8 +1258,8 @@ class MultiModelEnsemble:
                 for model_name in ["xgboost", "lightgbm", "catboost"]:
                     weights[model_name] *= 1.1
             elif "RANGE" in regime:
-                for model_name in ["histgb", "dl", "sgd"]:
-                    weights[model_name] *= 1.1
+                for model_name in ["histgb", "dl"]:
+                    weights[model_name] *= 1.1  # (sgd removed in v6)
 
         # Learned regime-specific weights (from per-model-per-regime live accuracy).
         # When available these replace the hand-coded TREND/RANGE heuristic above with
@@ -1270,7 +1349,7 @@ class MultiModelEnsemble:
         # the caller's zero-sum safety net forces NEUTRAL on EVERY prediction — the model
         # never actually gets consulted. Route to GLOBAL whenever the chosen regime has
         # no usable models for this horizon.
-        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd"]
+        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
         _has_stacker = bool((self.stackers_by_regime.get(reg) or {}).get(horizon))
         _has_base = any(horizon in (store.get(n) or {}) for n in _base_names)
         if not _has_stacker and not _has_base and reg != "GLOBAL":
@@ -1338,7 +1417,6 @@ class MultiModelEnsemble:
             ("histgb", "histgb"),
             ("dl", "dl"),
             ("lr", "lr"),
-            ("sgd", "sgd"),
         ]:
             if horizon in store[name]:
                 try:
@@ -1373,7 +1451,7 @@ class MultiModelEnsemble:
         """Return each trained model's argmax direction for this regime."""
         reg = self._get_regime_from_state(data_state)
         store = self.models_by_regime.get(reg) or {}
-        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd"]
+        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
         # SAME GLOBAL fallback as _predict_from_regime: per-regime buckets (esp. VOLATILE)
         # are frequently empty (training skips <1000-sample regimes), but inference routes by
         # HMM label. Without this, _model_directions returns {} → agreement 0 → the meta-trust
@@ -1394,8 +1472,8 @@ class MultiModelEnsemble:
         """Pairwise concordance between models (1 = agree, 0 = disagree)."""
         pairs = [
             ("xgb", "lgb"), ("xgb", "cat"), ("xgb", "histgb"), ("xgb", "dl"), ("xgb", "lr"),
-            ("xgb", "sgd"), ("lgb", "cat"), ("lgb", "dl"), ("lgb", "sgd"), ("cat", "dl"),
-            ("cat", "sgd"), ("histgb", "lr"), ("histgb", "sgd"), ("dl", "lr"), ("lr", "sgd"),
+            ("lgb", "cat"), ("lgb", "dl"), ("cat", "dl"),
+            ("histgb", "lr"), ("dl", "lr"),
         ]
         out = {}
         for a, b in pairs:
@@ -1406,7 +1484,7 @@ class MultiModelEnsemble:
     def _agreement_threshold(self, model_count: int, min_fraction: float = 0.60) -> float:
         """
         Majority threshold adjusted for the number of available models.
-        Optional models such as CatBoost, PyTorch, and SGD change the denominator
+        Optional models such as CatBoost and PyTorch change the denominator
         honestly, so 4/7 and 5/7 are treated differently in the analysis UI.
         """
         if model_count <= 1:
@@ -1651,8 +1729,11 @@ class MultiModelEnsemble:
         # ~6x more than DOWN). Dividing each class prob by its training base-rate
         # (tempered by alpha) removes the systematic prior so the model will commit to
         # DOWN when the data warrants — without flattening genuine asymmetry to 50/50.
+        # RETIRED for class-balanced bundles (v5+): the loss-level fix already removes
+        # the prior; dividing balanced outputs by the DATA priors would re-bias them
+        # the opposite way. alpha=0 keeps the code path for A/B archaeology.
         priors = getattr(self, "class_priors", {}).get(h)
-        if priors and len(priors) == 3:
+        if priors and len(priors) == 3 and "classbal" not in MODEL_ARCH_VERSION:
             alpha = 0.5
             eps = 1e-3
             pd_, pn_, pu_ = priors  # [DOWN, NEUTRAL, UP] fractions
@@ -2217,19 +2298,18 @@ class MultiModelEnsemble:
             "histgb": True,
             "dl": HAS_TORCH,
             "lr": True,
-            "sgd": True,
         }
         trained_by_regime = {}
         for reg, stores in self.models_by_regime.items():
             trained_by_regime[reg] = {
                 name: len(stores.get(name, {}))
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd"]
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
             }
         move_size_prior_count = sum(len(hs) for hs in self.move_size_stats.values())
         return {
             "installed": installed,
             "trained_by_regime": trained_by_regime,
-            "available_model_keys": ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd"],
+            "available_model_keys": ["xgb", "lgb", "cat", "histgb", "dl", "lr"],
             "move_size_prior_count": move_size_prior_count,
             "catboost_available": HAS_CATBOOST,
             "torch_available": HAS_TORCH,
@@ -2248,7 +2328,7 @@ class MultiModelEnsemble:
             for reg in self.regimes:
                 reg_dir = os.path.join(MODEL_DIR, reg)
                 os.makedirs(reg_dir, exist_ok=True)
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd", "mag"]:
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
                     store = self.models_by_regime[reg][name]
                     for h in self.horizons:
                         if h in store:
@@ -2276,7 +2356,7 @@ class MultiModelEnsemble:
                 reg_dir = os.path.join(MODEL_DIR, reg)
                 if not os.path.exists(reg_dir):
                     continue
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd", "mag"]:
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
                     for h in self.horizons:
                         path = os.path.join(reg_dir, f"{name}_{h}.pkl")
                         if os.path.exists(path):
@@ -2352,7 +2432,7 @@ class MultiModelEnsemble:
                         MODEL_ARCH_VERSION,
                     )
                     for r in self.regimes:
-                        for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd", "mag"]:
+                        for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
                             self.models_by_regime[r][n].clear()
                     self.is_trained = False
                     return False
@@ -2367,7 +2447,7 @@ class MultiModelEnsemble:
                             except Exception as e:
                                 logger.warning(f"Saved models are incompatible with current features count: {e}. Purging saved models to trigger retraining.")
                                 for r in self.regimes:
-                                    for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "sgd", "mag"]:
+                                    for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
                                         self.models_by_regime[r][n].clear()
                                 self.is_trained = False
                                 return False

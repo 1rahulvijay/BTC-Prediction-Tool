@@ -207,6 +207,33 @@ class PriceToBeatTracker:
         rnd["seconds_left"] = secs_left
         rnd["live_lean"] = live_lean
         rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
+        # Magnitude FORECAST for the Polymarket card: the model's directional move-size
+        # regressor (conformal low/median/high band) projected onto a close estimate vs
+        # the price-to-beat. Lets the bettor see "expected drop/rise of ~$X" and whether
+        # that PROJECTS to clear the line, not just the UP/DOWN sign.
+        _emr = p.get("expectedMoveRange") or {}
+        if _emr.get("low") is not None and _emr.get("high") is not None:
+            rnd["expected_move_range"] = {
+                "low": round(float(_emr["low"]), 2),
+                "median": round(float(_emr.get("median") or live_exp or 0.0), 2),
+                "high": round(float(_emr["high"]), 2),
+            }
+            # Signed projection: which way the model leans × the magnitude, added to NOW.
+            _sgn = 1.0 if live_lean == "UP" else -1.0 if live_lean == "DOWN" else 0.0
+            if _sgn != 0.0 and live_exp is not None:
+                rnd["projected_close"] = round(ref_price + _sgn * abs(float(live_exp)), 2)
+                rnd["projected_vs_beat"] = round(rnd["projected_close"] - ptb, 2)
+                # p_up (A2-lite): P(close >= beat) ≈ Φ(edge/σ), σ from the conformal
+                # IQR (q75−q25 ≈ 1.349σ), floored so we never print false certainty.
+                # This is the number a Polymarket share is actually WORTH — compare
+                # it to the market's ask to see edge.
+                try:
+                    import math as _m
+                    _sigma = max(8.0, abs(float(_emr["high"]) - float(_emr["low"])) / 1.349)
+                    _edge = float(rnd["projected_close"]) - float(ptb)
+                    rnd["p_up"] = round(0.5 * (1.0 + _m.erf(_edge / (_sigma * _m.sqrt(2)))), 3)
+                except Exception:
+                    pass
         # PATH OUTLOOK — a plain-English "how will price travel vs the line" forecast:
         # built from the model's expected move vs the distance to the line, with odds from
         # MEASURED precision (expectedPrecision) when available, else the two-way prob.
@@ -214,26 +241,87 @@ class PriceToBeatTracker:
             cur_move, cur_pos, live_lean, p, rnd.get("lean_source"))
         rnd["advice"] = self._advice(rnd.get("our_direction", "NEUTRAL"),
                                      cur_pos, live_lean, secs_left, cur_move)
+        # COHERENCE override (operator-caught, 2026-06-12): when the path outlook says
+        # STRETCH — expected travel can't plausibly cover the gap to the line — the
+        # advice must NOT say "hold, reversal possible". The lean can be RIGHT about
+        # direction and still unable to cross in time; for THIS binary window that is
+        # a losing hold, and the math two boxes up already says so. Keep the boxes
+        # agreeing with each other.
+        _po = rnd.get("path_outlook") or {}
+        if _po.get("scenario") == "STRETCH" and isinstance(rnd.get("advice"), dict):
+            _gap = abs(float(cur_move or 0.0))
+            _trav = abs(float(live_exp)) if live_exp is not None else 0.0
+            # SIDE-AWARE (operator-caught bug, 2026-06-13): the outlook describes the
+            # LIVE lean. If that stretched lean IS the bet side → it can't cross →
+            # exit/skip. But if the bet side is the OPPOSITE one (lean flipped while
+            # the bet is ahead), the stretch means the OPPONENT is counted out — the
+            # held side is near-certain. The old text told a winning DOWN holder
+            # (ahead $91) to "exit; do not enter". Exactly backwards.
+            if rnd.get("our_direction") == live_lean:
+                rnd["advice"]["action"] = "EXIT / SKIP"
+                rnd["advice"]["tone"] = "bad"
+                rnd["advice"]["text"] = (
+                    f"Counted out for THIS window: typical travel ~${_trav:.0f} vs a "
+                    f"${_gap:.0f} gap with {secs_left}s left — the lean may be right about "
+                    f"direction but cannot cross the line in time. Exit if holding; do not enter."
+                )
+            elif (rnd.get("our_direction") in ("UP", "DOWN")
+                  and live_lean in ("UP", "DOWN") and rnd.get("our_direction") != live_lean):
+                rnd["advice"]["action"] = "HOLD — opponent counted out"
+                rnd["advice"]["tone"] = "good"
+                rnd["advice"]["text"] = (
+                    f"Your {rnd['our_direction']} side leads by ${_gap:.0f} and the flipped "
+                    f"{live_lean} lean only expects ~${_trav:.0f} of travel with {secs_left}s "
+                    f"left — it cannot cross back in time. Strong hold."
+                )
         # Weak-lean warning: a "fallback" lean is the two-way tilt of an otherwise-NEUTRAL
         # model — live evidence shows it's near coin-flip, unlike committed model leans.
         if rnd.get("lean_source") == "fallback" and isinstance(rnd.get("advice"), dict):
             rnd["advice"]["text"] = ("[Weak lean — model is near-neutral, side from probability "
                                      "tilt only. Best skipped as a bet.] ") + rnd["advice"].get("text", "")
         # Setup grade (Stage 3): surfaced in the advice so the bettor sees signal quality.
+        # LABELED as "live": this is the CURRENT prediction's grade and can legitimately
+        # differ from the grade-at-open shown in the card header (flows shift mid-round).
+        # Unlabeled, the two looked like a contradiction (header C vs advice A).
         cfl = p.get("confluence") or rnd.get("confluence")
         if isinstance(cfl, dict) and isinstance(rnd.get("advice"), dict):
-            rnd["advice"]["text"] += f" [Setup grade {cfl.get('grade')} ({cfl.get('score')}/5 confirmations.)]"
+            _open_g = (rnd.get("confluence") or {}).get("grade") if isinstance(rnd.get("confluence"), dict) else None
+            _live_g = cfl.get("grade")
+            _delta = (f", opened {_open_g}" if _open_g and _open_g != _live_g else "")
+            rnd["advice"]["text"] += f" [Live grade {_live_g} ({cfl.get('score')}/5{_delta}).]"
         # Stage-4 LATE ENTRY: with little time left and price already ahead on the leaned
         # side, the bet becomes "no reversal in N seconds" — conditional win probability is
         # far higher than at window open (the most reliable 80%+ mechanism that exists).
         # The share price reflects some of this; the flag marks the favorable structure.
+        # Late-entry window scales with the horizon (fixed 15-120s covered nearly a
+        # whole 1m round once the 1m/3m practice mirrors were added): final ~40% of
+        # the window, capped at 120s; min-ahead distance softer for the fast mirrors.
+        _h_secs = int(rnd.get("horizon", 5)) * 60
+        _late_win = min(120, int(_h_secs * 0.4))
+        _min_ahead = 10.0 if rnd.get("horizon", 5) >= 5 else 5.0
+        # ⚡ gated to COMMITTED model leans (2026-06-13): flagging late-entry on a
+        # ⚠ fallback lean put "persistence odds strongly favor X" on a card whose
+        # own badge says "WEAK — skip". Contradictory coaching; model leans only.
         late = (live_lean in ("UP", "DOWN") and cur_pos == live_lean
-                and 15 < secs_left <= 120 and abs(cur_move) >= 10.0)
+                and rnd.get("lean_source") == "model"
+                and 15 < secs_left <= _late_win and abs(cur_move) >= _min_ahead)
         rnd["late_entry"] = bool(late)
         if late and isinstance(rnd.get("advice"), dict):
             rnd["advice"]["text"] += (f" [LATE-ENTRY WINDOW: {secs_left}s left, already "
                                       f"{cur_move:+.0f} on the {live_lean} side and the model still "
                                       f"agrees — persistence odds strongly favor {live_lean}.]")
+        # EARLY-EXIT hint (A13, from the repo scan): when one side is near-certain by
+        # p_up, SELLING at ~that price captures nearly the whole win and deletes 100%
+        # of the tail risk — every profitable external bot monetizes the path, not
+        # just resolution. Decision-support text only.
+        _pu = rnd.get("p_up")
+        if _pu is not None and isinstance(rnd.get("advice"), dict):
+            if _pu >= 0.97 and rnd.get("our_direction") == "UP":
+                rnd["advice"]["text"] += (f" [EXIT-EDGE: UP ≈{_pu*100:.0f}% — if holding UP shares, "
+                                          f"selling near {_pu*100:.0f}¢ locks the win without tail risk.]")
+            elif _pu <= 0.03 and rnd.get("our_direction") == "DOWN":
+                rnd["advice"]["text"] += (f" [EXIT-EDGE: DOWN ≈{(1-_pu)*100:.0f}% — if holding DOWN shares, "
+                                          f"selling near {(1-_pu)*100:.0f}¢ locks the win without tail risk.]")
 
     @staticmethod
     def _path_outlook(cur_move: float, cur_pos: str, lean: str, p: dict,
