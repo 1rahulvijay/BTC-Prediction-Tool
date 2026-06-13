@@ -4,13 +4,69 @@ Options (Deribit), CME Basis proxy, Stablecoin Flows, On-Chain Exchange Flows.
 Each feed is an async poller with graceful fallback to neutral values.
 """
 
+import datetime as _dt
 import logging
+import math
 import time
 from typing import Optional
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+
+def _bs_gamma(S: float, K: float, T: float, sigma: float) -> float:
+    """Black-Scholes gamma (r=0, fine for crypto). 0 for degenerate inputs.
+    gamma = phi(d1) / (S*sigma*sqrt(T)); phi = standard-normal pdf (math only, no scipy)."""
+    if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+        return 0.0
+    try:
+        d1 = (math.log(S / K) + 0.5 * sigma * sigma * T) / (sigma * math.sqrt(T))
+        pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
+        return pdf / (S * sigma * math.sqrt(T))
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def compute_gex(instruments: list, now_ms: int) -> dict:
+    """Net dealer Gamma EXposure ($ per 1% move) from a Deribit BTC option book summary.
+
+    Calls +, puts - (naive dealer convention: long calls / short puts). Positive GEX =
+    dealers long gamma -> they fade moves -> price pins / mean-reverts; negative GEX =
+    dealers short gamma -> they chase moves -> trending/explosive. This is a REGIME
+    signal that is NOT price- or order-book-derived (the kind of new information that can
+    move the model off the coin-flip ceiling). BS gamma computed analytically from the
+    fields the book-summary already returns (OI, mark_iv, underlying, strike, expiry) —
+    no per-instrument ticker call."""
+    net_g = 0.0   # signed Sum gamma*OI (calls +, puts -)
+    abs_g = 0.0   # Sum |gamma|*OI (total positioning magnitude)
+    spot = 0.0
+    now_s = now_ms / 1000.0
+    for inst in instruments:
+        try:
+            name = inst.get("instrument_name", "")
+            parts = name.split("-")          # BTC-28JUN24-70000-C
+            if len(parts) < 4:
+                continue
+            S = float(inst.get("underlying_price", 0) or 0)
+            if S > 0:
+                spot = S
+            oi = float(inst.get("open_interest", 0) or 0)
+            sigma = float(inst.get("mark_iv", 0) or 0) / 100.0
+            K = float(parts[2])
+            is_call = parts[3].upper().startswith("C")
+            exp = _dt.datetime.strptime(parts[1].title(), "%d%b%y").replace(
+                tzinfo=_dt.timezone.utc, hour=8)   # Deribit expiry = 08:00 UTC
+            T = (exp.timestamp() - now_s) / (365.25 * 86400.0)
+            g = _bs_gamma(S, K, T, sigma)
+            net_g += g * oi * (1.0 if is_call else -1.0)
+            abs_g += g * oi
+        except (ValueError, IndexError, KeyError):
+            continue
+    scale = spot * spot * 0.01     # dollar-gamma per 1% move
+    return {"gex": round(scale * net_g, 2),
+            "total_gamma": round(scale * abs_g, 2),
+            "spot": round(spot, 2)}
 
 
 class DeribitOptionsClient:
@@ -28,6 +84,8 @@ class DeribitOptionsClient:
             "skew_25d": 0.0,
             "max_pain": 0.0,
             "atm_iv": 0.0,
+            "gex": 0.0,            # net dealer gamma exposure ($/1% move)
+            "total_gamma": 0.0,    # total gamma positioning magnitude
             "last_update": 0,
         }
 
@@ -119,6 +177,14 @@ class DeribitOptionsClient:
                 call_iv = self._closest_iv(iv_by_strike, call_strike)
                 if put_iv > 0 and call_iv > 0:
                     self.data["skew_25d"] = round(put_iv - call_iv, 4)
+
+        # Net dealer gamma exposure (regime signal; analytic BS gamma, no extra API call).
+        try:
+            _g = compute_gex(instruments, int(time.time() * 1000))
+            self.data["gex"] = _g["gex"]
+            self.data["total_gamma"] = _g["total_gamma"]
+        except Exception as _ge:
+            logger.debug(f"GEX compute skipped: {_ge}")
 
         self.data["last_update"] = time.time()
         return self.data

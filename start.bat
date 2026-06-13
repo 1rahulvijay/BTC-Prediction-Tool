@@ -14,7 +14,12 @@ REM   1  = ~24h DEBUG smoke-test only (fast, NOT accurate).
 REM HEADS-UP: a MULTI-HOUR train (overnight), and the TREND/RANGE/VOLATILE regime buckets
 REM train too. The dashboard stays usable throughout (non-blocking boot). The
 REM microstructure features only fill from UPTIME, so after training, LEAVE IT RUNNING.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=50"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=60"
+REM === DATA BACKFILL WINDOW (DAYS) =======================================
+REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
+REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
+REM set BTC_BACKFILL_DAYS=60  (or 90) here or in the environment — all scripts follow it.
+if not defined BTC_BACKFILL_DAYS set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
 REM =======================================================================
 REM Run a validation backtest automatically on startup (1 = on, 0 = off).
 REM It runs in the BACKGROUND after the app is ready, so it does not block live trading.
@@ -69,12 +74,23 @@ REM   - After that: only the days since the last run (usually ~1 day, fast).
 REM   - Already current: instant no-op.
 REM Set BTC_SKIP_BACKFILL=1 to skip (e.g. offline). A failure NEVER blocks the
 REM app — the overlay just falls back to whatever history already exists.
+REM All three offline data builders run BEFORE the app, incrementally (--auto only fetches
+REM days missing since the last run). First-ever run downloads the full %BTC_HISTORICAL_DAYS%-day
+REM window per source (multi-GB, slow ONCE); afterwards each is a fast ~1-day top-up or no-op.
+REM They share data\backfill_cache\ (spot CSVs are reused across builders). A failure NEVER
+REM blocks the app. Set BTC_SKIP_BACKFILL=1 to skip all three (offline).
 if "%BTC_SKIP_BACKFILL%"=="1" (
-    echo [0/3] Backfill skipped: BTC_SKIP_BACKFILL=1.
+    echo [0/3] Data backfills skipped: BTC_SKIP_BACKFILL=1.
 ) else (
-    echo [0/3] Updating trade-feature backfill data...
-    python backend\backfill_trade_features.py --auto --days %BTC_HISTORICAL_DAYS%
-    if errorlevel 1 echo [0/3] Backfill failed - continuing with existing data.
+    echo [0/3] a. Updating trade-feature backfill - CVD/VPIN/large-trade...
+    python backend\backfill_trade_features.py --auto --days %BTC_BACKFILL_DAYS%
+    if errorlevel 1 echo [0/3a] Trade-feature backfill failed - continuing with existing data.
+    echo [0/3] b. Updating A1 persistence dataset - late-entry/T3 engine...
+    python backend\build_persistence_dataset.py --auto --days %BTC_BACKFILL_DAYS%
+    if errorlevel 1 echo [0/3b] Persistence build failed - continuing.
+    echo [0/3] c. Updating A4 cross-venue flow - spot-vs-perp divergence...
+    python backend\build_crossvenue_flow.py --auto --days %BTC_BACKFILL_DAYS%
+    if errorlevel 1 echo [0/3c] Cross-venue build failed - continuing.
 )
 REM =======================================================================
 

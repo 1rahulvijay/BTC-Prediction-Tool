@@ -174,6 +174,7 @@ async def lifespan(app: FastAPI):
     ws_client.on("kline", handle_kline)
     coinbase_client.on("ticker", handle_coinbase_ticker)
     futures_ws_client.on("liquidation", handle_liquidation)
+    futures_ws_client.on("perp_bar", handle_perp_bar)   # A4 live perp-CVD parity recorder
     cross_asset_client.on("cross_asset_trade", handle_cross_asset_trade)
     cross_asset_client.on("cross_asset_depth", handle_cross_asset_depth)
     cross_asset_client.on("cross_asset_kline", handle_cross_asset_kline)
@@ -856,6 +857,16 @@ def handle_coinbase_ticker(ticker: dict) -> None:
         binance_price = data_state["klines"][-1]["close"]
         coinbase_price = ticker["price"]
         data_state["coinbase_premium"] = coinbase_price - binance_price
+
+
+def handle_perp_bar(bar: dict) -> None:
+    """A4 parity recorder: persist one finalized live perp-CVD 1m bar. Crash-safe — a logging
+    failure must never affect the feed. Spot leg already lives in trade_features; this fills the
+    perp leg so a future retrain can add the spot-vs-perp divergence feature with train/serve parity."""
+    try:
+        database.log_perp_cvd_bar(bar["ts"], bar["cvd_perp"], bar["vol_perp"], bar["perp_price"])
+    except Exception as e:
+        logger.debug(f"perp-cvd bar log skipped: {e}")
 
 
 def handle_liquidation(liq: dict) -> None:
@@ -2642,6 +2653,20 @@ async def main_loop():
                                 _feature_logged = True
                             except Exception as _fe:
                                 logger.debug(f"B1 feature-vector log skipped: {_fe}")
+                            # GEX recorder (start the clock on options positioning) —
+                            # once per cycle, same guard. Crash-safe; never affects serving.
+                            try:
+                                _od = deribit_client.data
+                                database.log_gex(
+                                    now_ms,
+                                    float(_od.get("gex", 0.0) or 0.0),
+                                    float(_od.get("total_gamma", 0.0) or 0.0),
+                                    float(current_price),
+                                    float(_od.get("put_call_ratio", 0.0) or 0.0),
+                                    float(_od.get("atm_iv", 0.0) or 0.0),
+                                )
+                            except Exception as _gle:
+                                logger.debug(f"GEX log skipped: {_gle}")
 
                         # Durably log A/B variant predictions for this recorded id.
                         ab_runner.persist(pred_id, h, now_ms)

@@ -130,7 +130,7 @@ class BinanceFuturesWebSocketClient:
     """Connects to Binance Futures WebSocket stream for Liquidations."""
 
     FUTURES_WS = "wss://fstream.binance.com/stream"
-    STREAMS = ["btcusdt@forceOrder"]
+    STREAMS = ["btcusdt@forceOrder", "btcusdt@aggTrade"]
 
     def __init__(self):
         self.ws = None
@@ -138,8 +138,16 @@ class BinanceFuturesWebSocketClient:
         self.callbacks: dict[str, list[Callable]] = {
             "liquidation": [],
             "status": [],
+            "perp_bar": [],   # A4 parity: one finalized 1m perp-CVD bar per minute
         }
         self.reconnect_delay = 1.0
+        # A4 live PERP-CVD accumulator (parity twin of build_crossvenue_flow's per-bar CVD;
+        # same sign convention: taker-buy (is_buyer_maker=False) positive).
+        self._pb_ms = None   # None = no bar open yet (a real bar_ms is never None)
+        self._pb_cvd = 0.0
+        self._pb_vol = 0.0
+        self._pb_last = 0.0
+        self.last_perp_bar = None
 
     def on(self, event: str, callback: Callable):
         if event in self.callbacks:
@@ -151,6 +159,26 @@ class BinanceFuturesWebSocketClient:
                 cb(data)
             except Exception as e:
                 logger.error(f"Callback error for {event}: {e}")
+
+    def _ingest_perp_trade(self, price: float, qty: float, m: bool, T: int):
+        """Accumulate PERP CVD per clock-aligned 1m bar; emit the finalized bar on rollover.
+        Sign convention: taker-buy (is_buyer_maker False) positive — IDENTICAL to
+        build_crossvenue_flow._per_bar, so live == offline (train/serve parity)."""
+        bar = (T // 60_000) * 60_000
+        if self._pb_ms is None:
+            self._pb_ms = bar
+        elif bar != self._pb_ms:
+            self.last_perp_bar = {
+                "ts": self._pb_ms, "cvd_perp": round(self._pb_cvd, 4),
+                "vol_perp": round(self._pb_vol, 4), "perp_price": self._pb_last,
+            }
+            self._emit("perp_bar", self.last_perp_bar)
+            self._pb_ms = bar
+            self._pb_cvd = 0.0
+            self._pb_vol = 0.0
+        self._pb_cvd += (-qty if m else qty)
+        self._pb_vol += qty
+        self._pb_last = price
 
     async def connect(self):
         self.running = True
@@ -182,6 +210,10 @@ class BinanceFuturesWebSocketClient:
                                         "time": o.get("T"),
                                     },
                                 )
+                            elif stream == "btcusdt@aggTrade":
+                                self._ingest_perp_trade(
+                                    float(data["p"]), float(data["q"]),
+                                    bool(data["m"]), int(data["T"]))
                         except Exception:
                             pass
             except Exception as e:

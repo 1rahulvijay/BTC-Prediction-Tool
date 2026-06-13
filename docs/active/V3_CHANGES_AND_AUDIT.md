@@ -1559,6 +1559,99 @@ This is the data source for A1 (the T3 95%-precision engine) and A1-ext (path la
 B1 (full feature vectors by ts), a future retrain has both the microstructure features AND the
 intra-window persistence trajectories.
 
+## 5be. Offline data-collection pipeline built + VALIDATED (2026-06-13) — no retrain, no uptime
+
+Operator: build the offline backfill scripts, validate them, apply the same pattern across all
+collectors, document everything. Goal = reconstruct the retrain data from archived history instead of
+weeks of live uptime.
+
+**Built (2 new scripts) + validated end-to-end on a real day (2026-06-12):**
+- `build_persistence_dataset.py` (A1) → `persistence_dataset.parquet`. Replays tick-level SPOT
+  aggTrades → intra-window snapshots `(distance, seconds_left, position, vol_60s_pct) → held`. VALID:
+  787k trades → 31,924 snapshots; **late-entry (≤60s, ≥$10 ahead) held 90.8%/95.1%/94.8%/97.2% at
+  5/7/10/15m** — the T3 95%-tier signal, visible in one day of real data.
+- `build_crossvenue_flow.py` (A4) → `crossvenue_flow.parquet`. Binance SPOT-vs-PERP per-1m-bar
+  `cvd_spot/cvd_perp/cvd_divergence/perp_spot_basis_bps`. VALID: spot 787k + perp 1.40M trades → 1,440
+  bars; basis ~−5 bps (persistent), cvd_divergence ±300. Chose spot-vs-perp over Coinbase/Bybit because
+  perp aggTrades ARE archived (Coinbase has no bulk history → would re-create the train/serve gap).
+- `backfill_trade_features.py` (existing) re-validated: 787k → 1,440 bars, CVD/VPIN non-zero/varied.
+
+Both new builders follow the existing keystone pattern (reuse `download_day`/`load_aggtrades`,
+`--validate DATE` dry-run, testable pure core unit-tested on synthetic data, parquet out). Synthetic
+core tests PASS for both; real-day validates PASS.
+
+**PARITY TODO (documented):** `crossvenue_flow` needs a live Binance futures-aggTrade recorder
+(same per-bar CVD) BEFORE its columns go into `FEATURE_NAMES` — else constant in serving. A1 already
+has its live twin (`persistence_snapshot`). B1's L2 subset has no offline twin (not archived).
+
+**Docs:** new [DATA_COLLECTORS.md](DATA_COLLECTORS.md) (unified registry of all collectors, offline +
+live, with the standard pattern + parity rules) and [RETRAIN_RUNBOOK.md](RETRAIN_RUNBOOK.md) (the
+60–90 day staged retrain). No serving-loop changes; no schema bump; no retrain.
+
+## 5bf. Live perp-CVD recorder (A4 parity) + start.bat data knob (2026-06-13) — activates on restart
+
+**Live perp-CVD recorder** — the parity twin for `build_crossvenue_flow.py`. The spot leg is already
+live (trade_features keystone); this fills the missing PERP leg so the spot-vs-perp divergence can
+later become a model feature with train/serve parity. NO schema bump — it records to a side table now.
+- `data_ingestion.py BinanceFuturesWebSocketClient`: added `btcusdt@aggTrade` to STREAMS + a testable
+  `_ingest_perp_trade()` that accumulates per-clock-1m-bar perp CVD (taker-buy positive — IDENTICAL
+  sign to the offline `_per_bar`) and emits a `perp_bar` on rollover. Sentinel is `None` (a real
+  bar_ms is never None) so a bar_ms of 0 can't collide.
+- `database.py`: `perp_cvd_live(ts PK, cvd_perp, vol_perp, perp_price)` + crash-safe
+  `log_perp_cvd_bar` (INSERT OR IGNORE dedup).
+- `server.py`: `handle_perp_bar` + `futures_ws_client.on("perp_bar", handle_perp_bar)` (mirrors
+  `handle_liquidation`). Crash-guarded.
+- VERIFIED: live accumulator emits the right bar; **PARITY live==offline CVD**; DB table+dedup; all
+  backend parses. At retrain: UNION `perp_cvd_live` + `crossvenue_flow.parquet` → the divergence feature.
+
+**start.bat data knob** — new `BTC_BACKFILL_DAYS` (defaults to `BTC_HISTORICAL_DAYS`) drives all three
+offline builders. Set it to 60/90 and every collector adjusts. Verified `--auto` math earlier.
+
+## 5bg. GEX (dealer gamma) recorder + backfillable feature plan (2026-06-13)
+## — NO retrain, NO schema bump; recorder activates on next restart
+
+Operator: build the highest-value NEW signal (Deribit GEX) + queue the backfillable
+features. Rationale (from external data-source research + the ceiling diagnosis): more
+L2-derived features are dead weight until L2 history exists; the features that actually
+help are NON-price, NON-L2 *new information* — and GEX (options dealer positioning) is
+the standout, sourceable now.
+
+**GEX recorder — BUILT + VALIDATED.** Net dealer Gamma EXposure ($/1% move): calls +,
+puts − (positive=dealers long gamma→price pins/mean-reverts; negative=short gamma→
+trending/explosive — a REGIME signal that is neither price- nor order-book-derived).
+- `institutional_feeds.py`: `_bs_gamma` (analytic Black-Scholes gamma, math-only, no
+  scipy) + `compute_gex(instruments, now_ms)` — reuses the EXISTING `get_book_summary`
+  fetch (OI, mark_iv, underlying, strike, expiry); NO per-instrument ticker call. Wired
+  into `fetch_options_summary` → `self.data["gex"]`/`["total_gamma"]` (guarded).
+- `database.py`: side table `gex_live(ts PK, gex, total_gamma, spot, pcr, atm_iv)` +
+  crash-safe `log_gex` (INSERT OR IGNORE dedup). NO FEATURE_NAMES change → frozen v6 model
+  unaffected; a future retrain aligns on ts to add GEX as a slowly-varying feature.
+- `server.py`: logs GEX once per recording cycle right after the B1 hook, guarded by
+  try/except (a logging failure can never affect serving). `deribit_client` is a module
+  global; all vars in scope → no unbound risk (the §5av lesson applied).
+- VERIFIED: ATM gamma > OTM > 0, degenerate→0; call-heavy book → +GEX, put-heavy → −GEX,
+  empty/garbage → safe zeros; DB round-trip + dedup. pyflakes clean, all compile.
+- Backfill note: real-time OI/IV is only CURRENT from the free book-summary, so GEX is a
+  LIVE-accumulation signal (start-the-clock, like B1's L2) — Deribit history/vendor could
+  backfill later. Activates on next restart; confirm `SELECT COUNT(*) FROM gex_live`.
+
+**Backfillable feature additions — QUEUED for the next retrain** (added to RETRAIN_RUNBOOK
+Phase 1; NOT added to features.py now because that bumps the schema → breaks the frozen
+model → forces a retrain). All non-L2, so they actually get learned (unlike L2 dead weight):
+- `variance_ratio` (var(k-ret)/(k·var(1-ret))) — mean-revert vs trend; kline-derived, free.
+- price-efficiency: permanent-vs-temporary impact, return autocorrelation — from aggTrades.
+- `rv_term_structure`, A8 session/time, funding×momentum — already in the runbook.
+These join the C1/C2 backfillable bundle (the cheapest "new edge" retrain).
+
+## 5bh. start.bat syntax fix (2026-06-13) — "Updating was unexpected at this time"
+
+The §5bf three-builder backfill block used unescaped `(a)`/`(b)`/`(c)` labels inside the
+`else ( ... )` block → cmd's block parser hit the stray `)` and aborted with
+"Updating was unexpected at this time" (boot never started). Python was validated that
+session but the Windows cmd parsing of the .bat wasn't. Fix: removed ALL parens from
+those three echo lines (`(a)`→`a.`, and the `^(...^)` descriptors → ` - ...`). Lesson:
+test .bat edits on the actual cmd shell, not just the Python they call.
+
 ## 6. Known limitations / honest notes
 - `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
   fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing

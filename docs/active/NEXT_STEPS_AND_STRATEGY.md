@@ -83,6 +83,60 @@ you can't bet becomes a small number of calls you can.
 - No touching the regime gate mid-measurement (it's working; changing it resets evidence).
 - No betting-layer work (fair value, penny-sniper) until the precision tier is proven.
 
+## 8. Stacker / new models / transformer / "another ensemble?" — the decision
+
+**Q: another ensemble, or extend the existing stacker?** → **Extend the ONE stacker.** Documented
+consensus (MODEL_ROSTER_PLAN §6): the stacker IS the ensemble-combiner; new models join it via OOF
+features, NOT as a parallel app. A second ensemble = duplicated complexity, no clear gain, harder to
+combine. Current seats (v6): xgb, lgb, cat, histgb, lr, **dl/TCN (now a FULL stacker seat)**.
+
+**Q: add a transformer?** → **Not yet — and there's a hard gate.** Transformers are data-hungry; at
+~46k samples (50d of 1m bars) one will overfit and lose to the trees. Sequence: (1) the 90-day window
+(~130k samples) + new features land, (2) **measure v6's TCN stacker contribution** — TCN is the cheap
+proxy for "do sequence models pay here?". If TCN shows decorrelated lift → a SMALL patch-attention
+encoder is the next candidate (added to the existing stacker). If TCN shows nothing → sequence models
+don't pay at this scale; no transformer, no LSTM/GRU (they'd be TCN-flavored clones). **Don't add a
+transformer speculatively.**
+
+**Q: what models to add?** → NOT more trees (xgb/lgb/cat/histgb already move as one block — clones add
+robustness, not diversity). The only genuinely decorrelated candidates: **(a) the kNN setup-fingerprint
+voter (A10-voter)** — memory-based, truly different — after A10 fingerprints exist; **(b) the
+transformer**, gated as above. Each enters as a challenger and earns its seat only on held-out
+sign-truth lift.
+
+**Q: what data elements to add?** (all at the retrain, schema-bumping):
+- **A4 spot-vs-perp flow** (`crossvenue_flow.parquet` ✅ collected) — needs its live perp-CVD twin first.
+- **A8 time/session** + **rv_term_structure** — cheap, backfillable, zero parity risk.
+- **L2 depth** (slots ~52–72) — already wired but constant-in-training; activates via live B1.
+- **★ A1 `P(hold)` as a FEATURE** into the main stacker — feed the persistence model's output back in
+  so the direction model can use "this setup historically holds" as a signal. High-value, novel.
+
+### Additional feature-matrix candidates (curated — new information, NOT TA reshuffles)
+All appended at the retrain (schema bump). B = backfillable now / L = live-only.
+
+| Candidate | Why it has edge | Source |
+|---|---|---|
+| **taker_buy_ratio** (1m/5m) | aggressive-flow imbalance leads price; cleaner than raw CVD | B (aggTrades) |
+| **perp_spot_basis_bps + cvd_divergence** | perp leads spot; funding tension precedes reversion | B ✅ (built: cross-flow) |
+| **oi_price_divergence** | OI↑+price↓ = shorts loading; OI↑+price↑ = strong trend | B (futures OI history) |
+| **funding_sign_flip / funding_regime** | funding flips = sentiment turn | B (funding history) |
+| **liquidation_momentum** (signed cascade) | liq cascades ARE the 5m move | L (forceOrder) + partial B |
+| **price_acceleration / jerk** (2nd/3rd deriv) | momentum dynamics, not level | B (klines, free) |
+| **vol_of_vol** (std of rv) | regime instability / breakout precursor | B (klines, free) |
+| **trade_size_entropy / whale_ratio** | informed flow concentration | B (aggTrades) |
+| **L2 depth slope / wall imbalance** (multi-level) | resting liquidity shapes the next minutes | L (depth20) |
+| **ETH/SOL lead-lag + corr regime** | alt moves often lead BTC micro-moves | B (cross-asset trades) |
+
+Priority for the next retrain (highest marginal edge, backfillable): **taker_buy_ratio,
+oi_price_divergence, funding_regime, price_acceleration, vol_of_vol** — all free-or-cheap and
+parity-safe. The L2/liquidation ones ride the live B1/recorder path for a later retrain.
+
+## 9. start.bat — all three offline builders auto-run on boot (2026-06-13)
+`[0/3]` now runs, in order and incrementally (`--auto`, only missing days; first run full, then ~1-day
+top-ups), all guarded by `BTC_SKIP_BACKFILL` and non-blocking: (a) `backfill_trade_features.py`,
+(b) `build_persistence_dataset.py`, (c) `build_crossvenue_flow.py`. They share `data\backfill_cache\`.
+So a normal app start keeps all three datasets current for the eventual retrain with zero extra steps.
+
 ## 7. Verification status (deep scan 2026-06-13 — all PASS)
 All session work verified end-to-end against a throwaway DB: `init_db` creates the new tables; B1
 logs 130-float vectors; `persist=True` tracker writes rounds+snapshots while `persist=False` (Binance

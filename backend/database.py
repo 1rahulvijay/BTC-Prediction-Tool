@@ -360,6 +360,33 @@ def init_db():
             features DOUBLE[]
         )
     """)
+    # A4 (2026-06-13): live PERP per-1m-bar CVD — the parity twin of build_crossvenue_flow's
+    # offline perp leg (spot leg already covered by trade_features live+backfill). UNION live +
+    # offline at retrain to form the spot-vs-perp divergence feature. NOT yet a model feature
+    # (no schema bump) — recording first so a future retrain can add the slots with parity.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS perp_cvd_live (
+            ts BIGINT PRIMARY KEY,
+            cvd_perp DOUBLE,
+            vol_perp DOUBLE,
+            perp_price DOUBLE
+        )
+    """)
+    # GEX (2026-06-13): net dealer gamma exposure from Deribit BTC options — a REGIME
+    # signal (positive=pinned/mean-reverting, negative=trending/explosive) that is NOT
+    # price- or order-book-derived. Logged ~once per recording cycle. A future retrain
+    # adds it as a slowly-varying feature (its live==serve value IS the recorded one, so
+    # train/serve parity holds once it's in FEATURE_NAMES). NO schema bump now (side table).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gex_live (
+            ts BIGINT PRIMARY KEY,
+            gex DOUBLE,
+            total_gamma DOUBLE,
+            spot DOUBLE,
+            pcr DOUBLE,
+            atm_iv DOUBLE
+        )
+    """)
     # A1 (2026-06-13): intra-window persistence snapshots for the late-entry/T3 model —
     # "price is `distance` past the line with `seconds_left` s left, on `position` side:
     # does it HOLD to close?". Logged ~every 15s per open round from the Pyth (settlement)
@@ -507,6 +534,43 @@ def log_exchange_verification(timestamp: int, horizon: int, direction: str,
         """, (timestamp, horizon, direction, confirmed, checked, rate, _json.dumps(venues)))
     except Exception as e:
         print(f"DuckDB Exchange Verify Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_perp_cvd_bar(ts: int, cvd_perp: float, vol_perp: float, perp_price: float):
+    """A4: persist one finalized live PERP 1m-bar CVD (parity twin of the offline cross-flow
+    perp leg). INSERT OR IGNORE dedupes a re-emitted bar. Crash-safe."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR IGNORE INTO perp_cvd_live (ts, cvd_perp, vol_perp, perp_price)
+            VALUES (?, ?, ?, ?)
+        """, (int(ts), float(cvd_perp), float(vol_perp), float(perp_price)))
+    except Exception as e:
+        print(f"DuckDB perp-cvd Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_gex(ts: int, gex: float, total_gamma: float, spot: float,
+            pcr: float, atm_iv: float):
+    """Persist one net-dealer-gamma-exposure sample (+ PCR/ATM-IV context). INSERT OR
+    IGNORE dedupes the once-per-cycle ts key. Crash-safe — a logging failure must never
+    affect serving. A future retrain joins/aligns on ts to add GEX as a feature."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR IGNORE INTO gex_live (ts, gex, total_gamma, spot, pcr, atm_iv)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (int(ts), float(gex), float(total_gamma), float(spot),
+              float(pcr), float(atm_iv)))
+    except Exception as e:
+        print(f"DuckDB GEX Insert Error: {e}")
     finally:
         if conn:
             conn.close()
