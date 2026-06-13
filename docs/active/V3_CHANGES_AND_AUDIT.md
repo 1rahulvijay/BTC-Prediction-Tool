@@ -1945,6 +1945,31 @@ Companions built this session (all no-train, independent): `seq_model_feasibilit
 Transformer fit + decorrelation gate, V8 theme 5) and `composed_decision_scorecard.py` (the
 end-to-end gated-decision metric). See [V10_ROADMAP.md](V10_ROADMAP.md) PART 4 + INTEGRATION_AND_METRICS.
 
+## 5bu. Real-data prediction dump + LIVE shadow lane (2026-06-13) — independent, no app touch
+## — the operator's "test the models on real/live data without polluting the app" request, delivered
+
+Two tangible real-data test artifacts, both independent (no serving touch, no DuckDB, no restart):
+- **Per-window backtest predictions** (`model_bakeoff.py --dump-predictions` →
+  `data/model_bakeoff_predictions.parquet`, **310,998 rows**: timestamp/horizon/model/p_up/actual_up
+  on the held-out unseen windows). Row-level confirmation of §5bt: at **5m & 15m every model's
+  directional accuracy is ~0.505–0.516** and they commit (p≥0.6) almost never (logistic 3, mlp 1,
+  histgb 16, lgb 28 of ~8,639) — calibrated to the slight down-lean, ~zero discrimination, barely
+  beating the constant baseline. The coin-flip is real at the individual-prediction level, not an
+  averaging artifact.
+- **Live shadow predictor** (`shadow_live_predictor.py --start --hours N`): a SEPARATE process on its
+  OWN public Binance REST feed (read-only) + OWN model file/output (`data/shadow/`). Trains the light
+  models, then each minute predicts P(up over next 1–15m) per model and self-resolves vs the realized
+  price → `data/shadow/shadow_live_resolved.parquet`. It never opens the app's DuckDB/serving and
+  needs NO restart. Self-tested (predict + resolution logic) + Binance REST reachability confirmed;
+  ran ~10h overnight 2026-06-13. The LIVE analog of the backtest (expect the same coin-flip); its
+  lasting value is the reusable **shadow-lane template** for promoting a future (post-V8, L2/order-
+  flow) model — shadow-test it live BEFORE it ever touches the real app.
+
+These close the loop on the model research: backtest metrics (§5bt) + per-window real-data calls +
+live shadow all agree — **no model family is the missing piece; information (live L2/order-flow,
+which B1 is accruing) is.** Free-L2 sourcing options (incl. the Binance futures `bookDepth` public
+lead to feasibility-check) are recorded in [DATA_COLLECTORS.md](DATA_COLLECTORS.md).
+
 ## 6. Known limitations / honest notes
 - `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
   `order_flow.py` was aligned to the backfill's fixed equal-volume buckets

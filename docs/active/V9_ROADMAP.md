@@ -2,7 +2,7 @@
 
 Comprehensive record of the 2026-06-13 work: what was built/modified, what was deliberately NOT
 implemented (and why), and the forward path V7 → V8 → V9. Companion to [V8_ROADMAP.md](V8_ROADMAP.md)
-(detailed V8 themes) and the change-audit [V3_CHANGES_AND_AUDIT.md](V3_CHANGES_AND_AUDIT.md) §5ba–§5bt.
+(detailed V8 themes) and the change-audit [V3_CHANGES_AND_AUDIT.md](V3_CHANGES_AND_AUDIT.md) §5ba–§5bu.
 
 ---
 
@@ -45,7 +45,7 @@ implemented (and why), and the forward path V7 → V8 → V9. Companion to [V8_R
 ### Infra & docs
 - `start.bat`: `BTC_BACKFILL_DAYS` knob + 3 data builders + 4 head trainers (train-if-missing).
 - Docs: MEASUREMENT_WINDOW, SPEC_ACCURACY_NEXT_RETRAIN, IMPLEMENTATION_QUEUE, NEXT_STEPS_AND_STRATEGY,
-  DATA_COLLECTORS, RETRAIN_RUNBOOK, V8_ROADMAP, betting-guide section, change-audit §5ba–§5bt.
+  DATA_COLLECTORS, RETRAIN_RUNBOOK, V8_ROADMAP, betting-guide section, change-audit §5ba–§5bu.
 
 ### Diagnostic findings (real, from the DB / training logs)
 - **Honest model health (v6-era, sign-truth):** 3m 50.8% · 5m 50.0% · 7m 46.8% · 10m 55.6% (only
