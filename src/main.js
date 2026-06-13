@@ -243,8 +243,10 @@ function init() {
       if (els.modelsView) els.modelsView.classList.toggle('hidden', currentAppTab !== 'models');
       const bv = document.getElementById('binance-view');
       const pv = document.getElementById('polymarket-view');
+      const bpv = document.getElementById('binancepm-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
+      if (bpv) bpv.classList.toggle('hidden', currentAppTab !== 'binancepm');
       if (currentAppTab === 'technical' && chart) {
         setTimeout(() => chart.timeScale().fitContent(), 50);
       }
@@ -257,6 +259,7 @@ function init() {
       }
       if (currentAppTab === 'binance' && lastPlainData) renderBinanceView(lastPlainData);
       if (currentAppTab === 'polymarket' && lastPlainData) renderPolymarketView(lastPlainData);
+      if (currentAppTab === 'binancepm' && lastPlainData) renderBinancePolymarketView(lastPlainData);
     });
   });
 
@@ -521,6 +524,7 @@ function renderDashboard(data) {
   renderModelsView(data);
   if (currentAppTab === 'binance') renderBinanceView(data);
   if (currentAppTab === 'polymarket') renderPolymarketView(data);
+  if (currentAppTab === 'binancepm') renderBinancePolymarketView(data);
 
   lastVerifyData = data.verification;
   renderVerification(data.verification);
@@ -2777,21 +2781,37 @@ window.__binanceLogTF = (tf) => {
 // ══════════════════════════════════════════════
 //  POLYMARKET VIEW — Pyth-anchored 5m/15m price-to-beat
 // ══════════════════════════════════════════════
-function renderPolymarketView(data) {
-  const grid = document.getElementById('pm-grid');
-  const strip = document.getElementById('pm-price-strip');
+// Two feed-anchored variants of the SAME up/down game. The Pyth one (existing
+// Polymarket tab) is unchanged; the Binance one reads a parallel payload key and the
+// live Binance price. Shared core so they never drift.
+const PM_CFG = {
+  pyth:    {p:'pm',  ptbKey:'price_to_beat',         priceField:'pyth_price', hasAge:true,
+            stripLabel:'Pyth BTC/USD (Polymarket settlement proxy)', beatLabel:'Pyth'},
+  binance: {p:'bpm', ptbKey:'price_to_beat_binance', priceField:'price',      hasAge:false,
+            stripLabel:"Binance BTC/USD (live exchange feed — the model's native data)", beatLabel:'Binance'},
+};
+function renderPolymarketView(data){ renderPMCore(data, PM_CFG.pyth); }
+function renderBinancePolymarketView(data){ renderPMCore(data, PM_CFG.binance); }
+function renderPMCore(data, cfg) {
+  const P = cfg.p;
+  const grid = document.getElementById(P+'-grid');
+  const strip = document.getElementById(P+'-price-strip');
   if (!grid) return;
+  const anchor = data[cfg.priceField]!=null?Number(data[cfg.priceField]):null;
   const pyth = data.pyth_price!=null?Number(data.pyth_price):null;
   const binance = Number(data.price||0);
   if (strip) {
-    const age = data.pyth_price_age_s;
+    const age = cfg.hasAge ? data.pyth_price_age_s : null;
     const stale = age!=null && age>10;
-    strip.innerHTML = `<span style="color:var(--text-secondary);font-size:.7em;text-transform:uppercase;letter-spacing:.6px">Pyth BTC/USD (Polymarket settlement proxy)</span>
-      <strong style="font-size:1.4em;margin-left:.5rem;color:${stale?'#ffb74d':'#00e676'}">${pyth!=null?'$'+pyth.toLocaleString(undefined,{minimumFractionDigits:2}):'connecting…'}</strong>
+    const otherTxt = cfg.p==='pm'
+      ? `<span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">Binance: $${binance.toLocaleString()}${pyth!=null?` (Δ ${(binance-pyth)>=0?'+':''}${(binance-pyth).toFixed(0)})`:''}</span>`
+      : `<span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">Pyth: ${pyth!=null?'$'+pyth.toLocaleString():'—'}${pyth!=null?` (Δ ${(binance-pyth)>=0?'+':''}${(binance-pyth).toFixed(0)})`:''}</span>`;
+    strip.innerHTML = `<span style="color:var(--text-secondary);font-size:.7em;text-transform:uppercase;letter-spacing:.6px">${cfg.stripLabel}</span>
+      <strong style="font-size:1.4em;margin-left:.5rem;color:${stale?'#ffb74d':'#00e676'}">${anchor!=null?'$'+anchor.toLocaleString(undefined,{minimumFractionDigits:2}):'connecting…'}</strong>
       ${stale?'<span style="color:#ffb74d;font-size:.7em"> (stale '+age+'s → using Binance)</span>':''}
-      <span style="color:var(--text-secondary);margin-left:1rem;font-size:.8em">Binance: $${binance.toLocaleString()}${pyth!=null?` (Δ ${(binance-pyth)>=0?'+':''}${(binance-pyth).toFixed(0)})`:''}</span>`;
+      ${otherTxt}`;
   }
-  const ptb = data.price_to_beat || {};
+  const ptb = data[cfg.ptbKey] || {};
   const latest = ptb.latest || {};
   const acc = ptb.accuracy || {};
   // Only 5m/15m are real Polymarket markets; 1m/3m/7m/10m are PRACTICE mirrors —
@@ -2815,7 +2835,7 @@ function renderPolymarketView(data) {
     return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
       <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}${practice}</strong>
         <span style="font-size:.8em;color:var(--text-secondary)">${accStr}</span></div>
-      <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (Pyth):</span>
+      <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (${cfg.beatLabel}):</span>
         <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
         ${r.ref_captured_late_ms?`<span style="color:#ffb74d;font-size:.7em"> (late anchor capture +${(r.ref_captured_late_ms/1000).toFixed(1)}s)</span>`:''}</div>
       <div style="font-size:1.2em;color:${col};font-weight:700">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN — no bet':dir} ${cfl.grade?`· Grade ${cfl.grade}`:''} ${srcBadge}${lateChip}</div>
@@ -2836,7 +2856,7 @@ function renderPolymarketView(data) {
 
   // win-rate strips: per-horizon model/all split + win rate by setup grade & source
   const rec = ptb.recent || [];
-  const accDiv = document.getElementById('pm-accuracy');
+  const accDiv = document.getElementById(P+'-accuracy');
   if (accDiv) {
     accDiv.innerHTML = [1,3,5,7,10,15].map(h=>{
       const a=acc[h]||acc[String(h)]||{};
@@ -2849,7 +2869,7 @@ function renderPolymarketView(data) {
     }).join('')
       + '<span style="color:var(--text-secondary);font-size:.75em">* practice mirror — not a real Polymarket market</span>';
   }
-  const gradeDiv = document.getElementById('pm-grade-stats');
+  const gradeDiv = document.getElementById(P+'-grade-stats');
   if (gradeDiv) {
     // Headline stats over REAL markets ONLY (5m/15m). The 1m/3m practice mirrors
     // fire ~5x faster and were flooding the rolling window (25 of "last 40"),
@@ -2875,7 +2895,7 @@ function renderPolymarketView(data) {
       : '';
     gradeDiv.innerHTML = (html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${realRows.length} REAL rounds (5m/15m):</span>${html}` : '') + prac;
   }
-  const recDiv = document.getElementById('pm-recent');
+  const recDiv = document.getElementById(P+'-recent');
   if (recDiv) {
     const resolved = rec.filter(r=>r.hit!=null);
     const tfs = ['all', 1, 3, 5, 7, 10, 15];
@@ -2923,7 +2943,9 @@ function renderPolymarketView(data) {
 let pmLogTF = 'all';
 window.__pmLogTF = (tf) => {
   pmLogTF = (tf === 'all') ? 'all' : Number(tf);
-  if (lastPlainData) renderPolymarketView(lastPlainData);
+  if (!lastPlainData) return;
+  if (currentAppTab === 'binancepm') renderBinancePolymarketView(lastPlainData);
+  else renderPolymarketView(lastPlainData);
 };
 
 function renderModelsView(data) {

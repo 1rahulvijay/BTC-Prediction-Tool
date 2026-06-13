@@ -1430,6 +1430,135 @@ lean). Header now shows:
 The big visual now matches live reality; the stale opening grade is de-emphasized, not
 removed (still visible as "opened …"). Display-only, no measurement impact, hard-refresh.
 
+## 5ba. Per-model accuracy neutral-poisoning fix + price-to-beat docstrings (2026-06-13)
+## — activates at the operator's NEXT restart (running 07:50 process has the old code)
+
+Two changes this session, both **measurement/display-only** (no model behavior, no schema change,
+no impact on the frozen v6 evidence run). Found during an operator-requested DuckDB/model analysis
+(via `/api/scorecard` — the DB file is exclusively locked by the live app).
+
+**1. `model_verifier.check` — per-base-model accuracy was neutral-poisoned (the 9th hit/neutral
+grading-class bug).** The per-model panel showed every base model at ~0–20% across all horizons
+(`lr` 0/48 at 1m, `cat` 6% at 5m, etc.) — not skill, an artifact. A base model's argmax is NEUTRAL
+on most ticks (abstention, esp. short horizons), but the grader compared that NEUTRAL against a
+near-always-moved market (`actual_dir` UP/DOWN over 5–15m), scoring every abstention as a directional
+miss with all of them in the denominator. It was measuring "how often does an abstention equal a
+moved market" ≈ 0. Same family as the §5z–5ai sign-truth fixes (calibration, regime-quality,
+analytics, auto-learning). **Fix:** grade only COMMITTED (UP/DOWN) votes by strict close-vs-ref sign;
+exclude NEUTRAL from the denominator; NEUTRAL rows still resolved with `hit=NULL` (BOOLEAN col is
+nullable) so they don't sit pending; `latest_vote` still exposes the raw argmax. After restart the
+panel reads ~40–55% (real) instead of ~5%. Syntax-verified.
+
+**2. `price_to_beat.py` docstrings corrected (Chainlink/Binance → Pyth).** Module header said the bet
+anchored/resolved on *Chainlink*; `update()` said *Binance aggTrade*. The live anchor is **Pyth**
+(REST-polled) with an offset-corrected Binance fallback, same-feed rule (`klines=None` whenever the
+anchor isn't raw Binance). Since this file documents the *bet-settlement feed*, the wrong name was
+actively misleading. Corrected both docstrings to the real Pyth-with-fallback behavior. No logic
+change (a logic audit this session found the same-feed enforcement already correct in all branches).
+
+**Operational note (not a code change):** the `[0/3]` step now successfully backfilled 2026-06-12
+SPOT aggTrades (787,812 trades → 59,040 bars, CVD/VPIN non-zero & varied) — the aggTrade history gap
+is closed; the next retrain sees full history on the trade-derived features.
+
+**New design docs added this session** (pointers for the next retrain): the honest measurement-window
+record [MEASUREMENT_WINDOW_2026-06-13.md](MEASUREMENT_WINDOW_2026-06-13.md) (regime edge map, gate /
+meta-model status, betting mirror, logic audit, DuckDB analysis) and the accuracy spec
+[SPEC_ACCURACY_NEXT_RETRAIN.md](SPEC_ACCURACY_NEXT_RETRAIN.md) (the train/serve-gap diagnosis +
+Tracks A/B/C). Both cross-linked from [V5.md](V5.md).
+
+## 5bb. B1 feature-logging + B2 conviction-gate implemented (2026-06-13)
+## — NO retrain; activates at the operator's NEXT restart (running process has old code)
+
+Operator asked to implement B1 + B2 + B4 with **no retrain** (and ideally no restart). Clarified:
+B1/B2 are serving-loop CODE → they require ONE restart to load (a frozen ~12s boot, NOT a retrain,
+era preserved); a running Python process cannot hot-reload. B4 is hardware (wired Ethernet) — no code.
+
+**B1 — live per-bar feature logging (the train/serve-gap fix infrastructure).** NO TRAIN.
+- `database.py`: new additive table `feature_outcome_log(ts BIGINT PK, schema_hash VARCHAR,
+  regime VARCHAR, features DOUBLE[])` in `init_db`; new crash-safe helper `log_feature_vector(...)`
+  using `INSERT OR IGNORE` (dedupes the once-per-cycle key).
+- `server.py` record loop: logs `seq[-1]` (the live per-bar feature vector) ONCE per recording cycle,
+  keyed by `now_ms` == `predictions_{h}m.timestamp`. Guarded by `_feature_logged` + try/except so a
+  logging failure can never break serving. No resolution hook — the outcome already persists in
+  `predictions_*`; a future retrain JOINs on ts:
+  ```sql
+  SELECT f.features,
+         CASE WHEN (p.raw_direction='UP' AND p.actual_move>0)
+                OR (p.raw_direction='DOWN' AND p.actual_move<0) THEN 1 ELSE 0 END AS label
+  FROM feature_outcome_log f JOIN predictions_{h}m p ON f.ts = p.timestamp
+  WHERE p.resolved AND p.raw_direction IN ('UP','DOWN');
+  ```
+- WHY: the high-edge microstructure features are constant in the historical training matrix
+  (`server.py:1160` broadcasts one live snapshot over 50d). Logging them live is the only way a
+  future retrain can learn them. Value is calendar-gated — start the clock now. (SPEC Track B1.)
+- Storage: ~1 row per recording cycle (deduped per ts), 130 doubles/row — bounded, append-only.
+
+**B2 — conviction-gate (Option A: visible-but-not-a-bet).** NO TRAIN.
+- `server.py apply_live_quality_filters`, right after the <50% poor-regime gate: a cell that cleared
+  the gate but is still measured **50–54%** (READY, e.g. 5m LOW_VOL ~51.7%) keeps its directional
+  READ (direction unchanged) but has `actionable` stripped + `convictionCapped`/`convictionCapReason`
+  set. Conviction reserved for PROVEN-edge cells (≥54%). Marginal-but-not-ready cells keep the benefit
+  of the doubt. Serving-side only — no effect on `raw_direction` or the sign-truth tables.
+
+**Verification (all PASS):** `ast.parse` both files; throwaway-DuckDB test proved DOUBLE[] binding,
+`INSERT OR IGNORE` dedup (3 inserts/1 dup → 2 rows), 130-len vectors, and the train-time join (2 rows,
+correct sign-truth labels); import smoke test (helper present, schema_hash `4d2aec96c919`,
+NUM_FEATURES 130, B2 marker present). The live DB is exclusively locked, so nothing touched it.
+
+**Post-restart confirmation (operator):** after the next restart, `SELECT COUNT(*) FROM
+feature_outcome_log` should climb; B2-capped cells carry `convictionCapped=true` in the payload.
+
+## 5bc. New "Binance · Price to Beat" tab — Binance-anchored mirror (2026-06-13)
+## — backend activates on NEXT restart; frontend on Vite rebuild (done). NO retrain.
+
+Operator: want an EXACT replica of the Polymarket tab but priced on **live Binance** (the model's
+native feed), keeping the existing Pyth Polymarket tab untouched. Rationale: judge the model against
+the data it actually learns on; the Pyth tab stays for real Polymarket betting.
+
+- `price_to_beat.py`: added `persist=True` param. A secondary tracker MUST be in-memory (it reuses the
+  `ptb_{h}m_{win_start}` ids → would collide/corrupt the shared `price_to_beat` table). Both
+  `database.log_price_to_beat` / `resolve_price_to_beat` calls now guarded by `if self.persist`.
+- `server.py`: `price_to_beat_binance_tracker = PriceToBeatTracker(..., persist=False)`; in the
+  price-to-beat ticker, after the Pyth update, a parallel `update()` anchored on `live_price`
+  (same-feed → klines boundary recovery valid), with its own freshness tracking; new payload key
+  `price_to_beat_binance` mirroring `price_to_beat`. In-memory → rebuilds live after restart.
+- `index.html`: nav tab `🟡 Binance · Price to Beat` + `#binancepm-view` section (bpm- ids).
+- `main.js`: refactored `renderPolymarketView` into a shared `renderPMCore(data, cfg)` + two thin
+  wrappers (`PM_CFG.pyth` / `PM_CFG.binance`); the Pyth tab output is byte-identical (same ids, same
+  data key). Binance variant reads `price_to_beat_binance` + the Binance price; tab toggle, live-update
+  dispatch, and the resolved-log TF filter all branch on `currentAppTab==='binancepm'`.
+
+Verified: `ast.parse` server.py + price_to_beat.py; `npm run build` clean (283 kB). Existing
+Polymarket (Pyth) tab unchanged. Backend tracker activates on the next restart.
+
+## 5bd. A1 persistence recorder built; A9 crowd recorder BLOCKED (2026-06-13)
+## — NO retrain; activates on next restart
+
+Operator asked for A9 + A1 recorders (B1 pattern, no retrain).
+
+**A9 (Polymarket crowd price as a feature) — NOT BUILT, blocked by data.** `polymarket_client`
+only discovers LONG-DATED threshold markets ("Will BTC hit $150k by …", confirmed by
+`_extract_reference_price` regex). The 5m/15m up/down markets are geo-blocked on this box (prior
+probe: gamma-api returns long-dated only; polymarket.com blocked w/o VPN). Recording long-dated
+prices as a 5m feature = noise, so A9 is deferred until an accessible 5m crowd feed exists. NOT built.
+
+**A1 (late-entry / T3 persistence recorder) — BUILT.** Self-contained, no external feed.
+- `database.py`: table `persistence_snapshot(round_id, horizon, ts, seconds_left, distance, position)`
+  + crash-safe helper `log_persistence_snapshot(...)`.
+- `price_to_beat.py`: in `_refresh_live`, the **Pyth tracker only** (settlement feed; `persist=True`)
+  logs one snapshot per open round per ~15s (`self._last_snap` dedupe): distance-to-line, seconds
+  left, current side. No resolution hook — the LABEL ("did this side hold to close?") is derived at
+  TRAIN time by joining `round_id -> price_to_beat.actual_direction` (same pattern as B1). The Binance
+  mirror (`persist=False`) does NOT log → no double-write.
+- Train-time query: `SELECT s.*, CASE WHEN s.position = p.actual_direction THEN 1 ELSE 0 END AS held
+  FROM persistence_snapshot s JOIN price_to_beat p ON s.round_id = p.id WHERE p.resolved`.
+- Verified: `ast.parse` both files; throwaway-DuckDB test (3 snapshots → correct held/flip labels via
+  the join). Activates on next restart.
+
+This is the data source for A1 (the T3 95%-precision engine) and A1-ext (path labels). Combined with
+B1 (full feature vectors by ts), a future retrain has both the microstructure features AND the
+intra-window persistence trajectories.
+
 ## 6. Known limitations / honest notes
 - `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
   fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing

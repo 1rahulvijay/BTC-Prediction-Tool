@@ -347,6 +347,34 @@ def init_db():
             conn.execute(f"ALTER TABLE ab_results {ddl};")
         except Exception:
             pass
+    # B1 (2026-06-13): live per-bar feature vector log. Closes the train/serve gap —
+    # the high-edge microstructure features are constant in the historical training
+    # matrix (one live snapshot broadcast over 50d); logging them live, keyed by the
+    # cycle ts, lets a FUTURE retrain join (features -> realized outcome) on
+    # predictions_{h}m.timestamp. Outcomes already persist there, so no resolution hook.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feature_outcome_log (
+            ts BIGINT PRIMARY KEY,
+            schema_hash VARCHAR,
+            regime VARCHAR,
+            features DOUBLE[]
+        )
+    """)
+    # A1 (2026-06-13): intra-window persistence snapshots for the late-entry/T3 model —
+    # "price is `distance` past the line with `seconds_left` s left, on `position` side:
+    # does it HOLD to close?". Logged ~every 15s per open round from the Pyth (settlement)
+    # tracker. Label is derived at TRAIN time by joining round_id -> price_to_beat.
+    # actual_direction (B1 pattern: log raw, label from the already-persisted outcome).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS persistence_snapshot (
+            round_id VARCHAR,
+            horizon INT,
+            ts BIGINT,
+            seconds_left INT,
+            distance DOUBLE,
+            position VARCHAR
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS feature_retirement_events (
             feature VARCHAR,
@@ -479,6 +507,46 @@ def log_exchange_verification(timestamp: int, horizon: int, direction: str,
         """, (timestamp, horizon, direction, confirmed, checked, rate, _json.dumps(venues)))
     except Exception as e:
         print(f"DuckDB Exchange Verify Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_persistence_snapshot(round_id: str, horizon: int, ts: int,
+                             seconds_left: int, distance: float, position: str):
+    """A1: append one intra-window persistence snapshot. Crash-safe; the price-to-beat
+    tracker dedupes to ~15s per round. Outcome/label joined at TRAIN time via round_id."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT INTO persistence_snapshot
+            (round_id, horizon, ts, seconds_left, distance, position)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (str(round_id), int(horizon), int(ts), int(seconds_left),
+              float(distance), str(position)))
+    except Exception as e:
+        print(f"DuckDB persistence-snapshot Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_feature_vector(ts: int, schema_hash: str, regime: str, features: list):
+    """B1: persist the live per-bar feature vector keyed by the cycle timestamp
+    (== predictions_{h}m.timestamp). A future retrain joins this on ts to pair the
+    real (live-varying) microstructure features with the realized outcome already
+    stored in predictions_*. INSERT OR IGNORE dedupes the once-per-cycle key.
+    Crash-safe: never raises into the serving loop."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR IGNORE INTO feature_outcome_log (ts, schema_hash, regime, features)
+            VALUES (?, ?, ?, ?)
+        """, (int(ts), str(schema_hash), str(regime), list(features)))
+    except Exception as e:
+        print(f"DuckDB feature-log Insert Error: {e}")
     finally:
         if conn:
             conn.close()

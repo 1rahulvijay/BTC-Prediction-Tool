@@ -257,6 +257,11 @@ model_verifier = PerModelVerifier(horizons=(1, 3, 5, 7, 10, 15))
 # same rule, same grading — they accrue evidence fast and map every horizon's
 # betting behavior; only 5m/15m are real markets.
 price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15))
+# Binance-priced MIRROR of the same up/down game — anchored on the live Binance feed
+# (the model's native data) instead of Pyth. In-memory only (persist=False) so it cannot
+# collide with the Pyth tracker's rows in the shared `price_to_beat` table. Powers the
+# "Binance — Price to Beat" tab; rebuilds live after a restart (no rehydration).
+price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15), persist=False)
 exchange_verifier = PerVenueVerifier(horizons=(5, 15))
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
@@ -408,6 +413,8 @@ async def price_to_beat_ticker():
     _last_ref = None
     _last_change_t = time.time()
     _pyth_offset = None  # EWMA of (pyth - binance) while both feeds are fresh
+    _last_binance = None         # freshness tracking for the Binance-priced mirror
+    _last_binance_t = time.time()
     while True:
         try:
             pyth = data_state.get("pyth_price")
@@ -449,6 +456,20 @@ async def price_to_beat_ticker():
                     {},  # kronos removed in v6 — tracker records "NONE"
                     klines=kl,
                     feed_fresh=feed_fresh,
+                )
+            # Binance-priced MIRROR: always anchor on the live Binance feed (same-feed,
+            # so klines boundary-recovery is valid). In-memory tracker → Binance PtB tab.
+            if binance_live:
+                if binance_live != _last_binance:
+                    _last_binance = binance_live
+                    _last_binance_t = time.time()
+                price_to_beat_binance_tracker.update(
+                    int(time.time() * 1000),
+                    float(binance_live),
+                    data_state.get("_ptb_preds") or {},
+                    {},
+                    klines=data_state.get("klines"),
+                    feed_fresh=(time.time() - _last_binance_t) < 10.0,
                 )
         except Exception:
             pass
@@ -2043,6 +2064,31 @@ def apply_live_quality_filters(
             prediction["regime_filtered"] = True
         return prediction
 
+    # ── B2: conviction-gate (operator 2026-06-13) ───────────────────────────────
+    # Cells that CLEARED the <50% poor-regime gate but are still only coin-flip
+    # (measured 50–54%, e.g. 5m LOW_VOLATILITY ~51.7%) must not be surfaced as
+    # CONFIDENT bets. Keep the directional READ (direction unchanged, so 5m stays
+    # visible) but strip "actionable" — conviction is reserved for PROVEN-edge cells
+    # (>= PROVEN_EDGE). Only fires when the cell's accuracy is statistically READY
+    # (enough samples); marginal-but-unproven cells keep the benefit of the doubt.
+    # Serving-side only: no model change, no retrain, no effect on raw_direction or
+    # the sign-truth tables. Option A of MEASUREMENT_WINDOW §5 (visible, not silent).
+    PROVEN_EDGE = 0.54
+    if (
+        prediction.get("direction") != "NEUTRAL"
+        and prediction.get("actionable")
+        and regime_quality
+        and regime_quality.get("ready")
+        and regime_quality.get("accuracy", 0.0) < PROVEN_EDGE
+    ):
+        _ce = regime_quality.get("accuracy", 0.0)
+        prediction["actionable"] = False
+        prediction["convictionCapped"] = True
+        prediction["convictionCapReason"] = (
+            f"{regime_name} {h}m is {_ce:.0%} (coin-flip) — shown as a read, not a "
+            f"confident bet (needs ≥{PROVEN_EDGE:.0%})."
+        )
+
     # Adaptive clamp: the bar can never sit above the recent 72nd percentile of
     # confidence (so the most-confident ~28% of signals always pass) nor below a
     # sensible floor (so we don't spam near-random calls). This self-corrects to the
@@ -2571,12 +2617,31 @@ async def main_loop():
                 # price-to-beat (which already uses the oracle/fallback).
                 _cl = data_state.get("chainlink_price")
                 reference_price = float(_cl) if _cl else current_price
+                _feature_logged = False  # B1: log the vector once per recording cycle
                 for p in predictions:
                     h = p["horizon"]
                     if verifier.should_record(h, now_ms):
                         pred_id = f"{h}m_{now_ms}"
                         p["id"] = pred_id  # attach to pass to verifier
                         verifier.record_prediction(p, current_price, now_ms)
+
+                        # B1 (2026-06-13): persist the live per-bar feature vector
+                        # (seq[-1]) keyed by now_ms == predictions_{h}m.timestamp, ONCE per
+                        # recording cycle. A future retrain joins this on ts to learn the
+                        # microstructure features that are constant in the historical matrix.
+                        # Outcome already persists in predictions_*; no resolution hook.
+                        # Crash-guarded — a logging failure must never break serving.
+                        if not _feature_logged:
+                            try:
+                                database.log_feature_vector(
+                                    now_ms,
+                                    __import__("features").get_feature_schema()["schema_hash"],
+                                    regime.get("regime", "UNKNOWN"),
+                                    [float(x) for x in seq[-1]],
+                                )
+                                _feature_logged = True
+                            except Exception as _fe:
+                                logger.debug(f"B1 feature-vector log skipped: {_fe}")
 
                         # Durably log A/B variant predictions for this recorded id.
                         ab_runner.persist(pred_id, h, now_ms)
@@ -2911,6 +2976,12 @@ async def main_loop():
                     "accuracy": price_to_beat_tracker.accuracy(),
                     # 60: six mirror horizons now resolve rounds; keep slow ones visible
                     "recent": price_to_beat_tracker.recent(200),
+                },
+                # Binance-priced mirror of the same game (in-memory; rebuilds live).
+                "price_to_beat_binance": {
+                    "latest": price_to_beat_binance_tracker.latest(),
+                    "accuracy": price_to_beat_binance_tracker.accuracy(),
+                    "recent": price_to_beat_binance_tracker.recent(200),
                 },
             }
 

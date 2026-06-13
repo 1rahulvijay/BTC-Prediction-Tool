@@ -65,13 +65,26 @@ class PerModelVerifier:
                 logger.debug(f"Model vote log failed: {e}")
 
     def check(self, current_price: float, now_ms: int):
-        """Resolve any per-model votes whose horizon has elapsed."""
+        """Resolve any per-model votes whose horizon has elapsed.
+
+        A base model's argmax is NEUTRAL on the majority of ticks (it ABSTAINS,
+        especially at short horizons). NEUTRAL is not a directional call — but over a
+        5–15m horizon the market almost always moves, so grading NEUTRAL votes against
+        a (near-always) UP/DOWN outcome scored every abstention as a miss and dragged
+        the per-model panel to a meaningless ~0–20%. FIX (2026-06-13, sign-truth): grade
+        only COMMITTED (UP/DOWN) votes, by strict close-vs-ref sign, and exclude NEUTRAL
+        from the accuracy denominator — same neutral-poisoning fix applied to calibration
+        / regime-quality / analytics. NEUTRAL rows are still resolved (hit=NULL) so they
+        don't sit pending forever; `latest_vote` still shows the raw argmax incl. NEUTRAL.
+        """
         still = []
         for p in self.pending:
             if now_ms >= p["verify_at"]:
-                actual_dir = self._direction(current_price, p["ref_price"])
-                hit = (p["direction"] == actual_dir)
-                self.history[p["model"]][p["horizon"]].append(1 if hit else 0)
+                actual_dir = "UP" if current_price >= p["ref_price"] else "DOWN"
+                committed = p["direction"] in ("UP", "DOWN")
+                hit = (p["direction"] == actual_dir) if committed else None
+                if committed:
+                    self.history[p["model"]][p["horizon"]].append(1 if hit else 0)
                 try:
                     database.resolve_model_prediction(p["id"], current_price, actual_dir, hit)
                 except Exception as e:

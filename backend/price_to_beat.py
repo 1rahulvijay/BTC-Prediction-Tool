@@ -43,13 +43,17 @@ def _hms(ms: int) -> str:
 
 
 class PriceToBeatTracker:
-    def __init__(self, horizons=(5, 15), neutral_band=0.0):  # 0.0 = strict up/down (Polymarket mirror)
+    def __init__(self, horizons=(5, 15), neutral_band=0.0, persist=True):  # 0.0 = strict up/down (Polymarket mirror)
         # neutral_band = 0.0 makes resolution STRICT (any close above the open = UP, below
         # = DOWN), mirroring Polymarket's BTC up/down markets — where even a +$50 move on
         # $63k (0.08%) is a clear UP, not "stayed near reference". The cost-floored band
         # belongs on the trade-decision side, not on this market-outcome mirror.
         self.horizons = list(horizons)
         self.neutral_band = neutral_band
+        # persist=False → in-memory only (a SECONDARY tracker, e.g. the Binance-priced
+        # mirror, must NOT write to the shared `price_to_beat` table: it reuses the same
+        # `ptb_{h}m_{win_start}` ids as the Pyth tracker and would collide/corrupt rows).
+        self.persist = persist
         self.pending: list[dict] = []
         self.history = {h: deque(maxlen=500) for h in self.horizons}
         self.recent_rounds = deque(maxlen=250)        # resolved rounds for the UI feed
@@ -57,6 +61,7 @@ class PriceToBeatTracker:
         # slower timeframe visible/scrollable in the per-TF log tabs)
         self.latest_round = {}                        # horizon -> current/most-recent round
         self.current_window = {}                      # horizon -> window-start ms we already opened
+        self._last_snap = {}                          # A1: round_id -> last snapshot ms (15s dedupe)
 
     @staticmethod
     def _bet_lean(p: dict) -> str:
@@ -184,10 +189,11 @@ class PriceToBeatTracker:
                 }
                 self.pending.append(entry)
                 self.latest_round[h] = {**entry, "status": "pending"}
-                try:
-                    database.log_price_to_beat(entry)
-                except Exception as e:
-                    logger.debug(f"Price-to-beat log failed: {e}")
+                if self.persist:
+                    try:
+                        database.log_price_to_beat(entry)
+                    except Exception as e:
+                        logger.debug(f"Price-to-beat log failed: {e}")
 
             # Live in-window decision support: refresh the OPEN round every tick so a user
             # holding a Polymarket bet can decide hold-vs-early-exit.
@@ -314,6 +320,21 @@ class PriceToBeatTracker:
                                       f"agrees — persistence odds strongly favor {live_lean}.]")
         # (EARLY-EXIT cents hint removed with p_up — same flat-magnitude basis. The
         # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
+        # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────
+        # Log intra-window snapshots (distance to line, seconds left, side) for the
+        # late-entry / T3 persistence model. Pyth tracker only (the settlement feed);
+        # deduped to ~15s per round; label derived at TRAIN time by joining round_id ->
+        # price_to_beat.actual_direction (no resolution hook — same pattern as B1).
+        if self.persist:
+            _rid = rnd.get("id")
+            if _rid and (now_ms - self._last_snap.get(_rid, 0)) >= 15000:
+                self._last_snap[_rid] = now_ms
+                try:
+                    database.log_persistence_snapshot(
+                        _rid, int(rnd.get("horizon", 0) or 0), int(now_ms),
+                        int(secs_left), float(cur_move), cur_pos)
+                except Exception as _se:
+                    logger.debug(f"A1 persistence snapshot skipped: {_se}")
 
     @staticmethod
     def _path_outlook(cur_move: float, cur_pos: str, lean: str, p: dict,
@@ -409,11 +430,12 @@ class PriceToBeatTracker:
                 self.recent_rounds.appendleft(resolved)
                 if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
                     self.latest_round[p["horizon"]] = resolved
-                try:
-                    database.resolve_price_to_beat(p["id"], end_price, actual_dir, hit, move,
-                                                   late_entry=bool(p.get("late_entry", False)))
-                except Exception as e:
-                    logger.debug(f"Price-to-beat resolve failed: {e}")
+                if self.persist:
+                    try:
+                        database.resolve_price_to_beat(p["id"], end_price, actual_dir, hit, move,
+                                                       late_entry=bool(p.get("late_entry", False)))
+                    except Exception as e:
+                        logger.debug(f"Price-to-beat resolve failed: {e}")
             else:
                 still.append(p)
         self.pending = still

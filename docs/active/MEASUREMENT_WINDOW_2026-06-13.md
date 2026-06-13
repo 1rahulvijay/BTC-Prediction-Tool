@@ -212,3 +212,52 @@ snapshot over 50 days of history), so the trees can't learn them. The fix is to 
 (Track B1: log full feature-vector+outcome live, then train on it), add backfillable multi-venue
 **flow** features (Track C), and harvest the cells that already have edge (Track A) — NOT more TA or
 bigger models.
+
+---
+
+## 12. DuckDB analysis — ~8.5h of v6 era (via /api/scorecard, DB file is locked by the live app)
+
+The live process holds an exclusive lock (Windows won't even copy the file), so analysis is via the
+app's `/api/scorecard` + `/api/runtime-status`. Era `2026-06-13 03:33` → +8.5h. Inventory healthy:
+6 models × {TREND,RANGE,VOLATILE,GLOBAL} × 6 horizons all trained; lgb on GPU; TCN deep model.
+
+**A. Ensemble sign-truth (committed leans) — coin-flip at bettable horizons, confirms info-ceiling:**
+
+| h | n | sign-acc | UP n/acc | DOWN n/acc |
+|---|---|---|---|---|
+| 5 | 42 | 50.0% | 9 / 44% | 33 / 52% |
+| 7 | 41 | 46.3% | 9 / 33% | 32 / 50% |
+| 10 | 31 | 54.8% | 0 / — | 31 / 55% |
+| 15 | 11 | 63.6% | 10 / 60% | 1 / — |
+| 3 | 10 | 20.0% | 4 / 25% | 6 / 17% |
+
+**B. Committed model leans vs fallback (mirror) — committing buys ~zero edge:**
+5m model **51.1%** (45) vs fallback 50.9% (53); 7m model 47.5% (40); 10m model 50.0% (24) vs
+fallback 56.5%; only 15m model 58.3% (n=12) shows a gap. The earlier "model leans 60%" was n=5
+noise — at n=24–45 committed leans ≈ coin-flip at 5–10m. **This is the larger-sample confirmation
+that there is no demonstrable 5m directional edge today.**
+
+**C. Persistent strong DOWN bias — class-balancing did NOT balance live serving:**
+5m 33 DOWN / 9 UP, 7m 32 / 9, **10m 31 / 0** (zero UP commits). And UP leans underperform DOWN
+(5m UP 44% vs DOWN 52%; 7m UP 33% vs DOWN 50%) — the DOWN-machine signature. DOWN accuracy is only
+~51–55% (not 60%+), so the model is leaning DOWN more by *habit* than by reward. Either an 8.5h
+down/chop window or residual bias; the balanced UP/DOWN-accuracy test is still the 24h decider.
+
+**D. Partial-candle skew (watch, don't act — small n):** 5m sign-acc by second-of-minute:
+0–14s 62.5% (8), 15–29s 62.5% (8), 30–44s 46.7% (15), 45–59s 36.4% (11). Hints that predictions made
+early in the bar beat late-bar ones — possible stale partial-candle feature effect. Too small to act.
+
+**E. 🐛 BUG FOUND + FIXED — per-base-model accuracy was neutral-poisoned.**
+`/api/scorecard.models` showed every base model at ~0–20% across all horizons (e.g. `lr` 0/48 at 1m,
+`cat` 6% at 5m). Root cause (`model_verifier.check`): a base model's argmax is NEUTRAL on most ticks
+(abstention), but the grader compared that NEUTRAL against an almost-always-moved market → every
+abstention scored as a directional miss, all in the denominator. The panel was measuring "how often
+does an abstention equal a moved market" ≈ 0 — **not** model skill. This is the SAME neutral/`hit`
+poisoning fixed earlier in calibration / regime-quality / analytics. **Fix:** grade only committed
+UP/DOWN votes by strict sign-truth, exclude NEUTRAL from the denominator (NEUTRAL still resolved as
+`hit=NULL`). After restart the per-model panel will read ~40–55% (real), not ~5%. Measurement-only —
+does not touch the frozen model or the `predictions_*` sign-truth tables.
+
+**Net:** the honest model quality is "coin-flip at 5–10m, committing adds no edge, still DOWN-biased"
+— exactly what §11 / the SPEC predict (information ceiling). The only *broken* thing found was the
+per-model display metric, now fixed.
