@@ -1970,6 +1970,33 @@ live shadow all agree — **no model family is the missing piece; information (l
 which B1 is accruing) is.** Free-L2 sourcing options (incl. the Binance futures `bookDepth` public
 lead to feasibility-check) are recorded in [DATA_COLLECTORS.md](DATA_COLLECTORS.md).
 
+## 5bv. TRADING-EDGE yardstick — quantified: NO tradable edge yet (2026-06-13)
+## — cost-aware BUY/SELL/AVOID backtest; offline, no-train, no app touch
+
+Built `trading_edge_backtest.py` (reuses the beat head's leak-free features + §5bs alignment; trains
+LightGBM+isotonic on the PAST, backtests on the UNSEEN future, NON-overlapping windows + h-bar
+embargo; sweeps round-trip cost 0/5/10 bps and edge-threshold delta). Self-tested (P&L/expectancy/PF/
+Sharpe/maxDD math on a known signal). Report -> `data/trading_edge_report.json`. RESULT on 30 days:
+
+| h | frictionless (0bps): exp / hit / Sharpe | best @ 5bps: exp / t-stat / verdict |
+|---|---|---|
+| 1m  | -0.0bps / 50.3% / -0.97 | -5.0bps / t -34 / no edge |
+| 3m  | **+0.3bps / 52.1% / +7.33** | -0.3bps / t -0.1 / no edge |
+| 5m  | +0.0bps / 50.8% / +0.54 | -5.0bps / t -12.6 / no edge |
+| 7m  | **+0.6bps / 51.3% / +7.31** | -4.4bps / t -8.2 / no edge |
+| 10m | +0.2bps / 51.6% / +1.81 | -4.1bps / t -4.7 / no edge |
+| 15m | -0.9bps / 50.0% / -4.85 | -5.7bps / t -4.9 / no edge |
+
+**Read:** FRICTIONLESS there is a *statistically detectable but economically trivial* directional
+tilt at 3m/7m/10m (~**+0.3-0.6 bps**, hit 51-52% — the same calm-regime whisper sign-truth shows).
+But that edge is **~10x smaller than a realistic ~5 bps round-trip cost**, so at 5 bps EVERY horizon
+is reliably NEGATIVE (exp -0.3..-5.7 bps, strongly significant negative t-stats -4.7..-34, negative
+Sharpe, -44%..-231% drawdowns). The frictionless +7 Sharpe at 3m/7m is an annualization artifact on a
+sub-bp edge — NOT tradable. **VERDICT: no tradable edge at realistic cost** — the coin-flip confirmed
+from the trading-economics angle, now with numbers. A "proven edge" can NEVER be backfilled (only
+measured forward — live shadow lane). This is the YARDSTICK: re-run after L2/order-flow features land
+to see an edge *appear* (or not).
+
 ## 6. Known limitations / honest notes
 - `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
   `order_flow.py` was aligned to the backfill's fixed equal-volume buckets

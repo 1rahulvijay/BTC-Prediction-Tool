@@ -99,6 +99,14 @@ leakage creeps in).
   then predicts each minute and self-resolves → `data/shadow/shadow_live_resolved.parquet`
   (predict_ms, ref_price, horizon, model, p_up, actual_up). The live analog of the backtest (expect
   the same coin-flip); its lasting value is the shadow-lane TEMPLATE for when a model is worth it.
+- **`trading_edge_backtest.py`** — the TRADING-EDGE yardstick: turns P(up) into a cost-aware
+  BUY/SELL/AVOID strategy and measures what decides tradability — **expectancy, profit factor,
+  Sharpe, max drawdown, hit-rate, coverage** — after fees+slippage, out-of-sample (LightGBM+isotonic
+  trained on the past, backtested on the unseen future, non-overlapping windows + h-bar embargo,
+  cost swept 0/5/10 bps, edge-threshold δ swept). Writes `data/trading_edge_report.json`. The
+  HONEST yardstick: expect ~0/negative expectancy on today's features (a "proven edge" needs forward
+  LIVE measurement — the shadow lane + composed scorecard); it becomes meaningful once L2/order-flow
+  lands. A "proven trading edge" can NEVER be backfilled — only measured forward.
 
 **How to read it tomorrow (the decision):** at 5m/15m, which families clear SIGNAL, and does any
 model beat lightgbm/histgb with a LOWER ECE (better-calibrated)? Expected (docs): lightgbm ≈ histgb
