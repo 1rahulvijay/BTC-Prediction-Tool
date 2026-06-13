@@ -266,7 +266,7 @@ MODEL_DIR = os.path.join(
 # OOF in live-relevant buckets), TCN promoted to a full stacker seat with a real
 # epoch budget, XGBoost/CatBoost GPU probes. "classbal" MUST stay in this string —
 # the inference-time prior-division retirement is keyed on it.
-MODEL_ARCH_VERSION = f"2026-06-12-v6-classbal-roster-130-{DL_ARCH.lower()}"
+MODEL_ARCH_VERSION = f"2026-06-13-v7-classbal-vrts-session-136-{DL_ARCH.lower()}"
 
 CASCADE_MIN_ACCURACY = 0.62
 CASCADE_MIN_PREDICTIONS = 30

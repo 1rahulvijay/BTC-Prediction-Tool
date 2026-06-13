@@ -2677,6 +2677,28 @@ async def main_loop():
                         # Per-model live accuracy: record every base model's vote.
                         model_verifier.record(p.get("modelDirs", {}), h, current_price, now_ms)
 
+                        # A10 setup-fingerprint recorder — the per-prediction DECISION context
+                        # (regime/conviction/agreement/grade/CVD/GEX), keyed by (now_ms,h) →
+                        # joins predictions_{h}m for the outcome. Feeds the kNN voter / T3
+                        # "similar setups" gate AND measures which signals have edge before any
+                        # becomes a gate. Crash-guarded — never affects serving.
+                        try:
+                            _ofp = _safe_dict(data_state.get("order_flow"))
+                            _cfl = p.get("confluence")
+                            database.log_setup_fingerprint(
+                                now_ms, h, p.get("regime", "UNKNOWN"),
+                                p.get("rawDirection", p.get("direction", "NEUTRAL")),
+                                float(p.get("conviction", 0.0) or 0.0),
+                                float(p.get("agreement", 0.0) or 0.0),
+                                float(p.get("confidence", 0.0) or 0.0),
+                                (_cfl.get("grade", "") if isinstance(_cfl, dict) else ""),
+                                float(_ofp.get("cvd_1m", 0.0) or 0.0),
+                                float((deribit_client.data or {}).get("gex", 0.0) or 0.0),
+                                float(p.get("expectedMove", 0.0) or 0.0),
+                            )
+                        except Exception as _fpe:
+                            logger.debug(f"A10 setup-fingerprint log skipped: {_fpe}")
+
                         # Process live signals into the execution engine simulator
                         order_flow_state = _safe_dict(data_state.get("order_flow"))
                         spread_exp = order_flow_state.get("spread_expansion_ratio", 1.0)

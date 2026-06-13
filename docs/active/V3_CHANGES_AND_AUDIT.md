@@ -1652,11 +1652,276 @@ session but the Windows cmd parsing of the .bat wasn't. Fix: removed ALL parens 
 those three echo lines (`(a)`→`a.`, and the `^(...^)` descriptors → ` - ...`). Lesson:
 test .bat edits on the actual cmd shell, not just the Python they call.
 
+## 5bi. A1 persistence model TRAINED + VALIDATED — the 95% tier is real (2026-06-13)
+## — offline, frozen-model-safe; NOT yet wired to serving (that needs a restart)
+
+After the 60-day `start.bat` boot built `persistence_dataset.parquet` (1.9M snapshots),
+trained the A1 / T3 persistence head via new `train_persistence_model.py` (separate head —
+does NOT touch the v6 ensemble, feature schema, or serving code).
+
+**Model:** calibrated P(hold | abs_distance_pct, seconds_left, vol_60s_pct, horizon,
+dist_vol_ratio). HistGradientBoosting + isotonic. Anti-leakage: features exclude
+close/actual_direction/anchor; split is TEMPORAL by window_start_ms (train 1.34M / calib
+287k / test 287k) so test windows are fully unseen AND it measures future generalization;
+|distance| used (persistence is up/down symmetric).
+
+**Validated on 287k UNSEEN test snapshots:**
+- AUC 0.747; calibration honest (model-says-0.95 → realized 96.7%).
+- **T3 tier: P(hold)≥0.93 → 95.3% realized at 30.4% coverage; ≥0.95 → 96.7% at 24.8%.**
+- Per-horizon @0.93: all 94–96%, ~30% coverage.
+- BEATS the naive heuristic (≤60s & ≥$10 ahead = 89.5% @ 23%) on BOTH precision AND coverage.
+
+**Honest framing:** conditional, mid-window edge (fires when price is already ahead —
+late-entry / don't-exit), not direction-from-scratch. Real + frequent, but the share
+price is high at that moment → "win often, thin margin"; the calibrated P(hold) is what
+makes the entry-vs-price judgment possible. Trained on SPOT paths (persistence is
+venue-agnostic).
+
+**Artifacts:** `data/saved_models/persistence_model.pkl` + `train_persistence_model.py`
+(re-runnable as the dataset grows). **NEXT (needs restart):** wire P(hold) into
+price_to_beat.py — show it on the card + gate the ⚡ late-entry signal on P(hold)≥0.93
+instead of the flat heuristic. That puts the 95% instrument in front of the operator live.
+
+## 5bj. P(hold) WIRED into the live card — the 95% instrument is now live (2026-06-13)
+## — serving change only; activates on the next restart; frozen v6 ensemble untouched
+
+Wired the §5bi A1/T3 persistence head into `price_to_beat.py` serving (the "Use it now"
+step). All crash-guarded — any failure leaves `p_hold=None` and the card + ⚡ gate fall
+back to the prior heuristic. Validated with a synthetic end-to-end test (model loads from
+the real pkl; strong setup +$60/25s-left → P(hold)=0.936 → ⚡ fires; weak +$3/200s →
+0.535 → no flag; empty buffer at boot → None → graceful).
+
+**What changed (`price_to_beat.py`):**
+- `_load_persistence_model()` — lazy, cached, crash-safe loader for
+  `data/saved_models/persistence_model.pkl` (honors `BTC_DATA_DIR`).
+- Rolling `self._px_buf` (deque, ~180) fed each `update()` tick (~1/s) → live trailing-60s
+  realized vol computed EXACTLY as the offline builder: `std(trailing-60s px)/anchor*100`
+  (keystone train/serve parity for `vol_60s_pct`).
+- In `_refresh_live`: compute the 5 features BY NAME from `mdl["features"]`
+  (`abs_distance_pct, seconds_left, vol_60s_pct, horizon, dist_vol_ratio`), run
+  `iso.predict(clf.predict_proba(...))`, store `rnd["p_hold"]`. P(hold) is about the side
+  price is CURRENTLY ahead on (matches the offline `pos==actual` label).
+- ⚡ LATE-ENTRY gate: the structural heuristic (15<secs_left≤late_win, ≥$min_ahead,
+  committed model lean, cur_pos==lean) is now a PRE-FILTER; the flag fires only when
+  calibrated **P(hold) ≥ 0.93**. If P(hold) is unavailable (model absent / buffer <3 ticks
+  at boot) ⚡ stays OFF rather than firing on the weaker heuristic. Advice text now quotes
+  the real number ("calibrated P(hold)=NN%").
+
+**What changed (`src/main.js`):** both live render paths (per-horizon card + wide card)
+show `🎯 Calibrated P(hold <side>)=NN%` on every open round (so the operator sees WHY ⚡
+does/doesn't fire), and the ⚡ chip shows "· NN% hold".
+
+**Honest framing unchanged:** conditional mid-window/late-entry edge, not
+direction-from-scratch. The frozen v6 ensemble, FEATURE_NAMES, and all retrain mechanisms
+are untouched — pure serving addition that activates on the next restart (~12s).
+
+## 5bk. PRE-RETRAIN AUDIT — retrain-critical path scanned clean (2026-06-13)
+## — operator asked "scan everything before I retrain the whole app"
+
+Focused scan of the retrain-critical path (feature matrix, labels, overlay, schema). **No
+retrain-blocking logic errors found.** Verified:
+- **Schema integrity:** 130 features (0–129), append-only preserved, `NUM_FEATURES` derived
+  (not hardcoded), `MODEL_ARCH_VERSION` says `...roster-130...`, `input_dim=NUM_FEATURES`.
+  No hardcoded count mismatch anywhere.
+- **Label construction LEAK-FREE** (`features.build_sequences`): triple-barrier, entry =
+  `closes[i]` (same candle the last feature row ends on — the deliberate 1-bar parity fix),
+  target looks STRICTLY forward (`j in 1..h`), index-guarded. Features↔closes alignment correct.
+- **Backfill overlay correct + defensive** (`signal_history.overlay_backfill`): fills
+  cvd_change/cvd_1m/cvd_5m + large_trade_delta/large_trade_imbalance + **vpin** from real
+  history; keeps live snapshots authoritative; missing parquet = clean no-op.
+- **vpin parity RESOLVED:** the streaming-VPIN recorder (`order_flow.py`) now uses the same
+  fixed equal-volume buckets as the backfill → vpin is train/serve safe and correctly merged.
+  Fixed stale docstring (overlay_backfill) + §6 note that still said vpin was excluded.
+
+**Two honest expectations the operator must weigh BEFORE retraining (NOT bugs):**
+1. **Same 130 features.** The queued ceiling-lift features (variance_ratio, price-efficiency,
+   rv_term_structure, A4 cross-venue, A8 session/time, GEX) are documented in the runbook but
+   NOT yet appended to FEATURE_NAMES. Retraining now banks class-balance + the CVD/vpin/
+   large-trade backfill history + trend-persistence + the per-model metric fix — a real but
+   INCREMENTAL gain, not the ceiling lift. To get the lift, append those features FIRST
+   (schema bump is free since you're retraining anyway) — that's the higher-EV path.
+2. **L2/options/polymarket slots stay constant over history.** Those columns only vary where a
+   LIVE snapshot was recorded (recent uptime tail); over the 60-day backfilled window they are
+   ~zero/constant (unbackfillable — Binance doesn't archive L2). The original ~0.51 ceiling for
+   THOSE slices persists until a live-accumulated second retrain or a Tardis.dev L2 buy.
+
+## 5bl. FEATURE BUNDLE — variance_ratio + rv_term_structure + session flags (2026-06-13)
+## — schema bump 130→136; chosen for GUARANTEED train/serve parity; retrain required
+
+Appended 6 features (slots 130–135) to `FEATURE_NAMES`, computed in the SINGLE builder
+`build_features_from_klines` (the same function server.py uses for train, live inference,
+AND backtest — so parity is structural, not promised). **All kline/timestamp-derived → no
+recorder, no overlay, no side table, no new failure surface.** This is deliberately the
+parity-SAFE subset of the queued bundle (see "deferred" below).
+
+- **130 `variance_ratio`** — Lo–MacKinlay Var(q-bar ret)/(q·Var(1-bar ret)), q=5/W=30,
+  centered (VR−1). >0 trending/momentum, <0 mean-reverting. Lets trees see the regime.
+- **131 `rv_term_structure`** — rv5/rv15 − 1 (both already computed). >0 short-vol expansion.
+- **132–134 `session_asia/eu/us`** — UTC session flags (0–8 / 7–16 / 13–21); overlap intended.
+- **135 `is_weekend`** — Sat/Sun UTC (epoch-day math verified: (days+3)%7≥5).
+
+**Validation (synthetic 12k-bar, 8-day span):** matrix = 136 wide; builder DETERMINISTIC
+(two builds bit-identical → serve==serve parity); 130/131 have ~12k unique finite values in
+range (they VARY — learnable, unlike the constant L2 slots); session flags binary; is_weekend
+= exactly 2 days flagged (math correct); slots 0–129 unbroken (append-only preserved).
+
+**Smooth-start guarantee (verified in code):** `MODEL_ARCH_VERSION` bumped to
+`…v7-classbal-vrts-session-136…`. On the next boot, `model.load_models()` sees the stale
+version (model.py:2428) → clears models, `is_trained=False`, returns False → server.py:2219
+auto-launches BACKGROUND startup training of the new 136-feature ensemble. Dashboard stays
+usable (live feeds/price/chart), predictions resume when training lands. `BTC_FREEZE_MODEL=1`
+does NOT block this initial train (it only blocks auto/scheduled relearns). No crash, no
+manual step beyond the normal start.bat.
+
+**DEFERRED (NOT in this bundle — would have broken parity):**
+- **A4 spot-vs-perp divergence** (`build_crossvenue_flow.py` parquet): the live PERP-CVD
+  recorder exists (`data_ingestion.py:144`, parity twin) but `handle_perp_bar` only logs to
+  the `perp_cvd_live` side table — it is NOT yet bridged into the per-bar signal_history
+  buffer, and the parquet keys on `ts_ms` not `candle_ts` (overlay needs candle_ts). Adding
+  it now would serve constant/zero over history = train/serve skew. NEXT bundle: bridge the
+  perp bar → buffer, add a candle_ts overlay from the parquet, THEN add 1–2 slots. Same
+  keystone discipline that made vpin parity-safe.
+- **price-efficiency** (aggTrades): needs a NEW live recorder in order_flow + backfill
+  builder addition (doesn't exist) → defer to the A4 bundle.
+- **GEX**: live-only accumulation (no history) → constant over training like L2; defer.
+
+## 5bm. A10 setup-fingerprint recorder (no-retrain) — activates on restart (2026-06-13)
+
+Operator: implement the no-retrain items. Built the highest-leverage one — the per-prediction
+DECISION-context recorder, which serves THREE no-retrain goals at once:
+1. the evidence layer for the **kNN voter + T3 "similar setups" gate** (the 95% mechanism);
+2. **measure-before-gate** — lets us test whether GEX / CVD / grade / conviction actually have edge
+   (join to outcome) BEFORE promoting any to a live gate (avoids gating on noise);
+3. zero serving risk (additive, crash-guarded, side table).
+
+- `database.py`: `setup_fingerprint(ts, horizon, regime, raw_direction, conviction, agreement,
+  confidence, grade, cvd_1m, gex, expected_move)` + crash-safe `log_setup_fingerprint`.
+- `server.py`: per-recorded-prediction hook after `model_verifier.record` (captures the decision
+  context + live CVD from order_flow + GEX from `deribit_client.data`). Keyed by `(now_ms, horizon)`
+  → joins `predictions_{h}m` for the outcome (same no-resolution-hook pattern as B1).
+- VERIFIED: table+helper, 2-row insert, and the fingerprint⨝outcome hit-label join all pass on a
+  throwaway DB; server.py + database.py parse. Coexists with B1 + GEX hooks (all additive).
+- Measure query (once data accrues): `SELECT grade, AVG(hit) FROM setup_fingerprint f JOIN
+  predictions_{h}m p ON f.ts=p.timestamp AND f.horizon=p.horizon WHERE p.resolved GROUP BY grade` —
+  same for gex-sign / cvd-sign / conviction-bucket → promote the proven ones to gates.
+
+## 5bn. Model-noise diagnostic tool (2026-06-13) — read-only, no retrain
+
+Operator: "a systematic tool that tells me which feature/model is noise, what's ruining accuracy."
+Built `backend/diagnose_model.py` (standalone, read-only — run when the app is STOPPED). Reports:
+1. **Horizon health** — committed sign-truth per horizon (the number that matters).
+2. **Weakest base models** — per-model COMMITTED (UP/DOWN) accuracy from `model_predictions` (now
+   sign-truth-graded after §5ba); lowest = dead weight in stacker/agreement.
+3. **Dead features** — ~0-variance columns over live `feature_outcome_log` (B1) = constant-in-serving
+   (the L2/options dead-weight problem); maps index→FEATURE_NAMES.
+4. **Low-signal features** — bottom-SHAP per horizon from `feature_importance` (written every train),
+   counted across horizons → the cut candidates.
+**Verdict logic:** cut = features that are BOTH ~0-variance AND bottom-SHAP; drop the weakest base
+model if it trails by >3pts on a stable sample; re-measure §1 after each cut, keep only if sign-truth
+improves. VERIFIED on a throwaway DB with planted noise: correctly flagged the weak model, the single
+constant feature, and the bottom-SHAP features. Pure analysis — touches nothing.
+
+## 5bo. Beat classifier (Polymarket fair-value head) built (2026-06-13) — offline, no retrain
+
+`train_beat_classifier.py` — per-horizon calibrated `P(window-close ≥ window-open)` (the exact
+Polymarket settlement question). Offline, reconstructs 1m OHLC from SPOT aggTrades; lean
+backfillable features (returns, rv, variance_ratio, range-pos, ATR, momentum, session). HGB +
+isotonic, **TEMPORAL** train/calib/test split (train past → test unseen future, no leakage).
+**Self-validating noise gates (refuses to save if it fails):** test-AUC ≥ 0.53, beats base-rate,
+high-confidence calibration ≥ 55%. VERIFIED: core (OHLC, labels, features) + the gate itself —
+planted-signal data → AUC 0.967 (kept), random data → AUC 0.517 (rejected). Saves
+`beat_model.pkl` only for horizons that clear the gates. ROLE: calibrated P(beat) = the proper
+`p_up`/fair value (A2 re-anchored to a real model, not the rejected flat formula) + a decorrelated
+second opinion. Does NOT escape the info ceiling. Wire P(beat) into the Polymarket card next, gated
+on live paper-tracking. See [V8_ROADMAP.md](V8_ROADMAP.md) specialized-heads suite.
+
+## 5bp. Specialized-heads suite COMPLETE + start.bat wiring + betting guide (2026-06-13)
+
+The offline "specialized heads" suite — all trained on reconstructed history (SPOT aggTrades),
+all with self-validating NOISE GATES (refuse to save a horizon that can't beat its baseline):
+- `train_beat_classifier.py` (§5bo) — P(close≥open) = fair value / `p_up`.
+- `build_path_labels.py` — A1-ext: 5-class first-passage SHAPE (CHOP/UP_DIRECT/UP_THEN_DOWN/
+  DOWN_DIRECT/DOWN_THEN_UP); vol-scaled band (no lookahead); gate = beat majority base-rate by ≥3pts.
+- `train_magnitude_quantiles.py` — C3: q10/q50/q90 of |move| (GBR quantile); gate = PINBALL beats the
+  flat constant baseline + monotone quantiles. Kills the flat ~$40.
+- `build_fingerprints_historical.py` — A10 offline twin: bucketed (vol×mom-sign×range×vr-sign) beat
+  rates with Laplace shrinkage → `fingerprint_evidence.parquet` ("similar setups: n·success%").
+All reuse the beat head's lean backfillable features (perfect train/serve parity) + a SHARED
+`resolve_dates()` (--start/--end | --validate | --days N). VERIFIED: syntax all backend; core tests
+PASS — classify_path 5/5 shapes, abs_move_pct + pinball, fingerprint aggregation, and the noise gate
+itself proven (planted signal AUC 0.967 kept, random AUC 0.517 rejected).
+
+**start.bat:** new `[0/3] d.` step trains each head ONLY if its model is missing (`if not exist` —
+no nested parens, honoring the §5bh lesson), driven by `BTC_BACKFILL_DAYS`. Delete a `.pkl` to force
+a rebuild. First boot is slow (trains all 4 once); after that they skip.
+
+**Betting guide** (`public/polymarket-betting.html`): new "🧠 The two probability instruments"
+section — P(hold) (live, ⚡≥0.93≈95%) and P(beat) (the real fair value / value-betting rule), with
+the honest limit (neither beats the 5m information ceiling; P(beat) stops you overpaying).
+
+**Noise diagnostic:** `diagnose_model.py` (§5bn) is ready but needs the app FULLY STOPPED (DuckDB
+single-writer) — the running server still held the lock. Run it between sessions:
+`python backend/diagnose_model.py`.
+
+## 5bq. Data-quality audit + clean tool (2026-06-13) — offline, no retrain
+
+`data_quality_audit.py` — audits the bar pipeline the models train on (1m OHLC from SPOT aggTrades)
+and optionally cleans it. Pairs with `diagnose_model.py` (that finds bad FEATURES; this finds bad
+DATA). Checks: bad OHLC (high<low / out-of-range / non-positive / non-finite), duplicate &
+non-monotonic timestamps, GAPS (missing minutes), stale runs (frozen feed), extreme |1m| returns
+(flash/glitch → winsorize), beat-label ambiguity (ties), and up-bar fraction (one-directional-window
+bias). `--clean` removes bad/dup bars, enforces monotonic time, winsorizes spikes → `clean_bars.parquet`.
+Shares `resolve_dates()` (--start/--end | --validate | --days N). VERIFIED on synthetic bars with
+planted defects: detects all (bad OHLC, dup, gap, stale, spike) and cleans to zero issues.
+HONEST SCOPE (in the docstring): cleaning makes the model learn the EXISTING signal better
+(calibration/stability/±a point) — it does NOT manufacture edge; the 5m ceiling moves only with new
+INFORMATION.
+
+## 5br. Grade validation (in diagnose_model.py) + data-quality in start.bat (2026-06-13)
+
+**Grade validation — MEASURED, and the grade is INVERTED.** Added `grade_validation()` +
+`_wilson_lb()` to `diagnose_model.py` (section 5): per A/B/C, committed sign-truth win rate across all
+horizons with a Wilson 95% lower bound. Run on the real DB (n=222–397/grade, a real sample):
+- **Grade A 44.3% (n=289, LB 38.7%)** · Grade B 56.8% (n=222, LB 50.2%) · Grade C 50.4% (n=397, LB 45.5%).
+- **NOT monotonic — A is the WORST (below coin-flip).** Confirms the exhaustion hypothesis (§A10-pre):
+  full flow-agreement clusters at move exhaustion → reversal risk → the "best" grade is anti-predictive.
+- ACTION (V8): the confluence grade is measurably broken at the top — **rebuild it** (A10:
+  regime-conditioned, maturity-aware) or stop surfacing A as "best". Until then: grades are NOT a
+  trust signal; lean on stable (non-flipping) leans + magnitude-clears-line + late-entry P(hold).
+  Gate to trust grades again: each n≥100 AND A's Wilson-LB > C's win rate (currently FAILS).
+
+**start.bat:** added `[0/3] e.` — a fast `data_quality_audit.py --days 3` health-check report each
+boot (no --clean; full-window clean is a manual run). `if not exist`/no-paren style preserved.
+
+## 5bs. LEAKAGE CAUGHT + FIXED in the at-open heads (2026-06-13) — discipline working
+
+First real-run beat head printed **h=1 AUC 1.000 / 99.7%**, 5m 63% — too good = leakage (5m is
+coin-flip; AUC 1.0 is impossible). ROOT CAUSE: `build_beat_features` uses the CURRENT bar's close
+(`ret_1`, `range_pos`, `mom_20` all read `close[t]`), but the beat/magnitude/path/fingerprint labels
+anchor on the SAME bar's open (`close[t]≥open[t]`) → `close[t]` leaks the label (perfectly at h=1,
+partially for longer h — hence AUC decayed 1.0→0.585).
+
+FIX (all 4 at-open heads): features[t] predict the window opening at **t+1** (beat/magnitude/
+fingerprints: `X[:-1], y[1:]`; path: use `X[t-1]` for the window at bar t). Now features end at
+`close[t]` which ≈ `open[t+1]` (known at the window open) and the outcome is strictly future — no
+leakage. VERIFIED on a cached day: **h=1 AUC 1.000 → 0.548**, rest 0.47–0.61 (honest, coin-flip-ish).
+The v7 ensemble and P(hold) were NOT affected (forward-only / intra-window-conditional label designs).
+
+**Operator action:** the overnight run's heads were trained by the in-memory OLD code → LEAKED.
+Let the v7 ensemble finish (it's fine). Tomorrow: delete the 4 leaked artifacts
+(`beat_model.pkl`, `magnitude_model.pkl`, `path_model.pkl`, `fingerprint_evidence.parquet`) → next
+`start.bat` retrains them with the fixed code (train-if-missing). This is exactly why "too-good =
+leakage" is a standing rule — caught before a single bet was placed on a fake-95% model.
+
 ## 6. Known limitations / honest notes
-- `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
-  fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing
-  `funding_rate` key (sparse historically — improves only with live coverage).
+- `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
+  `order_flow.py` was aligned to the backfill's fixed equal-volume buckets
+  (`trade_features.DEFAULT_BUCKET_VOLUME_BTC` / `DEFAULT_ROLLING_BUCKETS`), so it is
+  train/serve parity-safe (see §pre-retrain-audit + `signal_history.overlay_backfill`).
+  The backfill's `funding_velocity` is STILL intentionally NOT merged (skew-avoidance);
+  feature 17's funding_velocity uses the existing `funding_rate` key (sparse historically —
+  improves only with live coverage).
 - Expected accuracy lift from this batch is **modest** (Class-A features are real but
   secondary); the larger gains remain calibration + meta-labeling once data accrues.
 - The schema hash changed → any cached feature-importance/PSI baselines recompute on the new
-  117-feature set after the retrain (expected, additive).
+  130-feature set after the retrain (expected, additive).

@@ -14,7 +14,9 @@ REM   1  = ~24h DEBUG smoke-test only (fast, NOT accurate).
 REM HEADS-UP: a MULTI-HOUR train (overnight), and the TREND/RANGE/VOLATILE regime buckets
 REM train too. The dashboard stays usable throughout (non-blocking boot). The
 REM microstructure features only fill from UPTIME, so after training, LEAVE IT RUNNING.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=60"
+REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samples is enough to
+REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=30"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
@@ -91,6 +93,14 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     echo [0/3] c. Updating A4 cross-venue flow - spot-vs-perp divergence...
     python backend\build_crossvenue_flow.py --auto --days %BTC_BACKFILL_DAYS%
     if errorlevel 1 echo [0/3c] Cross-venue build failed - continuing.
+    echo [0/3] d. Specialized heads - train only if MISSING - delete the .pkl to force a rebuild:
+    if not exist "%BTC_DATA_DIR%\saved_models\beat_model.pkl" python backend\train_beat_classifier.py --days %BTC_BACKFILL_DAYS%
+    if not exist "%BTC_DATA_DIR%\saved_models\magnitude_model.pkl" python backend\train_magnitude_quantiles.py --days %BTC_BACKFILL_DAYS%
+    if not exist "%BTC_DATA_DIR%\saved_models\path_model.pkl" python backend\build_path_labels.py --days %BTC_BACKFILL_DAYS%
+    if not exist "%BTC_DATA_DIR%\fingerprint_evidence.parquet" python backend\build_fingerprints_historical.py --days %BTC_BACKFILL_DAYS%
+    echo [0/3] e. Data-quality health check - last 3 days - report only:
+    python backend\data_quality_audit.py --days 3
+    if errorlevel 1 echo [0/3e] Data-quality audit skipped - continuing.
 )
 REM =======================================================================
 

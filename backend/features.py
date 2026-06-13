@@ -520,6 +520,14 @@ FEATURE_NAMES = [
     # the trees SEE "quiet but persistent drift" so the RANGE/low-vol experts can follow a
     # trend instead of always fading it. Full history immediately (no recording wait).
     "trend_efficiency", "signed_streak", "momentum_fast_slow", "return_acceleration",
+    # Regime / term-structure / session batch (130-135) — added 2026-06-13. APPEND ONLY.
+    # ALL kline/timestamp-derived → computed identically at train AND serve by the SINGLE
+    # builder build_features_from_klines (no recorder, no overlay, no side table), so they
+    # have PERFECT train/serve parity and NONE of the constant-in-training problem that
+    # caps the L2/options slots. variance_ratio = Lo–MacKinlay trend-vs-meanrevert;
+    # rv_term_structure = short-vs-long realized-vol; session_* / is_weekend = UTC regime.
+    "variance_ratio", "rv_term_structure",
+    "session_asia", "session_eu", "session_us", "is_weekend",
 ]
 NUM_FEATURES = len(FEATURE_NAMES)
 
@@ -1210,6 +1218,35 @@ def build_features_from_klines(
     _ret1 = np.diff(closes, prepend=closes[0])
     _acc = np.diff(_ret1, prepend=_ret1[0]) / np.where(closes > 0, closes, 1.0)
     features[:, 129] = np.clip(_acc[1:] * 10000.0, -2.0, 2.0) / 2.0
+
+    # ── Regime / term-structure / session batch (130-135) — kline+timestamp only ──────
+    # PERFECT train/serve parity: same arrays (closes, returns_full, rv5/rv15, _t_s) used
+    # identically here whether building the train matrix or the live row. Append-only.
+    # 130: variance_ratio (Lo–MacKinlay) — Var(q-bar return)/(q·Var(1-bar return)) over a
+    #      trailing window W. >1 trending/momentum, <1 mean-reverting, ~1 random walk.
+    #      Centered at 0 (VR−1) and clipped: lets the trees SEE the trend-vs-chop regime.
+    _q, _W = 5, 30
+    _cs_r = np.cumsum(returns_full)
+    _rq = np.zeros(n); _rq[_q:] = _cs_r[_q:] - _cs_r[:-_q]      # trailing q-bar return
+    _var1 = _rolling_std(returns_full, _W) ** 2
+    _varq = _rolling_std(_rq, _W) ** 2
+    _vr = np.where(_var1 > 1e-18, _varq / (_q * np.where(_var1 > 1e-18, _var1, 1.0)), 1.0)
+    features[:, 130] = np.clip(_vr[1:] - 1.0, -1.0, 1.0)
+    # 131: rv_term_structure — short-horizon RV (rv5) vs long-horizon RV (rv15), both already
+    #      computed above. >0 short-term vol elevated (expansion/stress), <0 calming. Centered.
+    _rvts = np.where(rv15 > 1e-9, rv5 / np.where(rv15 > 1e-9, rv15, 1.0) - 1.0, 0.0)
+    features[:, 131] = np.clip(_rvts[1:], -1.0, 1.0)
+    # 132-134: UTC trading-session flags — BTC vol/flow regime differs by session; the EU+US
+    #      overlap (13–16 UTC) is the high-activity window. Overlapping ranges are intentional
+    #      (the trees combine them). Sharp, interpretable, parity-perfect.
+    _hr = (_t_s.astype(np.int64) // 3600) % 24
+    features[:, 132] = ((_hr >= 0) & (_hr < 8)).astype(np.float64)[1:]    # Asia
+    features[:, 133] = ((_hr >= 7) & (_hr < 16)).astype(np.float64)[1:]   # Europe
+    features[:, 134] = ((_hr >= 13) & (_hr < 21)).astype(np.float64)[1:]  # US
+    # 135: is_weekend — Sat/Sun UTC (thinner liquidity, distinct mean-reversion regime).
+    #      Epoch day 0 (1970-01-01) was Thursday → (days+3)%7 gives 0=Mon … 5=Sat,6=Sun.
+    _dow = (_t_s.astype(np.int64) // 86400 + 3) % 7
+    features[:, 135] = (_dow >= 5).astype(np.float64)[1:]
 
     # Feature Interactions (34-37) — vectorized, per-bar. Placed last so every
     # referenced column is already populated.

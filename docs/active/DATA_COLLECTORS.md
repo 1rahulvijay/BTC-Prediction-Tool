@@ -48,6 +48,8 @@ wire a live Binance futures aggTrade stream computing the same per-bar CVD, then
 | **B1** | `feature_outcome_log(ts, schema_hash, regime, features[])` | full live feature vector per cycle (incl. live-only L2) | next restart | *(none — L2 not archivable)* |
 | **A1** | `persistence_snapshot(round_id, horizon, ts, seconds_left, distance, position)` | live round trajectory; label via join to `price_to_beat` | next restart | `build_persistence_dataset.py` |
 | **A4 perp** | `perp_cvd_live(ts, cvd_perp, vol_perp, perp_price)` | live per-1m-bar PERP CVD (futures aggTrade); parity-verified vs offline | next restart | `build_crossvenue_flow.py` (perp leg) |
+| **A10** | `setup_fingerprint(ts, horizon, regime, raw_direction, conviction, agreement, confidence, grade, cvd_1m, gex, expected_move)` | per-prediction decision context; joins `predictions_{h}m` for outcome | next restart | *(derivable from B1 too)* |
+| **GEX** | `gex_live(ts, gex, total_gamma, spot, pcr, atm_iv)` | live dealer gamma (Deribit) | next restart | *(live-only; no archive)* |
 | outcomes | `predictions_{h}m`, `price_to_beat`, `model_predictions`, `ab_results` | predictions + resolved outcomes (labels) | live | — |
 
 B1 is the ONLY collector with no offline twin — live L2 order-book depth (slots ~52–72) is not

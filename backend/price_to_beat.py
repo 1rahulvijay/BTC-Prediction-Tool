@@ -23,9 +23,45 @@ Persists to DuckDB (`price_to_beat`); surfaced as
 import logging
 from collections import deque
 
+import numpy as np
+
 import database
 
 logger = logging.getLogger(__name__)
+
+# ── A1 / T3 persistence model (P(hold)) — separate head, lazy + crash-safe ──────────
+# Calibrated P(side-currently-ahead holds to close | abs_distance, seconds_left, vol,
+# horizon). Trained offline by train_persistence_model.py on 1.9M snapshots (test AUC
+# 0.747; P(hold)>=0.93 -> 95.3% realized at ~30% coverage). It does NOT touch the frozen
+# v6 ensemble or the feature schema; a missing/unreadable file simply disables P(hold)
+# (the card falls back to prior behavior). Loaded once, cached at module scope.
+_PERSIST_MODEL = None
+_PERSIST_MODEL_TRIED = False
+
+
+def _load_persistence_model():
+    """Return the persistence-model dict {clf, iso, features, ...} or None. Loaded once;
+    any failure is swallowed and P(hold) is silently disabled."""
+    global _PERSIST_MODEL, _PERSIST_MODEL_TRIED
+    if _PERSIST_MODEL_TRIED:
+        return _PERSIST_MODEL
+    _PERSIST_MODEL_TRIED = True
+    try:
+        import os
+        import joblib
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "persistence_model.pkl")
+        if not os.path.exists(path):
+            logger.info(f"A1 persistence model absent at {path} — P(hold) disabled.")
+            return None
+        _PERSIST_MODEL = joblib.load(path)
+        logger.info("A1 persistence model loaded (P(hold) live): test_auc="
+                    f"{_PERSIST_MODEL.get('test_auc')}, features={_PERSIST_MODEL.get('features')}")
+    except Exception as e:
+        logger.warning(f"A1 persistence model load failed — P(hold) disabled: {e}")
+        _PERSIST_MODEL = None
+    return _PERSIST_MODEL
 
 
 def _hms(ms: int) -> str:
@@ -62,6 +98,9 @@ class PriceToBeatTracker:
         self.latest_round = {}                        # horizon -> current/most-recent round
         self.current_window = {}                      # horizon -> window-start ms we already opened
         self._last_snap = {}                          # A1: round_id -> last snapshot ms (15s dedupe)
+        # Rolling (ts_ms, price) buffer for LIVE trailing-60s realized vol — the vol_60s_pct
+        # feature the A1 P(hold) model needs. update() fires ~1/s, so 180 covers ~3 min.
+        self._px_buf = deque(maxlen=180)
 
     @staticmethod
     def _bet_lean(p: dict) -> str:
@@ -132,6 +171,9 @@ class PriceToBeatTracker:
             # Can't anchor a round without a reference price; still try to resolve.
             self._resolve(now_ms, ref_price, klines)
             return
+
+        # Feed the rolling price buffer for the live trailing-60s vol (A1 P(hold) feature).
+        self._px_buf.append((int(now_ms), float(ref_price)))
 
         for h in self.horizons:
             win_len = h * 60_000
@@ -221,6 +263,34 @@ class PriceToBeatTracker:
         rnd["seconds_left"] = secs_left
         rnd["live_lean"] = live_lean
         rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
+        # ── A1 / T3 P(hold): calibrated prob the side price is CURRENTLY ahead on holds to
+        # close. Mirrors the offline label (pos==actual) and feature recipe EXACTLY:
+        # abs_distance_pct, seconds_left, vol_60s_pct (trailing-60s std/anchor*100), horizon,
+        # dist_vol_ratio. Crash-safe — any failure leaves p_hold None and the card + the ⚡
+        # late-entry gate fall back to the pre-existing heuristic. Separate frozen head.
+        p_hold = None
+        try:
+            mdl = _load_persistence_model()
+            if mdl and ptb > 0 and secs_left > 0:
+                cutoff = now_ms - 60_000
+                seg = [px for (t, px) in self._px_buf if t >= cutoff]
+                if len(seg) > 2:
+                    vol_60s_pct = float(np.std(seg) / ptb * 100.0)
+                    abs_dist_pct = abs(cur_move) / ptb * 100.0
+                    dist_vol_ratio = abs_dist_pct / (vol_60s_pct + 1e-6)
+                    fvals = {
+                        "abs_distance_pct": abs_dist_pct,
+                        "seconds_left": float(secs_left),
+                        "vol_60s_pct": vol_60s_pct,
+                        "horizon": float(rnd.get("horizon", 5) or 5),
+                        "dist_vol_ratio": dist_vol_ratio,
+                    }
+                    feats = [[fvals[k] for k in mdl["features"]]]
+                    raw = mdl["clf"].predict_proba(feats)[:, 1]
+                    p_hold = float(mdl["iso"].predict(raw)[0])
+        except Exception as _pe:
+            logger.debug(f"P(hold) compute skipped: {_pe}")
+        rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
         # Magnitude FORECAST for the Polymarket card: the model's directional move-size
         # regressor (conformal low/median/high band) projected onto a close estimate vs
         # the price-to-beat. Lets the bettor see "expected drop/rise of ~$X" and whether
@@ -310,14 +380,20 @@ class PriceToBeatTracker:
         # ⚡ gated to COMMITTED model leans (2026-06-13): flagging late-entry on a
         # ⚠ fallback lean put "persistence odds strongly favor X" on a card whose
         # own badge says "WEAK — skip". Contradictory coaching; model leans only.
+        # CALIBRATED gate (2026-06-13): the structural heuristic (window/min-ahead) is now
+        # a PRE-FILTER; the ⚡ flag fires only when the A1/T3 model says the currently-ahead
+        # side holds with calibrated P(hold) >= 0.93 (its honest 95%-tier — 95.3% realized
+        # at ~30% coverage on unseen test). If P(hold) is unavailable (model absent / buffer
+        # < 3 ticks at boot), ⚡ stays OFF rather than firing on the weaker heuristic alone.
         late = (live_lean in ("UP", "DOWN") and cur_pos == live_lean
                 and rnd.get("lean_source") == "model"
-                and 15 < secs_left <= _late_win and abs(cur_move) >= _min_ahead)
+                and 15 < secs_left <= _late_win and abs(cur_move) >= _min_ahead
+                and p_hold is not None and p_hold >= 0.93)
         rnd["late_entry"] = bool(late)
         if late and isinstance(rnd.get("advice"), dict):
             rnd["advice"]["text"] += (f" [LATE-ENTRY WINDOW: {secs_left}s left, already "
-                                      f"{cur_move:+.0f} on the {live_lean} side and the model still "
-                                      f"agrees — persistence odds strongly favor {live_lean}.]")
+                                      f"{cur_move:+.0f} on the {live_lean} side — calibrated "
+                                      f"P(hold)={p_hold*100:.0f}% favors {live_lean} holding to close.]")
         # (EARLY-EXIT cents hint removed with p_up — same flat-magnitude basis. The
         # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
         # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────

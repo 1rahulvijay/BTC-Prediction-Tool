@@ -19,9 +19,11 @@
 | **A6** TCN full stacker seat | OOF refits + GPU | ✅ v6 | diversity | (done) | NO |
 | **F1** GPU train | lgb/xgb/cat CUDA | ✅ v6 | −1.5h → daily fresh | (done) | NO |
 | **A4 / Track C** | OBI depth, cross-venue lead-lag, funding×mom, L2 | ❌ | **HIGH — ceiling lift** | YES | YES (B1/backfill) |
-| **A8** | session/time features | ❌ | MED (cheap; time-blind) | YES | NO |
+| **A8** | session/time features | ✅ **built (v7)** | MED (cheap; time-blind) | YES | NO |
+| **C7** | `variance_ratio` | ✅ **built (v7)** | MED (cheap; trend/chop) | YES | NO |
+| **C8** | `rv_term_structure` | ✅ **built (v7)** | MED (cheap; vol term) | YES | NO |
 | **A9** | Polymarket crowd price feature | ⛔ blocked (no 5m feed) | MED-HIGH (unique) | YES | YES (need feed) |
-| **A1 model** | persistence/hold classifier (T3) | ❌ (recorder ✅) | **HIGH — 95% tier** | YES | YES (accruing) |
+| **A1 model** | persistence/hold classifier (T3) | ✅ **trained + WIRED** (restart) | **HIGH — 95% tier** | (own head) | YES (accruing) |
 | **A1-ext** | learned path labels | ❌ | MED-HIGH | YES | YES |
 | **A10** | setup fingerprints / similar-setup | ❌ | MED (evidence) | NO* | YES |
 | **A7** | Optuna hyperparam search | ❌ | **HIGH — biggest tune lever** | YES (offline) | NO |
@@ -54,6 +56,15 @@ Legend: **NO TRAIN** = serving/display/logging/infra only, safe alongside the fr
 | A5 | Pyth anchor + dual Binance/Polymarket views (earlier) | `server.py`, `main.js` | Price-to-beat matches Polymarket within a few $ |
 
 *(A1/A2 activated on the restart you just did; A3–A5 were already live.)*
+
+## A-v7. BUILT & STAGED FOR RETRAIN — active after the next restart & retrain (v7 schema)
+
+| # | Change / Feature | File | Effect / Target |
+|---|---|---|---|
+| C1 | `variance_ratio` (slot 130) | `features.py` | Trend-vs-chop regime detector (Lo-MacKinlay variance ratio) |
+| C2 | `rv_term_structure` (slot 131) | `features.py` | Short-vs-long realized volatility term structure |
+| A8 | Session flags & weekend (slots 132-135) | `features.py` | UTC Session (Asia/EU/US) and weekend flags (volume/liquidity proxies) |
+| A1 | P(hold) serving & ⚡ late-entry gate | `price_to_beat.py`, `main.js` | Uses persistence model to gate ⚡ entries at calibrated P(hold) >= 93% |
 
 ---
 
@@ -101,15 +112,19 @@ Legend: **NO TRAIN** = serving/display/logging/infra only, safe alongside the fr
 
 ## C. PROPOSED — TRAIN (parked until a deliberate retrain window)
 
-### C1. Track C — multi-venue backfillable FLOW features (slots 130–134)
+### C1. Track C — multi-venue backfillable FLOW features (deferred)
 - Coinbase/Bybit CVD divergence, cross-venue lead-lag, multi-venue aggressive-buy ratio, large-print
-  venue skew. Backfillable (both venues publish historical trades) → train/serve consistent. Real
-  additive 5m edge. Spec: [SPEC_ACCURACY_NEXT_RETRAIN.md](SPEC_ACCURACY_NEXT_RETRAIN.md) §3.
-- **Training?** **YES** — new feature columns → retrain. Cheapest "new edge" retrain.
+  venue skew. Deferred to the A4 cross-venue flow bundle to ensure train/serve parity is 100% resolved first.
+- **Training?** **YES** — new feature columns → retrain.
 
-### C2. `rv_term_structure` (slot 135)
-- rv_1m / rv_15m short-vs-long realized-vol ratio. Kline-derived → free full history.
-- **Training?** **YES** (it's a new feature) — but trivial to add; bundle with C1.
+### C2. `rv_term_structure` (slot 131)
+- ✅ **Built in v7** (slot 131) — short-vs-long realized-vol ratio (`rv5 / rv15`). Kline-derived → free full history.
+
+### C2-ext. `variance_ratio` (slot 130)
+- ✅ **Built in v7** (slot 130) — Lo-MacKinlay trend-vs-chop indicator (`VR - 1`). Kline-derived → free full history.
+
+### C2-session. Session flags & weekend (slots 132-135)
+- ✅ **Built in v7** (slots 132-135) — UTC trading-session flags (Asia/EU/US) and weekend indicator. Timestamp-derived.
 
 ### C3. Magnitude (#2) — conditional-quantile regressor
 - Replaces the flat ~$40 mean with a vol-aware q10/q50/q90 (pinball loss). Sharpens "how far".

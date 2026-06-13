@@ -2829,8 +2829,9 @@ function renderPMCore(data, cfg) {
     const srcBadge = r.lean_source==='fallback'
       ? '<span style="background:rgba(255,183,77,.15);color:#ffb74d;border-radius:4px;padding:0 .35rem;font-size:.7em">⚠ WEAK (fallback) — skip</span>'
       : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
+    const phPct = (r.p_hold!=null) ? Math.round(r.p_hold*100) : null;
     const lateChip = r.late_entry
-      ? '<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge</span>' : '';
+      ? `<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge${phPct!=null?` · ${phPct}% hold`:''}</span>` : '';
     const practice = (h!==5&&h!==15) ? ' <span style="background:rgba(255,255,255,.08);color:var(--text-secondary);border-radius:4px;padding:0 .35rem;font-size:.6em;vertical-align:middle">PRACTICE — no real market</span>' : '';
     return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
       <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}${practice}</strong>
@@ -2843,6 +2844,7 @@ function renderPMCore(data, cfg) {
         <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
+      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.25rem;font-size:.82em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold>=0.93?'#64b5f6':'var(--text-secondary)'}">P(hold ${r.current_position})=${Math.round(r.p_hold*100)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 persistence model; ⚡ fires at ≥93%)</div>`:''}
       ${!resolved&&r.live_expected_move!=null&&dir!=='NEUTRAL'?`<div style="margin-top:.4rem;padding:.4rem .6rem;border-radius:6px;background:rgba(255,255,255,.03);font-size:.85em">
         📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· 50% band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))} (tails run larger)</span>`:''}
         ${r.projected_close!=null?`→ projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong>
@@ -3293,6 +3295,8 @@ function renderPriceToBeatTabbed(data) {
           <div><span style="color:var(--text-secondary)">Model now</span><br><strong style="color:${dirColor(r.live_lean || 'NEUTRAL')}">${r.live_lean || 'NEUTRAL'}</strong></div>
           <div><span style="color:var(--text-secondary)">Exp. move</span><br><strong>${r.live_expected_move != null ? '$' + Math.round(Math.abs(r.live_expected_move)) : '--'}</strong></div>
         </div>
+        ${r.p_hold != null && r.current_position ? `
+        <div style="margin-top:.55rem;font-size:.84em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold >= 0.93 ? '#64b5f6' : 'var(--text-primary)'}">P(hold ${r.current_position}) = ${Math.round(r.p_hold * 100)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 model; ⚡ late-entry fires at ≥93%)</div>` : ''}
       </div>` : '';
 
     els.ptbGrid.innerHTML = `<div class="ptb-card ptb-card-wide" style="border-color:${dirColor(dir)}">

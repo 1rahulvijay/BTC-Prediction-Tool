@@ -87,6 +87,18 @@
 </div>
 
 <!-- ============================================================ -->
+<h2 id="brain">🧠 The two probability instruments (the betting brain)</h2>
+<div class="card">
+<p>Two <b>calibrated, separately-trained models</b> now drive the decision — both validated out-of-sample, both refusing to ship if they're noise. They answer different questions:</p>
+<ul>
+  <li><b>🎯 P(hold) — the late-entry / T3 instrument (LIVE).</b> "Price is already $X past the line with S seconds left — will it HOLD to close?" Trained on 1.9M historical intra-window snapshots; on unseen data <b>P(hold) ≥ 0.93 realized ~95%</b>. This is the rare, near-certain setup: enter <i>late</i> on the side already winning, when the model says it holds. The ⚡ chip fires only when <b>calibrated P(hold) ≥ 0.93</b>. It's a <i>conditional</i> edge (price already ahead), not a from-scratch call.</li>
+  <li><b>📊 P(beat) — the fair value (the new `p_up`).</b> "Will the window CLOSE above its OPEN?" — the exact Polymarket settlement, as a calibrated probability. <b>This is the fair price of the UP share.</b> It replaces the old fake fair value (which was built on a flat $40 guess).</li>
+</ul>
+<p style="margin:.5rem 0 0"><b>The value-betting rule, made real:</b> bet UP only when <b>market ask &lt; P(beat)</b> (and the DOWN share when its ask &lt; 1−P(beat)). Paying 65¢ for a 60% outcome loses money — P(beat) is what lets you see that. <span style="color:var(--amber)">Honest limit:</span> P(beat) does <i>not</i> beat the 5m information ceiling — it won't make a coin-flip a winner. Its job is to stop you <b>overpaying</b> for a correct call, and to size the rare real edges.</p>
+<p style="margin:.5rem 0 0;color:var(--dim)">How we know they're not noise: each was trained past→future (no leakage) and only saved per-horizon if it cleared its gate (P(beat): test-AUC ≥ 0.53 + calibration; P(hold): calibration + beats the heuristic). A horizon that can't clear prints <b>NOISE</b> and is dropped — silence beats a confident lie.</p>
+</div>
+
+<!-- ============================================================ -->
 <h2 id="tiers">🏆 The decision tiers — best to worst</h2>
 <p>Read the card top-down and find the <i>lowest</i> tier it fails. That's your bet quality.</p>
 

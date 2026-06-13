@@ -402,6 +402,26 @@ def init_db():
             position VARCHAR
         )
     """)
+    # A10 (2026-06-13): per-prediction setup FINGERPRINT — the DECISION context (regime,
+    # conviction, agreement, grade, CVD, GEX) keyed by (ts,horizon), joinable to
+    # predictions_{h}m for the outcome. Two no-retrain payoffs: (1) the evidence layer for
+    # the kNN voter + T3 "similar setups" gate; (2) lets us MEASURE which signals (GEX / CVD /
+    # grade) actually have edge BEFORE promoting any to a live gate (measure-before-gate).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS setup_fingerprint (
+            ts BIGINT,
+            horizon INT,
+            regime VARCHAR,
+            raw_direction VARCHAR,
+            conviction DOUBLE,
+            agreement DOUBLE,
+            confidence DOUBLE,
+            grade VARCHAR,
+            cvd_1m DOUBLE,
+            gex DOUBLE,
+            expected_move DOUBLE
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS feature_retirement_events (
             feature VARCHAR,
@@ -571,6 +591,29 @@ def log_gex(ts: int, gex: float, total_gamma: float, spot: float,
               float(pcr), float(atm_iv)))
     except Exception as e:
         print(f"DuckDB GEX Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_setup_fingerprint(ts: int, horizon: int, regime: str, raw_direction: str,
+                          conviction: float, agreement: float, confidence: float, grade: str,
+                          cvd_1m: float, gex: float, expected_move: float):
+    """A10: persist one per-prediction setup fingerprint (decision context). Joins to
+    predictions_{h}m on (ts,horizon) for the outcome at train/measure time. Crash-safe."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT INTO setup_fingerprint
+            (ts, horizon, regime, raw_direction, conviction, agreement, confidence, grade,
+             cvd_1m, gex, expected_move)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (int(ts), int(horizon), str(regime), str(raw_direction), float(conviction),
+              float(agreement), float(confidence), str(grade), float(cvd_1m), float(gex),
+              float(expected_move)))
+    except Exception as e:
+        print(f"DuckDB setup-fingerprint Insert Error: {e}")
     finally:
         if conn:
             conn.close()

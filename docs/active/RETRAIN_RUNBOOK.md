@@ -33,18 +33,16 @@ python backend/build_persistence_dataset.py --start <90d-ago> --end <today>
 ## Phase 1 — Feature additions (schema bump → bundle with the retrain)
 
 Append-only (never reorder 0–129; saved models index by position). Then bump `MODEL_ARCH_VERSION`.
-- **A8 session/time** — Asia/EU/US flags, minutes-to-funding, top/bottom-of-hour, weekend. Free
-  history (timestamp-derived). ~4–6 slots.
-- **A4 cross-venue flow** — `cvd_cb_binance_div`, `cvd_bybit_binance_div`, `flow_lead_lag_cb`,
-  `aggressive_buy_ratio_multi`, `large_print_venue_skew` (fed by `build_crossvenue_flow.py`).
-- **`rv_term_structure`** — rv_1m / rv_15m (free, kline-derived).
-- **`variance_ratio`** — var(k-period ret) / (k · var(1-period ret)); mean-revert (<1) vs
-  trend (>1). Kline-derived → free full history. (added 2026-06-13)
-- **price-efficiency** — permanent-vs-temporary impact (`mid_t+30s` vs `mid_t+1s` after an
-  aggressive-flow impulse) + short-lag return autocorrelation. From aggTrades → backfillable
-  via the trade_features pipeline. New non-L2 microstructure. (added 2026-06-13)
-- **GEX** — `gex_live` side table is already accumulating (see §5bg / `compute_gex`); add the
-  recorded value as a slowly-varying feature here, aligned on ts. (added 2026-06-13)
+
+**✅ v7 Bundle (Built 2026-06-13, slots 130-135):**
+- **`variance_ratio`** (130) — Lo-MacKinlay trend-vs-chop (kline-derived, parity-safe).
+- **`rv_term_structure`** (131) — rv_5m / rv_15m term structure (kline-derived, parity-safe).
+- **A8 session/time** (132-135) — Asia/EU/US UTC flags, weekend (timestamp-derived, parity-safe).
+
+**Deferred to the A4 Bundle (needs live parity recorders first):**
+- **A4 cross-venue flow** — `cvd_cb_binance_div`, `cvd_bybit_binance_div`, `flow_lead_lag_cb` (fed by `build_crossvenue_flow.py`).
+- **price-efficiency** — permanent-vs-temporary impact (`mid_t+30s` vs `mid_t+1s`). Needs new live recorder.
+- **GEX** — `gex_live` side table accumulation. Live-only, no history.
 - **ATR triple-barrier labels** — cleaner target (V5 §2.5a); a label change, not a feature.
 
 ## Phase 2 — A7 Optuna tuning (offline, overnight, no new data)
@@ -99,8 +97,9 @@ re-anchored fair value.
   Binance. Either let live B1 accumulate them for a *second* retrain, or buy a historical L2 archive
   (Tardis.dev) to backfill even those.
 
-## Order of operations (recommended)
-1. **Now:** run the two existing Phase-0 backfills over 90 days (offline).
-2. **Next build:** `build_crossvenue_flow.py` (A4) — then Phase-1 feature additions as one bundle.
-3. **Then (operator):** Phase 2 Optuna → Phase 3 retrain (90 days) → measure.
-4. **Then:** Phase 4 A1 persistence head → the T3 precision tier.
+## Order of operations (updated 2026-06-13)
+1. **✅ Done:** Phase 0 backfills & A1 persistence head trained.
+2. **✅ Done:** `v7` feature bundle (variance_ratio, rv_term_structure, session flags) appended (slots 130-135) + schema version bumped.
+3. **NOW (operator):** Run `start.bat` to launch the **Phase 3 retrain** on the `v7` 136-feature ensemble.
+4. **Next Build (after retrain):** `A4` cross-venue flow + live parity recorders.
+5. **Next Tune:** Phase 2 Optuna.

@@ -224,11 +224,15 @@ class LiveSignalHistoryBuffer:
         converted to SECONDS, because every other path here keys candles by the kline `time`
         field which is UNIX SECONDS (data_ingestion stores `int(k[0]) // 1000`).
 
-        Only `cvd_change/cvd_1m/cvd_5m` are merged by default: these are recorded live by
-        order_flow with the SAME rolling-window definition the backfill reproduces (via the
-        shared trade_features functions), so they are train/serve consistent. `vpin` and
-        `funding_velocity` are intentionally NOT merged — the live recorder does not yet
-        produce them identically, and merging them would create train/serve skew.
+        Merged by default: `cvd_change/cvd_1m/cvd_5m`, `large_trade_delta/large_trade_imbalance`,
+        and `vpin`. Each is now recorded live by order_flow with the SAME definitions/constants
+        the backfill reproduces (CVD via the shared trade_features rolling windows; large-trade
+        via the same EWMA threshold; vpin via the same fixed equal-volume buckets —
+        trade_features.DEFAULT_BUCKET_VOLUME_BTC / DEFAULT_ROLLING_BUCKETS, see order_flow.py),
+        so they are train/serve consistent. `funding_velocity` is still intentionally NOT merged
+        — the live recorder does not yet produce it identically, and merging it would create
+        train/serve skew. (Historical note: vpin was excluded here until the streaming-VPIN
+        recorder was aligned to the backfill constants; it is parity-safe now.)
 
         Returns the number of (bar, key) cells filled (0 = no-op).
         """
