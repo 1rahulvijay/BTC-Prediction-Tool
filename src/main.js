@@ -1132,7 +1132,7 @@ function renderDecisionCockpit(data, best, activeAcc) {
   let invalid = 'Evidence does not align';
   let invalidDetail = 'Do not act until models, flow, regime, and trust score point the same way.';
   let next = 'Wait for alignment';
-  let nextDetail = 'Best confirmation is model direction, Kronos, flow, and regime agreeing at the same time.';
+  let nextDetail = 'Best confirmation is model direction, flow, and regime agreeing at the same time.';
   if (action === 'BUY') {
     invalid = sr?.resistance ? 'Resistance rejection' : 'Upside fails';
     invalidDetail = sr?.resistance
@@ -1172,14 +1172,12 @@ function renderDecisionCockpit(data, best, activeAcc) {
     riskDetail = 'The expected move range is too wide, so price target confidence is weak.';
   }
 
-  const kAgree = directional && k && ['UP', 'DOWN'].includes(k.direction) ? k.direction === dir : false;
   const flowAgree = cd.flow_agree != null
     ? !!cd.flow_agree
     : directional && ((dir === 'UP' && (imbalance > 0.04 || premium > 3)) || (dir === 'DOWN' && (imbalance < -0.04 || premium < -3)));
   const regimeOk = cd.regime_favorable != null ? !!cd.regime_favorable : !best.regime_filtered;
   const gates = [
     { label: 'Models', ok: cd.models_agree != null ? !!cd.models_agree : (best.agreement || 0) >= (best.agreementThreshold || 0.67), detail: `${agreement}% agreement` },
-    { label: 'Kronos', ok: !!kAgree, neutral: !k || !directional, detail: k ? `${k.direction} ${formatUsd(k.price, 0)}` : 'waiting' },
     { label: 'Flow', ok: !!flowAgree, detail: `book ${(imbalance * 100).toFixed(1)}%, premium ${premium >= 0 ? '+' : ''}$${premium.toFixed(2)}` },
     { label: 'Regime', ok: !!regimeOk, detail: data.regime?.regime || 'unknown' },
     { label: 'Live record', ok: (activeAcc?.total || 0) >= 100 && (activeAcc?.accuracy || 0) >= 0.5, neutral: (activeAcc?.total || 0) < 100, detail: activeAcc?.total ? `${((activeAcc.accuracy || 0) * 100).toFixed(0)}% / ${activeAcc.total}n` : '0n' },
@@ -1232,6 +1230,18 @@ function renderFsrPpoChallenger(data, activePred) {
   const fsr = block.fsr || {};
   const status = block.status || {};
 
+  // FSR-PPO mothballed in v6 (R3): the backend stub sets status.enabled=false. Show
+  // a clear mothballed state instead of a misleading "waiting".
+  if (status.enabled === false || (!rec && block.summary && /mothball/i.test(block.summary))) {
+    els.fsrPpoGrid.innerHTML = `
+      <div class="fsr-ppo-card neutral">
+        <span>Strategy call</span>
+        <strong>MOTHBALLED</strong>
+        <p>The PPO challenger is paused in v6 — a strategy layer is premature until the core model proves its edge. Re-enable with BTC_FSR_PPO=1.</p>
+      </div>`;
+    if (els.fsrPpoRecent) els.fsrPpoRecent.innerHTML = '';
+    return;
+  }
   if (!rec) {
     els.fsrPpoGrid.innerHTML = `
       <div class="fsr-ppo-card neutral">
@@ -1335,10 +1345,6 @@ function renderSignalFlow(data, best, activeAcc) {
   const agreement = Math.round((best.agreement || 0) * 100);
   const signedMove = getSignedExpectedMove(best);
   const modelTarget = (data.price || 0) + signedMove;
-  const kronos = getKronosAtHorizon(data, best.horizon);
-  const kText = kronos
-    ? `${kronos.direction} ${formatUsd(kronos.price)} (${kronos.move >= 0 ? '+' : '-'}$${Math.abs(Math.round(kronos.move)).toLocaleString()})`
-    : (best.horizon === 5 || best.horizon === 15 ? 'Waiting for Kronos/fallback path' : 'Kronos is compared mainly on 5m and 15m');
   const accText = activeAcc && activeAcc.total
     ? `${Math.round((activeAcc.accuracy || 0) * 100)}% over ${activeAcc.total} resolved`
     : 'Not enough resolved examples yet';
@@ -1361,10 +1367,10 @@ function renderSignalFlow(data, best, activeAcc) {
       detail: skip
     },
     {
-      tone: kronos?.direction === 'UP' ? 'up' : kronos?.direction === 'DOWN' ? 'down' : 'neutral',
-      label: '3. Kronos cross-check',
-      value: kText,
-      detail: 'Kronos is a separate future-price path. It is a confirmation signal, not the same thing as the ensemble decision.'
+      tone: raw === 'UP' ? 'up' : raw === 'DOWN' ? 'down' : 'neutral',
+      label: '3. Expected move',
+      value: signedMove ? `${signedMove >= 0 ? '+' : '-'}$${Math.abs(Math.round(signedMove)).toLocaleString()} → ${formatUsd(modelTarget, 0)}` : 'flat / no edge',
+      detail: 'The model\'s typical move size for current conditions (not a path guarantee). Used to judge whether a move can reach the line.'
     },
     {
       tone: 'neutral',
@@ -2467,12 +2473,6 @@ function renderScoreboard(data) {
     const conv = Math.round(s.conviction || 0);
     const grade = s.convictionGrade || 'WATCH';
     const ourAcc = s.ourAccuracy != null ? (s.ourAccuracy * 100).toFixed(0) + '%' : '--';
-    const kAcc = s.kronosAccuracy != null ? (s.kronosAccuracy * 100).toFixed(0) + '%' : '--';
-    const kDir = s.kronosDirection || 'NONE';
-    const comparable = ['UP', 'DOWN'].includes(dir) && ['UP', 'DOWN'].includes(kDir);
-    const agree = comparable ? !!s.kronosAgrees : null;
-    const agreeText = agree == null ? 'n/a' : (agree ? 'YES' : 'no');
-    const agreeColor = agree == null ? '#8892a6' : (agree ? '#00e676' : '#ff9100');
     const raw = s.rawDirection || dir;
     const cd = s.confluenceDetail || {};
     const chip = (label, ok) => `<span class="cf-chip ${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'} ${label}</span>`;
@@ -2518,12 +2518,11 @@ function renderScoreboard(data) {
           <strong>${conv}</strong>
         </div>
         <div class="sb-confluence">
-          ${chip('models', cd.models_agree)} ${chip('kronos', cd.kronos_agree)} ${chip('flow', cd.flow_agree)} ${chip('regime', cd.regime_favorable)}
+          ${chip('models', cd.models_agree)} ${chip('flow', cd.flow_agree)} ${chip('regime', cd.regime_favorable)}
         </div>
         <div class="sb-vs">
           <div class="sb-vs-col"><span>Ensemble final</span><strong style="color:${dirColor(dir)}">${dir}</strong><small>${ourAcc} acc · ${s.ourSamples || 0}n</small></div>
-          <div class="sb-vs-col"><span>Kronos</span><strong style="color:${dirColor(kDir)}">${kDir}</strong><small>${kAcc} acc · ${s.kronosSamples || 0}n</small></div>
-          <div class="sb-vs-col"><span>Agree?</span><strong style="color:${agreeColor}">${agreeText}</strong><small>${comparable ? 'direction compare' : 'no UP/DOWN compare'}</small></div>
+          <div class="sb-vs-col"><span>Raw lean</span><strong style="color:${dirColor(raw)}">${raw}</strong><small>before the gate</small></div>
         </div>
         ${expRow}
         ${adviceStrip}
@@ -2711,17 +2710,47 @@ function renderBinanceView(data) {
     }).join('');
   }
 
-  // ── Recent calls log: every resolved lean, graded by SIGN-TRUTH (✓/✗) ──
+  // ── Recent calls log: per-timeframe tabs, every resolved lean graded by SIGN-TRUTH.
+  // Sourced from verification.histories (up to 30 per horizon) so each tab is full.
   const logDiv = document.getElementById('binance-log');
   if (logDiv) {
-    const recent = ((data.verification || {}).recent || [])
-      .filter(r => (r.raw_direction === 'UP' || r.raw_direction === 'DOWN'))
-      .slice(0, 18);
-    const rows = recent.map(r => {
+    const hist = (data.verification || {}).histories || {};
+    const allRows = [];
+    ROSTER_HORIZONS.forEach(h => {
+      (hist[h] || hist[String(h)] || []).forEach(r => { if (r.horizon == null) r.horizon = h; allRows.push(r); });
+    });
+    // Only committed directional leans grade as correct/incorrect.
+    const dirRows = allRows.filter(r => r.raw_direction === 'UP' || r.raw_direction === 'DOWN');
+    const tfs = ['all', 1, 3, 5, 7, 10, 15];
+    const tabs = tfs.map(tf => {
+      const cnt = tf === 'all' ? dirRows.length : dirRows.filter(r => r.horizon === tf).length;
+      const on = String(binanceLogTF) === String(tf);
+      return `<button onclick="window.__binanceLogTF('${tf}')" style="background:${on?'rgba(243,186,47,.2)':'rgba(255,255,255,.04)'};
+        border:1px solid ${on?'#f3ba2f':'rgba(255,255,255,.1)'};color:${on?'#f3ba2f':'var(--text-secondary)'};
+        border-radius:6px;padding:.15rem .7rem;margin-right:.4rem;cursor:pointer;font-size:.8em">${tf==='all'?'All':tf+'m'} (${cnt})</button>`;
+    }).join('');
+    const sel = binanceLogTF === 'all' ? dirRows : dirRows.filter(r => String(r.horizon) === String(binanceLogTF));
+    sel.sort((a,b) => (b.verified_at||b.timestamp||0) - (a.verified_at||a.timestamp||0));
+    const winOf = (r) => {
       const move = Number(r.actual_move_usd || 0);
-      // lean_hit from the backend when present; sign-truth fallback for older rows
-      const win = r.lean_hit != null ? r.lean_hit
-        : (move !== 0 ? ((r.raw_direction === 'UP') === (move > 0)) : null);
+      return r.lean_hit != null ? r.lean_hit : (move !== 0 ? ((r.raw_direction === 'UP') === (move > 0)) : null);
+    };
+    // Per-tab W/L summary line (like the Polymarket table)
+    let summary = '';
+    if (sel.length) {
+      const graded = sel.filter(r => winOf(r) !== null);
+      const w = graded.filter(r => winOf(r) === true).length;
+      const up = graded.filter(r => r.raw_direction === 'UP'), dn = graded.filter(r => r.raw_direction === 'DOWN');
+      const pct = (a,b) => b ? `${(a/b*100).toFixed(0)}%` : '—';
+      summary = `<div style="margin:.2rem 0 .5rem;font-size:.85em;color:var(--text-secondary)">
+        <strong style="color:var(--text-primary)">${graded.length} graded</strong> ·
+        <span style="color:#00e676">${w} ✓</span> / <span style="color:#ff5252">${graded.length-w} ✗</span> (${pct(w,graded.length)})
+        · UP <span style="color:#00e676">${pct(up.filter(r=>winOf(r)).length, up.length)}</span> (${up.length})
+        · DOWN <span style="color:#ff5252">${pct(dn.filter(r=>winOf(r)).length, dn.length)}</span> (${dn.length})</div>`;
+    }
+    const rows = sel.slice(0, 25).map(r => {
+      const move = Number(r.actual_move_usd || 0);
+      const win = winOf(r);
       const act = (r.signal === 'NEUTRAL' || r.signal === 'WAIT' || r.direction === 'NEUTRAL') ? 'waited' : 'traded';
       return `<div class="log-row ${win===true?'log-hit-row':win===false?'log-miss-row':''}">
         <span>${etTime(r.verified_at || r.timestamp)}</span>
@@ -2732,11 +2761,18 @@ function renderBinanceView(data) {
         <span class="${win===true?'log-hit':win===false?'log-miss':'log-pending'}">${win===true?'✓ CORRECT':win===false?'✗ WRONG':'— flat'}</span>
       </div>`;
     }).join('');
-    logDiv.innerHTML = rows
-      ? `<div class="log-row log-head"><span>Time</span><span>TF</span><span>Lean</span><span>Conf</span><span>Realized</span><span>Result</span></div>${rows}`
-      : '<div class="log-empty">No resolved directional calls yet — they appear a few minutes after the model starts predicting.</div>';
+    logDiv.innerHTML = `<div style="margin-bottom:.5rem">${tabs}</div>${summary}`
+      + (rows ? `<div class="log-row log-head"><span>Time</span><span>TF</span><span>Lean</span><span>Conf</span><span>Realized</span><span>Result</span></div>${rows}`
+              : '<div class="log-empty">No resolved directional calls for this timeframe yet.</div>');
   }
 }
+
+// Per-timeframe filter for the Binance recent-calls log
+let binanceLogTF = 'all';
+window.__binanceLogTF = (tf) => {
+  binanceLogTF = (tf === 'all') ? 'all' : Number(tf);
+  if (lastPlainData) renderBinanceView(lastPlainData);
+};
 
 // ══════════════════════════════════════════════
 //  POLYMARKET VIEW — Pyth-anchored 5m/15m price-to-beat
@@ -2791,7 +2827,6 @@ function renderPolymarketView(data) {
         📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· 50% band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))} (tails run larger)</span>`:''}
         ${r.projected_close!=null?`→ projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong>
           <span style="color:${(r.projected_vs_beat||0)>=0?'#00e676':'#ff5252'}">(${(r.projected_vs_beat||0)>=0?'+':''}$${Math.round(r.projected_vs_beat||0)} vs beat → ${(r.projected_vs_beat||0)>=0?'UP':'DOWN'} resolves)</span>`:''}
-        ${r.p_up!=null?`<div style="margin-top:.25rem">💰 Fair value: <strong style="color:#00e676">UP ≈ ${(r.p_up*100).toFixed(0)}¢</strong> · <strong style="color:#ff5252">DOWN ≈ ${((1-r.p_up)*100).toFixed(0)}¢</strong> <span style="color:var(--text-secondary)">— buy a side only when the market asks LESS than this</span></div>`:''}
         <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">This is the median move size for current conditions, not a path call — a $100+ window lands outside the band ~50% of the time by design.</div></div>`:''}
       ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}</div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
@@ -2868,7 +2903,7 @@ function renderPolymarketView(data) {
         · model: ${mdl.length?`<strong style="color:#00e676">${pct(mw,mdl.length)}</strong> (${mw}/${mdl.length})`:'<span>— none committed</span>'}
         · ⚠ fallback: ${fb.length?`${pct(fw,fb.length)} (${fw}/${fb.length})`:'—'}</div>`;
     }
-    const shown = tfRows.slice(0,20);
+    const shown = tfRows.slice(0,25);  // up to 25 per timeframe; container scrolls
     const rows = shown.map(r=>{
       const win=r.hit===true; const col=win?'#00e676':'#ff5252';
       const src = r.lean_source==='fallback'?' ⚠':'';
@@ -3047,32 +3082,29 @@ function renderBestLongShort(data) {
 function renderForecastScorecard(data) {
   if (!els.forecastScorecard) return;
   const ens = (data.verification && data.verification.accuracy) || {};
-  const kro = data.kronos_accuracy || {};
   const horizons = [1, 3, 5, 7, 10, 15];
   const pct = (v) => (v != null ? `${(v * 100).toFixed(0)}%` : '—');
   const usd = (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—');
 
   const head = `<div class="sc-row sc-head">
-    <span>Horizon</span><span>Ensemble acc</span><span>Ensemble err</span>
-    <span>Kronos acc</span><span>Kronos err</span>
+    <span>Horizon</span><span>Directional acc</span><span>UP acc</span><span>DOWN acc</span><span>Avg move err</span>
   </div>`;
   const rows = horizons.map((h) => {
     const e = ens[h] || ens[String(h)] || {};
-    const k = kro[h] || kro[String(h)] || {};
-    const eAcc = e.total ? pct(e.accuracy) : '—';
+    const dAcc = e.directional_total ? pct(e.directional_accuracy) : '—';
+    const uAcc = e.up_total ? pct(e.up_accuracy) : '—';
+    const dnAcc = e.down_total ? pct(e.down_accuracy) : '—';
     const eErr = (e.directional_total && e.avg_move_error_usd) ? usd(e.avg_move_error_usd) : '—';
-    const kAcc = k.total ? pct(k.accuracy) : (h === 5 || h === 15 ? '—' : '·');
-    const kErr = k.total ? usd(k.avg_error_usd) : (h === 5 || h === 15 ? '—' : '·');
     return `<div class="sc-row">
       <span class="sc-h">${h}m</span>
-      <span>${eAcc}<small>${e.total ? e.total + 'n' : ''}</small></span>
+      <span>${dAcc}<small>${e.directional_total ? e.directional_total + 'n' : ''}</small></span>
+      <span style="color:#00e676">${uAcc}<small>${e.up_total ? e.up_total + 'n' : ''}</small></span>
+      <span style="color:#ff5252">${dnAcc}<small>${e.down_total ? e.down_total + 'n' : ''}</small></span>
       <span>${eErr}</span>
-      <span>${kAcc}<small>${k.total ? k.total + 'n' : ''}</small></span>
-      <span>${kErr}</span>
     </div>`;
   }).join('');
   els.forecastScorecard.innerHTML = head + rows +
-    `<div class="sc-note">Kronos only forecasts 5m & 15m. "Err" = average |forecast − actual| in USD. Ensemble error shows only when there are resolved UP/DOWN calls.</div>`;
+    `<div class="sc-note">Committed UP/DOWN calls graded by realized direction. UP/DOWN split is the bias watch. "Err" = average |forecast − actual| in USD.</div>`;
 }
 
 function dirColor(d) {
@@ -3312,11 +3344,9 @@ function renderPriceToBeatConfluence(data) {
     const conv = Math.round(s.conviction || r.conviction || 0);
     const grade = s.convictionGrade || (conv >= 85 ? 'A+' : conv >= 70 ? 'A' : conv >= 55 ? 'B' : conv >= 40 ? 'C' : 'WATCH');
     const cd = s.confluenceDetail || {};
-    const kDir = s.kronosDirection || r.kronos_direction || 'NONE';
     const ourAcc = s.ourAccuracy != null
       ? `${(s.ourAccuracy * 100).toFixed(0)}%`
       : (a.total ? `${(a.accuracy * 100).toFixed(0)}%` : '--');
-    const kAcc = s.kronosAccuracy != null ? `${(s.kronosAccuracy * 100).toFixed(0)}%` : '--';
     const signal = actionable
       ? (dir === 'UP' ? 'BUY / BEAT' : 'SELL / NOT BEAT')
       : (dir === 'NEUTRAL' ? 'WAIT' : `${dir} lean only`);
@@ -3332,14 +3362,12 @@ function renderPriceToBeatConfluence(data) {
         <span>Reference <strong>${ref}</strong></span>
         <span>Expected <strong>${expectedText(dir)}</strong></span>
         <span>Raw lean <strong style="color:${dirColor(raw)}">${raw}</strong></span>
-        <span>Kronos <strong style="color:${dirColor(kDir)}">${kDir}</strong></span>
       </div>
       <div class="sb-confluence">
-        ${chip('models', cd.models_agree)} ${chip('kronos', cd.kronos_agree)} ${chip('flow', cd.flow_agree)} ${chip('regime', cd.regime_favorable)}
+        ${chip('models', cd.models_agree)} ${chip('flow', cd.flow_agree)} ${chip('regime', cd.regime_favorable)}
       </div>
       <div class="ptb-conf-acc">
         <span>Ensemble acc ${ourAcc} (${s.ourSamples || a.total || 0}n)</span>
-        <span>Kronos acc ${kAcc} (${s.kronosSamples || 0}n)</span>
       </div>
     </div>`;
   }).join('');
@@ -3363,7 +3391,6 @@ function renderModelRoster(data) {
   const predsByH = {};
   (data.predictions || []).forEach((p) => { predsByH[p.horizon] = p; predsByH[String(p.horizon)] = p; });
   const ensAcc = (data.verification && data.verification.accuracy) || {};
-  const kroAcc = data.kronos_accuracy || {};
 
   const ensembleCells = ROSTER_HORIZONS.map((h) => {
     const p = predsByH[h] || predsByH[String(h)] || {};
@@ -3377,21 +3404,8 @@ function renderModelRoster(data) {
     </span>`;
   }).join('');
 
-  const kronosCells = ROSTER_HORIZONS.map((h) => {
-    const cell = kroAcc[h] || kroAcc[String(h)] || {};
-    const latest = cell.latest || {};
-    const vote = latest.direction || (h === 5 || h === 15 ? 'NONE' : 'n/a');
-    const accTxt = cell.total ? `${(cell.accuracy * 100).toFixed(0)}%` : (h === 5 || h === 15 ? '-' : 'n/a');
-    const accSub = cell.total ? `${cell.hits}/${cell.total}` : (h === 5 || h === 15 ? 'path model' : '5m/15m only');
-    return `<span class="roster-cell roster-summary-cell">
-      <em style="color:${dirColor(vote)}">${vote}</em>
-      <b>${accTxt}</b><small>${accSub}</small>
-    </span>`;
-  }).join('');
-
   const summaryRows =
-    renderRow('Ensemble final', 'gated', ensembleCells, 'roster-summary-row') +
-    renderRow('Kronos path', 'kronos', kronosCells, 'roster-summary-row');
+    renderRow('Ensemble final', 'gated', ensembleCells, 'roster-summary-row');
 
   const rows = Object.keys(MODEL_LABELS).map((name) => {
     const row = macc[name] || {};

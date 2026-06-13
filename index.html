@@ -418,7 +418,7 @@
           </div>
 
           <div class="decision-checklist" id="decision-checklist">
-            <!-- Populated by JS: models, Kronos, flow, regime, live record, data freshness -->
+            <!-- Populated by JS: models, flow, regime, live record, data freshness -->
           </div>
         </section>
 
@@ -442,26 +442,19 @@
           </div>
         </section>
 
-        <!-- Kronos Price Projection Area -->
-        <section class="forecast-prediction-board">
-          <div class="analysis-section-header">
-            <h2>Kronos Forecast Targets</h2>
-            <p>Separate Kronos/fallback future-price path. This is a cross-check, not the same thing as the ensemble action.</p>
-          </div>
-          <div class="forecast-current-price">
-            <span>Current BTC Price: </span>
-            <strong id="forecast-current-price">Loading...</strong>
-          </div>
-          <p class="kronos-status" id="kronos-status">Forecast engine status: waiting for backend.</p>
-          <div class="pulse-grid forecast-grid" id="forecast-pulse-grid">
-            <!-- Populated by JS with projected BTC targets per timeframe -->
-          </div>
+        <!-- Kronos Price Projection Area — REMOVED in v6 (Kronos retired from the
+             roster; its fallback emitted noise). Section hidden to avoid an empty
+             panel; JS targets degrade safely if these ids are absent. -->
+        <section class="forecast-prediction-board" style="display:none">
+          <p class="kronos-status" id="kronos-status"></p>
+          <strong id="forecast-current-price"></strong>
+          <div class="pulse-grid forecast-grid" id="forecast-pulse-grid"></div>
         </section>
 
         <section class="analysis-section signal-flow-section">
           <div class="analysis-section-header">
             <h2>Signal Flow</h2>
-            <p>The selected timeframe in plain order: model lean, safety decision, Kronos cross-check, and how the result will be judged.</p>
+            <p>The selected timeframe in plain order: model lean, safety decision, expected move, and how the result will be judged.</p>
           </div>
           <div class="signal-flow-grid" id="signal-flow-grid">
             <!-- Populated by JS -->
@@ -663,7 +656,7 @@
         <section class="analysis-section scoreboard-section" id="scoreboard-section">
           <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
             <h2>BTC Direction Scoreboard — 5m &amp; 15m</h2>
-            <p>Only <strong>high-conviction</strong> calls (our ensemble, Kronos, order flow and regime all agreeing) are marked actionable. Trade fewer, win more.</p>
+            <p>Only <strong>high-conviction</strong> calls (our ensemble, order flow and regime all agreeing) are marked actionable. Trade fewer, win more.</p>
           </div>
           <div class="scoreboard-grid" id="scoreboard-grid">
             <!-- Populated by JS: 5m and 15m cards -->
@@ -723,8 +716,8 @@
         <!-- Forecast Scorecard: Ensemble vs Kronos (accuracy + error) -->
         <section class="analysis-section" id="forecast-scorecard-section">
           <div class="analysis-section-header" style="border-left:4px solid #00d4ff; padding-left:1rem;">
-            <h2>Forecast Scorecard — Ensemble vs Kronos</h2>
-            <p>Live direction accuracy and average price error (how far the forecast was from the actual price) for our ensemble and for Kronos, side by side.</p>
+            <h2>Forecast Scorecard — Ensemble accuracy</h2>
+            <p>Live direction accuracy and average price error (how far the forecast was from the actual price) for our ensemble, per horizon.</p>
           </div>
           <div class="scorecard-wrap" id="forecast-scorecard">
             <!-- Populated by JS -->
@@ -753,7 +746,7 @@
         <section class="analysis-section" id="ptb-confluence-section">
           <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
             <h2>Price-to-Beat Signal Rating</h2>
-            <p>Reconciles Ensemble, Kronos, live flow, and regime into one plain signal rating for the 5m and 15m price-to-beat rounds.</p>
+            <p>Reconciles Ensemble, live flow, and regime into one plain signal rating for the 5m and 15m price-to-beat rounds.</p>
           </div>
           <div class="ptb-confluence-grid" id="ptb-confluence-grid">
             <!-- Populated by JS -->

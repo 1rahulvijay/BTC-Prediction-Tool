@@ -6,6 +6,35 @@ today's evidence.**
 
 ---
 
+## OPERATOR PRIORITY (2026-06-13): PREDICTION precision, NOT betting precision
+
+The goal is a model whose COMMITTED directional calls are highly accurate (when it says
+UP/DOWN with conviction, it is right) — even at the cost of abstaining often. This is
+PRECISION in the ML sense, a property of the model + its selectivity layer. It is NOT
+about the betting-market layer (fair value, share pricing, EV vs ask).
+
+**IN SCOPE (drives prediction precision) — these are the priorities:**
+- Raw directional edge: class-balanced loss (v6, done), focal loss (contingency),
+  better labels (ATR-scaled triple-barrier), hyperparameter tuning (A7/Optuna).
+- New INFORMATION the model lacks: time/session features (A8), multi-depth OBI &
+  cross-venue lead-lag & L2 maturation (A4), the Polymarket crowd price AS A FEATURE
+  (A9 — input to the model, not a bet signal).
+- The SELECTIVITY layer that isolates a high-precision subset: isotonic calibration
+  (maturing), conviction/grade gating, the persistence/path model (A1 — reframed: it
+  is a high-precision PREDICTION "will price hold past a level", not a bet tool).
+- TCN's full seat (A6), roster hygiene (SGD out, etc.).
+
+**DEPRIORITIZED / SHELVED (betting-market monetization, not prediction quality):**
+- A2 fair value / p_up, A11 penny-sniper, A12 pair-arbitrage detector, A13 exit hints.
+  These remain documented but are NOT worked until the operator asks. They do not make
+  a single prediction more accurate.
+
+The 95% TIER below is therefore re-read as a 95%-PRECISION PREDICTION tier: the rare
+subset of committed calls (high conviction + grade + agreement + persistence) that hit
+90-95%. Few calls, near-certain — measured on sign-truth, not on betting outcomes.
+
+---
+
 ## 0. The 95% target — said honestly, aimed correctly
 
 95% accuracy on EVERY 5-minute signal does not exist anywhere on earth. If 5m BTC
@@ -148,9 +177,25 @@ The single highest-value addition. A dedicated binary classifier:
   late-entry heuristic; T3 bets only when P(hold) ≥ 0.93 AND share price < P(hold).
 - This is where "95%" becomes an engineering target instead of a wish.
 
-### A2 — p_up distributional pricing (V5 §3)
-Conformal band → P(close ≥ beat) → fair share price. Converts every lean into an
-EDGE number. T3 requires p_up edge ≥ X¢. (Already planned; unchanged.)
+### A2 — p_up fair-value pricing (RE-ANCHORED 2026-06-13)
+The single most important number for a betting tool: P(close beats the line) → fair
+share price → "bet only when the market asks LESS than fair." It is the basis of the
+T3 tier, the penny-sniper edge, and all bet selection. NOT optional to the endgame —
+but it must be built on a TRUSTWORTHY source, which the first attempt was not.
+
+DECISION (operator: "do what is best"): the broken display-version (Φ(edge/σ) on the
+flat ~$40 mean magnitude) is REMOVED and stays removed. The proper p_up is RE-ANCHORED
+to the **persistence model (A1)**, which directly estimates "will price hold/cross the
+line" = exactly P(close beats beat) — a measured probability, not a Gaussian
+approximation off a magnitude regressor. (A3's quantile magnitude is a secondary/cross-
+check source, not the primary.)
+
+HARD GATE before it is shown to the operator again — ALL of:
+1. sourced from A1's measured P(hold|distance, secs_left, vol, flow), not a formula;
+2. calibrated (its stated 60% wins ~60% on held-out rounds);
+3. back-tested EV positive vs real Polymarket share prices (the A9 CLOB feed).
+Until all three pass, NO probability/cents are displayed — no fake precision, ever
+again. This is the lesson of the removed version encoded as a rule.
 
 ### A3 — Conditional quantile magnitude (V5 §2.5b-ii)
 Pinball-loss q10/q50/q90 so the band breathes with volatility. Feeds A2's math and

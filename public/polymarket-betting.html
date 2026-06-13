@@ -64,6 +64,8 @@
 <div class="toc">
   <a href="#tldr">⚡ 30-second version</a>
   <a href="#tiers">🏆 The decision tiers (best → worst)</a>
+  <a href="#lifecycle">🔄 In-window states (offside / flipped / lock-in)</a>
+  <a href="#flip">🌀 Why the lean flips — and why that's a SKIP</a>
   <a href="#fields">🔢 Every field on the card</a>
   <a href="#flow">🧭 The decision flowchart</a>
   <a href="#magnitude">📐 Reading the magnitude forecast</a>
@@ -75,12 +77,13 @@
 <h2 id="tldr">⚡ The 30-second version</h2>
 <div class="card t-best tier">
 <ol>
-  <li><b>Only bet when source = <span class="chip c-blue">MODEL lean</span></b> (never <span class="chip c-amber">⚠ WEAK / fallback</span> — those are coin-flips).</li>
-  <li><b>Prefer <span class="chip c-green">Grade A</span> &gt; <span class="chip c-amber">B</span> &gt; skip <span class="chip c-red">C</span>.</b></li>
-  <li><b>The magnitude must project PAST the line</b> — "expects drop of $40 → projects $30 below beat" is a real edge; "$8 drop, $20 to the line" is not.</li>
-  <li><b>Skip CHOP / STRETCH path outlooks.</b></li>
+  <li><b>Only bet when source = <span class="chip c-blue">MODEL lean</span></b> (never <span class="chip c-amber">⚠ WEAK / fallback</span> — those are coin-flips, measured).</li>
+  <li><b>If the lean is FLIPPING (changing UP↔DOWN every minute) → SKIP.</b> A flip means the model is near-50/50; instability <i>is</i> the no-edge signal. Stable conviction = real signal. <a href="#flip" style="color:var(--blue)">why →</a></li>
+  <li><b>The magnitude must project PAST the line</b> — "expects drop of $40 → projects $30 below beat" is real; "$8 drop, $20 to the line" is not. (It's a <i>typical</i> move, not a guarantee.)</li>
+  <li><b>Skip CHOP / STRETCH outlooks, and skip <span class="chip c-red">Grade C</span>.</b></li>
   <li><b>The bet only profits if your win-rate &gt; the share price you pay.</b> 60% wins at 65¢ loses money.</li>
 </ol>
+<p style="margin:.6rem 0 0;color:var(--amber)"><b>Reality check:</b> 5m BTC direction is ~coin-flip for almost everyone. The edge is <b>selectivity</b> — bet only the few stable, high-grade, magnitude-clears windows; sit out the rest (which is most of them). Fewer bets, higher win rate. That's the whole game.</p>
 </div>
 
 <!-- ============================================================ -->
@@ -99,6 +102,15 @@
     <tr><td>Live lean</td><td>Still matches the original lean</td></tr>
   </table>
   <p><b>Caveat:</b> the share price is usually expensive here (market sees it too) — profit per bet is small. Size up, expect thin margins.</p>
+</div>
+
+<div class="card warn" style="margin:10px 0">
+<b>⚠ Grade letters are not yet validated.</b> Early live data showed grades stratifying
+<i>inconsistently</i> (sometimes C beat A). The grade counts flow <i>agreement</i>, and full
+agreement can cluster at move <i>exhaustion</i> (everyone already leans that way → reversal
+risk). Until the per-grade win rates prove out at real sample size, treat A/B/C as a
+<i>hint</i>, not gospel — and lean harder on the things that ARE proven: stable (non-flipping)
+model leans, magnitude clearing the line, and the late-entry structure.
 </div>
 
 <div class="tier t-best">
@@ -143,15 +155,57 @@
 </div>
 
 <!-- ============================================================ -->
+<h2 id="lifecycle">🔄 In-window states — opened vs live</h2>
+<div class="card info">
+<p>A bet <b>locks at window-open</b>, so the big header (direction · grade) is the <b>snapshot at open</b>
+and stays fixed. The card then tracks the live market in two places <i>below</i> the header — and those,
+not the header, tell you how the bet is doing:</p>
+<table>
+  <tr><th>Where</th><th>What it tells you</th></tr>
+  <tr><td><b>"Now: $… (±$X → UP/DOWN side)"</b></td><td>Which side price is on <i>right now</i>, and by how much. If it's on the opposite side of your bet, you're currently losing.</td></tr>
+  <tr><td><b>"live lean now …"</b> (small, amber)</td><td>The model's <i>current</i> lean. If it differs from the header, the model has changed its mind since open.</td></tr>
+  <tr><td><b>The advice box</b> (bordered)</td><td>The lifecycle coach — see below.</td></tr>
+</table>
+<p>So a header that says <b>UP · Grade C</b> while the live note says <b>"live lean now DOWN"</b> is
+<b>not a contradiction</b> — it's "you opened UP, the model has since flipped DOWN." The header is the
+photo at open; the live note is now.</p>
+<p><b>The advice box is what to act on:</b>
+<span class="chip c-green">HOLD</span> (on-side, model agrees → let it ride) ·
+<span class="chip c-green">LOCK IN</span> (ahead but the lean faded → sell to bank the small win) ·
+<span class="chip c-red">EXIT</span> (losing / model flipped against you → cut it to limit loss) ·
+<span class="chip c-amber">HOLD/WAIT</span> (mixed → watch). Read the advice box, not the frozen header, once a bet is live.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="flip">🌀 Why the lean flips — and why a flipping lean is a SKIP</h2>
+<div class="card">
+<p>You'll see a card open <b>UP</b> and minutes later read <b>"live lean now DOWN."</b> That is
+<b>not the model being broken or indecisive</b> — it's the model being honest about a coin-flip.</p>
+<h3>What's actually happening</h3>
+<ul>
+  <li>On a weak window the model's true answer is <b>NEUTRAL</b>. The market still needs a side, so the card shows whichever way the probability tilts <i>by a hair</i> — 50.4% UP one moment, 49.6% the next.</li>
+  <li>The model <b>re-predicts every few seconds</b> on fresh price/flow. When the signal sits right at 50%, any tiny move pushes the tilt across the line. The "flip" is a near-zero number changing sign — there was never real conviction to abandon.</li>
+  <li><b>High-conviction calls do NOT flip.</b> A Grade-A 65%-one-side lean is anchored far from 50% and holds steady. <b>Only the weak ones flip.</b></li>
+</ul>
+<div class="card t-best tier" style="margin-top:10px">
+<b>The rule:</b> a lean that flips is the model telling you <b>"I don't know."</b> That instability
+<i>is</i> the no-edge signal. <b>If it's flipping, skip it.</b> Stability is the fingerprint of a real
+signal — bet the calm, conviction leans; ignore the flippers (which is most 5m/15m windows).
+</div>
+</div>
+
+<!-- ============================================================ -->
 <h2 id="fields">🔢 Every field on the card, decoded</h2>
 <div class="card">
 <table>
   <tr><th>Field</th><th>Meaning</th><th>Bet signal</th></tr>
   <tr><td><b>Price to beat (Pyth)</b></td><td>The locked line. Resolves UP if close ≥ this, DOWN otherwise. From Pyth (the settlement proxy), not Binance.</td><td>—</td></tr>
-  <tr><td><b>Lean + arrow</b></td><td>The side the model favors.</td><td>Must be UP or DOWN, not NO LEAN</td></tr>
+  <tr><td><b>Header (direction · grade)</b></td><td>The model's call at window-OPEN — fixed once the bet locks. For live status read the "Now" line, "live lean now", and the advice box (see <a href="#lifecycle" style="color:var(--blue)">lifecycle</a>).</td><td>Stable UP/DOWN, not flipping</td></tr>
+  <tr><td><b>"live lean now …"</b></td><td>The model's CURRENT lean. If it differs from the header, the model flipped since open. If it keeps flipping → skip.</td><td>Matches header & stable</td></tr>
   <tr><td><b>Source badge</b></td><td><span class="chip c-blue">MODEL</span> = committed lean (~the bettable class). <span class="chip c-amber">⚠ WEAK</span> = two-way tilt (coin-flip).</td><td><span class="chip c-green">MODEL only</span></td></tr>
-  <tr><td><b>Setup grade</b></td><td>A/B/C — how many independent flows confirm the lean (regime, CVD, large trades, book).</td><td><span class="chip c-green">A</span> best, <span class="chip c-amber">B</span> ok, <span class="chip c-red">C</span> skip</td></tr>
-  <tr><td><b>📐 Expected move + band</b></td><td>The move-size regressor's forecast magnitude and its conformal low–high band.</td><td>Band low should still clear the line</td></tr>
+  <tr><td><b>Setup grade</b></td><td>A/B/C — flow confirmations (regime, CVD, large trades, book). <b>Not yet validated</b> — treat as a hint.</td><td>Prefer A/B; never rely on the letter alone</td></tr>
+  <tr><td><b>📐 Typical move + band</b></td><td>The model's <i>typical</i> move size for these conditions (median, with a 50% band). <b>Not a path call or a probability.</b></td><td>Band low should still clear the line</td></tr>
+  <tr><td><b>PRACTICE badge</b> (1/3/7/10m)</td><td>Only 5m & 15m are real Polymarket markets. 1/3/7/10m are practice mirrors — same grading, faster evidence, not bettable.</td><td>Bet 5m/15m only</td></tr>
   <tr><td><b>Projected close vs beat</b></td><td>Now-price + the signed expected move, compared to the line.</td><td>Want it clearly on your side</td></tr>
   <tr><td><b>🧭 Path outlook</b></td><td>Plain-English journey: HOLD / BREAKOUT / CHOP / STRETCH.</td><td>HOLD or BREAKOUT good; CHOP/STRETCH skip</td></tr>
   <tr><td><b>Now / current move</b></td><td>Live price and signed $ vs the line right now.</td><td>Ahead on lean side = stronger</td></tr>
@@ -168,6 +222,8 @@
 │        │ no
 ├─ Source = MODEL lean?  ───────────────────► NO (weak/fallback/no-lean) → SKIP
 │        │ yes
+├─ Is the lean FLIPPING (UP↔DOWN)?  ────────► YES → SKIP (near-50/50, no edge)
+│        │ no (stable)
 ├─ Path outlook = CHOP or STRETCH?  ────────► YES → SKIP (noise lives at the line)
 │        │ no
 ├─ 📐 Does projected close clear the beat
@@ -186,19 +242,23 @@ ALWAYS LAST CHECK:  is your win-rate > the share price you pay?
                     60% wins @ 65¢ = losing.  60% wins @ 50¢ = printing.</div>
 
 <!-- ============================================================ -->
-<h2 id="magnitude">📐 Reading the magnitude forecast (new)</h2>
+<h2 id="magnitude">📐 Reading the magnitude forecast</h2>
 <div class="card">
-<p>The model doesn't just pick a side — its move-size regressor forecasts <b>how far</b> price travels, with a confidence band (conformal low / median / high). The card shows:</p>
+<p>The model forecasts <b>how far</b> price typically travels, with a 50% band. The card shows:</p>
 <p style="font-family:var(--font-mono);background:var(--card2);padding:12px 16px;border-radius:8px;border:1px solid var(--border)">
-📐 Model expects a <span style="color:var(--red)">drop of ≈ $40</span> (band $22–$61) → projects close <b>$62,296</b> <span style="color:var(--red)">(−$30 vs beat → DOWN resolves)</span></p>
+📐 Typical <span style="color:var(--red)">drop ≈ $40</span> (50% band $22–$61) → projects close <b>$62,296</b> <span style="color:var(--red)">(−$30 vs beat → DOWN resolves)</span></p>
 <h3>How to use it</h3>
 <ul>
-  <li><b>Edge = projected-vs-beat distance.</b> The bigger the projection clears the line, the safer the directional bet.</li>
-  <li><b>The band is your risk.</b> If the band's <i>near</i> edge ($22 here) still clears the line, the move is reliably big enough. If the band straddles the line, the magnitude is a coin-flip even when the sign is right → drop to Tier C.</li>
-  <li><b>Sign vs magnitude can disagree with "where it is now."</b> Price can be on the UP side right now but the model expects a $40 drop — that's a <i>fade</i> setup; trust the projection over the current tick only on Grade A.</li>
+  <li><b>It's a TYPICAL move, not a path guarantee.</b> The label is the median for current conditions; a $100+ window lands outside the band ~50% of the time by design. Don't read it as "price will do exactly this."</li>
+  <li><b>Edge = projected-vs-beat distance.</b> The further the projection clears the line, the safer the directional bet.</li>
+  <li><b>The band is your risk.</b> If the band's <i>near</i> edge ($22 here) still clears the line, the move is reliably big enough. If the band <i>straddles</i> the line, the magnitude is a coin-flip even when the sign is right → drop to Tier C / skip.</li>
+  <li><b>Magnitude can disagree with "where it is now."</b> Price can be on the UP side this second while the model expects a $40 drop — a <i>fade</i>. Trust the projection over the current tick only when the lean is stable and high-grade.</li>
 </ul>
 <div class="card warn" style="margin-top:12px">
-<b>Coming in V5:</b> this point-forecast becomes a true probability — <code>P(close ≥ beat)</code> — which maps directly to a fair share price. Until then, use the band-clears-line rule as the manual version of that math.
+<b>What this is NOT (yet):</b> there is no "fair value in cents" / probability on the card. An earlier
+version showed one, but it was built on this flat typical-move number and was misleadingly precise, so it
+was <b>removed</b>. A real <code>P(close ≥ beat)</code> only returns once the magnitude estimate itself
+becomes trustworthy (a future retrain) — and only if it then proves out. No fake precision in the meantime.
 </div>
 </div>
 
@@ -206,10 +266,11 @@ ALWAYS LAST CHECK:  is your win-rate > the share price you pay?
 <h2 id="mistakes">🚫 Bet-killers (instant skip, no matter what else looks good)</h2>
 <div class="card t-skip tier">
 <ul>
+  <li><b>Flipping lean.</b> If it changes UP↔DOWN every minute, the model is at 50/50. Instability = no edge. Skip.</li>
   <li><b>Fallback lean.</b> ⚠ WEAK = coin-flip. The price can look like free money; it isn't.</li>
-  <li><b>CHOP outlook.</b> The model is telling you the closing side is random. Believe it.</li>
-  <li><b>LOW_VOLATILITY regime.</b> The weakest cell in live evidence — the line and the noise overlap.</li>
-  <li><b>Band straddles the line on a Grade-C setup.</b> Right sign, wrong size, weak confirmation — three strikes.</li>
+  <li><b>CHOP / STRETCH outlook.</b> The model is telling you the closing side is random, or the move can't reach the line. Believe it.</li>
+  <li><b>LOW_VOLATILITY regime.</b> A weak cell in live evidence — the line and the noise overlap.</li>
+  <li><b>Band straddles the line.</b> Right sign, wrong size — the magnitude is a coin-flip even when the direction isn't.</li>
   <li><b>Tiny sample win-rate.</b> "model 100% (2)" means nothing. Wait for n≥100 before trusting the strip.</li>
   <li><b>Paying above your edge.</b> The single most common way to lose while being "right" — win-rate must beat the share price.</li>
 </ul>
@@ -219,16 +280,18 @@ ALWAYS LAST CHECK:  is your win-rate > the share price you pay?
 <h2 id="honest">🧠 Honest math</h2>
 <div class="card warn">
 <ul>
-  <li><b>5-minute BTC direction is mostly noise.</b> The current model's raw leans measure ~51% (coin-flip). The edge lives in the <i>selected</i> slice: model leans + Grade A + magnitude clearing the line + good regime. Selectivity is the whole game.</li>
-  <li><b>Win-rate is not profit.</b> Profit = win-rate vs share price. Cheaper entry beats more predictions. Always.</li>
-  <li><b>Fewer bets = higher win-rate.</b> Nobody wins 70% betting every window. You win 70% by betting the best 5–10% of windows and sitting out the rest.</li>
-  <li><b>The model is being retrained toward less bias (v5).</b> Until the win-rate strip shows model-leans clearing 55% on a real sample, treat this as <b>paper-tracking</b>, not sized betting.</li>
+  <li><b>5-minute BTC direction is mostly noise.</b> Every model family in the ensemble independently lands at ~51% out-of-sample — that's not a broken model, it's the honest ceiling of 5m direction on these inputs. Tuning or bigger models won't move it; only genuinely <i>new information</i> can.</li>
+  <li><b>The edge lives in the SELECTED slice, not every call.</b> Some cells are real (calm-market 3m/10m have shown ~54–56%). You don't need 55% everywhere — you need it on the few windows you act on: stable model leans + magnitude clearing the line + good regime, and skip the rest.</li>
+  <li><b>Win-rate is not profit.</b> Profit = win-rate vs share price. Cheaper entry beats more predictions. Always. 60% wins at 65¢ loses money.</li>
+  <li><b>Fewer bets = higher win-rate.</b> Nobody sustains 70% at 5m. You get a high win-rate by betting the best 5–10% of windows and sitting out the other 90%+. The app is a <i>filter</i>, not an oracle.</li>
+  <li><b>Until the strip shows model-leans clearing ~55% at n≥100, treat this as PAPER-TRACKING, not sized betting.</b> The model is mid-measurement.</li>
   <li><b>Not financial advice.</b> Educational decision-support only. Never bet money you can't lose.</li>
 </ul>
 </div>
 
 <footer>
-  BTC Quantum Trader · Polymarket betting decision guide · 2026-06-12<br>
+  BTC Quantum Trader · Polymarket betting decision guide · updated 2026-06-13
+  (flip=skip, lifecycle states, fair-value removed, honest accuracy ceiling)<br>
   Companion to <code>guide.html</code>. Open while the app runs: <code>http://localhost:3000/polymarket-betting.html</code>
 </footer>
 

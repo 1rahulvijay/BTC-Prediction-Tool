@@ -150,7 +150,9 @@ async def lifespan(app: FastAPI):
         # Also rehydrate the resolved-rounds UI table (newest-first) — the win-rate
         # COUNTERS survived restarts but the table showed "No resolved rounds yet"
         # because recent_rounds was memory-only.
-        _recent = database.fetch_price_to_beat_recent(20)
+        # 200: enough that the per-timeframe log tabs aren't sparse right after a
+        # restart (1m floods the buffer; slower TFs need depth to show ~25 each).
+        _recent = database.fetch_price_to_beat_recent(200)
         for _r in _recent:
             price_to_beat_tracker.recent_rounds.append(_r)  # newest-first preserved
         if _recent:
@@ -2640,11 +2642,16 @@ async def main_loop():
                             expected_precision=p.get("expectedPrecision"),
                             calibrated_confidence=p.get("calibratedConfidence"),
                         )
+                        # FSR-PPO logging only when the challenger is enabled (v6 R3
+                        # mothballs it by default → fsr_ppo_block is never assigned;
+                        # this guard prevents the UnboundLocalError that crashed the
+                        # serving loop every cycle). (operator-caught, 2026-06-13)
+                        ppo_block = data_state.get("fsr_ppo") or {}
                         ppo_h = (
-                            (fsr_ppo_block.get("by_horizon") or {}).get(str(h))
-                            or (fsr_ppo_block.get("by_horizon") or {}).get(h)
+                            (ppo_block.get("by_horizon") or {}).get(str(h))
+                            or (ppo_block.get("by_horizon") or {}).get(h)
                             or {}
-                        )
+                        ) if FSR_PPO_ENABLED else {}
                         if ppo_h:
                             database.log_fsr_ppo_decision(
                                 {
@@ -2662,7 +2669,7 @@ async def main_loop():
                                     ),
                                     "reason": ppo_h.get("reason", ""),
                                     "risk_note": ppo_h.get("risk_note", ""),
-                                    "fsr": fsr_ppo_block.get("fsr", {}),
+                                    "fsr": ppo_block.get("fsr", {}),
                                     "state": ppo_h.get("state", {}),
                                     "verify_at": now_ms + h * 60 * 1000,
                                 }
@@ -2903,7 +2910,7 @@ async def main_loop():
                     "latest": price_to_beat_tracker.latest(),
                     "accuracy": price_to_beat_tracker.accuracy(),
                     # 60: six mirror horizons now resolve rounds; keep slow ones visible
-                    "recent": price_to_beat_tracker.recent(60),
+                    "recent": price_to_beat_tracker.recent(200),
                 },
             }
 

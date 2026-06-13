@@ -1,17 +1,20 @@
 """
-Price-to-Beat 5m/15m Tracker (Chainlink, fixed clock windows)
-=============================================================
+Price-to-Beat 5m/15m Tracker (Pyth anchor, fixed clock windows)
+===============================================================
 A self-contained directional game (replaces the broken Polymarket "Value Engine",
 which could only see long-dated BTC markets).
 
 Design:
 - Uses **fixed clock-aligned windows**, not arbitrary prediction timing:
   5m windows snap to :00, :05, :10 … and 15m windows snap to :00, :15, :30, :45.
-- The **price to beat** is the **Chainlink** BTC/USD price captured at the window start,
-  and resolution at the window end is also against Chainlink (live oracle reference).
+- The **price to beat** is the BTC/USD price captured at the window start from whatever
+  feed `server.price_to_beat_ticker` passes as `ref_price` — currently **Pyth BTC/USD**
+  (matches Polymarket's Chainlink settlement family within a few $), falling back to the
+  live Binance price *converted into Pyth units* if Pyth is stale. Resolution at the window
+  end is against the SAME feed (same-feed rule — see `update()` and the ticker docstring).
 - At window start we record our ensemble's UP/DOWN call + action + Kronos's call; once the
-  window closes we check whether Chainlink finished above or below the price to beat and
-  whether our call was right.
+  window closes we check whether the anchor feed finished above or below the price to beat
+  and whether our call was right.
 
 Persists to DuckDB (`price_to_beat`); surfaced as
 `payload.price_to_beat = {latest, accuracy, recent}`.
@@ -49,7 +52,9 @@ class PriceToBeatTracker:
         self.neutral_band = neutral_band
         self.pending: list[dict] = []
         self.history = {h: deque(maxlen=500) for h in self.horizons}
-        self.recent_rounds = deque(maxlen=60)         # resolved rounds for the UI feed
+        self.recent_rounds = deque(maxlen=250)        # resolved rounds for the UI feed
+        # (250: with 6 mirror horizons, 1m floods the buffer — 250 keeps ~25+ of each
+        # slower timeframe visible/scrollable in the per-TF log tabs)
         self.latest_round = {}                        # horizon -> current/most-recent round
         self.current_window = {}                      # horizon -> window-start ms we already opened
 
@@ -110,8 +115,11 @@ class PriceToBeatTracker:
                kronos_dir_by_h: dict, klines=None, feed_fresh: bool = True):
         """Open new clock-aligned rounds and resolve elapsed ones. Call once per tick.
 
-        ref_price: fresh Binance aggTrade BTC/USD (sub-100ms live price). This anchors the
-            window, drives the live position, and resolves the round (UP if end >= start).
+        ref_price: the live BTC/USD anchor feed chosen by the caller — currently Pyth
+            (sub-second), with an offset-corrected Binance fallback when Pyth is stale. This
+            anchors the window, drives the live position, and resolves the round (UP if
+            end >= start). `klines` is passed as None whenever the anchor is NOT raw Binance,
+            so boundary recovery never mixes feeds (same-feed rule).
         predictions_by_h: {horizon: ensemble prediction dict}.
         kronos_dir_by_h: {horizon: kronos direction string}.
         """
@@ -223,17 +231,11 @@ class PriceToBeatTracker:
             if _sgn != 0.0 and live_exp is not None:
                 rnd["projected_close"] = round(ref_price + _sgn * abs(float(live_exp)), 2)
                 rnd["projected_vs_beat"] = round(rnd["projected_close"] - ptb, 2)
-                # p_up (A2-lite): P(close >= beat) ≈ Φ(edge/σ), σ from the conformal
-                # IQR (q75−q25 ≈ 1.349σ), floored so we never print false certainty.
-                # This is the number a Polymarket share is actually WORTH — compare
-                # it to the market's ask to see edge.
-                try:
-                    import math as _m
-                    _sigma = max(8.0, abs(float(_emr["high"]) - float(_emr["low"])) / 1.349)
-                    _edge = float(rnd["projected_close"]) - float(ptb)
-                    rnd["p_up"] = round(0.5 * (1.0 + _m.erf(_edge / (_sigma * _m.sqrt(2)))), 3)
-                except Exception:
-                    pass
+                # p_up / "fair value" REMOVED (operator 2026-06-13): it was Φ(edge/σ)
+                # built on the FLAT ~$40 mean-move magnitude — fake-precise cents on an
+                # unreliable base, misleading rather than useful. The proper p_up
+                # returns with A3 (conditional quantile magnitude that breathes with
+                # volatility) → A2, in Retrain #2. Until then we show no probability.
         # PATH OUTLOOK — a plain-English "how will price travel vs the line" forecast:
         # built from the model's expected move vs the distance to the line, with odds from
         # MEASURED precision (expectedPrecision) when available, else the two-way prob.
@@ -310,18 +312,8 @@ class PriceToBeatTracker:
             rnd["advice"]["text"] += (f" [LATE-ENTRY WINDOW: {secs_left}s left, already "
                                       f"{cur_move:+.0f} on the {live_lean} side and the model still "
                                       f"agrees — persistence odds strongly favor {live_lean}.]")
-        # EARLY-EXIT hint (A13, from the repo scan): when one side is near-certain by
-        # p_up, SELLING at ~that price captures nearly the whole win and deletes 100%
-        # of the tail risk — every profitable external bot monetizes the path, not
-        # just resolution. Decision-support text only.
-        _pu = rnd.get("p_up")
-        if _pu is not None and isinstance(rnd.get("advice"), dict):
-            if _pu >= 0.97 and rnd.get("our_direction") == "UP":
-                rnd["advice"]["text"] += (f" [EXIT-EDGE: UP ≈{_pu*100:.0f}% — if holding UP shares, "
-                                          f"selling near {_pu*100:.0f}¢ locks the win without tail risk.]")
-            elif _pu <= 0.03 and rnd.get("our_direction") == "DOWN":
-                rnd["advice"]["text"] += (f" [EXIT-EDGE: DOWN ≈{(1-_pu)*100:.0f}% — if holding DOWN shares, "
-                                          f"selling near {(1-_pu)*100:.0f}¢ locks the win without tail risk.]")
+        # (EARLY-EXIT cents hint removed with p_up — same flat-magnitude basis. The
+        # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
 
     @staticmethod
     def _path_outlook(cur_move: float, cur_pos: str, lean: str, p: dict,

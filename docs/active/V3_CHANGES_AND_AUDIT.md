@@ -1250,6 +1250,186 @@ Activates at the same restart.
   its budget even landed; lr massively overcommits at 1m (247 directional votes, 9%).
 - Partial-candle buckets: 56/52/32/52 — odd 30-44s dip, n≈22/bucket, no verdict yet.
 
+## 5au. RUN RECORD — v6 training launched (2026-06-13 23:26) + GPU findings
+
+**Config (operator-set):** 50 days (71,925 samples / 57,540 train) · `BTC_FREEZE_MODEL=1`
+(training is now a deliberate act — the boot-train runs on arch mismatch; auto/scheduled
+relearns are OFF) · fresh console (50d confirmed in boot log) · arch target
+`2026-06-12-v6-classbal-roster-130-tcn`.
+
+**Plan confirmed in the log:** 24 eligible buckets / ~192 components — **the VOLATILE
+regime tier trains for the FIRST TIME** (1,153 samples at 50d vs 998 at 40d — the
+operator's window choice cleared the 1,000-sample guard by 153). Direction roster shows
+6 models, no SGDLogLoss. Class weights firing (1m [1.399, 0.5, 1.527]). Components:
+7/regime bucket, 11 GLOBAL — v6 arithmetic exact.
+
+**Milestone observed at boot:** `[PRECISION] 3m calibrator ACTIVE (n=150, base rate
+0.493)` — the isotonic calibration engine's FIRST activation ever, exactly at threshold,
+on clean sign-truth labels (v5-era sample; re-earns after the v6 save, by design).
+Boot also confirmed §5aj rehydration ("Restored 20 resolved price-to-beat rounds for
+the UI") and 513 mirror outcomes restored.
+
+**GPU hardware findings (operator observed "Intel GPU busy, RTX idle"):**
+- `nvidia-smi` PROOF: the app process (PID 7232) holds a CUDA compute context on the
+  **RTX 4050** — XGBoost CUDA is real; utilization spikes only during XGB phases and
+  Task Manager hides the CUDA engine by default.
+- **LightGBM's "gpu" is OpenCL and lands on the Intel iGPU** (platform 0 on dual-GPU
+  laptops) — the activity the operator saw. Improvement queued: pin
+  `gpu_platform_id/gpu_device_id` to the NVIDIA platform (Retrain #2 rider).
+- **torch is the CPU build** → TCN trains on CPU (log: device=cpu). Upgrade queued:
+  CUDA PyTorch install so A6's 12-epoch budget rides the RTX (Retrain #2 rider).
+- CatBoost: CPU (pip build lacks GPU) — accepted.
+
+**Ops notes:** memory ~85% during train = expected peak (2.2GB tensor at 50d, freed at
+completion via explicit gc); training needs zero network from [TRAIN 1/192] onward —
+low bandwidth only affects live feeds, which auto-reconnect. Backfill "current through
+2026-06-11": Jun-12 publishes next start; the OLDEST ~10 days of the 50d window have no
+CVD overlay (--auto extends forward only; recency weights make this minor; optional
+one-time `--days 50` run fills it).
+
+**Final pre-train static sweep:** pyflakes clean · all compile · zero imports of the
+deleted kronos modules · zero live sgd references · residual kronos mentions verified
+harmless (snapshot column writes '{}'; offline analytics reader; self-gating model
+hooks; comments) · `fetch_kronos_accuracy()` = dead function, cleanup-pass candidate.
+
+**Measurement plan:** v6 hot-swaps ~03:00-03:30; FROZEN single era; ~24h serve; then
+the scorecard (per-model table + VOLATILE's first live report card + per-grade splits)
+gates Retrain #2 (path labels + session/time features + quantile bands + CUDA-torch +
+LGB platform pin). NOTE for reading the scorecard: v6 vs v5 differs by roster AND
+window (50 vs 40 days) — a deliberate, low-risk confound accepted by the operator.
+
+## 5av. v6 TRAINED OK but serving loop crashed — FSR mothball bug (2026-06-13 03:33)
+
+**v6 train SUCCEEDED & SAVED** (03:33:31, arch `v6-classbal-roster-130-tcn`): GLOBAL 42 +
+VOLATILE 36 components (VOLATILE tier trained for the first time), 8MB stackers (TCN
+INCLUDED — log confirms `OOF...dl=0.346`, stacker features `['xgb','histgb','lr','lgb',
+'cat','dl']` → A6 landed), backtest ran 03:48. Zero training loss.
+
+**But the serving loop crashed every cycle** with
+`UnboundLocalError: fsr_ppo_block` at server.py:2644. CAUSE (Claude's bug, §5ar
+mothball): the FSR-PPO `recommend()` assignment was correctly guarded by
+`if FSR_PPO_ENABLED:`, but a SECOND consumer 100 lines later (the per-horizon
+`log_fsr_ppo_decision` block) still referenced `fsr_ppo_block` unconditionally. With
+FSR off (default), the var is never created → crash after predictions generate but
+before they record/broadcast (UI froze; no rows logged).
+
+**Fix:** the logging block now reads `data_state["fsr_ppo"]` (always set — real block
+or stub) and is gated by `FSR_PPO_ENABLED`. pyflakes clean, compiles.
+
+**Why it slipped past verification (the real lesson):** pyflakes CANNOT flag
+conditional-assignment-then-unconditional-use (the name IS bound on one branch), and
+the pre-train smoke test imported + instantiated but never RAN the async `main_loop`.
+Static checks + import smoke are necessary but NOT sufficient for control-flow bugs in
+the serving loop. Future serving-path edits need a loop execution check, not just import.
+
+**Recovery:** restart loads v6 from disk (arch matches → NO retrain, ~15s) with the
+fixed loop. The 3.5h train is intact on disk.
+
+## 5aw. Deep scan after the fsr bug — control-flow class audit (2026-06-13)
+
+Triggered by the §5av crash, this pass hunted the SAME bug CLASS (conditional
+assignment / missing var in the serving hot path — invisible to pyflakes) rather than
+just re-linting. Findings:
+
+**Serving-loop variable trace (the fsr bug class) — CLEAN except the one already fixed:**
+- `predictions = []` and `meta_contexts = {}` initialized UNCONDITIONALLY at the top of
+  every loop iteration (server.py 2442-43) → the recording block's `meta_contexts.get(h)`
+  is always safe.
+- `cascade_data` assigned and used only inside the same `if model.is_trained` block.
+- `current_price` / `reference_price` assigned before every use (re-assigned at 2477,
+  2563, 2673). No unbound paths.
+- `fsr_ppo_block` was the ONLY conditional-assign-then-use bug (fixed §5av); re-verified
+  it's now referenced only inside its own `if` block; the logging path reads the always-
+  set `data_state["fsr_ppo"]`.
+
+**Kronos hot-path hooks (left in model.predict, claimed "self-gating") — VERIFIED inert:**
+- `_kronos_direction`: `data_state.get("kronos_forecasts") or []` → empty → returns
+  "NONE" immediately. No crash.
+- decision gate: `kronos_accuracy or {}` → total=0 → not proven → `kronos_dir_decision`
+  "NONE" → no confluence vote, no `contradicted_by_kronos` veto.
+- soft-confirmation nudge: empty accuracy → kdir "NONE" → zero nudge.
+  → With kronos data absent (the v6 state), all hooks contribute nothing and cannot
+  crash. Confirmed safe, not just asserted.
+
+**Frontend removed-symbol consumers — all DEFENSIVE (cosmetic only):** every `data.kronos*`
+read uses `|| {}` / `|| []` / `!= null ?` / `|| 'NONE'`; the "Kronos path" roster row and
+scoreboard kronos cells render '--' placeholders. No crash; UI tidy deferred to the
+cosmetic pass.
+
+**7m/10m mirror — no hardcoded horizon assumptions:** the only `(5,15)` in price_to_beat
+is the overridden default param; all internals use `self.horizons`; late-entry window
+scales by horizon (verified for 1/7/10m).
+
+**Static gauntlet:** pyflakes CLEAN backend-wide; all backend compiles; frontend builds
+clean; `/api/scorecard` + per-model table proven working live (operator output).
+
+**Honest scope limit:** static analysis + import smoke CANNOT execute the async
+`main_loop`; the variable trace above is by-inspection. The definitive proof is the
+operator's restart booting cleanly and the loop serving without the §5av error —
+recommend watching the first ~60s of logs for any `Loop error`.
+
+## 5ax. Kronos/FSR UI cleanup + v6 restart confirmed (2026-06-13)
+
+**v6 confirmed serving correctly:** runtime probe — relearn IDLE (no retrain),
+model_trained True, arch on disk `v6-classbal-roster-130-tcn`, serving loop healthy
+(the §5av fix worked). Enhancement + training verified correct.
+
+**Operator distrust was driven by DEAD KRONOS UI** (red ✗ chips, "Kronos NONE/WAIT",
+"Kronos cross-check" everywhere) — backend retired Kronos but the UI still rendered its
+ghost, making working components look broken. The deferred "cosmetic pass" was actually
+hurting confidence, so done now (frontend-only, applies on hard refresh):
+- Scoreboard: removed kronos chip + Kronos column + Agree column → now Ensemble-final +
+  Raw-lean (the gate is no longer dragged down by a permanently-failing kronos check).
+- Decision Center: removed the Kronos GATE (was counting as a failing evidence check,
+  lowering the rating) and the "next confirmation" kronos text; replaced the "Kronos
+  cross-check" card with an "Expected move" card.
+- Roster: removed the "Kronos path" row.
+- Price-to-beat confluence card: removed kronos line, chip, acc.
+- Forecast Scorecard: replaced the dead Kronos acc/err columns with a **Directional /
+  UP / DOWN / move-err** layout — the bias-watch split, genuinely useful.
+- FSR-PPO panel: "WAITING" → "MOTHBALLED" (reads status.enabled=false from the stub).
+- index.html: "Kronos Forecast Targets" section hidden (ids kept as empty elements so
+  the still-running forecast-targets renderer can't null-crash); all Kronos mentions in
+  section descriptions removed.
+
+**Reminder for reading metrics now:** the restart reset the model era — current
+mirror/scorecard rows are the FIRST v6 rounds (n=2-6 = pure noise). Judge only at n>100.
+
+**Validation:** frontend builds clean (bundle shrank 282.3→281.3 kB = dead code gone);
+no dangling references (getKronosAtHorizon/kronosStatus retained but null-safe).
+
+## 5ay. Fair-value removed (display-only) + Binance per-TF table (2026-06-13)
+
+- **Fair-value / p_up removed** (operator: "incorrect, not adding value"). CONFIRMED
+  display-only: p_up lived in price_to_beat.py (downstream of the model, consumes its
+  output), was NEVER a training feature or a prediction input — removing it changed
+  ZERO model behavior, accuracy/precision byte-identical. It was Φ(edge/σ) on the flat
+  ~$40 mean-move magnitude = fake-precise cents. Proper p_up returns in Retrain #2 atop
+  A3 (breathing quantile magnitude). EXIT-EDGE hint removed too (same basis).
+- **Binance tab: per-timeframe resolved-calls table** (operator request, mirrors the
+  Polymarket table). Per-TF tabs (All/1/3/5/7/10/15m) with counts, per-tab W/L + UP/DOWN
+  summary, sign-truth grading (✓/✗), up to 25 rows, scrollable. Sourced from the
+  already-sent `verification.histories` (30/horizon) → NO backend change, applies on
+  hard refresh. This is the model's PURE directional accuracy (lean vs realized move),
+  the cleanest skill measure — distinct from Polymarket's beat-the-anchor grading.
+
+## 5az-2. Offside/flipped Polymarket header (2026-06-13) — frontend only
+
+Operator: cards looked "contradictory." Root cause confirmed NOT a model bug — the
+colored header is FROZEN at window-open while everything below is live; a bet that has
+gone wrong still showed a big confident "UP · Grade A" while the small print said
+flipped/EXIT. The UI juxtaposed opened-vs-live without resolving them.
+
+Fix (renderPolymarketView card header): compute `offside` (live current_position
+opposite the opened bet side = losing) and `flipped` (live_lean differs from opened
+lean). Header now shows:
+- offside → red "⚠ OFFSIDE — bet UP, price now on DOWN side" + muted "opened UP·A" tag;
+  card border turns red.
+- flipped → amber "⚠ LEAN FLIPPED → model now DOWN" + muted opened tag; border amber.
+- else → the normal confident opened header (unchanged).
+The big visual now matches live reality; the stale opening grade is de-emphasized, not
+removed (still visible as "opened …"). Display-only, no measurement impact, hard-refresh.
+
 ## 6. Known limitations / honest notes
 - `vpin` and the backfill's `funding_velocity` are present in the parquet but intentionally not
   fed to training (skew-avoidance). Feature 17's funding_velocity uses the existing
