@@ -16,8 +16,9 @@ WHY IT EXISTS / HOW IT HELPS THE APP:
 
 HOW WE KNOW IT'S SIGNAL, NOT NOISE (gates baked in — it REFUSES to save if it fails):
   1. TEMPORAL out-of-sample split (train past → test unseen future; no leakage).
-  2. AUC must clear NOISE_AUC (~0.53) on the unseen test — AUC≈0.5 = no signal.
-  3. CALIBRATION must hold (its "70%" wins ~70% on held-out) — else it's overconfident noise.
+  2. AUC must clear NOISE_AUC (~0.55, the bettable floor) on the unseen test — AUC≈0.5 = no signal.
+  3. CALIBRATION + a USABLE confident subset: >=20 calls at >=0.6 that realize >=55% (not just
+     "calibrated when it abstains" — a model that almost never commits is not signal, §5bt).
   4. Must BEAT the base-rate baseline (predicting the majority class).
   Fails any gate → printed "NOISE — not saved". Then live paper-tracking before real money.
 
@@ -35,7 +36,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "beat_model.pkl")
 HORIZONS = (1, 3, 5, 7, 10, 15)
-NOISE_AUC = 0.53           # below this on unseen test = no signal → not saved
+NOISE_AUC = 0.55           # bettable floor (SPEC §6); below this on unseen test = no signal → not saved
 FEATURE_NAMES = ["ret_1", "ret_5", "ret_15", "rv_short", "rv_long", "variance_ratio",
                  "range_pos", "atr_norm", "mom_20", "hour_sin", "hour_cos"]
 
@@ -190,7 +191,9 @@ def main():
         iso = IsotonicRegression(out_of_bounds="clip", y_min=0.02, y_max=0.98)
         iso.fit(clf.predict_proba(Xca)[:, 1], yca)
         auc, acc, base, (hin, hireal) = _evaluate(clf, iso, Xte, yte)
-        ok = (auc >= NOISE_AUC) and (acc >= base - 0.005) and (hireal is None or hireal >= 0.55)
+        # §5bt: require a USABLE confident subset (>=20 calls realizing >=55%), not a vacuous
+        # "None -> pass" — a 0.53-AUC model that almost never commits is noise, not a saveable head.
+        ok = (auc >= NOISE_AUC) and (acc >= base - 0.005) and (hin >= 20 and (hireal or 0.0) >= 0.55)
         cal = f"{hireal*100:.0f}%({hin})" if hireal is not None else "thin"
         verdict = "SIGNAL" if ok else "** NOISE **"
         print(f"{h:>3} {len(yv):>7} {auc:>6.3f} {acc*100:>5.1f}% {base*100:>5.1f}% {cal:>14}  {verdict}")

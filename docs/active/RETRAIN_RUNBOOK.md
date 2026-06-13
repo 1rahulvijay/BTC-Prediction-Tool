@@ -40,7 +40,10 @@ Append-only (never reorder 0–129; saved models index by position). Then bump `
 - **A8 session/time** (132-135) — Asia/EU/US UTC flags, weekend (timestamp-derived, parity-safe).
 
 **Deferred to the A4 Bundle (needs live parity recorders first):**
-- **A4 cross-venue flow** — `cvd_cb_binance_div`, `cvd_bybit_binance_div`, `flow_lead_lag_cb` (fed by `build_crossvenue_flow.py`).
+- **A4 cross-venue flow** — Binance **spot-vs-perp**: `cvd_divergence` (perp CVD − spot CVD),
+  `perp_spot_basis_bps` (fed by `build_crossvenue_flow.py`). NOT Coinbase/Bybit — Coinbase has no
+  bulk trade history → would re-create the train/serve gap. Needs the live perp-CVD recorder bridged
+  into the per-bar buffer + a `candle_ts` overlay before the slots are added (parity). Appends at 136+.
 - **price-efficiency** — permanent-vs-temporary impact (`mid_t+30s` vs `mid_t+1s`). Needs new live recorder.
 - **GEX** — `gex_live` side table accumulation. Live-only, no history.
 - **ATR triple-barrier labels** — cleaner target (V5 §2.5a); a label change, not a feature.

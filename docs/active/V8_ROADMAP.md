@@ -39,16 +39,38 @@ enters as a challenger and earns its place on **purged walk-forward sign-truth**
 4. **PRECISION TIER.** A10 setup fingerprints + the kNN voter (decorrelated stacker seat, gated on
    lift) + the T3 Wilson-lower-bound gate (n≥100, ≥80% LB). A1-ext path labels
    (UP_THEN_DOWN/…). **OOF warm-start** of calibration/meta/signal_history (kill post-retrain dormancy).
+   **Concrete driver — the confluence grade is MEASURED-inverted (§5br):** Grade A 44.3% (n=289,
+   Wilson-LB 38.7%) < Grade C 50.4% < Grade B 56.8% — "highest agreement" is the WORST (move
+   exhaustion → reversal). So A10 must REBUILD the grade *regime-conditioned + maturity-aware*, not
+   just add fingerprints. Until A≥B≥C with each n≥100 AND A's Wilson-LB > C's rate, the grade letters
+   are NOT a trust signal and must not be surfaced as "best."
 5. **CONTINGENT — transformer.** ONLY if v7/v8's TCN shows decorrelated stacker lift on 136+ features.
    A small patch-attention encoder into the EXISTING stacker — never a parallel ensemble. If TCN
-   shows nothing → sequence models don't pay at this data scale; no transformer.
+   shows nothing → sequence models don't pay at this data scale; no transformer. **Operationalized:**
+   `backend/seq_model_feasibility.py` is the independent check — trains TCN/LSTM/Transformer on the
+   app's exact (60×136) sequences with a purged temporal split, reports per-model sign-truth AND
+   decorrelation-vs-TCN. Mechanical FIT verified (all three build/train/output 3-class); run `--run`
+   on real `(X,Y)` AFTER a train to see if any earns a seat. Adopt only on decorrelated sign-truth lift.
 
-## Specialized OFFLINE heads suite — ✅ ALL BUILT 2026-06-13 (trainers + noise gates + start.bat)
+## Specialized OFFLINE heads suite — BUILT 2026-06-13, but FIRST BUILD LEAKED → rebuild required
 Status: `train_beat_classifier.py`, `build_path_labels.py`, `train_magnitude_quantiles.py`,
 `build_fingerprints_historical.py` all built, core-tested, wired into start.bat (`[0/3] d.`, train-if-
-missing). Each self-validates and refuses to save a noise horizon. NEXT: run them over the full
-60–90d window ("train hard"), then wire P(beat)/path/magnitude outputs into the Polymarket card +
-the T3 gate (serving — like P(hold) already is). Original plan below.
+missing). Each self-validates and refuses to save a *noise* horizon.
+
+**⚠ LABEL-LEAKAGE CAUGHT + FIXED (§5bs) — and the lesson.** The first real run printed beat
+**h=1 AUC 1.000 / 99.7%** — impossible at coin-flip horizons. Cause: all 4 at-open heads' feature
+builder read the CURRENT bar's close while the label anchored on the SAME bar's open → `close[t]`
+leaked the answer. **The noise gate did NOT catch this — a noise gate filters noise, and leakage
+looks like *strong signal*, not noise.** It was caught only by the "too-good-to-be-true = leakage"
+discipline check (see Standing validation gates below). FIX: features[t] now predict the window
+opening at t+1 (verified: h=1 AUC 1.000 → 0.548, rest 0.47–0.61 — honest). The artifacts trained
+before the fix are LEAKED — they must be **deleted and rebuilt** leak-free
+(`beat_model.pkl`, `magnitude_model.pkl`, `path_model.pkl`, `fingerprint_evidence.parquet`) before
+anything is wired. Expect the honest heads to be MODEST (mostly NOISE at 5m — correct).
+
+NEXT (after the leak-free rebuild): run them over the full 60–90d window ("train hard"), then wire
+P(beat)/path/magnitude outputs into the Polymarket card + the T3 gate (serving — like P(hold) already
+is). Original plan below.
 
 
 The A1 persistence head proved the pattern: train a focused classifier offline on reconstructed
@@ -67,6 +89,20 @@ history, ensemble it in. Buildable now (no live uptime), each answers ONE bettin
   (the live `setup_fingerprint` recorder is the going-forward twin).
 All four + persistence = a "specialized heads" layer feeding the one decision stack. Each enters as a
 challenger, measured on held-out sign-truth.
+
+## Standing validation gates (hard rules — each earned by a real failure this session)
+Before ANY model/head/grade is trusted or wired, it must clear these. Both were learned the hard way:
+1. **Too-good-to-be-true = leakage.** 5m direction is coin-flip; an honest 5m AUC is ~0.50–0.55.
+   Any head reporting AUC ≫ that (≳0.65 at 5m, or AUC→1.0 anywhere) is presumed LEAKED until the
+   feature↔label TIME ALIGNMENT is audited (features must use only data known at the decision instant;
+   never the outcome bar's close). A noise gate does NOT catch leakage — leakage looks like signal.
+   *(Caught the §5bs at-open-head leak; h=1 AUC 1.000 was the tell.)*
+2. **Stratifier must stratify.** Any bucketed "quality" signal (confluence grade A/B/C, conviction
+   bins, P(beat) tiers) must show MONOTONIC stratification on committed sign-truth — top bucket ≥
+   bottom, each n≥100, top-bucket Wilson-LB > bottom-bucket rate — BEFORE it is surfaced as "best" or
+   used as a gate. *(Caught the §5br grade inversion: A 44% < C 50% < B 57% — A was anti-predictive.)*
+3. **Measure before gate.** Never gate on an unproven signal (GEX/exhaustion/CVD as a hard filter)
+   until the `setup_fingerprint` recorder joins it to outcomes and shows edge. Gating on noise = overfit.
 
 ## Explicitly NOT in V8
 - Lunar cycles (astrology), more price-derived TA (diminishing returns at 136), parallel ensembles

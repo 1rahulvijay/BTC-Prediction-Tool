@@ -2,7 +2,7 @@
 
 Comprehensive record of the 2026-06-13 work: what was built/modified, what was deliberately NOT
 implemented (and why), and the forward path V7 → V8 → V9. Companion to [V8_ROADMAP.md](V8_ROADMAP.md)
-(detailed V8 themes) and the change-audit [V3_CHANGES_AND_AUDIT.md](V3_CHANGES_AND_AUDIT.md) §5ba–§5bp.
+(detailed V8 themes) and the change-audit [V3_CHANGES_AND_AUDIT.md](V3_CHANGES_AND_AUDIT.md) §5ba–§5bt.
 
 ---
 
@@ -45,11 +45,19 @@ implemented (and why), and the forward path V7 → V8 → V9. Companion to [V8_R
 ### Infra & docs
 - `start.bat`: `BTC_BACKFILL_DAYS` knob + 3 data builders + 4 head trainers (train-if-missing).
 - Docs: MEASUREMENT_WINDOW, SPEC_ACCURACY_NEXT_RETRAIN, IMPLEMENTATION_QUEUE, NEXT_STEPS_AND_STRATEGY,
-  DATA_COLLECTORS, RETRAIN_RUNBOOK, V8_ROADMAP, betting-guide section, change-audit §5ba–§5bp.
+  DATA_COLLECTORS, RETRAIN_RUNBOOK, V8_ROADMAP, betting-guide section, change-audit §5ba–§5bt.
 
 ### Diagnostic findings (real, from the DB / training logs)
 - **Honest model health (v6-era, sign-truth):** 3m 50.8% · 5m 50.0% · 7m 46.8% · 10m 55.6% (only
   edge) · 15m 46.2%. Coin-flip at 5m — confirmed three ways.
+- **★ Confluence grade is INVERTED (§5br) — MEASURED, n=222–397/grade.** Grade A 44.3%
+  (Wilson-LB 38.7%) < Grade C 50.4% < Grade B 56.8%. "Highest agreement" is the WORST (exhaustion →
+  reversal). Grade letters are NOT a trust signal until A≥B≥C, each n≥100, A's LB > C's rate.
+  V8 action: rebuild the grade regime-conditioned + maturity-aware (A10).
+- **★ Label leakage caught + fixed in the 4 at-open heads (§5bs).** Beat printed h=1 AUC 1.000 —
+  features read the current bar's close while the label anchored on its open. Fixed (features → t+1
+  window; h=1 AUC 1.000→0.548). The v7 ensemble + P(hold) were NOT affected (forward-only / intra-
+  window label designs). The leaked head artifacts must be deleted + rebuilt before wiring.
 - **Low-signal features (v7 SHAP):** `price_return, fv_deviation, twap_deviation, price_vs_sma50,
   eth_btc_price_ratio, rv_15m` — redundant; model leans on `atr_norm`.
 - **Dead weight (architectural):** the live-only constant-in-training slots (L2 ~52–72, options,
@@ -61,7 +69,7 @@ implemented (and why), and the forward path V7 → V8 → V9. Companion to [V8_R
 
 | Not done | Why (honest) |
 |---|---|
-| **Wire P(beat)/path/magnitude into the card** | The models don't exist until the 30-day train runs — you can't wire/verify a model that isn't trained. P(hold) was wired AFTER training for this exact reason. Do it next session against the real `.pkl`s. |
+| **Wire P(beat)/path/magnitude into the card** | First build LEAKED (§5bs — features read the outcome bar's close), so the saved `.pkl`s are invalid. Must DELETE + rebuild leak-free, then wire/verify against the corrected `.pkl`s. P(hold) was wired AFTER validated training for this exact reason. |
 | **Volume-profile overlay (#4)** | Deprioritized (frontend, operator-context only). The diagnostic + heads were higher value. Still queued. |
 | **GEX / exhaustion / CVD as live GATES (#1/#2/#3)** | **Measure-before-gate discipline.** Gating on unproven signals = overfitting to noise. The `setup_fingerprint` recorder must first SHOW these have edge (join to outcome) before any becomes a gate. |
 | **0DTE / DEX / skew recorder (#6)** | Touches `institutional_feeds.py` — the *other session's* file → concurrency-clobber risk. Deferred until single-session. |
@@ -85,11 +93,13 @@ edge today is the **P(hold)** late-entry tier. Validate on the 24h sign-truth sc
 ≥ ~56%, UP/DOWN balanced).
 
 ### V8 — INFORMATION + HEADS + PRECISION TIER (specced, mostly built)
+0. **Rebuild the 4 heads leak-free FIRST** (delete the leaked `.pkl`s; §5bs) — then everything below.
 1. **Wire the 4 heads** (P(beat)/path/magnitude/fingerprints) into serving + ensemble.
 2. **Information features** that break the ceiling: options positioning (GEX/DEX/0DTE/skew),
    A4 cross-venue (bridge perp→buffer), L2 depth (live B1 or Tardis archive).
 3. **A7 Optuna** tuning + **OOF warm-start** (kill post-retrain dormancy).
-4. **T3 precision tier**: A10 fingerprints → kNN voter → Wilson-lower-bound gate (n≥100, ≥80% LB).
+4. **T3 precision tier**: A10 fingerprints (+ **rebuild the inverted confluence grade**, §5br) →
+   kNN voter → Wilson-lower-bound gate (n≥100, ≥80% LB).
 5. **A1-ext path labels** live.
 
 ### V9 — CEILING BROKEN · BETTING PRODUCT LIVE · SELF-IMPROVING

@@ -55,6 +55,27 @@ wire a live Binance futures aggTrade stream computing the same per-bar CVD, then
 B1 is the ONLY collector with no offline twin — live L2 order-book depth (slots ~52–72) is not
 archived by Binance. That subset alone needs live accumulation (or a paid Tardis.dev L2 archive).
 
+### L2 / order-flow sourcing reality (operator research 2026-06-13) — the bakeoff (§5bt) proved this IS the missing edge
+- **Free historical = trades/aggTrades ONLY** (`data.binance.vision/data/spot/daily/{aggTrades,trades,klines}/BTCUSDT/`).
+  These give order-flow: buy/sell volume delta, trade imbalance, aggressive-flow ratio, large-print,
+  VWAP, short-RV — **we already backfill these** (`backfill_trade_features.py` → slots 109–125). They
+  are NOT true L2 depth; the bakeoff shows price/vol/flow-derived features alone stay coin-flip.
+- **True historical L2 depth = mostly NOT free** — BUT one free lead to investigate (operator
+  2026-06-13): **Binance FUTURES `bookDepth` IS public**
+  (`data.binance.vision/data/futures/um/daily/bookDepth/BTCUSDT/`). It is **snapshot depth**
+  (periodic, % -from-mid notional buckets), NOT full incremental L2, and futures (not spot) — so it
+  can't reconstruct exact book state / queue position, but it MAY give backfillable depth-imbalance
+  features for a retrain instead of waiting weeks for live B1. **TODO: feasibility-check one day's
+  file** (`--validate` pattern) before counting on it. Paid full L2 = Tardis.dev; Crypto Lake
+  (`lakeapi`) advertises free L2 — verify pair/exchange/date coverage. Synthetic L2 from aggTrades
+  (estimated depth around mid) is fine for ML FEATURES but NOT for queue/slippage/market-making sim.
+- **The realistic FREE path = collect live forward = exactly what B1 does.** B1 logs the full live
+  feature vector incl. the live L2 slots (`depth20@100ms` → OBI/walls/queue) every cycle. So "start a
+  Binance `@depth` collector now" ≈ already running via B1 — it just needs ~3–4 weeks of uptime before
+  those slots VARY enough to train (the SPEC Track-B1 plan). Decision: **rely on B1 live accumulation
+  for L2** + the trade-derived order-flow we already backfill; revisit a paid L2 archive only if a
+  faster L2-bearing retrain is worth the spend.
+
 ---
 
 ## How they feed the retrain (see [RETRAIN_RUNBOOK.md](RETRAIN_RUNBOOK.md))

@@ -1913,6 +1913,38 @@ Let the v7 ensemble finish (it's fine). Tomorrow: delete the 4 leaked artifacts
 `start.bat` retrains them with the fixed code (train-if-missing). This is exactly why "too-good =
 leakage" is a standing rule — caught before a single bet was placed on a fake-95% model.
 
+## 5bt. Independent model bakeoff CONFIRMS the ceiling; noise gate tightened (2026-06-13)
+## — research-only (no retrain, no serving touch); the edge is INFORMATION, not architecture
+
+Built `model_bakeoff.py` (independent, report-only — never touches the ensemble/schema/serving/
+saved_models): it REUSES the beat head's leak-free builder (`build_beat_features` + `beat_labels` +
+the `Xs,ys=X[:-1],y[1:]` §5bs alignment) and trains 6 model families on the SAME P(close≥open) task
+across all 6 horizons, with full metrics (acc/prec/rec/F1/AUC/Brier/log-loss/**ECE**/feature-imp,
+isotonic-calibrated). Ran light tier over 30 days (43,200 bars) → `data/model_bakeoff_report.json`.
+
+**RESULT — five-way convergence at coin-flip, independent confirmation of the information ceiling:**
+- AUC across logistic / random-forest / histgb / lightgbm / mlp = **0.50–0.54 at EVERY horizon**
+  (max 0.538, 15m mlp). Five independent families agreeing at ~0.51 ⇒ the bottleneck is the DATA,
+  not the model — the same verdict as the main ensemble, reached from a fresh angle/task/codebase.
+- **LightGBM did NOT win** (tied at noise) — refutes "just use LightGBM." Models are well-CALIBRATED
+  (ECE 0.02–0.06) but have ~no discrimination: a cleaner label, not a better edge.
+- Ties to the operator's own research dump (order-book/order-flow imbalance is where short-horizon
+  edge lives, NOT price-derived indicators): with our 11 BACKFILLABLE price/vol/flow features, every
+  model is a coin-flip. The edge needs the live-only L2/order-flow info (V8 / live B1), as SPEC says.
+
+**🐛 GATE-TOO-LOOSE caught + fixed (same gate the beat head uses):** the old gate
+`AUC>=0.53 AND (hi_conf_realized is None OR >=0.55)` stamped **SIGNAL** on 4 cells (3m/7m logistic,
+10m/15m mlp) whose AUC barely clipped 0.53 with ~1% recall — the model almost never commits, so the
+calibration check passed *vacuously* (None→pass). FIX in BOTH `model_bakeoff.py` and
+`train_beat_classifier.py`: **AUC ≥ 0.55** (the bettable floor) **AND** a usable confident subset
+(`hi_conf_n ≥ 20 AND realized ≥ 0.55`). Under the tightened gate all 36 cells are correctly NOISE
+(max AUC 0.538 < 0.55). This protects tomorrow's leak-free beat-head rebuild from a false pass — it
+will now honestly refuse to save noise, exactly as the §5bs discipline intends.
+
+Companions built this session (all no-train, independent): `seq_model_feasibility.py` (TCN/LSTM/
+Transformer fit + decorrelation gate, V8 theme 5) and `composed_decision_scorecard.py` (the
+end-to-end gated-decision metric). See [V10_ROADMAP.md](V10_ROADMAP.md) PART 4 + INTEGRATION_AND_METRICS.
+
 ## 6. Known limitations / honest notes
 - `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
   `order_flow.py` was aligned to the backfill's fixed equal-volume buckets

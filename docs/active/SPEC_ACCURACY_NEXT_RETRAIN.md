@@ -30,7 +30,7 @@ closing that train/serve gap, not adding more indicators.
    the live-only features do not vary → a constant column → **the trees cannot split on it** →
    zero learned influence.
 3. **The high-edge features are exactly the live-only ones** (feature slots, `features.py`
-   `FEATURE_NAMES`): liquidations (46–49), liquidity walls/vacuum (52–56), deep microstructure
+   `FEATURE_NAMES`): liquidations (42–45), liquidity walls/vacuum (52–56), deep microstructure
    (61–67), advanced microstructure / absorption / queue (68–72), deep order flow incl.
    `cross_exchange_lead_lag` (97–100). These are precisely where sub-15m edge lives — and precisely
    what's missing from training.
@@ -82,6 +82,21 @@ trades, so these are train/serve consistent immediately (mirror `backfill_trade_
 Append only — new slots after 129 (never reorder 0–129; saved models index by position). Bump
 `MODEL_ARCH_VERSION`. Each must have BOTH a live recorder and a `data.binance.vision`/exchange
 historical backfill computing the identical value (the keystone pattern in `trade_features.py`).
+
+> **⚠ POST-V7 UPDATE (2026-06-13) — this table's slot numbers AND venue choice are SUPERSEDED.**
+> - **Slots 130–135 are now taken** by v7's kline/time bundle: `variance_ratio` (130),
+>   `rv_term_structure` (131), `session_asia/eu/us` (132–134), `is_weekend` (135). See
+>   [IMPLEMENTATION_QUEUE.md](IMPLEMENTATION_QUEUE.md) / change-audit §5bl. So any cross-venue
+>   feature appends at **136+**, not 130.
+> - **The Coinbase/Bybit approach below was replaced by Binance spot-vs-perp** in the actual
+>   builder `build_crossvenue_flow.py` (it produces `cvd_divergence`, `perp_spot_basis_bps`):
+>   Coinbase publishes no bulk trade history, so a Coinbase feature could never be backfilled and
+>   would re-create the train/serve gap. The current, parity-correct A4 spec lives in
+>   [DATA_COLLECTORS.md](DATA_COLLECTORS.md) + [V8_ROADMAP.md](V8_ROADMAP.md); it is DEFERRED until
+>   the live perp-CVD recorder is bridged into the per-bar buffer (see V9 ledger PART 2).
+> - `rv_term_structure` already SHIPPED at slot **131** in v7 (not 135 as row 6 below proposes).
+>
+> The table is kept verbatim for historical design context only — do not implement it as written.
 
 | slot | name | definition | live source | backfill source |
 |---|---|---|---|---|
@@ -141,8 +156,9 @@ Notes:
 
 ## 7. Sequencing (gated on the 24h number)
 
-1. **Now, regardless:** start **Track B1 logging** (long-pole; the clock should already be running)
-   and add **slot 135 `rv_term_structure`** (free, kline-derived) to the next retrain.
+1. **Now, regardless:** start **Track B1 logging** (long-pole; the clock should already be running).
+   (`rv_term_structure` — once proposed here as a slot-135 add — already SHIPPED at slot **131** in
+   the v7 bundle, along with `variance_ratio` and the session flags.)
 2. **At the 24h re-check:**
    - If 5m committed-lean **≥56% & balanced** → direction edge is real → prioritize **Track A**
      (harvest) + ship **Track C** multi-venue flow in the next retrain; magnitude/path (V5 #2/#3)
