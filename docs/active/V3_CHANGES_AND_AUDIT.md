@@ -1997,6 +1997,397 @@ from the trading-economics angle, now with numbers. A "proven edge" can NEVER be
 measured forward — live shadow lane). This is the YARDSTICK: re-run after L2/order-flow features land
 to see an edge *appear* (or not).
 
+## 5bw. P(hold) VALIDATED live + the dead-feed ROOT CAUSE found (2026-06-14, morning analysis)
+## — the morning run after the overnight v7 train; two milestone findings
+
+**(1) P(hold) / late-entry is REAL — validated on 19,298 live snapshots.** Joined
+`persistence_snapshot` → resolved `price_to_beat` outcomes (held = position==actual). The
+persistence curve is clean and strong: hold rate rises with |distance| and as seconds_left
+falls — $50+ ahead with <60s left = **97–100% hold**. The late-entry STRUCTURAL zone (the ⚡
+gate conditions) per horizon: 3m 88.0% (n910, LB85.8), 5m 84.3% (n836, LB81.7), 7m 93.3%
+(n549, LB90.8), 10m 88.3% (n445, LB85.0), **15m 99.7% (n330, LB98.3)**. Against ~52% break-even
+this clears with huge margin + confidence. **This is the ONE genuine, bettable edge** — and it
+works *because* its inputs (distance/time/price-vol) are all price-derived and ALIVE, unlike the
+dead microstructure feeds below.
+
+**(2) Direction is coin-flip BECAUSE 78/136 features are dead-zero — and we found why.** The
+fixed `diagnose_model §3` (schema-filtered) showed 78/136 features have ~0 variance even LIVE —
+the ENTIRE microstructure half (CVD, OBI, walls, vpin, liquidations, funding, OI, coinbase
+premium). B1 logs `seq[-1]` = the model's ACTUAL input, so the model genuinely sees these as 0.
+`feed_health.py` (new) tested each exchange stream directly and SPLIT the cause:
+- **SPOT aggTrade + depth = WORKING → RESOLVED 2026-06-14.** `feed_health.py` PART B confirmed
+  live `order_flow` non-zero after restart (cvd_1m −0.16, cvd_5m −0.88, obi_5 −0.62, trade_intensity
+  1.8) → the overnight zeros were a **TRANSIENT spot-WS disconnect**, not a wiring bug. **Why it went
+  UNDETECTED + the FIX:** the staleness guard used `freshness_ms` = per-trade LATENCY, which is only
+  set WHEN a trade arrives, so it FROZE at ~5ms during the disconnect (no trades → never updated) and
+  the app predicted on a dead feed for hours. FIXED (server.py, activates next restart): stamp a
+  wall-clock `order_flow_updated_ms` on every trade/depth; the freshness blocker now neutralizes
+  predictions when no order_flow update in 5s (`stale_feed`); and **B1 skips logging dead-feed cycles**
+  so a future outage can't poison the retrain set again. (Futures/Coinbase remain geo-blocked.)
+- **FUTURES (fstream) + Coinbase = BLOCKED (geo)** → perp CVD, liquidations, coinbase premium
+  are GENUINELY UNAVAILABLE on this box (India/Binance). Not a code bug — needs a proxy/VPN or a
+  vendor feed. This is *why* `perp_cvd_live = 0`.
+
+**STRATEGIC REFRAME:** the "information ceiling" is part **geo-block** (futures/coinbase/
+derivatives unreachable here) + part **recoverable spot-feed** (CVD/OBI/vpin work). Half the
+high-edge features can be revived locally; the other half need infra (proxy/vendor). **A4
+cross-venue stays blocked** on BOTH counts (perp→buffer bridge never built AND the live perp feed
+is geo-blocked, so there's no live data for parity).
+
+**No-train fixes shipped this session:** `diagnose_model §3` schema filter (the dead-feature read
+now works); `feed_health.py` (the probe); persistence_snapshot now persists `vol_60s_pct` + `p_hold`
+(so the live P(hold) tier is exactly gradeable, not just the structural zone); the **disconnect-aware
+feed-staleness guard + B1 dead-feed skip** (server.py — neutralizes predictions and stops logging
+when order-flow has no update in 5s); and the **do-not-trade reason engine** (`decision_gate.py`,
+pure + self-tested, wired after `apply_live_quality_filters`): every prediction now carries a
+structured `no_trade_reasons[]` + 3-state `trade_verdict` (NO_TRADE / WEAK_LEAN / TRADE), surfaced
+in the card — the "abstention machine" both our analysis and the Codex review converge on. All
+activate on the next restart, no retrain. **Do NOT retrain to chase 5m** — it's coin-flip on the
+backfillable features (proven); a 60d retrain is incremental, not a ceiling break.
+
+## 5bx. Codex-aligned ABSTENTION enhancements built (2026-06-14) — all no-train, validated
+The Codex review (independent second opinion) converged on "ruthless abstention machine, not money
+printer." Three evidence-first enhancements built + self-tested (no app/schema/retrain impact):
+- **`decision_gate.py` — do-not-trade reason engine** (wired into serving, §5bw): structured
+  `no_trade_reasons[]` + 3-state `trade_verdict` (NO_TRADE/WEAK_LEAN/TRADE) on every prediction,
+  surfaced in the card. The keystone — most ticks should read NO_TRADE.
+- **`phold_tier_scorecard.py` — T2/T3 precision-tier proof + lifecycle** (read-only, app-stopped):
+  per-horizon late-entry hold% + Wilson-LB (T2 structural; T3 = +P(hold)≥0.93 once those rows
+  accrue), the HALF-LIFE curve (hold% by seconds_left — edge strengthens toward close), and
+  signal-STABILITY (flip-rate; stable positions = higher precision). Writes `data/phold_tier.json`.
+  The T3 card gate: n≥100 AND hold≥90% AND Wilson-LB≥80%.
+- **`anti_signal_scan.py` — fade-candidate detector** (read-only): flags (regime×horizon) cells the
+  model is RELIABLY WRONG on (Wilson UPPER bound < coin-flip). LOGS only — Codex rule: don't
+  auto-invert; silence the cell until the negative edge holds over more samples + ≥2 windows.
+
+**LIVE T2/T3 UI card — NOW BUILT (2026-06-14):** `price_to_beat.py` classifies each late-entry round
+as T2 (structural zone, already P(hold)≥0.93) or **T3** (additionally the HISTORICAL proof clears
+n≥100 AND hold≥90% AND Wilson-LB≥80%), attaching the proof panel from `phold_tier.json` (hot-reloads
+when the scorecard re-runs — no restart). `main.js` renders the tier card with the n / hold% /
+Wilson-LB evidence (graceful: shows "proof pending" until the scorecard is run app-stopped). Tier
+gate logic validated. STILL deferred: signal-lifecycle STATE-tracking (created→weakened→invalidated
+in real time) — the half-life + stability *measurements* are delivered; the live state-machine is
+the remaining follow-on.
+
+## 5by. DEPTH-EDGE PROBE — order-book depth does NOT predict 5m (2026-06-14) — reframes the ceiling
+The SPEC's central thesis was "the missing 5m edge is the live-only L2/depth features, constant in
+training." `depth_edge_probe.py` TESTED it directly: the free Binance **futures `bookDepth` archive**
+(data.binance.vision — reachable even though live futures WS is geo-blocked) + futures 1m klines,
+leak-free (resting-depth snapshot at minute m → sign of open[m+1+h]−open[m+1]). 7 days, **9,957
+samples**, depth-imbalance features (imb at ±0.2/1/2/5%, book thickness, concentration). RESULT:
+**AUC 0.516 (3m) / 0.534 (5m) / 0.515 (10m) / 0.543 (15m)** — logistic ≈ lightgbm, all below the 0.55
+edge bar. **Order-book depth imbalance does NOT predict direction.**
+
+**IMPLICATIONS (honest, project-shaping):**
+- The L2-depth thesis is **largely DISPROVEN for the free/coarse depth** — even WITH the data the
+  model never had, depth carries no tradable directional edge. So **getting live futures via a
+  proxy/vendor is NOT justified for direction** — it wouldn't help. Saves the infra spend.
+- Combined with the bakeoff (5-way coin-flip), trading-edge (~0 expectancy), and live shadow:
+  **5m BTC direction is near-efficient / information-poor with retail-available data.** The edge is
+  NOT in predicting direction — it is in the CONDITIONAL/structural play **P(hold)/late-entry**
+  (validated 84–99%), which needs no direction call.
+- CAVEAT (calibrated): this is COARSE depth (% bands, 1-min snapshots, static imbalance) — NOT
+  tick-level full L2 dynamics (cancels/refills), which a paid archive (Tardis) could test. But the
+  coarse signal being absent makes that low-priority. The probe is reusable for a tick-L2 sample later.
+- STRATEGY: stop chasing 5m direction; double down on the **abstention machine anchored on P(hold)**
+  + conditional/structural edges. The `bookDepth` archive remains a confirmed-reachable data source
+  (could still feed a regime/vol-context feature even if not a direction edge).
+
+## 5bz. 30m horizon added + auto-retrain on + P(hold) cockpit lead (2026-06-14)
+
+**30m horizon (the #1 accuracy lever — longer horizons are inherently cleaner than 5m):** added
+30 to every full horizon list across the backend (35 replacements / 22 files: `model.py` default
+`[1,3,5,7,10,15,30]`, `database.py` timeframes → `predictions_30m`, `features.build_sequences`,
+`prediction_verifier.ALL_HORIZONS`, `calibration`, `analytics`, `server.py` verifiers + both
+price_to_beat trackers, the offline heads/scorecards) + `main.js` (6 render lists). **MODEL_ARCH_VERSION
+bumped** to `…v8-7horizon-30m-…` → next boot REJECTS the 6-horizon v7 and FULL-RETRAINS 7 horizons.
+VERIFIED: all backend parse, pyflakes 0 undefined, `model.horizons=[1,3,5,7,10,15,30]`, `init_db`
+creates `predictions_30m`, `build_sequences(horizons incl 30)` produces 30m labels, frontend builds.
+
+**start.bat:** `BTC_HISTORICAL_DAYS=50` + `BTC_FREEZE_MODEL=0` (auto-retrain ON — operator accepts the
+feed-freeze during each ~24h background retrain).
+
+**P(hold) T3 cockpit lead (`main.js renderDecisionCockpit`):** when a live T3 late-entry setup exists
+(`price_to_beat.latest[*].tier==='T3'`), the home cockpit now LEADS with `⚡ P(HOLD) EDGE NN%` above
+the coin-flip 5m direction — the product surfaces its one validated edge first. Additive, falls back
+to the normal cockpit when no T3 setup is live.
+
+**GOTCHA for the operator:** the offline heads (`magnitude_model.pkl`/`path_model.pkl`) are still
+6-horizon — start.bat `if not exist` skips them. To get 30m in the heads too, DELETE those `.pkl`s
+before restart so they rebuild with 30m. The ensemble gets 30m regardless.
+
+**30m consistency sweep (final pass, pre-restart):** the blanket replace only matched the exact
+`[1, 3, 5, 7, 10, 15]` literal, so a few differently-shaped lists were missed and fixed by hand:
+- `server.py:2271` decision-gate slow-horizon branch `elif h in [10, 15]` → `[10, 15, 30]` (30m is
+  the slowest horizon — it MUST get the strict-volatility/spread threshold, was falling through).
+- `main.js:2958 / :3138` price-to-beat resolved-rounds log tabs `['all',1,…,15]` → add `30` (the
+  30m log tab now appears in both Pyth and Binance round logs). Rebuilt `dist`.
+- `build_path_labels.py` `HORIZONS (3,5,7,10,15)` → `(…,30)` so the path-shape head also covers 30m
+  (still no 1m by design). Also dropped a dead `_daterange` import (pyflakes-clean now).
+- `analytics.py` `validate_regime_thresholds` default + `automl.py` (inactive Optuna scaffold) →
+  full 7-set, for consistency. Neither is on the live path (server passes `model.horizons`).
+Left intentionally as-is: `depth_edge_probe.py (3,5,10,15)` (concluded research tool), and the
+`server.py:1240` comment. Final validation re-run clean: all backend parses OK, pyflakes 0,
+DuckDB 32 tables incl `predictions_30m`, `model.horizons` 7-wide, arch `v8-7horizon-30m`, build OK.
+
+## 5ca. `--auto` backfill window-widen bug (60-day bump) — FIXED (2026-06-14)
+
+**Symptom:** operator bumped `BTC_HISTORICAL_DAYS`/`BTC_BACKFILL_DAYS` 50→60; `crossvenue_flow`
+and `persistence_dataset` parquets had a full 60 days but `trade_features_backfill.parquet` had
+**only 2 days** (06-12→06-13) — the CVD/VPIN/large-trade overlay the retrain consumes.
+
+**Root cause (a real bug in all 3 offline builders):** the `--auto` incremental mode decided
+"current — nothing to do" purely from the **newest** covered bar (`last >= yesterday`). It only ever
+tops up the FORWARD end and is **blind to the window START**, so widening `--days` was silently
+ignored — the parquet kept whatever (short) backward span it already had. The raw download was never
+the problem (the spot/perp cache had all 61 daily CSVs); only the trade-features parquet had been
+left short by an earlier partial run, and `--auto` refused to extend it backward.
+
+**Fix:** added `_first_covered_date()` and a backward-extend branch to the `--auto` logic in all
+three builders (`backfill_trade_features.py`, `build_persistence_dataset.py`, `build_crossvenue_flow.py`):
+when the existing parquet's OLDEST bar is newer than the requested window start
+(`first > yesterday - (days-1)`), it now REBUILDS the full window (overwrite, re-extracting from the
+CSV cache — no re-download) instead of no-op'ing. Dormant when coverage already reaches back far enough.
+
+**Immediate remediation:** rebuilt `trade_features_backfill.parquet` via the fixed path
+(`--auto --days 60 --keep-cache`) → **86,400 bars = 60×1440 min**, 04-15→06-13, healthy non-zero
+cvd/vpin/funding stats. Cache preserved (61 spot + 61 perp CSVs intact). All three parquets now
+~60 days. Parse + pyflakes clean on all three. Next `start.bat --auto --days 60` is a no-op (current).
+
+## 5cb. External-review fixes #8 + #6 (2026-06-14) — neutral-poisoning in regime weights; Kronos UI
+Two real items from the external (Codex/Gemini-style) review, verified against the code then fixed.
+(Review #5 — "polymarket_client.py missing `import asyncio`" — was a FALSE POSITIVE: line 1 imports it.)
+
+**#8 — regime weights trained on a DIFFERENT definition than the UI (the §5ba neutral-poisoning bug,
+surviving in one place).** `model_verifier` grades the UI per-model panel COMMITTED-ONLY by STRICT
+close-vs-ref sign (NEUTRAL excluded, §5ba). But `prediction_verifier.verify` built
+`regime_model_stats` (the LEARNED per-regime model weights) by counting NEUTRAL model votes as MISSES
+and grading against a neutral-BAND outcome — so a model was penalized for ABSTAINING, and the weights
+learned from a definition the panel never showed. FIX (`prediction_verifier.py` ~210): grade only
+committed (UP/DOWN) votes vs strict-sign actual (`current_price >= predicted_price`) — identical to
+`model_verifier`. One canonical definition of model skill now. Self-heals over the rolling deque as
+clean grades replace poisoned ones; no retrain. Compile clean.
+
+**#6 — Kronos was half-retired, half-visible (trust problem).** Backend removed Kronos in v6
+(`server.py:465` records "NONE"; no `kronos_status`/`kronos_forecasts` emitted), but `main.js` still
+rendered a misleading **"Forecast engine status: Fallback projection active"** label + a grid of dead
+"Xm Kronos waiting" cards + "Kronos: NONE" lines in the round log and roster. FIX (`main.js`): the
+status now reads an honest "Kronos retired in v6" note; the forecast pulse grid shows a single
+"projection retired" note instead of dead per-horizon cards; removed the "Kronos: NONE" displays from
+the price-to-beat round log + roster note. Left harmless dead refs (empty chart overlay,
+null-guarded `getKronosAtHorizon`) — they render nothing. `node --check` clean; 0 visible Kronos
+strings remain. Still OPEN (deferred, not user-visible): fully delete the dead chart-series scaffold.
+
+## 5cc. Model-training code review + expert skill file + new strategy docs (2026-06-14)
+**Training-code review (read-only, during the 60-day retrain) — VERDICT: correctly implemented.**
+`model.py train()`: temporal 80/20 split (no shuffle → leak-free) + recency weights; labels via
+`build_sequences` (forward-only triple-barrier, leak-free); class-balanced `sample_weight` (inverse-
+freq clipped [0.5,2.0] — the v6 DOWN-bias fix); thin-regime tiny-noise augmentation (fixes the
+`Expected [0 1] got [0 2]` crash); per-regime isotonic-calibrated experts; OOF stacker on
+`TimeSeriesSplit` (leak-free) with correct fold-local→global label remapping. **The pipeline is sound;
+the 5m ceiling is INFORMATIONAL, not a code bug** — retraining the same features reshuffles noise.
+
+**New artifacts (no-train, docs/skill only):**
+- `.claude/skills/quant-ml-expert/SKILL.md` — operating manual for working on the app (the 7 hard
+  rules, proven facts, two-layer architecture, code patterns, what-to-do/not). Load before model/
+  feature/decision-flow work.
+- `docs/active/STRATEGY_VOLATILITY_TIMING_AND_ENSEMBLES_2026-06-14.md` — two TO-TRY strategies, gated
+  on BTC validation: **A15 Markov-entropy volatility/TIMING head** (Singha arXiv:2512.15720 — entropy
+  predicts |move| size NOT direction; low entropy → ~2.9× bigger 5m moves; SPY/36-day early evidence,
+  must validate on BTC; build as a separate parity-twinned head, direction-invariant by construction)
+  and the **specialist-ensemble architecture** (specialists per question + a rule-based composer first,
+  shallow meta-stacker only after ≥500 resolved samples; the staged/guardrail build). Aligns with the
+  proven thesis: selectivity/timing, not louder direction.
+- `backend/entropy_edge_probe.py` — the **decisive A15 test** (built + self-tested, NOT yet run on
+  real data). Same leak-free probe pattern as `depth_edge_probe.py`: builds 15-state order-flow Markov
+  entropy from cached aggTrades and tests whether LOW entropy predicts BIGGER |move| (BIG_MOVE AUC +
+  low-entropy lift), direction-invariant by construction. Run it AFTER the retrain (state-building over
+  millions of trades is CPU work; don't contend with the live train). Verdict gates whether A15 is
+  built at all — the same "probe-first, don't chase a dead end" discipline that closed the L2 question.
+  **Deliberately did NOT build the full A15 head/recorder or the meta-stacker** (premature/overfit;
+  meta-stacker is data-gated at ≥500 resolved samples).
+- `backend/edge_probe.py` — **unified leak-free EDGE-PROBE engine** (built + self-tested, NOT yet run).
+  One harness to test "does feature X have edge?" for any hypothesis; adding a hypothesis = adding one
+  builder to `FEATURE_BUILDERS`. Aggregates cached spot aggTrades into per-minute bars, then for each
+  feature reports **DIRECTION AUC** (expected ~0.50 = confirms the ceiling; >0.55 = surprising → audit
+  for leakage) AND **TIMING AUC** (above-median |move| — selectivity candidate) + lift, on a temporal
+  70/30 split. Six hypotheses registered: `cvd` (the research dump's #1 claimed edge), `taker_ratio`,
+  `large_trade` (whale flow), `realized_vol` (the TIMING BASELINE the entropy head must beat),
+  `session` (time-of-day/weekend), `intensity` (trade-count/volume accel). Run `--feature all --days 7`
+  AFTER the retrain. Self-test plants a persistent-flow CVD→direction signal (learned at AUC>0.60) and
+  verifies the null property (random labels → ~0.50, no manufactured edge). This is the research engine
+  for "implement more such things and test independently" — it maps which backfillable signals actually
+  carry direction vs. time moves vs. nothing, BEFORE anything is wired.
+- **RESULTS (2026-06-14, ran `--feature all --days 7`, 10,080 minute-bars, ~7.5M trades; engine grew
+  to 17 hypotheses — alt session added xvenue_divergence/price_impact/range_compression/trade_size_skew/
+  ofi_chop/absorption/liquidity_shock/trend_consistency; clean merge, registry-append only):**
+  - **DIRECTION dead across ALL 17:** every feature dir AUC 0.45–0.544, none clears 0.55 (top: ofi_chop
+    0.544, autocorr 0.541, vpin 0.535 — noise). The "order-flow imbalance predicts BTC 5m direction"
+    thesis is FALSE on retail data. 6th independent ceiling confirmation; clean (no dir-AUC spike = no
+    leak). `xvenue_divergence` (perp-vs-spot CVD) also ~0.50 — cross-venue flow gives no direction edge.
+  - **TIMING real (P(big_move)):** `range_compression` 0.642/0.634/0.603/0.598, `realized_vol`
+    0.630/0.621/0.593/0.571, `intensity` 0.625/0.622/0.580/0.565, `liquidity_shock`
+    0.618/0.613/0.573/0.557, `vpin` 0.599/0.588/0.562/0.572 (3m/5m/10m/15m). Strongest at 3m, decays
+    with horizon = clean volatility clustering. **~ONE signal seen five ways** (all activity/vol
+    proxies); best carriers range_compression + realized_vol.
+  - **`entropy_edge_probe.py --days 7` (8,124 min): A15 REJECTED** — BIG_MOVE_AUC 0.51–0.54, low-entropy
+    |move| lift 1.03–1.18× (paper 2.89×). Singha/SPY result does NOT transfer; entropy strictly worse
+    than realized_vol. The probe-first discipline saved the A15 build (same as depth).
+  - **Keeper verdict:** ONE keeper = a simple `P(big_move)` SELECTIVITY gate (range_compression +
+    realized_vol). Next gates BEFORE wiring: (1) redundancy (combined vs best-single ≈ noise?),
+    (2) cost-survival (does gating on high-P(big_move) windows raise proven-tier hit-rate/EV after fee?).
+  - Fixed a trailing-line `→`/`—` cp1252 crash in `main()` (results printed fine; only the final GUIDE
+    line raised). ASCII-only prints restored per skill rule.
+- **SGD classifier test (2026-06-14, operator-requested):** added a properly-SCALED SGD
+  (`StandardScaler -> SGDClassifier(log_loss, class_weight=balanced)`) to `model_bakeoff.py` and ran
+  `--days 60` (86,400 1m bars) alongside logistic/RF/histgb/mlp/lightgbm on the leak-free beat matrix.
+  **Result: SGD = NOISE at every horizon** (AUC 1m .512 / 3m .497 / 5m .526 / 7m .494 / 10m .512 /
+  15m .499 / 30m .495; acc ~48-52% vs ~48-50% base). Two findings: (1) the historical "SGD below
+  chance (29%/15%)" was a SCALING ARTIFACT -- scaled SGD sits AT chance, not below; (2) SGD ~= logistic
+  exactly (same linear family; 5m AUC .526 = logistic .526). The bakeoff is now a **6-way coin-flip**
+  (all 6 model families NOISE, ECE low = they honestly report ~50/50). Reconfirms: the bottleneck is
+  INFORMATION, not the model -- no classifier choice escapes the 5m direction ceiling.
+- **14-model x 2-label bakeoff (2026-06-14, `--days 60 --label both`):** broadened the field to 14
+  families (logistic, sgd, random_forest, extra_trees, histgb, gradient_boost, adaboost, knn,
+  gaussian_nb, qda, mlp, lightgbm, xgboost, catboost) and ran BOTH the direction (`beat`) and a new
+  TIMING (`big_move` = |move|>median) label across all 7 horizons (86,400 1m bars).
+  - **DIRECTION: all 14 families = NOISE at every horizon** (AUC 0.49–0.54, ECE ~0.01–0.03 = honest
+    50/50). Linear, distance, probabilistic, bagged, boosted, neural — total convergence. The
+    definitive information-ceiling proof; no model class escapes it.
+  - **TIMING: real & strong — most families = SIGNAL.** AUC ~0.66–0.68 at 1m, decaying to ~0.60 at
+    30m. Best/tied: random_forest / histgb / xgboost / catboost / sgd (~0.67 @1m). The FULL feature
+    set + nonlinear models beat the per-feature probe (0.64), combining rv_short/rv_long/atr_norm/
+    range_pos. `logistic`/`qda`/`mlp` were NOISE on timing — a SCALING artifact (they're unscaled;
+    scaled `sgd` + scale-invariant trees captured it), reconfirming the scaling lesson.
+  - **Caveats:** (a) the temporal test tail is higher-vol than the global median (June ramp), so
+    big_move is ~68% positive in test → ACCURACY (~70%) is partly base-rate; the threshold-independent
+    **AUC ~0.67 is the real signal**. (b) clean (direction AUC ~0.50 = no time-misalignment leak).
+    (c) it's volatility clustering — real but known; value is as a SELECTIVITY gate, not novel alpha.
+  - **Verdict:** the keeper (P(big_move) timing gate) is robust across the whole model field; use a
+    tree model (RF/histgb). STILL gated on the cost-survival test before wiring. To clean the accuracy
+    read, threshold big_move on the TRAIN median (not global) in a follow-up.
+- **COST-SURVIVAL TEST — the P(big_move) gate does NOT survive as a DIRECTIONAL trade (2026-06-14).**
+  Ran the alt session's `probes/probe_expected_move_cost_gate.py` on `research_matrix_1m.parquet`
+  (reconciled, not rebuilt — it already implements Phase-16's "Expected Move / Cost >= 2.5" rule via
+  `decision/cost_gate.py`). Result: of 1,191 base signals, 1,043 passed the expected-move>=2.5x-cost
+  gate, but **gated Net EV = -21.63 bps, Win% = 36.9%** (30m hold, 14 bps taker-taker cost, side from
+  `microstructure_side_engine`). **Conclusion:** correctly identifying a big-move window is worthless
+  when you can't call the SIDE — direction is dead, so entering big-move windows is a coin-flip with
+  LARGER variance → negative EV after cost. Maker (0 bps) wouldn't save it either: the 37% win rate
+  shows the side has no edge, not just that cost is too high. **So P(big_move) is NOT a standalone
+  keeper for directional trading.** It maps cleanly onto Phase 16: gross dir EV +0.04 bps → any cost
+  kills it. The ONE validated edge remains **P(hold) (direction-INVARIANT late-entry)**; P(big_move)'s
+  only plausible use is as a FILTER for the P(hold) play (does a big-move window help or hurt hold?) —
+  a separate test against the persistence data (DB-locked while the app runs).
+- **PRICE-TO-BEAT target decomposition (2026-06-14, operator clarified the real goal).** The
+  "price-to-beat" prediction is NOT one task; it decomposes into pieces of very different tractability:
+  | Sub-target | Verdict | Evidence |
+  |---|---|---|
+  | up/down vs line (line~=price) | coin-flip | direction ~0.50 (8 ways) |
+  | beats-or-not, fresh call | coin-flip | P(beat) ~0.50 |
+  | beats-or-not, **already ahead late** | **EDGE** | P(hold) 84-99% |
+  | **time up/down (dwell)** | **not predictable** | `dwell_probe.py` (new) |
+  | expected drop / high (band) | **tractable+calibrated** | magnitude q10/q50/q90; signed-quantile 80% band=77.6% |
+  - `dwell_probe.py` (NEW, built+self-tested+run on research_matrix): for line=close[t], dwell_up =
+    fraction of next h bars above line. **SIDE** (dwell_up>0.5) AUC **0.52/0.51** (5m/15m) = same dead
+    direction. **COMMITMENT** (one-sided >=80% vs chop) AUC **0.51/0.50** = NOT predictable from vol
+    features (surprising: big_move MAGNITUDE is predictable at 0.67, but path one-sidedness is not).
+    committed_rate 0.77/0.65 (most short windows ARE one-sided — arcsine law — but you can't predict
+    which side NOR which will chop). So "how much time up/down" is governed by the unpredictable path
+    direction; the only handle is P(hold) (conditional on already being ahead).
+  - `seq_timing_probe.py` (NEW): LSTM/GRU/Transformer/TCN on the strong timing features vs a tabular
+    RF/logit baseline, big_move label, train-median threshold. **Sequence models do NOT beat tabular**
+    (5m: RF 0.694 = LSTM 0.694, Transformer 0.687; 15m: RF 0.681, LSTM 0.682, Transformer 0.656 =
+    overfit). The rolling features (rv_15m/30m/60m) already summarize the temporal info -> stay tabular.
+  - `model_bakeoff.py --label beat --deep` (LSTM/Transformer on DIRECTION, 60d, all 7 horizons):
+    sign_acc **50.2-52.4% (LSTM) / 49.0-51.5% (Transformer)** = coin-flip, with the textbook overfit
+    tell (train loss 0.78->0.69 but test acc ~0.50). 9th confirmation: deep sequence models can't
+    break the direction ceiling either.
+  - **Precision path:** predict the PREDICTABLE pieces precisely (magnitude band #4, conditional
+    P(hold) #2b) and ABSTAIN on the coin-flip pieces (fresh up/down #1/#2, dwell side #3). Precision
+    overall = being precise where edge exists + honest NO_TRADE where it doesn't.
+- **CAPSTONE `final_analysis.py` (2026-06-14): 14 models x 4 targets x {5m,15m} on the full 60-day
+  matrix INCLUDING the recorded-but-unwired cross-venue features.** dir_beat all NOISE (0.51-0.52),
+  dwell_side NOISE (0.52), committed NOISE (0.51), **big_move SIGNAL (0.62-0.63)**. The unwired
+  cross-venue features did NOT rescue direction. MAGNITUDE: quantile band ~no better than flat,
+  coverage 72% (<80% target -> needs conformal widening on the volatile recent regime); expected
+  drop/high ~symmetric (5m -13.5/+14.9 bps). Final confirmation of the tractability split.
+- **END-TO-END Polymarket-flow tests (2026-06-14) — the decisive product proof.** Two runs settle it:
+  - `decision/composed_decision_backtest.py` (the DIRECTIONAL staged flow: selectivity -> side engine
+    -> cost gate, 60d, MAKER_MAKER): 95% NO_TRADE / 4.6% WATCH / 0.5% T1+T2. Paper EV **negative even
+    at maker0** (T2 -0.58, T3 -17.1 bps; win 39-46%). The staged flow that still PICKS A SIDE loses,
+    because the side is coin-flip. **Don't bet a side, even gated.**
+  - **P(Hold) late-entry map** (direct on `persistence_dataset.parquet`, 1.95M rows): the validated
+    high-precision product. 5m rounds, hold-rate by (seconds_left x |distance|): 0-30s left & >=10bps
+    ahead = **99.7%** (LB 99.6%); 0-30s & 5-10bps = 97.0%; 30-60s & 2-5bps = 81.3%; 60-120s & 5-10bps
+    = 88.4%. Clean, monotone, direction-INVARIANT (ride the side already winning, don't predict it).
+    15m similar/stronger. **THIS is the product**; the directional flow is not.
+  - **Honest profitability caveat:** the 87-99% hold PROBABILITY is proven offline; whether it PAYS
+    depends on beating Polymarket's IMPLIED price at entry (a 99.7% hold quoted at 97c = +2.7% edge;
+    quoted at 99.9c = none). That price edge can only be tested with live Polymarket order-book data ->
+    the live-shadow frontier. Offline proves the probability; live proves the price.
+- **145-FEATURE definitive sweep (`expanded_matrix_analysis.py`, 2026-06-14).** Built 145 leak-free
+  engineered features (returns/rolling-vol/EMA/RSI/MACD/Bollinger/ATR/candle/stochastic/Parkinson/VWAP/
+  flow+VPIN+CVD+basis dynamics+lags/interactions/time) -> `data/expanded_matrix.parquet`; 14 models x
+  {dir_beat, big_move, dwell_side} x {5m,15m}. Passed a real leak test (perturbing FUTURE close leaves
+  PAST features unchanged). Results (the 10th direction confirmation):
+  - **dir_beat: STILL all NOISE** even at 145 features — 5m best 0.536 (adaboost), 15m best 0.535
+    (logistic). The ~33->145 feature jump moved best AUC only ~0.51->0.53 (still < 0.55, tree models
+    overfitting trend); direction does NOT survive cost at 0.53. **More features cannot fix the
+    information ceiling. Do NOT wire a direction model.**
+  - **big_move: SIGNAL but SATURATED** — 0.62-0.63 (5m) / 0.60-0.62 (15m), i.e. 145 features do NOT
+    beat the 33-feature 0.62. Top timing features (the wire list): **range_15m, rvol_60/90, atr_norm,
+    micro_range_15m, parkinson_15, shock_max15, rv_15m/60m** (+ minor: basis_lag, min_of_hr, vpin).
+    The edge is pure volatility clustering -> already captured by `selectivity_models.pkl`.
+  - **dwell_side: all NOISE** (0.54). **MAGNITUDE: ~flat** (pinball ties flat), coverage 72% (<80%),
+    near-symmetric (drop -13.5 / high +14.9 bps 5m) -> band needs conformal widening; conditioning
+    adds ~nothing over a flat band.
+  - **WIRING VERDICT:** nothing NEW to wire — the existing P(big_move) selectivity gate already uses
+    the winning (volatility) features. Improve the app via SELECTIVITY, not more features: wire the
+    calibrated magnitude band (conformal->80%), the P(hold) late-entry tier (the hold-map), and the
+    P(big_move) round filter; ABSTAIN on direction. "Accuracy" improves by speaking only when precise.
+
+- **RF added to the SELECTIVITY (timing) ensemble (2026-06-15, operator-requested).**
+  `train_selectivity_models.py` now fits the P(big_move) head as a soft-voting `LogReg+RandomForest`
+  (`VotingClassifier`, drop-in `predict_proba` — consumers unchanged). Retrained: OOS AUC **0.741 vs
+  0.739** LogReg-only (lift **+0.002**, the honest rounding-error gain predicted; timing is saturated).
+  Deliberately NOT added to the DIRECTION ensemble (would be a 6h retrain for measured +0.00). Safe:
+  writes only `selectivity_models.pkl`, no direction retrain, no FREEZE change.
+- **main.js abstain-on-direction (2026-06-15).** When the cockpit action is AVOID, the direction
+  detail now reads "<dir> lean is ~coin-flip at Nm — informational only; lead with the move-range band
+  and P(Hold)" instead of "Final ensemble: <dir>". Text-only, fallback-safe; `node --check` clean.
+  Complements the existing P(Hold)-T3-outranks-direction headline logic.
+- **P(Hold) dynamics probe -> NO LIFT, NOT built (2026-06-15).** `phold_dynamics_probe.py` tested
+  within-round dynamics (distance_velocity, dist_accel, line_cross_count, time_since_last_cross) on the
+  1.95M-row persistence dataset (round-split, leak-free): 5m 0.730->0.730, 15m 0.743->0.744 (+0.000/
+  +0.001). The static snapshot already captures the hold signal (keepers earlier gave +0.019; dynamics
+  +0.000). Measure-first avoided a dataset rebuild + live-recorder parity + retrain for zero gain.
+- **Conformal band FIX -> honest 80% coverage (2026-06-15).** `train_signed_quantiles.py`: the CQR
+  offset was calibrated on an OLDER (60-80%) slice while the recent regime is more volatile -> band
+  undercovered (cov80_cqr 68-73%). Fix: calibrate `cqr` on the MOST-RECENT 20% (live-regime proxy).
+  Now cov80_cqr = **80.0% at every horizon** (3m..30m); band widened appropriately (5m +-20 bps vs old
+  +-17). Saved `signed_quantile_model.pkl`. Serving (already wired): drop=q10-cqr, high=q90+cqr,
+  project=q50.
+- **Selectivity calibration -> not needed.** The composer gates selectivity on PERCENTILE thresholds
+  (sel_t1/t2/t3), which is calibration-robust (rank, not raw probability) -> explicit isotonic adds
+  nothing. Verified.
+- **Validation sweep + card-label fix (2026-06-15).** Full `py_compile`/`pyflakes` of all backend +
+  `node --check src/main.js` = clean. Logic review of the live wiring found one real bug: the card
+  still labeled the move-range "50% band" / "outside ~50% by design", but the signed-quantile override
+  now produces an 80% band. Fixed both strings in `main.js` (conditional on `band_source`).
+- **Model-metrics DuckDB (2026-06-15, operator-requested).** New `model_metrics_logger.py` writes a
+  DEDICATED `data/model_metrics.duckdb` (NEVER the live single-writer DB), two tables: `direction_log`
+  (ensemble dir + P(up/down/neutral) + confidence + final dir + expected move + verdict + action per
+  horizon/tick) and `ptb_log` (P(Hold)+source, tier, signed-quantile band, projected close/vs-beat,
+  band source, lean — both venues). Wired crash-safe into `server.py` (`log_direction` before the
+  broadcast; `log_ptb` in the price-to-beat ticker). Self-tested. Read offline (app stopped). Every
+  card number is now an ML-model output AND logged for offline scoring.
+- **guide.html (2026-06-15).** Added "What changed (2026-06-15)" section: everything is ML-predicted,
+  the calibrated 80% band, no-drift projection, keeper P(Hold) + late-entry tier, why-not-direction,
+  and the bet workflow. Copied public/ -> dist/ (served build).
+- **Restart: NO retrain.** `BTC_FREEZE_MODEL=1` -> restart LOADS the saved heads (selectivity RF
+  ensemble, 80% band, keeper P(Hold)) in ~12s, no 6h retrain. All new models already on disk.
+
 ## 6. Known limitations / honest notes
 - `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
   `order_flow.py` was aligned to the backfill's fixed equal-volume buckets

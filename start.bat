@@ -16,12 +16,20 @@ REM train too. The dashboard stays usable throughout (non-blocking boot). The
 REM microstructure features only fill from UPTIME, so after training, LEAVE IT RUNNING.
 REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samples is enough to
 REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=30"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=60"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
 REM set BTC_BACKFILL_DAYS=60  (or 90) here or in the environment — all scripts follow it.
 if not defined BTC_BACKFILL_DAYS set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
+REM === TRAIN/HOLDOUT SPLIT ===============================================
+REM Fraction of data used to FIT the base models. The remaining tail is the HOLDOUT,
+REM used to (a) conformal-calibrate the magnitude bands and (b) score the OOS backtest.
+REM A holdout is MANDATORY — code clamps this to [0.50, 0.98]. 0.95 = "use almost all the
+REM data" (operator 2026-06-14, wanted ~100%) while keeping ~5% recent rows to keep the
+REM expected-drop/up bands honest. Literal 1.0 would make the bands too narrow + backtest
+REM in-sample, so it is intentionally not allowed.
+if not defined BTC_TRAIN_SPLIT_FRAC set "BTC_TRAIN_SPLIT_FRAC=0.98"
 REM =======================================================================
 REM Run a validation backtest automatically on startup (1 = on, 0 = off).
 REM It runs in the BACKGROUND after the app is ready, so it does not block live trading.
@@ -33,6 +41,11 @@ REM model is STABLE and the live feed NEVER freezes (a background retrain pegs a
 REM hours and this box has no headroom for that). 0 = auto-improve, but on 16GB the feed WILL
 REM freeze during each ~4.6h retrain. To improve the model, retrain manually (POST /api/relearn
 REM or set this to 0 briefly) when you can leave it overnight with the IDE/browser closed.
+REM FROZEN (operator 2026-06-14, post-60d-retrain): 1 = no auto/scheduled retraining. The
+REM purged walk-forward showed ALL horizons at the information ceiling (1m 0.36 -> 30m 0.50,
+REM below_chance) — retraining cannot lift that, it only burns ~6h and freezes the feed. The
+REM saved v8 model's arch MATCHES the code, so boot LOADS it (no startup retrain). Set back to
+REM 0 only for a deliberate, operator-chosen retrain (e.g. new features / longer window).
 set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
@@ -93,14 +106,17 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     echo [0/3] c. Updating A4 cross-venue flow - spot-vs-perp divergence...
     python backend\build_crossvenue_flow.py --auto --days %BTC_BACKFILL_DAYS%
     if errorlevel 1 echo [0/3c] Cross-venue build failed - continuing.
-    echo [0/3] d. Specialized heads - train only if MISSING - delete the .pkl to force a rebuild:
-    if not exist "%BTC_DATA_DIR%\saved_models\beat_model.pkl" python backend\train_beat_classifier.py --days %BTC_BACKFILL_DAYS%
-    if not exist "%BTC_DATA_DIR%\saved_models\magnitude_model.pkl" python backend\train_magnitude_quantiles.py --days %BTC_BACKFILL_DAYS%
-    if not exist "%BTC_DATA_DIR%\saved_models\path_model.pkl" python backend\build_path_labels.py --days %BTC_BACKFILL_DAYS%
-    if not exist "%BTC_DATA_DIR%\fingerprint_evidence.parquet" python backend\build_fingerprints_historical.py --days %BTC_BACKFILL_DAYS%
+    echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
+    echo          HEAD_VERSION changed, same idea as the ensemble arch. Bump a trainer's
+    echo          HEAD_VERSION to force just that head to rebuild; else restarts skip them:
+    python backend\train_heads.py
+    if errorlevel 1 echo [0/3d] Head training had an issue - continuing.
     echo [0/3] e. Data-quality health check - last 3 days - report only:
     python backend\data_quality_audit.py --days 3
     if errorlevel 1 echo [0/3e] Data-quality audit skipped - continuing.
+    echo [0/3] f. Cleanup superseded research artifacts - safe allow-list only:
+    python backend\cleanup_artifacts.py --apply
+    if errorlevel 1 echo [0/3f] Cleanup skipped - continuing.
 )
 REM =======================================================================
 

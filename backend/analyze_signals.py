@@ -55,7 +55,7 @@ def main():
     # 2) Combined ensemble leans ------------------------------------------
     print("\n[2] COMBINED ENSEMBLE — directional leans (raw_direction), strict by move sign")
     tot = res = cor = sig = 0
-    for h in (1, 3, 5, 7, 10, 15):
+    for h in (1, 3, 5, 7, 10, 15, 30):
         rows = con.execute(f"""SELECT raw_direction, actual_move, resolved, signal
                                FROM predictions_{h}m WHERE raw_direction IN('UP','DOWN')""").fetchall()
         rh = [r for r in rows if r[2]]

@@ -116,6 +116,19 @@ def _last_covered():
         return None
 
 
+def _first_covered():
+    if not os.path.exists(OUT_PATH):
+        return None
+    try:
+        import pandas as pd
+        df = pd.read_parquet(OUT_PATH, columns=["ts_ms"])
+        if df.empty:
+            return None
+        return datetime.fromtimestamp(int(df["ts_ms"].min()) / 1000.0, tz=timezone.utc).date()
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start"); ap.add_argument("--end")
@@ -131,12 +144,21 @@ def main():
         dates, write = [args.validate], False
     elif args.auto:
         last = _last_covered()
+        first = _first_covered()
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
-        if last is not None and last >= yesterday:
+        want_start = yesterday - timedelta(days=args.days - 1)
+        if first is not None and first > want_start:
+            # Parquet doesn't reach back far enough for --days (e.g. window bumped
+            # 50 -> 60). --auto only tops up FORWARD, so rebuild the full window
+            # (merge stays False → overwrites). Without this a wider --days is silent.
+            ds = want_start.strftime("%Y-%m-%d")
+            print(f"[auto] parquet starts {first} but --days {args.days} wants {want_start} "
+                  f"— REBUILDING full window {ds} .. {yesterday} (backward extend).", flush=True)
+        elif last is not None and last >= yesterday:
             print(f"[auto] cross-venue flow current (through {last}) — nothing to do.")
             return
-        if last is None:
-            ds = (yesterday - timedelta(days=args.days - 1)).strftime("%Y-%m-%d")
+        elif last is None:
+            ds = want_start.strftime("%Y-%m-%d")
             print(f"[auto] no parquet — full build {ds} .. {yesterday} (first run can be slow)", flush=True)
         else:
             ds = (last + timedelta(days=1)).strftime("%Y-%m-%d")

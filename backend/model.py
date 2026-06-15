@@ -266,7 +266,7 @@ MODEL_DIR = os.path.join(
 # OOF in live-relevant buckets), TCN promoted to a full stacker seat with a real
 # epoch budget, XGBoost/CatBoost GPU probes. "classbal" MUST stay in this string —
 # the inference-time prior-division retirement is keyed on it.
-MODEL_ARCH_VERSION = f"2026-06-13-v7-classbal-vrts-session-136-{DL_ARCH.lower()}"
+MODEL_ARCH_VERSION = f"2026-06-15-v9-7horizon-30m-rf-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
 
 CASCADE_MIN_ACCURACY = 0.62
 CASCADE_MIN_PREDICTIONS = 30
@@ -375,7 +375,7 @@ class MultiModelEnsemble:
 
     def __init__(self, horizons=None, config=None):
         if horizons is None:
-            self.horizons = [1, 3, 5, 7, 10, 15]
+            self.horizons = [1, 3, 5, 7, 10, 15, 30]
         else:
             self.horizons = horizons
             
@@ -407,8 +407,9 @@ class MultiModelEnsemble:
                 "histgb": {},
                 "dl": {},
                 "lr": {},
+                "rf": {},      # operator-requested tabular RandomForest seat
                 "mag": {},
-                
+
             } for reg in self.regimes
         }
         
@@ -488,7 +489,20 @@ class MultiModelEnsemble:
             logger.info("[TRAIN] Class priors (DOWN/NEUTRAL/UP): %s",
                         {h: [round(x, 3) for x in p] for h, p in self.class_priors.items()})
 
-        split_idx = int(n_samples * 0.8)
+        # Train/holdout split. Configurable via BTC_TRAIN_SPLIT_FRAC (default 0.8).
+        # CLAMPED to [0.5, 0.98]: a holdout is MANDATORY because the magnitude bands are
+        # conformal-calibrated on the held-out slice (see §conformal below) and the OOS
+        # backtest scores the held-out tail. A literal 1.0 ("100% of data") would leave the
+        # bands uncalibrated (systematically too narrow) and the backtest in-sample. 0.9–0.95
+        # is the way to "use almost all the data" while keeping the bands honest.
+        try:
+            _split_frac = float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.8"))
+        except ValueError:
+            _split_frac = 0.8
+        _split_frac = min(max(_split_frac, 0.5), 0.98)
+        split_idx = int(n_samples * _split_frac)
+        logger.info("[TRAIN] split_frac=%.3f (holdout=%s rows for conformal+backtest)",
+                    _split_frac, n_samples - split_idx)
         logger.info(
             "[TRAIN] Starting ensemble training: samples=%s, train_samples=%s, lookback=%s, features=%s, horizons=%s",
             n_samples,
@@ -754,6 +768,23 @@ class MultiModelEnsemble:
                 except Exception as e:
                     logger.error(f"XGBoost training failed for h={h} reg={reg}: {e}")
 
+                # 1b. RandomForest (operator-requested tabular seat). NB: on DIRECTION this is
+                # a coin-flip like every learner — the OOF stacker weights it accordingly; it
+                # adds a small decorrelated lift only on the timing/selectivity question.
+                # max_features='sqrt' keeps it fast on the flattened (lookback*NUM_FEATURES) matrix.
+                try:
+                    from sklearn.ensemble import RandomForestClassifier
+                    _t0 = log_component_start(h, reg, "RandomForest", len(X_train_h))
+                    rf_model = RandomForestClassifier(
+                        n_estimators=150, max_depth=8, min_samples_leaf=50,
+                        max_features="sqrt", class_weight="balanced",
+                        n_jobs=TRAIN_THREADS, random_state=42)
+                    rf_model.fit(X_train_h, y_train_h, sample_weight=sw)
+                    self.models_by_regime[reg]["rf"][h] = rf_model
+                    log_component_done(h, reg, "RandomForest", _t0)
+                except Exception as e:
+                    logger.error(f"RandomForest training failed for h={h} reg={reg}: {e}")
+
                 # 2. LightGBM
                 if HAS_LGBM:
                     try:
@@ -915,6 +946,7 @@ class MultiModelEnsemble:
                         "xgb": (reg_store.get("xgb") or {}).get(h),
                         "histgb": (reg_store.get("histgb") or {}).get(h),
                         "lr": (reg_store.get("lr") or {}).get(h),
+                        "rf": (reg_store.get("rf") or {}).get(h),  # tabular RF seat
                     }
                     if HAS_LGBM:
                         base_models["lgb"] = (reg_store.get("lgb") or {}).get(h)
@@ -1349,7 +1381,7 @@ class MultiModelEnsemble:
         # the caller's zero-sum safety net forces NEUTRAL on EVERY prediction — the model
         # never actually gets consulted. Route to GLOBAL whenever the chosen regime has
         # no usable models for this horizon.
-        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
+        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"]
         _has_stacker = bool((self.stackers_by_regime.get(reg) or {}).get(horizon))
         _has_base = any(horizon in (store.get(n) or {}) for n in _base_names)
         if not _has_stacker and not _has_base and reg != "GLOBAL":
@@ -1417,6 +1449,7 @@ class MultiModelEnsemble:
             ("histgb", "histgb"),
             ("dl", "dl"),
             ("lr", "lr"),
+            ("rf", "rf"),
         ]:
             if horizon in store[name]:
                 try:
@@ -1451,7 +1484,7 @@ class MultiModelEnsemble:
         """Return each trained model's argmax direction for this regime."""
         reg = self._get_regime_from_state(data_state)
         store = self.models_by_regime.get(reg) or {}
-        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
+        _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"]
         # SAME GLOBAL fallback as _predict_from_regime: per-regime buckets (esp. VOLATILE)
         # are frequently empty (training skips <1000-sample regimes), but inference routes by
         # HMM label. Without this, _model_directions returns {} → agreement 0 → the meta-trust
@@ -1662,6 +1695,8 @@ class MultiModelEnsemble:
             "expectedEdgePct": round(expected_edge_pct, 4),
             "conviction": conviction,
             "convictionGrade": conv_grade,
+            "modelConfluenceScore": round(confluence, 3),
+            "modelConfluenceDetail": detail,
             "confluence": round(confluence, 3),
             "confluenceDetail": detail,
             "actionable": actionable,
@@ -1840,7 +1875,8 @@ class MultiModelEnsemble:
             conf = prob_neutral
 
         # ──── Direction Lock with Hysteresis ────
-        direction = self._apply_direction_lock(h, raw_direction, prob_up, prob_down, prob_neutral)
+        locked_direction = self._apply_direction_lock(h, raw_direction, prob_up, prob_down, prob_neutral)
+        direction = locked_direction
 
         if direction == "UP":
             conf = prob_up
@@ -2023,6 +2059,11 @@ class MultiModelEnsemble:
         res = {
             "horizon": h,
             "direction": direction,
+            "modelRawDirection": raw_direction,
+            "rawDirection": raw_direction,
+            "lockedDirection": locked_direction,
+            "modelFilteredDirection": direction,
+            "preServerDirection": direction,
             "signal": signal,
             "confidence": round(conf, 4),
             "confidenceRaw": round(conf_raw, 4),

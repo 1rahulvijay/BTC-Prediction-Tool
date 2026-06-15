@@ -60,18 +60,28 @@ def feature_deadness(conn):
         n = conn.execute("SELECT COUNT(*) FROM feature_outcome_log").fetchone()[0]
     except Exception as e:
         return {"error": f"no feature_outcome_log ({str(e)[:60]})"}
-    if n < 200:
-        return {"pending": n, "msg": f"only {n} B1 rows — variance needs ~200+ (collect more live)"}
     import numpy as np
     import sys
     sys.path.insert(0, os.path.dirname(__file__))
-    from features import FEATURE_NAMES
-    feats = conn.execute("SELECT features FROM feature_outcome_log").fetchall()
-    X = np.array([f[0] for f in feats], dtype=float)
+    from features import FEATURE_NAMES, calculate_schema_hash
+    W = len(FEATURE_NAMES)
+    sh = calculate_schema_hash(FEATURE_NAMES)
+    # A schema bump (e.g. 130->136) leaves MIXED-WIDTH vectors in the log — filter to the
+    # CURRENT schema so variance is computed on a homogeneous, current-features matrix.
+    try:
+        feats = conn.execute(
+            "SELECT features FROM feature_outcome_log WHERE schema_hash=?", [sh]).fetchall()
+    except Exception:
+        feats = conn.execute("SELECT features FROM feature_outcome_log").fetchall()
+    rows = [f[0] for f in feats if f[0] is not None and len(f[0]) == W]
+    if len(rows) < 200:
+        return {"pending": len(rows),
+                "msg": f"only {len(rows)} B1 rows on the current schema (hash {sh}) — "
+                       f"variance needs ~200+ (collect more live; {n} total rows, mixed schema)"}
+    X = np.array(rows, dtype=float)
     var = X.var(axis=0)
-    dead = [(FEATURE_NAMES[i] if i < len(FEATURE_NAMES) else f"f{i}", float(var[i]))
-            for i in np.argsort(var) if var[i] < 1e-9][:40]
-    return {"rows": n, "dead": dead, "n_dead": int((var < 1e-9).sum()), "n_total": int(len(var))}
+    dead = [(FEATURE_NAMES[i], float(var[i])) for i in np.argsort(var) if var[i] < 1e-9][:40]
+    return {"rows": len(rows), "dead": dead, "n_dead": int((var < 1e-9).sum()), "n_total": int(len(var))}
 
 
 def model_noise(conn):
@@ -91,7 +101,7 @@ def model_noise(conn):
 
 def horizon_health(conn):
     out = {}
-    for h in (1, 3, 5, 7, 10, 15):
+    for h in (1, 3, 5, 7, 10, 15, 30):
         try:
             r = conn.execute(f"""
                 SELECT COUNT(*) n,
@@ -120,7 +130,7 @@ def grade_validation(conn):
     """Per A/B/C grade: committed sign-truth win rate across ALL horizons, with Wilson LB.
     Answers 'do grades actually stratify (A>B>C)?' — read from the persisted confluence_grade."""
     parts = []
-    for h in (1, 3, 5, 7, 10, 15):
+    for h in (1, 3, 5, 7, 10, 15, 30):
         parts.append(f"""SELECT substr(confluence_grade,1,1) g,
             CASE WHEN (raw_direction='UP' AND actual_move>0)
                   OR (raw_direction='DOWN' AND actual_move<0) THEN 1 ELSE 0 END hit

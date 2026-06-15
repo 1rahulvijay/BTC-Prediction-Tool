@@ -43,7 +43,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 REPORT_PATH = os.path.join(DATA_DIR, "model_bakeoff_report.json")
 NOISE_AUC = 0.55          # the documented bettable floor (SPEC §6); below this = no real discrimination
-HORIZONS = (1, 3, 5, 7, 10, 15)
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 
 
 # ───────────────────────── metrics ────────────────────────────────────────────────────
@@ -97,16 +97,37 @@ def verdict(m: dict) -> str:
 # ───────────────────────── model registry (light, CPU) ────────────────────────────────
 def make_light_models():
     """Fresh estimators each call. Lazy imports so --selftest needs only what it uses."""
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+    from sklearn.linear_model import LogisticRegression, SGDClassifier
+    from sklearn.ensemble import (RandomForestClassifier, HistGradientBoostingClassifier,
+                                  ExtraTreesClassifier, GradientBoostingClassifier, AdaBoostClassifier)
     from sklearn.neural_network import MLPClassifier
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.naive_bayes import GaussianNB
+    from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    _nj = int(os.environ.get("OMP_NUM_THREADS", "2"))
+    # Diverse families on purpose: linear (logistic/sgd), distance (knn), probabilistic (nb/qda),
+    # bagged trees (rf/extra), boosted trees (histgb/gb/ada/lgbm/xgb/cat), neural (mlp). If they ALL
+    # converge at the same AUC, the bottleneck is information, not model class. All expose predict_proba
+    # (run_horizon needs it) — RidgeClassifier/LinearSVC deliberately excluded (no proba). Scale-
+    # sensitive learners (sgd/knn) are wrapped in a StandardScaler pipeline.
     models = {
         "logistic": LogisticRegression(max_iter=200, C=1.0),
-        "random_forest": RandomForestClassifier(n_estimators=200, max_depth=6,
-                                                 n_jobs=int(os.environ.get("OMP_NUM_THREADS", "2")),
-                                                 random_state=0),
+        "sgd": make_pipeline(StandardScaler(),
+                             SGDClassifier(loss="log_loss", alpha=1e-4, max_iter=1000, tol=1e-3,
+                                           class_weight="balanced", random_state=0)),
+        "random_forest": RandomForestClassifier(n_estimators=200, max_depth=6, n_jobs=_nj, random_state=0),
+        "extra_trees": ExtraTreesClassifier(n_estimators=200, max_depth=8, n_jobs=_nj, random_state=0),
         "histgb": HistGradientBoostingClassifier(max_iter=300, max_depth=4, learning_rate=0.05,
                                                  l2_regularization=1.0, random_state=0),
+        "gradient_boost": GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.05,
+                                                     subsample=0.8, random_state=0),
+        "adaboost": AdaBoostClassifier(n_estimators=150, learning_rate=0.5, algorithm="SAMME",
+                                       random_state=0),
+        "knn": make_pipeline(StandardScaler(), KNeighborsClassifier(n_neighbors=64, n_jobs=_nj)),
+        "gaussian_nb": GaussianNB(),
+        "qda": QuadraticDiscriminantAnalysis(reg_param=0.1),
         "mlp": MLPClassifier(hidden_layer_sizes=(128, 64, 32), alpha=1e-3, max_iter=120,
                              early_stopping=True, random_state=0),
     }
@@ -114,8 +135,20 @@ def make_light_models():
         from lightgbm import LGBMClassifier
         models["lightgbm"] = LGBMClassifier(n_estimators=400, num_leaves=31, learning_rate=0.03,
                                             subsample=0.8, colsample_bytree=0.8, random_state=0,
-                                            n_jobs=int(os.environ.get("OMP_NUM_THREADS", "2")),
-                                            verbose=-1)
+                                            n_jobs=_nj, verbose=-1)
+    except Exception:
+        pass
+    try:
+        from xgboost import XGBClassifier
+        models["xgboost"] = XGBClassifier(n_estimators=300, max_depth=4, learning_rate=0.03,
+                                          subsample=0.8, colsample_bytree=0.8, eval_metric="logloss",
+                                          n_jobs=_nj, random_state=0)
+    except Exception:
+        pass
+    try:
+        from catboost import CatBoostClassifier
+        models["catboost"] = CatBoostClassifier(iterations=300, depth=4, learning_rate=0.05,
+                                                verbose=0, random_seed=0, thread_count=_nj)
     except Exception:
         pass
     return models
@@ -213,44 +246,69 @@ def run_horizon_deep(Xs, ys, lookback=30, epochs=12):
     return out
 
 
+def big_move_labels(o, c, horizon):
+    """TIMING label: big_move[t] = 1 if |window-close − window-open| is ABOVE the median |move|
+    (a balanced 'is this window worth predicting?' target). Same alignment as beat_labels; NaN tail.
+    The median DEFINES the question (label distribution), it is NOT a feature → no feature leakage.
+    This is where the probes found real edge (range_compression/realized_vol AUC .57–.64)."""
+    n = len(c); raw = np.full(n, -1.0)
+    end = n - horizon
+    if end <= 0:
+        return np.full(n, -1)
+    raw[:end] = np.abs(c[horizon - 1:horizon - 1 + end] - o[:end]) / np.where(o[:end] > 0, o[:end], 1.0)
+    y = np.full(n, -1)
+    valid = raw >= 0
+    if valid.sum():
+        y[valid] = (raw[valid] > np.median(raw[valid])).astype(int)
+    return y
+
+
+LABEL_FNS = {"beat": ("beat P(close>=open) [DIRECTION]", "beat_labels"),
+             "big_move": ("P(|move|>median) [TIMING]", "big_move_labels")}
+
+
 # ───────────────────────── orchestration ──────────────────────────────────────────────
-def run(dates, deep=False, dump=False):
+def run(dates, deep=False, dump=False, labels=("beat",)):
     from train_beat_classifier import _ohlc_for_dates, build_beat_features, beat_labels, FEATURE_NAMES
+    label_fn = {"beat": beat_labels, "big_move": big_move_labels}
     T, O, H, L, C = _ohlc_for_dates(dates)
     if C is None or len(C) < 400:
         sys.exit("Not enough bars (need the cached aggTrades; run start.bat's backfill first).")
     X = build_beat_features(O, H, L, C, T)
     ts_all = T[1:]                       # window-open ms, aligned to Xs=X[:-1], ys=y[1:]
     print(f"\nFeature matrix {X.shape}; {len(C)} bars over {len(dates)} day(s). Features: {FEATURE_NAMES}")
-    report = {"task": "beat P(close>=open)", "bars": int(len(C)), "days": len(dates),
-              "features": FEATURE_NAMES, "horizons": {}}
-    pred_rows = [] if dump else None
-    for h in HORIZONS:
-        y = beat_labels(O, C, h)
-        Xs, ys = X[:-1], y[1:]          # §5bs anti-leakage alignment (verbatim from the beat head)
-        m = ys >= 0
-        Xv, yv, tsv = Xs[m], ys[m], ts_all[m]
-        if len(yv) < 300 or len(np.unique(yv)) < 2:
-            print(f"\n[{h}m] insufficient ({len(yv)})"); continue
-        res = run_horizon(Xv, yv, make_light_models(), FEATURE_NAMES, ts=tsv, h=h, pred_rows=pred_rows)
-        if deep:
-            res["_deep"] = run_horizon_deep(Xv, yv)
-        report["horizons"][str(h)] = res
-        _print_horizon(h, res)
+    full_report = {}
+    for lab in labels:
+        desc = LABEL_FNS[lab][0]
+        print(f"\n{'='*72}\n  LABEL: {desc}\n{'='*72}")
+        report = {"task": desc, "label": lab, "bars": int(len(C)), "days": len(dates),
+                  "features": FEATURE_NAMES, "horizons": {}}
+        pred_rows = [] if dump else None
+        for h in HORIZONS:
+            y = label_fn[lab](O, C, h)
+            Xs, ys = X[:-1], y[1:]      # §5bs anti-leakage alignment (verbatim from the beat head)
+            m = ys >= 0
+            Xv, yv, tsv = Xs[m], ys[m], ts_all[m]
+            if len(yv) < 300 or len(np.unique(yv)) < 2:
+                print(f"\n[{h}m] insufficient ({len(yv)})"); continue
+            res = run_horizon(Xv, yv, make_light_models(), FEATURE_NAMES, ts=tsv, h=h, pred_rows=pred_rows)
+            if deep:
+                res["_deep"] = run_horizon_deep(Xv, yv)
+            report["horizons"][str(h)] = res
+            _print_horizon(h, res)
+        full_report[lab] = report
+        if pred_rows:
+            import pandas as pd
+            pp = os.path.join(DATA_DIR, f"model_bakeoff_predictions_{lab}.parquet")
+            pd.DataFrame(pred_rows).to_parquet(pp, index=False)
+            print(f"Per-window REAL-DATA predictions ({len(pred_rows):,} rows) -> {pp}")
     os.makedirs(DATA_DIR, exist_ok=True)
+    out = full_report if len(labels) > 1 else full_report[labels[0]]
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
+        json.dump(out, f, indent=2)
     print(f"\nFull report -> {REPORT_PATH}")
-    if pred_rows:
-        import pandas as pd
-        pp = os.path.join(DATA_DIR, "model_bakeoff_predictions.parquet")
-        pd.DataFrame(pred_rows).to_parquet(pp, index=False)
-        print(f"Per-window REAL-DATA predictions ({len(pred_rows):,} rows) -> {pp}")
-        print("Each row = one held-out (unseen, recent) window: model's P(up) vs actual_up. Inspect with")
-        print("pandas/DuckDB to see each independent model's raw calls on real data — not just metrics.")
-    print("Read it tomorrow: which family clears SIGNAL at 5m/15m, and does any beat LightGBM with")
-    print("LOWER ECE (better calibration)? Expectation (docs): LightGBM ~ histgb on top; DL likely")
-    print("overfits at this scale; nothing escapes the 5m information ceiling — cleaner label only.")
+    print("READ: DIRECTION should be ~0.50 across ALL families (info ceiling). TIMING is where edge")
+    print("lives — which family clears SIGNAL (AUC>=.55) on big_move, and is it tradeable after cost?")
 
 
 def _print_horizon(h, res):
@@ -308,6 +366,8 @@ if __name__ == "__main__":
                     help="write per-window real-data test predictions to model_bakeoff_predictions.parquet")
     ap.add_argument("--start"); ap.add_argument("--end"); ap.add_argument("--validate")
     ap.add_argument("--days", type=int, help="last N full days to yesterday")
+    ap.add_argument("--label", choices=["beat", "big_move", "both"], default="beat",
+                    help="beat=direction (default), big_move=timing, both=run both labels")
     a = ap.parse_args()
     if a.selftest:
         selftest()
@@ -316,4 +376,5 @@ if __name__ == "__main__":
     dates, _ = resolve_dates(a)
     if not dates:
         ap.error("provide --selftest, --days N, --start/--end, or --validate DATE")
-    run(dates, deep=a.deep, dump=a.dump_predictions)
+    labels = ("beat", "big_move") if a.label == "both" else (a.label,)
+    run(dates, deep=a.deep, dump=a.dump_predictions, labels=labels)

@@ -29,7 +29,7 @@ import math
 import os
 import sys
 
-HORIZONS = [1, 3, 5, 7, 10, 15]
+HORIZONS = [1, 3, 5, 7, 10, 15, 30]
 BREAKEVEN = float(os.environ.get("BTC_BET_BREAKEVEN", "0.52"))  # ~50% + spread/slippage
 REAL_MARKETS = {5, 15}  # 1/3/7/10 are practice mirrors
 

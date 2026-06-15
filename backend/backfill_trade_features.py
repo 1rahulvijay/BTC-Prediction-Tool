@@ -205,6 +205,21 @@ def _last_covered_date(out_path: str):
         return None
 
 
+def _first_covered_date(out_path: str):
+    """Date (UTC) of the OLDEST bar in an existing parquet, or None."""
+    if not os.path.exists(out_path):
+        return None
+    try:
+        import pandas as pd
+        df = pd.read_parquet(out_path, columns=["candle_ts"])
+        if df.empty:
+            return None
+        return datetime.fromtimestamp(int(df["candle_ts"].min()) / 1000.0,
+                                      tz=timezone.utc).date()
+    except Exception:
+        return None
+
+
 def run(start: str, end: str, validate_nrows: int | None = None, keep_cache: bool = False,
         merge_existing: bool = False):
     import pandas as pd
@@ -307,13 +322,24 @@ def main():
     elif args.auto:
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         last = _last_covered_date(OUT_PATH)
+        first = _first_covered_date(OUT_PATH)
+        ds_want, de_want = _default_range(args.days)
+        want_start = datetime.strptime(ds_want, "%Y-%m-%d").date()
         if last is None:
-            ds, de = _default_range(args.days)
+            ds, de = ds_want, de_want
             print(f"[auto] no existing parquet — full backfill {ds} .. {de} "
                   f"(first run: multi-GB download, can take a while)", flush=True)
             run(ds, de, keep_cache=args.keep_cache)
+        elif first is not None and first > want_start:
+            # The existing parquet does not reach back far enough for the requested
+            # --days window (e.g. the operator bumped 50 -> 60). --auto only ever tops
+            # up the FORWARD end, so without this a wider window is silently ignored.
+            # Rebuild the full window (re-extracts from cache if present — no re-download).
+            print(f"[auto] parquet starts {first} but --days {args.days} wants {want_start} "
+                  f"— REBUILDING full window {ds_want} .. {de_want} (backward extend).", flush=True)
+            run(ds_want, de_want, keep_cache=args.keep_cache)
         elif last >= yesterday:
-            print(f"[auto] backfill is current (covers through {last}) — nothing to do.")
+            print(f"[auto] backfill is current (covers {first} through {last}) — nothing to do.")
         else:
             ds = (last + timedelta(days=1)).strftime("%Y-%m-%d")
             de = yesterday.strftime("%Y-%m-%d")

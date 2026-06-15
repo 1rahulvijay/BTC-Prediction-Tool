@@ -27,7 +27,7 @@ from train_beat_classifier import (build_beat_features, beat_labels, FEATURE_NAM
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "fingerprint_evidence.parquet")
-HORIZONS = (1, 3, 5, 7, 10, 15)
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 SHRINK_K = 30.0   # Laplace strength: a cell with n=K is pulled halfway to 0.5
 
 

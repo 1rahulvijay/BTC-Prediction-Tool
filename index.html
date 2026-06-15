@@ -539,6 +539,33 @@
             <div class="plain-rate-card"><span>Avg price error</span><strong id="analysis-avg-error">--</strong><p>Average distance between expected and actual move.</p></div>
             <div class="plain-rate-card"><span>UP error</span><strong id="analysis-up-error">--</strong><p>Average dollar error on UP calls.</p></div>
             <div class="plain-rate-card"><span>DOWN error</span><strong id="analysis-down-error">--</strong><p>Average dollar error on DOWN calls.</p></div>
+            <div class="plain-rate-card"><span>Forward paper EV</span><strong id="forward-ev-net">--</strong><p>Net paper value of final TRADE calls after fees/slippage assumptions.</p></div>
+            <div class="plain-rate-card"><span>Avoided loss</span><strong id="forward-ev-avoided">--</strong><p>Estimated loss avoided when the gate blocked weak raw leans.</p></div>
+            <div class="plain-rate-card"><span>P(hold) engine</span><strong id="phold-status">--</strong><p>Late-entry hold model status: loaded, missing, or disabled.</p></div>
+          </div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <div>
+              <h2>Replay Proof Lab</h2>
+              <p>Runs saved models on recent historical candles, then shows direction accuracy, target error, and whether thresholds should be stricter.</p>
+            </div>
+            <div style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+              <span class="stat-value" id="replay-status">Idle</span>
+              <button class="top-action-button" id="replay-run-btn" type="button">Run 7-Day Replay</button>
+            </div>
+          </div>
+          <div class="simulator-disclaimer" style="margin-bottom: 1rem; padding: 0.75rem; background: rgba(100,181,246,0.1); border-left: 3px solid #64b5f6; font-size: 0.85rem; color: #9fc9f3;">
+            Replay is not live profit proof. It checks the saved model on unseen candles without mixing those rows into live accuracy.
+          </div>
+          <div class="plain-rate-grid" id="replay-summary-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem;"></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:1rem;">
+            <div id="replay-recommendations"></div>
+            <div>
+              <div style="color:var(--text-secondary);font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:.5rem">Recent replay examples</div>
+              <div id="replay-recent" style="border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.02);overflow:hidden;"></div>
+            </div>
           </div>
         </section>
 

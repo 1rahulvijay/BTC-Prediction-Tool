@@ -42,6 +42,7 @@ let currentAppTab = 'technical';
 let activePlainTF = 1;
 let activePtbHorizon = 5;
 let lastPlainData = null;
+let replayPollTimer = null;
 
 const API_URL = 'ws://127.0.0.1:8000/ws';
 const HTTP_API_BASE = 'http://127.0.0.1:8000';
@@ -187,6 +188,14 @@ const els = {
   avoidRate: document.getElementById('avoid-rate'),
   
   analysisExpectancy: document.getElementById('analysis-expectancy'),
+  forwardEvNet: document.getElementById('forward-ev-net'),
+  forwardEvAvoided: document.getElementById('forward-ev-avoided'),
+  pholdStatus: document.getElementById('phold-status'),
+  replayRunButton: document.getElementById('replay-run-btn'),
+  replayStatus: document.getElementById('replay-status'),
+  replaySummaryGrid: document.getElementById('replay-summary-grid'),
+  replayRecommendations: document.getElementById('replay-recommendations'),
+  replayRecent: document.getElementById('replay-recent'),
   regimeHealthState: document.getElementById('regime-health-state'),
   regimeHealthPf: document.getElementById('regime-health-pf'),
   regimeHealthDd: document.getElementById('regime-health-dd'),
@@ -287,6 +296,10 @@ function init() {
   }
   if (els.backtestButton) {
     els.backtestButton.addEventListener('click', triggerBacktest);
+  }
+  if (els.replayRunButton) {
+    els.replayRunButton.addEventListener('click', triggerReplay);
+    fetchReplayStatus();
   }
 }
 
@@ -506,6 +519,46 @@ async function triggerBacktest() {
 // ══════════════════════════════════════════════
 //  Dashboard Render
 // ══════════════════════════════════════════════
+async function triggerReplay() {
+  if (!els.replayRunButton) return;
+  els.replayRunButton.disabled = true;
+  els.replayRunButton.textContent = 'Queued...';
+  if (els.replayStatus) els.replayStatus.textContent = 'Starting replay...';
+  try {
+    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15&max_samples=1000`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.scheduled && data.status?.message && els.replayStatus) {
+      els.replayStatus.textContent = data.status.message;
+    }
+    scheduleReplayPoll();
+  } catch (err) {
+    if (els.replayStatus) els.replayStatus.textContent = 'Replay request failed';
+    els.replayRunButton.disabled = false;
+    els.replayRunButton.textContent = 'Run 7-Day Replay';
+  }
+}
+
+function scheduleReplayPoll() {
+  if (replayPollTimer) clearTimeout(replayPollTimer);
+  replayPollTimer = setTimeout(fetchReplayStatus, 2500);
+}
+
+async function fetchReplayStatus() {
+  if (!els.replaySummaryGrid && !els.replayStatus) return;
+  try {
+    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/status?limit=75`);
+    const payload = await res.json();
+    renderReplayLab({
+      historical_replay: payload.historical_replay,
+      threshold_recommendations: payload.threshold_recommendations,
+      replay_status: payload.status,
+    });
+    if (payload.status?.running) scheduleReplayPoll();
+  } catch (err) {
+    if (els.replayStatus) els.replayStatus.textContent = 'Replay status unavailable';
+  }
+}
+
 function renderDashboard(data) {
   renderPrice(data);
   renderChart(data);
@@ -920,6 +973,7 @@ function renderBootStatus(data) {
 function renderRuntimeStatus(data) {
   const backtest = data.backtest_status || {};
   const relearn = data.relearn_status || {};
+  const replay = data.replay_status || {};
   if (els.backtestStatus) {
     const pct = backtest.progress != null ? `${Math.round(backtest.progress * 100)}%` : '';
     els.backtestStatus.textContent = backtest.running
@@ -943,6 +997,18 @@ function renderRuntimeStatus(data) {
     const locked = !!backtest.running;
     els.backtestButton.disabled = locked;
     els.backtestButton.textContent = locked ? 'Backtesting...' : 'Run Backtest';
+  }
+  if (els.replayStatus) {
+    const pct = replay.progress != null ? `${Math.round(replay.progress * 100)}%` : '';
+    els.replayStatus.textContent = replay.running
+      ? `${pct} ${replay.message || 'Running replay'}`
+      : (replay.message || replay.phase || 'Idle');
+    els.replayStatus.title = replay.error || replay.message || '';
+  }
+  if (els.replayRunButton) {
+    const locked = !!replay.running;
+    els.replayRunButton.disabled = locked;
+    els.replayRunButton.textContent = locked ? 'Replaying...' : 'Run 7-Day Replay';
   }
 }
 
@@ -972,6 +1038,8 @@ function renderPlainAnalysis(data) {
   renderTrustPanel(data, activePred, activeAcc);
   renderActionReasons(data, activePred, activeAcc);
   renderPlainRates(errors, activeAcc, activePred);
+  renderProofCards(data);
+  renderReplayLab(data);
   renderActionMetrics(data.verification || {}, activeAcc);
   renderAvoidSuccess(activeAcc);
   renderRiskAndLab(data);
@@ -997,9 +1065,20 @@ function formatSignedUsd(value, digits = 2) {
 function getFinalAction(p) {
   if (!p) return 'AVOID';
   const d = p.direction || p.signal || 'NEUTRAL';
-  if (d === 'UP') return 'BUY';
-  if (d === 'DOWN') return 'SELL';
+  const verdict = p.trade_verdict || p.tradeVerdict || p.finalAction || '';
+  const passedGate = p.actionable || verdict === 'TRADE';
+  if (passedGate && d === 'UP') return 'BUY';
+  if (passedGate && d === 'DOWN') return 'SELL';
   return 'AVOID';
+}
+
+function getNoTradeText(p, fallback = '') {
+  if (!p) return fallback;
+  const text = p.no_trade_reason_text || p.noTradeReasonText || [];
+  const codes = p.no_trade_reasons || p.noTradeReasons || [];
+  const reasons = text.length ? text : codes;
+  if (reasons && reasons.length) return reasons.join('; ');
+  return fallback || p.skipReason || p.qualityMessage || '';
 }
 
 function getSignedExpectedMove(p) {
@@ -1115,7 +1194,12 @@ function renderDecisionCockpit(data, best, activeAcc) {
   let whyDetail = `Confidence ${confidence}%, agreement ${agreement}%, raw model lean ${raw}.`;
   const premium = Number(data.derivatives?.coinbase_premium || 0);
   const imbalance = Number(data.order_flow?.imbalance || 0);
-  if (best.skipReason || best.qualityMessage) {
+  if (best.no_trade_reasons && best.no_trade_reasons.length) {
+    // Do-not-trade reason engine (decision_gate): the structured "why not" — the abstention machine.
+    const verdict = best.trade_verdict || 'NO_TRADE';
+    why = verdict === 'WEAK_LEAN' ? 'Weak lean — not a clean trade' : 'No trade';
+    whyDetail = 'Why not: ' + (best.no_trade_reason_text || best.no_trade_reasons).join('; ') + '.';
+  } else if (best.skipReason || best.qualityMessage) {
     why = action === 'AVOID' ? 'Safety gate blocked it' : 'Safety gate checked';
     whyDetail = best.skipReason || best.qualityMessage;
   } else if (Math.abs(premium) >= 5) {
@@ -1190,12 +1274,39 @@ function renderDecisionCockpit(data, best, activeAcc) {
   const okCount = gates.filter(g => g.ok).length;
   const rating = okCount >= 5 && trust.score >= 70 ? 'A' : okCount >= 4 && trust.score >= 55 ? 'B' : okCount >= 3 ? 'C' : 'WATCH';
 
-  els.decisionPrimaryAction.textContent = `${actionTitle} - ${rating}`;
-  els.decisionPrimaryAction.className = tone;
-  els.decisionPrimaryMessage.textContent = primaryMessage;
-  if (els.decisionMainCard) els.decisionMainCard.className = `decision-main-card ${tone}`;
+  // ★ P(hold) T3 LEAD — the home screen leads with the ONE validated edge when it's live.
+  // Scan the live price-to-beat rounds for a T3 late-entry setup (calibrated P(hold) on the
+  // already-ahead side, historical proof cleared). If present it OUTRANKS the coin-flip 5m
+  // direction below — that is the honest "what should I do right now".
+  let t3Edge = null;
+  const ptbLatest = (data.price_to_beat && data.price_to_beat.latest) || {};
+  for (const key of Object.keys(ptbLatest)) {
+    const r = ptbLatest[key];
+    if (r && r.status === 'pending' && r.tier === 'T3' && r.p_hold != null) {
+      if (!t3Edge || r.p_hold > t3Edge.p_hold) t3Edge = r;
+    }
+  }
+  if (t3Edge) {
+    const pct = Math.round(t3Edge.p_hold * 100);
+    const side = t3Edge.live_lean || t3Edge.our_direction || '';
+    els.decisionPrimaryAction.textContent = `⚡ P(HOLD) EDGE - ${pct}%`;
+    els.decisionPrimaryAction.className = 'up';
+    els.decisionPrimaryMessage.textContent =
+      `Proven late-entry tier is LIVE (${t3Edge.horizon}m): the ${side} side is already ahead and the calibrated model says it HOLDS to close ${pct}% of the time. This is the tool's one validated edge — act on this, not the ${horizon}m direction call below (which is ~coin-flip).`;
+    if (els.decisionMainCard) els.decisionMainCard.className = 'decision-main-card up';
+  } else {
+    els.decisionPrimaryAction.textContent = `${actionTitle} - ${rating}`;
+    els.decisionPrimaryAction.className = tone;
+    els.decisionPrimaryMessage.textContent = primaryMessage;
+    if (els.decisionMainCard) els.decisionMainCard.className = `decision-main-card ${tone}`;
+  }
   els.decisionCockpitAction.textContent = actionTitle;
-  els.decisionCockpitActionDetail.textContent = `Selected timeframe: ${horizon}m. Final ensemble: ${dir}. Raw lean: ${raw}.`;
+  // Abstain-on-direction: when there is no clean trade, label the direction as ~coin-flip and
+  // point to the validated edges (move-range band + P(Hold)), instead of implying a confident call.
+  const _dirNote = (action === 'AVOID')
+    ? `${dir} lean is ~coin-flip at ${horizon}m — informational only; lead with the move-range band and P(Hold).`
+    : `Final ensemble: ${dir}. Raw lean: ${raw}.`;
+  els.decisionCockpitActionDetail.textContent = `Selected timeframe: ${horizon}m. ${_dirNote}`;
   els.decisionCockpitTarget.textContent = targetText;
   els.decisionCockpitTargetDetail.textContent = targetDetail;
   els.decisionCockpitTrust.textContent = `${trust.score}%`;
@@ -1342,8 +1453,8 @@ function renderSignalFlow(data, best, activeAcc) {
     return;
   }
 
-  const raw = best.rawDirection || best.direction || 'NEUTRAL';
-  const finalDir = best.direction || 'NEUTRAL';
+  const raw = best.modelRawDirection || best.rawDirection || best.direction || 'NEUTRAL';
+  const finalDir = best.finalDirection || best.direction || 'NEUTRAL';
   const action = getFinalAction(best);
   const conf = Math.round((best.confidence || 0) * 100);
   const agreement = Math.round((best.agreement || 0) * 100);
@@ -1355,7 +1466,12 @@ function renderSignalFlow(data, best, activeAcc) {
   const targetDetail = action === 'AVOID'
     ? `The model still estimates a possible zone near ${formatUsd(modelTarget)}, but the safety gate says do not act on it.`
     : `If acted on, the model zone is near ${formatUsd(modelTarget)}.`;
-  const skip = best.skipReason || best.qualityMessage || (action === 'AVOID' ? 'Confidence, expectancy, regime, or model trust did not clear the safety gate.' : 'Signal passed the current safety gate.');
+  const skip = getNoTradeText(
+    best,
+    action === 'AVOID'
+      ? 'Confidence, expectancy, regime, or model trust did not clear the safety gate.'
+      : 'Signal passed the current safety gate.'
+  );
 
   const cards = [
     {
@@ -1428,31 +1544,21 @@ function renderForecastPulse(data, preds) {
   }
 
   if (els.kronosStatus) {
-    const ks = data.kronos_status || {};
-    const label = ks.loaded ? 'Kronos model active' : 'Fallback projection active';
-    els.kronosStatus.textContent = `Forecast engine status: ${label}. ${ks.message || ''}`;
-    els.kronosStatus.className = `kronos-status ${ks.loaded ? 'active' : 'fallback'}`;
+    // Kronos retired in v6 — the backend no longer emits kronos_status/forecasts. Show an honest
+    // retired note instead of the old misleading "Fallback projection active" label (review #6).
+    els.kronosStatus.textContent = 'Forecast projection (Kronos) retired in v6 — the app leads with measured signals + P(hold), not a candle projection.';
+    els.kronosStatus.className = 'kronos-status retired';
   }
-  
-  const horizons = [1, 3, 5, 7, 10, 15];
-  els.forecastPulseGrid.innerHTML = horizons.map(h => {
-    const k = getKronosAtHorizon(data, h);
-    if (!k) {
-      return `<div class="pulse-card neutral">
-        <span class="pulse-tf">${h}m Kronos</span>
-        <span class="pulse-dir">waiting</span>
-        <span class="pulse-target">--</span>
-      </div>`;
-    }
-    const dirClass = k.direction === 'UP' ? 'up' : k.direction === 'DOWN' ? 'down' : 'neutral';
-    const moveTxt = `${k.move >= 0 ? '+' : '-'}$${Math.abs(Math.round(k.move)).toLocaleString()}`;
-    return `<div class="pulse-card ${dirClass}">
-      <span class="pulse-tf">${h}m Kronos</span>
-      <span class="pulse-dir">${dirArrow(k.direction)} ${k.direction}</span>
-      <span class="pulse-target">${formatUsd(k.price)}</span>
-      <span class="pulse-sub">${moveTxt} path move</span>
-    </div>`;
-  }).join('');
+
+  // Kronos per-horizon forecast cards retired with the model (v6) — this grid would otherwise show
+  // "Xm Kronos waiting" forever. The decision cockpit + P(hold) tier are the live signal surfaces now.
+  if (els.forecastPulseGrid) {
+    els.forecastPulseGrid.innerHTML =
+      '<div class="pulse-card neutral" style="grid-column:1/-1;text-align:center">' +
+      '<span class="pulse-tf">Forecast projection retired (v6)</span>' +
+      '<span class="pulse-sub">Use the decision cockpit + P(hold) tier — measured signals, not a candle projection.</span>' +
+      '</div>';
+  }
 }
 
 function getBestPrediction(preds) {
@@ -1611,6 +1717,122 @@ function renderPlainRates(errors, activeAcc, best) {
   els.analysisAvgError.textContent = dirTotal ? `$${Math.round(stats.avg_move_error_usd || 0).toLocaleString()}` : '— (no UP/DOWN calls yet)';
   els.analysisUpError.textContent = (stats.up_total || dirTotal) ? `$${Math.round(stats.up_avg_move_error_usd || 0).toLocaleString()}` : '—';
   els.analysisDownError.textContent = (stats.down_total || dirTotal) ? `$${Math.round(stats.down_avg_move_error_usd || 0).toLocaleString()}` : '—';
+}
+
+function renderProofCards(data) {
+  const fwd = data.forward_ev || {};
+  const totals = fwd.totals || {};
+  if (els.forwardEvNet) {
+    const v = Number(totals.net_pnl_usd || 0);
+    els.forwardEvNet.textContent = totals.resolved ? `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}` : '--';
+    els.forwardEvNet.style.color = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-primary)';
+  }
+  if (els.forwardEvAvoided) {
+    const v = Number(totals.avoided_loss_usd || 0);
+    els.forwardEvAvoided.textContent = totals.resolved ? `$${v.toFixed(2)}` : '--';
+    els.forwardEvAvoided.style.color = v > 0 ? 'var(--green)' : 'var(--text-primary)';
+  }
+  if (els.pholdStatus) {
+    const st = (((data.price_to_beat || {}).p_hold_status) || {});
+    const label = st.loaded
+      ? `Loaded${st.test_auc ? ` AUC ${Number(st.test_auc).toFixed(2)}` : ''}`
+      : (st.status || 'missing');
+    els.pholdStatus.textContent = label;
+    els.pholdStatus.style.color = st.loaded ? 'var(--green)' : 'var(--gold)';
+    els.pholdStatus.title = st.path || '';
+  }
+}
+
+function renderReplayLab(data) {
+  const replay = data.historical_replay || {};
+  const status = data.replay_status || replay.status || {};
+  const recBlock = data.threshold_recommendations || replay.threshold_recommendations || {};
+  const safe = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+
+  if (els.replayStatus) {
+    const pct = status.progress != null ? `${Math.round(Number(status.progress || 0) * 100)}% ` : '';
+    els.replayStatus.textContent = status.running
+      ? `${pct}${status.message || 'Running historical replay'}`
+      : (status.message || status.phase || 'Idle');
+    els.replayStatus.title = status.error || status.message || '';
+  }
+  if (els.replayRunButton) {
+    const locked = !!status.running;
+    els.replayRunButton.disabled = locked;
+    els.replayRunButton.textContent = locked ? 'Replaying...' : 'Run 7-Day Replay';
+  }
+
+  const summary = replay.summary || {};
+  const latestRun = recBlock.latest_replay_run_id || Object.keys(summary)[0];
+  const byHorizon = latestRun ? (summary[latestRun] || {}) : {};
+  if (els.replaySummaryGrid) {
+    const entries = Object.entries(byHorizon);
+    if (!entries.length) {
+      els.replaySummaryGrid.innerHTML = '<div class="plain-empty">No replay results yet. Run the 7-day replay to test saved models on recent unseen candles.</div>';
+    } else {
+      els.replaySummaryGrid.innerHTML = entries.map(([h, s]) => {
+        const n = Number(s.directional_n || 0);
+        const acc = s.directional_accuracy == null ? '--' : `${(Number(s.directional_accuracy) * 100).toFixed(1)}%`;
+        const pm = s.price_match_rate == null ? '--' : `${(Number(s.price_match_rate) * 100).toFixed(1)}%`;
+        const err = Number(s.avg_move_error_usd || 0);
+        const tone = n >= 100 && Number(s.directional_accuracy || 0) >= 0.53 ? 'var(--green)' : n >= 100 ? 'var(--gold)' : 'var(--text-secondary)';
+        return `
+          <div class="plain-rate-card" style="border-left:3px solid ${tone}">
+            <span>${safe(h)}m replay</span>
+            <strong style="color:${tone}">${acc}</strong>
+            <p>${n} UP/DOWN calls · price close ${pm} · avg error $${Math.round(err).toLocaleString()}</p>
+          </div>`;
+      }).join('');
+    }
+  }
+
+  if (els.replayRecommendations) {
+    const recs = recBlock.recommendations || [];
+    if (!recs.length) {
+      els.replayRecommendations.innerHTML = '<div class="plain-empty">Threshold recommendations appear after replay or enough live forward-EV events resolve.</div>';
+    } else {
+      const color = (sev) => sev === 'high' ? 'var(--red)' : sev === 'medium' ? 'var(--gold)' : 'var(--green)';
+      els.replayRecommendations.innerHTML = `
+        <div style="margin-bottom:.65rem;color:var(--text-secondary)">${safe(recBlock.summary || 'Replay guidance is collecting evidence.')}</div>
+        ${recs.slice(0, 8).map(r => `
+          <div style="border:1px solid rgba(255,255,255,.08);border-left:4px solid ${color(r.severity)};border-radius:8px;padding:.7rem .85rem;margin-bottom:.5rem;background:rgba(255,255,255,.025)">
+            <div style="display:flex;justify-content:space-between;gap:.75rem;align-items:center">
+              <strong style="color:${color(r.severity)}">${safe(String(r.action || 'review').replaceAll('_', ' ')).toUpperCase()}</strong>
+              <span style="color:var(--text-secondary);font-size:.8rem">${r.horizon ? `${safe(r.horizon)}m` : safe(r.source || 'replay')}</span>
+            </div>
+            <p style="margin:.35rem 0 0;color:var(--text-secondary);font-size:.9rem">${safe(r.reason || '')}</p>
+          </div>`).join('')}`;
+    }
+  }
+
+  if (els.replayRecent) {
+    const recent = replay.recent || [];
+    if (!recent.length) {
+      els.replayRecent.innerHTML = '<div class="plain-empty">Replay examples will show here after the first run.</div>';
+    } else {
+      els.replayRecent.innerHTML = recent.slice(0, 10).map(row => {
+        const raw = row.model_raw_direction || 'NEUTRAL';
+        const finalDir = row.final_direction || 'NEUTRAL';
+        const ok = row.direction_hit === true;
+        const bad = row.direction_hit === false;
+        const time = row.timestamp ? new Date(Number(row.timestamp)).toLocaleTimeString() : '--';
+        const expected = Number(row.expected_move || 0);
+        const actual = Number(row.actual_move || 0);
+        const tone = ok ? 'var(--green)' : bad ? 'var(--red)' : 'var(--text-secondary)';
+        const verdict = ok ? 'direction right' : bad ? 'direction wrong' : 'not a directional call';
+        return `
+          <div style="display:grid;grid-template-columns:90px 70px 1fr 1fr 1fr;gap:.75rem;align-items:center;padding:.55rem .75rem;border-bottom:1px solid rgba(255,255,255,.06);font-size:.9rem">
+            <span style="color:var(--text-secondary)">${safe(time)}</span>
+            <strong>${safe(row.horizon)}m</strong>
+            <span>${safe(raw)} → ${safe(finalDir)}</span>
+            <span>expected ${formatSignedUsd(expected, 0)} · actual ${formatSignedUsd(actual, 0)}</span>
+            <strong style="color:${tone}">${verdict}</strong>
+          </div>`;
+      }).join('');
+    }
+  }
 }
 
 function renderRiskAndLab(data) {
@@ -2289,7 +2511,7 @@ function renderVerification(v) {
     
     // High-level Accuracy chips
     els.verifyAccRow.innerHTML = '';
-    [1, 3, 5, 7, 10, 15].forEach(h => {
+    [1, 3, 5, 7, 10, 15, 30].forEach(h => {
       const acc = v.accuracy?.[h];
       const chip = document.createElement('div');
       chip.className = 'verify-acc-chip';
@@ -2471,14 +2693,16 @@ function renderScoreboard(data) {
 
   grid.innerHTML = horizons.map((h) => {
     const s = sb[h] || {};
-    const dir = s.direction || 'NEUTRAL';
+    const dir = s.finalDirection || s.direction || 'NEUTRAL';
     const directional = ['UP', 'DOWN'].includes(dir);
-    const actionable = !!s.actionable && directional;
+    const actionable = (s.finalAction === 'TRADE' || s.tradeVerdict === 'TRADE' || !!s.actionable) && directional;
     const conv = Math.round(s.conviction || 0);
     const grade = s.convictionGrade || 'WATCH';
     const ourAcc = s.ourAccuracy != null ? (s.ourAccuracy * 100).toFixed(0) + '%' : '--';
-    const raw = s.rawDirection || dir;
-    const cd = s.confluenceDetail || {};
+    const raw = s.modelRawDirection || s.rawDirection || dir;
+    const setup = s.setupQuality || {};
+    const cd = setup.checks || s.confluenceDetail || {};
+    const why = getNoTradeText(s, actionable ? 'Passed the current trade gate.' : 'Risk gate says wait.');
     const chip = (label, ok) => `<span class="cf-chip ${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'} ${label}</span>`;
     const actionLabel = actionable
       ? (dir === 'UP' ? 'STRONG BUY' : 'STRONG SELL')
@@ -2524,6 +2748,7 @@ function renderScoreboard(data) {
         <div class="sb-confluence">
           ${chip('models', cd.models_agree)} ${chip('flow', cd.flow_agree)} ${chip('regime', cd.regime_favorable)}
         </div>
+        <div class="sb-reason" style="margin-top:.45rem;color:var(--text-secondary);font-size:.82em">${why}</div>
         <div class="sb-vs">
           <div class="sb-vs-col"><span>Ensemble final</span><strong style="color:${dirColor(dir)}">${dir}</strong><small>${ourAcc} acc · ${s.ourSamples || 0}n</small></div>
           <div class="sb-vs-col"><span>Raw lean</span><strong style="color:${dirColor(raw)}">${raw}</strong><small>before the gate</small></div>
@@ -2567,7 +2792,7 @@ const MODEL_LABELS = {
   dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression',
 };
 const PTB_HORIZONS = [5, 15];
-const ROSTER_HORIZONS = [1, 3, 5, 7, 10, 15];
+const ROSTER_HORIZONS = [1, 3, 5, 7, 10, 15, 30];
 
 // ══════════════════════════════════════════════
 //  BINANCE VIEW — 6-horizon model predictions (spot/perp, long/short entries)
@@ -2725,7 +2950,7 @@ function renderBinanceView(data) {
     });
     // Only committed directional leans grade as correct/incorrect.
     const dirRows = allRows.filter(r => r.raw_direction === 'UP' || r.raw_direction === 'DOWN');
-    const tfs = ['all', 1, 3, 5, 7, 10, 15];
+    const tfs = ['all', 1, 3, 5, 7, 10, 15, 30];
     const tabs = tfs.map(tf => {
       const cnt = tf === 'all' ? dirRows.length : dirRows.filter(r => r.horizon === tf).length;
       const on = String(binanceLogTF) === String(tf);
@@ -2816,7 +3041,7 @@ function renderPMCore(data, cfg) {
   const acc = ptb.accuracy || {};
   // Only 5m/15m are real Polymarket markets; 1m/3m/7m/10m are PRACTICE mirrors —
   // same rule + grading, fast evidence, not bettable.
-  grid.innerHTML = [1,3,5,7,10,15].map(h => {
+  grid.innerHTML = [1,3,5,7,10,15,30].map(h => {
     const r = latest[h] || latest[String(h)];
     const a = acc[h] || acc[String(h)] || {};
     const accStr = a.total ? `model ${((a.model_accuracy||0)*100).toFixed(0)}% (${a.model_total||0}) · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})` : 'no rounds yet';
@@ -2826,6 +3051,8 @@ function renderPMCore(data, cfg) {
     const cfl = r.confluence||{}; const po = r.path_outlook||{}; const adv = r.advice||{};
     const tone = adv.tone==='good'?'#00e676':adv.tone==='bad'?'#ff5252':adv.tone==='warn'?'#ffb74d':'var(--text-secondary)';
     const resolved = r.status==='resolved';
+    // T2/T3 precision-tier proof (the precision card): the historical evidence for THIS tier.
+    const tProof = r.tier && r.tier_proof ? (r.tier==='T3' ? r.tier_proof.t3 : r.tier_proof.t2) : null;
     const srcBadge = r.lean_source==='fallback'
       ? '<span style="background:rgba(255,183,77,.15);color:#ffb74d;border-radius:4px;padding:0 .35rem;font-size:.7em">⚠ WEAK (fallback) — skip</span>'
       : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
@@ -2845,11 +3072,14 @@ function renderPMCore(data, cfg) {
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
       ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.25rem;font-size:.82em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold>=0.93?'#64b5f6':'var(--text-secondary)'}">P(hold ${r.current_position})=${Math.round(r.p_hold*100)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 persistence model; ⚡ fires at ≥93%)</div>`:''}
+      ${!resolved&&r.tier?`<div style="margin-top:.35rem;padding:.5rem .7rem;border-radius:8px;background:rgba(100,181,246,.12);border:1px solid ${r.tier==='T3'?'#64b5f6':'rgba(100,181,246,.4)'};font-size:.84em">
+        <strong style="color:#64b5f6;letter-spacing:.4px">${r.tier} PRECISION SETUP</strong>${tProof&&tProof.n?` — <strong>${tProof.n}</strong> similar late-entry setups held <strong style="color:#00e676">${tProof.hold_pct}%</strong> <span style="color:var(--text-secondary)">(Wilson-LB ${tProof.wilson_lb}%)</span>`:` <span style="color:var(--text-secondary)">— proof panel pending: run <code>phold_tier_scorecard.py</code> (app stopped)</span>`}
+        ${r.tier==='T2'?`<div style="color:var(--text-secondary);font-size:.92em;margin-top:.2rem">T2 = structural late-entry zone. T3 (surfaceable high-precision) needs proof n≥100, hold≥90%, Wilson-LB≥80%.</div>`:''}</div>`:''}
       ${!resolved&&r.live_expected_move!=null&&dir!=='NEUTRAL'?`<div style="margin-top:.4rem;padding:.4rem .6rem;border-radius:6px;background:rgba(255,255,255,.03);font-size:.85em">
-        📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· 50% band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))} (tails run larger)</span>`:''}
+        📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· ${r.band_source==='signed_quantile'?'80%':'50%'} band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))}${r.band_source==='signed_quantile'?' (calibrated)':' (tails run larger)'}</span>`:''}
         ${r.projected_close!=null?`→ projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong>
           <span style="color:${(r.projected_vs_beat||0)>=0?'#00e676':'#ff5252'}">(${(r.projected_vs_beat||0)>=0?'+':''}$${Math.round(r.projected_vs_beat||0)} vs beat → ${(r.projected_vs_beat||0)>=0?'UP':'DOWN'} resolves)</span>`:''}
-        <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">This is the median move size for current conditions, not a path call — a $100+ window lands outside the band ~50% of the time by design.</div></div>`:''}
+        <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">This is the median move size for current conditions, not a path call — ${r.band_source==='signed_quantile'?'the calibrated 80% band contains ~80% of outcomes (≈20% land outside)':'a $100+ window lands outside the band ~50% of the time by design'}.</div></div>`:''}
       ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}</div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
       ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
@@ -2860,7 +3090,7 @@ function renderPMCore(data, cfg) {
   const rec = ptb.recent || [];
   const accDiv = document.getElementById(P+'-accuracy');
   if (accDiv) {
-    accDiv.innerHTML = [1,3,5,7,10,15].map(h=>{
+    accDiv.innerHTML = [1,3,5,7,10,15,30].map(h=>{
       const a=acc[h]||acc[String(h)]||{};
       if(!a.total) return '';
       // "model 0% (0)" read as a recording failure — show "—" when the model has
@@ -2900,7 +3130,7 @@ function renderPMCore(data, cfg) {
   const recDiv = document.getElementById(P+'-recent');
   if (recDiv) {
     const resolved = rec.filter(r=>r.hit!=null);
-    const tfs = ['all', 1, 3, 5, 7, 10, 15];
+    const tfs = ['all', 1, 3, 5, 7, 10, 15, 30];
     const tabs = tfs.map(tf => {
       const cnt = tf==='all' ? resolved.length : resolved.filter(r=>r.horizon===tf).length;
       const on = String(pmLogTF)===String(tf);
@@ -3106,7 +3336,7 @@ function renderBestLongShort(data) {
 function renderForecastScorecard(data) {
   if (!els.forecastScorecard) return;
   const ens = (data.verification && data.verification.accuracy) || {};
-  const horizons = [1, 3, 5, 7, 10, 15];
+  const horizons = [1, 3, 5, 7, 10, 15, 30];
   const pct = (v) => (v != null ? `${(v * 100).toFixed(0)}%` : '—');
   const usd = (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—');
 
@@ -3176,7 +3406,6 @@ function renderPriceToBeat(data) {
       <div class="ptb-call" style="color:${dirColor(dir)}">${dirArrow(dir)} ${action}</div>
       <div class="ptb-meta">
         <span>Our call: <strong style="color:${dirColor(dir)}">${dir}</strong></span>
-        <span>Kronos: <strong style="color:${dirColor(r.kronos_direction)}">${r.kronos_direction || 'NONE'}</strong></span>
         <span>Conviction: <strong>${Math.round(r.conviction || 0)}</strong></span>
       </div>
       <div class="ptb-result">${result}</div>
@@ -3307,7 +3536,7 @@ function renderPriceToBeatTabbed(data) {
         <div><span>Signal</span><strong style="color:${dirColor(dir)}">${dir}</strong><small>${r.actionable ? 'passed risk gate' : 'not actionable / wait'}</small></div>
         <div><span>Expected</span><strong>${expectedText(dir)}</strong><small>${expectedDetail(dir)} Target: ${target}</small></div>
         <div><span>Actual / met</span><strong>${resolved ? actualText(r.actual_direction) : 'Waiting for close'}</strong><small>${resolved ? `Closed ${formatUsd(actual, 2)}` : 'Round still open'}</small></div>
-        <div><span>Result</span><strong>${result}</strong><small>Kronos: ${r.kronos_direction || 'NONE'} | Conviction: ${Math.round(r.conviction || 0)}</small></div>
+        <div><span>Result</span><strong>${result}</strong><small>Conviction: ${Math.round(r.conviction || 0)}</small></div>
       </div>
       ${liveBlock}
     </div>`;
@@ -3363,13 +3592,15 @@ function renderPriceToBeatConfluence(data) {
     const s = sb[h] || sb[String(h)] || {};
     const r = latest[h] || latest[String(h)] || {};
     const a = acc[h] || acc[String(h)] || {};
-    const dir = s.direction || r.our_direction || 'NEUTRAL';
-    const raw = s.rawDirection || dir;
+    const dir = s.finalDirection || s.direction || r.our_direction || 'NEUTRAL';
+    const raw = s.modelRawDirection || s.rawDirection || dir;
     const directional = ['UP', 'DOWN'].includes(dir);
-    const actionable = !!s.actionable && directional;
+    const actionable = (s.finalAction === 'TRADE' || s.tradeVerdict === 'TRADE' || !!s.actionable) && directional;
     const conv = Math.round(s.conviction || r.conviction || 0);
     const grade = s.convictionGrade || (conv >= 85 ? 'A+' : conv >= 70 ? 'A' : conv >= 55 ? 'B' : conv >= 40 ? 'C' : 'WATCH');
-    const cd = s.confluenceDetail || {};
+    const setup = s.setupQuality || {};
+    const cd = setup.checks || s.confluenceDetail || {};
+    const why = getNoTradeText(s, actionable ? 'Passed the current trade gate.' : 'Risk gate says wait.');
     const ourAcc = s.ourAccuracy != null
       ? `${(s.ourAccuracy * 100).toFixed(0)}%`
       : (a.total ? `${(a.accuracy * 100).toFixed(0)}%` : '--');
@@ -3395,6 +3626,7 @@ function renderPriceToBeatConfluence(data) {
       <div class="ptb-conf-acc">
         <span>Ensemble acc ${ourAcc} (${s.ourSamples || a.total || 0}n)</span>
       </div>
+      <div class="ptb-conf-reason" style="margin-top:.4rem;color:var(--text-secondary);font-size:.82em">${why}</div>
     </div>`;
   }).join('');
 }
@@ -3450,7 +3682,7 @@ function renderModelRoster(data) {
   }).join('');
 
   els.modelRoster.innerHTML = header + summaryRows + rows +
-    `<div class="roster-note">Top rows reconcile the final gated ensemble and Kronos path. Base-model rows show each model's <em>current vote</em> and <b>live accuracy</b> (hits/resolved) for that horizon.</div>`;
+    `<div class="roster-note">Top rows reconcile the final gated ensemble. Base-model rows show each model's <em>current vote</em> and <b>live accuracy</b> (hits/resolved) for that horizon.</div>`;
 }
 
 // inventory `installed` uses full names for some models; trained counts are nested by regime

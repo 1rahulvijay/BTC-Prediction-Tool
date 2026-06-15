@@ -63,7 +63,7 @@ def init_db():
         _ANCHOR_CONN = duckdb.connect(DB_PATH)
     conn = _connect()
     # For each timeframe, create a table if it doesn't exist
-    timeframes = [1, 3, 5, 7, 10, 15]
+    timeframes = [1, 3, 5, 7, 10, 15, 30]
     for tf in timeframes:
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS predictions_{tf}m (
@@ -121,6 +121,15 @@ def init_db():
             "ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
             "ADD COLUMN expected_precision DOUBLE DEFAULT NULL",
             "ADD COLUMN calibrated_confidence DOUBLE DEFAULT NULL",
+            "ADD COLUMN model_raw_direction VARCHAR DEFAULT ''",
+            "ADD COLUMN pre_server_direction VARCHAR DEFAULT ''",
+            "ADD COLUMN final_direction VARCHAR DEFAULT ''",
+            "ADD COLUMN trade_verdict VARCHAR DEFAULT ''",
+            "ADD COLUMN no_trade_reasons_json VARCHAR DEFAULT '[]'",
+            "ADD COLUMN decision_state_json VARCHAR DEFAULT '{}'",
+            "ADD COLUMN model_confluence DOUBLE DEFAULT 0.0",
+            "ADD COLUMN setup_score DOUBLE DEFAULT 0.0",
+            "ADD COLUMN setup_quality_json VARCHAR DEFAULT '{}'",
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions_{tf}m {ddl};")
@@ -174,6 +183,40 @@ def init_db():
             pnl_usd DOUBLE,
             net_pnl_usd DOUBLE,
             hold_time_ms BIGINT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS forward_ev_ledger (
+            id VARCHAR PRIMARY KEY,
+            prediction_id VARCHAR,
+            source VARCHAR,
+            timestamp BIGINT,
+            horizon INT,
+            entry_price DOUBLE,
+            target_price DOUBLE,
+            expected_move DOUBLE,
+            confidence DOUBLE,
+            raw_direction VARCHAR,
+            final_direction VARCHAR,
+            trade_verdict VARCHAR,
+            action VARCHAR,
+            notional_usd DOUBLE,
+            fee_bps DOUBLE,
+            slippage_bps DOUBLE,
+            no_trade_reasons_json VARCHAR DEFAULT '[]',
+            setup_quality_json VARCHAR DEFAULT '{}',
+            resolved BOOLEAN DEFAULT FALSE,
+            exit_price DOUBLE DEFAULT NULL,
+            actual_move DOUBLE DEFAULT NULL,
+            actual_direction VARCHAR DEFAULT '',
+            direction_hit BOOLEAN DEFAULT NULL,
+            gross_pnl_usd DOUBLE DEFAULT NULL,
+            fees_usd DOUBLE DEFAULT NULL,
+            slippage_usd DOUBLE DEFAULT NULL,
+            net_pnl_usd DOUBLE DEFAULT NULL,
+            avoided_loss_usd DOUBLE DEFAULT NULL,
+            opportunity_cost_usd DOUBLE DEFAULT NULL,
+            resolved_at BIGINT DEFAULT NULL
         )
     """)
     conn.execute("""
@@ -399,9 +442,19 @@ def init_db():
             ts BIGINT,
             seconds_left INT,
             distance DOUBLE,
-            position VARCHAR
+            position VARCHAR,
+            vol_60s_pct DOUBLE,
+            p_hold DOUBLE
         )
     """)
+    # Additive migration (2026-06-14): persist trailing-60s vol + the live calibrated P(hold)
+    # at snapshot time, so the live P(hold) tier is EXACTLY gradeable from the DB (not just the
+    # structural distance/time zone the §5bw validation reconstructed). Crash-safe no-op if present.
+    for _ddl in ["ADD COLUMN vol_60s_pct DOUBLE", "ADD COLUMN p_hold DOUBLE"]:
+        try:
+            conn.execute(f"ALTER TABLE persistence_snapshot {_ddl}")
+        except Exception:
+            pass
     # A10 (2026-06-13): per-prediction setup FINGERPRINT — the DECISION context (regime,
     # conviction, agreement, grade, CVD, GEX) keyed by (ts,horizon), joinable to
     # predictions_{h}m for the outcome. Two no-retrain payoffs: (1) the evidence layer for
@@ -466,6 +519,33 @@ def init_db():
             actual_direction VARCHAR DEFAULT '',
             hit BOOLEAN,
             resolved BOOLEAN DEFAULT FALSE
+        )
+    """)
+    # Offline replay rows are deliberately separate from live predictions_*m tables.
+    # They are useful for calibration/backtest research but must never contaminate
+    # live accuracy, because replay cannot reproduce feed outages, latency, or slippage.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS historical_replay_predictions (
+            id VARCHAR PRIMARY KEY,
+            replay_run_id VARCHAR,
+            timestamp BIGINT,
+            horizon INT,
+            model_bundle_id VARCHAR DEFAULT '',
+            feature_schema_hash VARCHAR DEFAULT '',
+            model_raw_direction VARCHAR DEFAULT '',
+            final_direction VARCHAR DEFAULT '',
+            trade_verdict VARCHAR DEFAULT '',
+            confidence DOUBLE DEFAULT 0.0,
+            expected_move DOUBLE DEFAULT 0.0,
+            target_price DOUBLE DEFAULT 0.0,
+            actual_price DOUBLE DEFAULT NULL,
+            actual_move DOUBLE DEFAULT NULL,
+            direction_hit BOOLEAN DEFAULT NULL,
+            price_match BOOLEAN DEFAULT NULL,
+            move_error DOUBLE DEFAULT NULL,
+            no_trade_reasons_json VARCHAR DEFAULT '[]',
+            setup_quality_json VARCHAR DEFAULT '{}',
+            created_at BIGINT
         )
     """)
     # 5m/15m "price to beat" rounds: lock a reference price, record our UP/DOWN call,
@@ -620,18 +700,22 @@ def log_setup_fingerprint(ts: int, horizon: int, regime: str, raw_direction: str
 
 
 def log_persistence_snapshot(round_id: str, horizon: int, ts: int,
-                             seconds_left: int, distance: float, position: str):
+                             seconds_left: int, distance: float, position: str,
+                             vol_60s_pct: float = None, p_hold: float = None):
     """A1: append one intra-window persistence snapshot. Crash-safe; the price-to-beat
-    tracker dedupes to ~15s per round. Outcome/label joined at TRAIN time via round_id."""
+    tracker dedupes to ~15s per round. Outcome/label joined at TRAIN time via round_id.
+    vol_60s_pct + p_hold (2026-06-14) make the live P(hold) tier exactly gradeable."""
     conn = None
     try:
         conn = _connect()
         conn.execute("""
             INSERT INTO persistence_snapshot
-            (round_id, horizon, ts, seconds_left, distance, position)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (round_id, horizon, ts, seconds_left, distance, position, vol_60s_pct, p_hold)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (str(round_id), int(horizon), int(ts), int(seconds_left),
-              float(distance), str(position)))
+              float(distance), str(position),
+              (float(vol_60s_pct) if vol_60s_pct is not None else None),
+              (float(p_hold) if p_hold is not None else None)))
     except Exception as e:
         print(f"DuckDB persistence-snapshot Insert Error: {e}")
     finally:
@@ -786,6 +870,277 @@ def fetch_model_accuracy() -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 #  Price-to-beat 5m/15m rounds
 # ──────────────────────────────────────────────────────────────────────────
+def log_historical_replay_prediction(entry: dict):
+    """Persist one offline replay prediction outside live accuracy tables."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR REPLACE INTO historical_replay_predictions
+            (id, replay_run_id, timestamp, horizon, model_bundle_id, feature_schema_hash,
+             model_raw_direction, final_direction, trade_verdict, confidence,
+             expected_move, target_price, actual_price, actual_move, direction_hit,
+             price_match, move_error, no_trade_reasons_json, setup_quality_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            entry.get("id"),
+            entry.get("replay_run_id", ""),
+            int(entry.get("timestamp") or 0),
+            int(entry.get("horizon") or 0),
+            entry.get("model_bundle_id", ""),
+            entry.get("feature_schema_hash", ""),
+            entry.get("model_raw_direction", ""),
+            entry.get("final_direction", ""),
+            entry.get("trade_verdict", ""),
+            float(entry.get("confidence") or 0.0),
+            float(entry.get("expected_move") or 0.0),
+            float(entry.get("target_price") or 0.0),
+            (float(entry["actual_price"]) if entry.get("actual_price") is not None else None),
+            (float(entry["actual_move"]) if entry.get("actual_move") is not None else None),
+            entry.get("direction_hit"),
+            entry.get("price_match"),
+            (float(entry["move_error"]) if entry.get("move_error") is not None else None),
+            json.dumps(entry.get("no_trade_reasons") or []),
+            json.dumps(entry.get("setup_quality") or {}),
+            int(entry.get("created_at") or time.time() * 1000),
+        ))
+    except Exception as e:
+        print(f"DuckDB Historical Replay Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def fetch_historical_replay_summary(limit: int = 50) -> dict:
+    out = {"summary": {}, "recent": []}
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT replay_run_id, horizon,
+                   COUNT(*) AS row_count,
+                   SUM(CASE
+                        WHEN model_raw_direction IN ('UP', 'DOWN')
+                         AND direction_hit IS NOT NULL THEN 1 ELSE 0 END) AS directional_n,
+                   SUM(CASE
+                        WHEN model_raw_direction IN ('UP', 'DOWN')
+                         AND direction_hit THEN 1 ELSE 0 END) AS directional_hits,
+                   SUM(CASE WHEN price_match THEN 1 ELSE 0 END) AS price_matches,
+                   AVG(move_error) AS avg_move_error
+            FROM historical_replay_predictions
+            GROUP BY replay_run_id, horizon
+            ORDER BY replay_run_id DESC, horizon
+        """).fetchall()
+        for run_id, h, row_count, directional_n, directional_hits, price_matches, avg_err in rows:
+            row_count = int(row_count or 0)
+            directional_n = int(directional_n or 0)
+            directional_hits = int(directional_hits or 0)
+            price_matches = int(price_matches or 0)
+            out["summary"].setdefault(str(run_id), {})[int(h)] = {
+                "rows": row_count,
+                "directional_n": directional_n,
+                "directional_hits": directional_hits,
+                "directional_accuracy": round(directional_hits / directional_n, 4) if directional_n else None,
+                "price_matches": price_matches,
+                "price_match_rate": round(price_matches / directional_n, 4) if directional_n else None,
+                "avg_move_error_usd": round(float(avg_err or 0.0), 2),
+            }
+        df = conn.execute("""
+            SELECT replay_run_id, timestamp, horizon, model_raw_direction,
+                   final_direction, trade_verdict, confidence, expected_move,
+                   actual_move, direction_hit, move_error
+            FROM historical_replay_predictions
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (int(limit),)).df()
+        out["recent"] = df.to_dict("records")
+    except Exception as e:
+        out["error"] = str(e)
+    finally:
+        if conn:
+            conn.close()
+    return out
+
+
+def log_forward_ev_event(entry: dict):
+    """Log one live/paper forward-EV event keyed to a prediction id.
+
+    This is not an execution fill. It is an auditable paper ledger that measures
+    whether final TRADE calls had positive net value and whether AVOID/WEAK_LEAN
+    decisions protected capital versus the raw model lean.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR REPLACE INTO forward_ev_ledger
+            (id, prediction_id, source, timestamp, horizon, entry_price, target_price,
+             expected_move, confidence, raw_direction, final_direction, trade_verdict,
+             action, notional_usd, fee_bps, slippage_bps, no_trade_reasons_json,
+             setup_quality_json, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+        """, (
+            entry.get("id"),
+            entry.get("prediction_id"),
+            entry.get("source", "ensemble"),
+            int(entry.get("timestamp") or 0),
+            int(entry.get("horizon") or 0),
+            float(entry.get("entry_price") or 0.0),
+            float(entry.get("target_price") or 0.0),
+            float(entry.get("expected_move") or 0.0),
+            float(entry.get("confidence") or 0.0),
+            entry.get("raw_direction", ""),
+            entry.get("final_direction", ""),
+            entry.get("trade_verdict", ""),
+            entry.get("action", ""),
+            float(entry.get("notional_usd") or 0.0),
+            float(entry.get("fee_bps") or 0.0),
+            float(entry.get("slippage_bps") or 0.0),
+            json.dumps(entry.get("no_trade_reasons") or []),
+            json.dumps(entry.get("setup_quality") or {}),
+        ))
+    except Exception as e:
+        print(f"DuckDB Forward-EV Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def resolve_forward_ev_event(prediction_id: str, exit_price: float, actual_move: float,
+                             actual_direction: str, direction_hit: bool,
+                             resolved_at: int = None):
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT id, entry_price, raw_direction, final_direction, trade_verdict,
+                   action, notional_usd, fee_bps, slippage_bps
+            FROM forward_ev_ledger
+            WHERE prediction_id = ? AND resolved = FALSE
+        """, (prediction_id,)).fetchall()
+        for row in rows:
+            (event_id, entry_price, raw_dir, final_dir, verdict, action,
+             notional, fee_bps, slip_bps) = row
+            entry_price = float(entry_price or 0.0)
+            exit_price_f = float(exit_price or 0.0)
+            notional = float(notional or 0.0)
+            fee_bps = float(fee_bps or 0.0)
+            slip_bps = float(slip_bps or 0.0)
+            fees = notional * (fee_bps / 10000.0) * 2.0
+            slippage = notional * (slip_bps / 10000.0) * 2.0
+
+            gross = None
+            net = None
+            avoided_loss = None
+            opportunity_cost = None
+
+            def _pnl_for(side: str) -> float:
+                if entry_price <= 0 or notional <= 0 or side not in ("UP", "DOWN"):
+                    return 0.0
+                ret = (exit_price_f - entry_price) / entry_price
+                if side == "DOWN":
+                    ret = -ret
+                return notional * ret
+
+            if action == "TRADE" and final_dir in ("UP", "DOWN"):
+                gross = _pnl_for(final_dir)
+                net = gross - fees - slippage
+            else:
+                hypo_gross = _pnl_for(raw_dir)
+                hypo_net = hypo_gross - fees - slippage
+                avoided_loss = max(0.0, -hypo_net)
+                opportunity_cost = max(0.0, hypo_net)
+
+            conn.execute("""
+                UPDATE forward_ev_ledger
+                SET resolved = TRUE, exit_price = ?, actual_move = ?, actual_direction = ?,
+                    direction_hit = ?, gross_pnl_usd = ?, fees_usd = ?, slippage_usd = ?,
+                    net_pnl_usd = ?, avoided_loss_usd = ?, opportunity_cost_usd = ?,
+                    resolved_at = ?
+                WHERE id = ?
+            """, (
+                float(exit_price or 0.0),
+                float(actual_move or 0.0),
+                actual_direction or "",
+                direction_hit,
+                gross,
+                fees,
+                slippage,
+                net,
+                avoided_loss,
+                opportunity_cost,
+                int(resolved_at or time.time() * 1000),
+                event_id,
+            ))
+    except Exception as e:
+        print(f"DuckDB Forward-EV Resolve Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def fetch_forward_ev_summary(limit: int = 50) -> dict:
+    out = {"summary": {}, "recent": []}
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT action,
+                   COUNT(*) FILTER (WHERE resolved) AS n,
+                   SUM(CASE WHEN resolved AND COALESCE(net_pnl_usd, 0) > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN resolved THEN COALESCE(net_pnl_usd, 0) ELSE 0 END) AS net_pnl,
+                   SUM(CASE WHEN resolved THEN COALESCE(avoided_loss_usd, 0) ELSE 0 END) AS avoided,
+                   SUM(CASE WHEN resolved THEN COALESCE(opportunity_cost_usd, 0) ELSE 0 END) AS opp_cost,
+                   AVG(CASE WHEN resolved THEN COALESCE(net_pnl_usd, 0) ELSE NULL END) AS avg_net
+            FROM forward_ev_ledger
+            GROUP BY action
+        """).fetchall()
+        total_net = 0.0
+        total_avoided = 0.0
+        total_opp = 0.0
+        total_n = 0
+        for action, n, wins, net, avoided, opp, avg_net in rows:
+            n = int(n or 0)
+            wins = int(wins or 0)
+            net = float(net or 0.0)
+            avoided = float(avoided or 0.0)
+            opp = float(opp or 0.0)
+            total_n += n
+            total_net += net
+            total_avoided += avoided
+            total_opp += opp
+            out["summary"][str(action or "UNKNOWN")] = {
+                "n": n,
+                "wins": wins,
+                "win_rate": round(wins / n, 4) if n else None,
+                "net_pnl_usd": round(net, 2),
+                "avg_net_pnl_usd": round(float(avg_net or 0.0), 2),
+                "avoided_loss_usd": round(avoided, 2),
+                "opportunity_cost_usd": round(opp, 2),
+            }
+        out["totals"] = {
+            "resolved": total_n,
+            "net_pnl_usd": round(total_net, 2),
+            "avoided_loss_usd": round(total_avoided, 2),
+            "opportunity_cost_usd": round(total_opp, 2),
+        }
+        df = conn.execute("""
+            SELECT timestamp, horizon, action, raw_direction, final_direction,
+                   trade_verdict, entry_price, exit_price, actual_direction,
+                   net_pnl_usd, avoided_loss_usd, opportunity_cost_usd, resolved
+            FROM forward_ev_ledger
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (int(limit),)).df()
+        out["recent"] = df.to_dict("records")
+    except Exception as e:
+        out["error"] = str(e)
+    finally:
+        if conn:
+            conn.close()
+    return out
+
+
 def log_price_to_beat(entry: dict):
     conn = None
     try:
@@ -1140,7 +1495,7 @@ def fetch_price_to_beat_recent(limit: int = 20) -> list:
 
 def fetch_action_log(limit: int = 50) -> list:
     """Union recent predictions across all horizons for the UI action feed."""
-    timeframes = [1, 3, 5, 7, 10, 15]
+    timeframes = [1, 3, 5, 7, 10, 15, 30]
     selects = []
     for tf in timeframes:
         # Push the ORDER BY/LIMIT into each per-table subquery so DuckDB only reads
@@ -1279,7 +1634,7 @@ def fetch_ab_variant_profit_stats() -> dict:
     directional PnL after the same cost floor used by labels.
     """
     out = {}
-    timeframes = [1, 3, 5, 7, 10, 15]
+    timeframes = [1, 3, 5, 7, 10, 15, 30]
     union_sql = " UNION ALL ".join([
         f"""
         SELECT id, horizon, binance_price, actual_move, resolved
@@ -1351,7 +1706,11 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                    expectancy_usd: float = 0.0, expected_slippage_usd: float = 0.0,
                    model_bundle_id: str = "baseline_v9", feature_schema_hash: str = "",
                    confluence_grade: str = "", expected_precision: float = None,
-                   calibrated_confidence: float = None):
+                   calibrated_confidence: float = None, model_raw_direction: str = "",
+                   pre_server_direction: str = "", final_direction: str = "",
+                   trade_verdict: str = "", no_trade_reasons: list = None,
+                   decision_state: dict = None, model_confluence: float = 0.0,
+                   setup_score: float = 0.0, setup_quality: dict = None):
     conn = None
     try:
         conn = _connect()
@@ -1362,8 +1721,11 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                 raw_direction, skip_reason, avoid_success, prob_up, prob_down, agreement,
                 model_dirs_json, verify_at, move_range_low, move_range_median,
                 move_range_high, move_range_width, model_version, feature_schema_hash,
-                confluence_grade, expected_precision, calibrated_confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                confluence_grade, expected_precision, calibrated_confidence,
+                model_raw_direction, pre_server_direction, final_direction, trade_verdict,
+                no_trade_reasons_json, decision_state_json, model_confluence, setup_score,
+                setup_quality_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (pred_id, timestamp, horizon, binance_price, target_price, expected_move,
               confidence, signal, chainlink_price, chainlink_target, False, cascade_active, regime,
               raw_direction or signal, skip_reason or "", avoid_success, prob_up, prob_down,
@@ -1374,7 +1736,16 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
               ((expected_move_range or {}).get("high") - (expected_move_range or {}).get("low"))
               if (expected_move_range or {}).get("high") is not None and (expected_move_range or {}).get("low") is not None
               else None, model_bundle_id, feature_schema_hash,
-              confluence_grade or "", expected_precision, calibrated_confidence))
+              confluence_grade or "", expected_precision, calibrated_confidence,
+              model_raw_direction or raw_direction or signal,
+              pre_server_direction or raw_direction or signal,
+              final_direction or signal,
+              trade_verdict or "",
+              json.dumps(no_trade_reasons or []),
+              json.dumps(decision_state or {}),
+              float(model_confluence or 0.0),
+              float(setup_score or 0.0),
+              json.dumps(setup_quality or {})))
         # Store prediction-time context for the trained meta-model.
         if context:
             conn.execute(f"""
@@ -1446,7 +1817,7 @@ def fetch_unresolved_predictions(max_age_hours: int = 48) -> list[dict]:
     conn = None
     try:
         conn = _connect()
-        for h in [1, 3, 5, 7, 10, 15]:
+        for h in [1, 3, 5, 7, 10, 15, 30]:
             df = conn.execute(f"""
                 SELECT id, horizon, signal, raw_direction, skip_reason, confidence,
                        target_price, expected_move, binance_price, timestamp, verify_at,
@@ -1496,7 +1867,7 @@ def get_last_prediction_timestamps() -> dict[int, int]:
     conn = None
     try:
         conn = _connect()
-        for h in [1, 3, 5, 7, 10, 15]:
+        for h in [1, 3, 5, 7, 10, 15, 30]:
             ts = conn.execute(f"SELECT MAX(timestamp) FROM predictions_{h}m").fetchone()[0]
             if ts is not None:
                 out[h] = int(ts)

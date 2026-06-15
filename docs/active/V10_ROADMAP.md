@@ -123,3 +123,212 @@ layer (P(beat)); it does NOT replace the direction stack.
    to settle the sequence-model question with real data.
 4. **Decide the keeper window** (60–90d) and assemble the PART 2 bundle — one measured lever at a time.
 5. **Wire the leak-free heads** into the card + composer; validate end-to-end with the composed metric.
+
+---
+
+## PART 5 — EXECUTION-DECISION LAYER (the Phase-16 pivot, 2026-06-14)
+
+**Why:** Phase 16 proved the bottleneck moved from prediction → execution. The 5m signal
+edge is real but break-evens at **0 bps cost** (gross +0.04 bps); taker fees / fixed holds
+kill it. The next edge is **execution discipline**, not another feature. Operator split:
+**70% execution / 20% side-rule / 10% features**; broad feature-hunting is PAUSED.
+
+### ✅ DONE NOW (offline-safe — built & self-tested while the 60-day retrain ran; no DB lock)
+- **`backend/decision/` package** (pure-Python, unit-tested, pyflakes-clean, needs NO retraining):
+  - `cost_gate.py` — the hard rule `expected_move / expected_cost ≥ 2.5` + a 3-mode exec-cost
+    model (MAKER_MAKER 0 / MAKER_TAKER 7 / TAKER_TAKER 14 bps base + spread). Reproduces Phase 16.
+  - `decision_composer.py` — the live single-tick ladder `NO_TRADE/WATCH/T1/T2/T2_SHADOW/T3`,
+    **reusing the validated `rules/microstructure_side_engine.py`** for SIDE (no new ML side
+    model — XGBoost failed). T3 is hard-gated on `maker_fill_proven` (default off) → caps at
+    `T2_SHADOW` until live shadow proves fills. A cost-gate FAIL → WATCH (not NO_TRADE).
+  - `event_exits.py` — deterministic event-driven exits (hard_stop, mfe_target, opposite_rule,
+    basis_normalized, vpin_resolved, tradability_decay, move_remaining_low, anchor_cross,
+    max_hold backstop). Phase 16 proved fixed-time holds fail.
+- **`train_selectivity_models.py`** → persisted `data/saved_models/selectivity_models.pkl`
+  (selectivity / tradability / fail-fast LogReg + expected-move Ridge + 60d side thresholds).
+  This is a tiny offline fit on `research_matrix_1m.parquet` — **NOT the 136-feature ensemble retrain.**
+  - ⚠️ **AUDIT FLAG:** OOS AUCs came in ABOVE the research docs (selectivity 0.739 vs ~0.720,
+    tradability 0.793 vs ~0.739, **fail-fast 0.613 vs ~0.537**). Per our "too-good = leakage"
+    rule these are **CANDIDATES, not trusted** until the audit below clears. Likely-benign cause:
+    used the rule-composer feature list (`rv_15m/vpin_15m/compression_ratio/shock_magnitude`)
+    rather than the canonical 6 keepers, on the current matrix. Expected-move Ridge is honestly
+    weak (MAE 8.6 ≈ mean 8.1 bps).
+
+### ⏳ DEFERRED TO V10 (needs the app running, live data, or validation — cannot do mid-train)
+1. **[AUDIT] Selectivity-model leakage/parity audit** — reconcile the feature list vs the canonical
+   6 keepers; confirm `tradable_move_label`/`fail_fast_label` alignment in the matrix; re-measure
+   purged-walk-forward. Do NOT serve `selectivity_models.pkl` until AUCs are explained and clean.
+2. **[WIRE] Live feature parity** — `compose_decision` needs `rv_*/vpin_15m/compression_ratio/
+   shock_magnitude/perp_spot_basis_bps/cvd_divergence` computed at SERVE time with the same math as
+   the matrix. `vpin/rv` exist live; **basis/cvd depend on perp flow which is geo-blocked** (V8/V10
+   note) — needs a live recorder twin or a fallback (side engine loses its strongest rule without basis).
+3. **[WIRE] Compose into `server.py`** — call `compose_decision` per tick from the persisted models;
+   add `decision` (action/tier/side/reason/move_cost_ratio + gate diagnostics) to the WS payload.
+4. **[WIRE] Live-shadow logging on the real feed** — connect `backend/live/live_shadow_logger.py`
+   (currently standalone sqlite) to the live tick stream; add `shadow_orders` / `live_shadow_signals`
+   tables to the app DuckDB (additive `CREATE TABLE IF NOT EXISTS`). Resolve after 5m/15m windows.
+5. **[BUILD — LIVE DATA FIRST] Fill-quality family** — `P(Good_Fill)`, `P(Adverse_Selection_After_Fill)`,
+   maker_fill_rate, time_to_fill. CANNOT be modeled offline (Phase 16); needs the shadow logger
+   running for days/weeks first. This is the gate to unlocking T3 live.
+6. **[BUILD] Rejection-reason analytics + live-calibration dashboard + drift downgrades**
+   (`backend/analytics/rejection_reason_report.py`, `live_calibration_report.py`, tier-downgrade
+   monitor). Report which gate blocks/saves the most trades; downgrade T3→T2→T1→WATCH on drift.
+7. **[WIRE] Frontend `PrecisionSignalCard`** — the honest WATCH card: show every gate value + the
+   rejection reason ("edge exists, cost too high — move/cost 1.28×"). Never a bare BUY/SELL.
+8. **[WIRE] `event_exits` into the live position tracker** — needs live MFE/MAE + basis/vpin state.
+
+**Promotion gate to LIVE_ACTIVE (unchanged):** ≥500 resolved live-shadow candidates, positive paper
+EV after real fills, stable calibration, no fakeout-rate increase, maker fill quality proven.
+
+### ✅ DONE (offline-safe additions, 2026-06-14 — built while the live model ran, nothing wired)
+- **`audit_selectivity_models.py`** — ran the V10 PART-5 #1 leakage audit. **VERDICT: no leakage.**
+  Naive `TimeSeriesSplit` AUC ≈ PURGED walk-forward AUC for all three heads (Δ≈0.000), and no single
+  feature ≥ 0.85. The higher-than-research AUCs (sel 0.738 / trad 0.791 / fail 0.612) are a benign
+  period difference, NOT a bug — the models are trustworthy for RANKING.
+  - ⚠️ **BUT raw probabilities are NOT calibrated** (`class_weight='balanced'` inflates them: at P≥0.7
+    realized rates are 0.51/0.21/0.02). **Serving must gate on the PERCENTILE thresholds**
+    (`sel_t1≈0.88`), not the composer's hardcoded `0.95` probability floor, and needs an isotonic layer.
+- **`composed_decision_backtest.py`** — ran the ACTUAL `compose_decision` over 84,955 purged-OOF bars.
+  - **Discipline works:** 95.0% NO_TRADE (weak_selectivity), 4.6% WATCH, 0.4% T2_SHADOW, 0.1% T1.
+  - **Honest EV (the hard truth):** even at **maker0 (0 bps)** the sided signals are **~0-to-negative**
+    — WATCH+sided −1.57 bps, T2 −0.58 bps, T3 −17 bps (n=38, noise). Side win-rate ~46% (BELOW the
+    research's 53–55%). So the deterministic side edge **does not reproduce positive gross EV under
+    honest purged-OOF**, consistent with Phase 16's "≈0 gross, break-even at 0 bps". **The system's
+    value today is the 95% disciplined abstention, NOT a tradable signal. Stays WATCH/shadow.**
+  - Open question for research (20% side-rule bucket): why side win-rate decays vs the probes (purged
+    OOF vs their split? threshold/regime-split differences?). Re-examine before trusting any tier live.
+- **`drift_monitor.py`** — pure tier-downgrade rules (T3→T2→T1→WATCH→NO_TRADE) on live calibration
+  drift / negative live EV / fakeouts. Self-tested. Feeds the (deferred) live loop.
+- **`shadow_store.py`** — a **SEPARATE DuckDB** (`data/execution_layer.duckdb`, NOT `analytics.duckdb`)
+  holding `shadow_signals` / `shadow_orders` / `rejection_events`. DuckDB is single-writer per file,
+  so the execution layer can be written/queried with ZERO contention or risk to the live ensemble's
+  DB. Created empty + self-tested; offline analytics (`rejection_summary`, `tier_scorecard`) read it.
+  This is the foundation the (deferred, sign-off-gated) live-shadow wiring writes to.
+- **`composed_decision_backtest.py --persist`** + **`shadow_report.py`** — an INDEPENDENT,
+  no-retrain pipeline: replay the 60-day matrix through the real `compose_decision`, write every
+  decision + resolution into `execution_layer.duckdb` (638 sided signals + 70,795 rejection_events),
+  then report rejection breakdown / tier scorecard / calibration. Works entirely on the separate DB.
+  - ⚠️ **Tiers are INVERTED (same grade-inversion as the direction stack):** T3 (p_big_move~0.995)
+    wins **39.5%** vs T2 (~0.933) **46.3%** — the highest-selectivity tier wins LESS. Full-agreement
+    clusters at exhaustion/reversal. So a naive "trust the top tier" gate is wrong here; the side
+    edge does not improve with selectivity. Another reason it stays WATCH/shadow until live data.
+- All are pure/offline, pyflakes-clean, and never touch `saved_models/` ensemble files or
+  `analytics.duckdb`.
+
+**OPERATOR NOTE — auto-retrain loop (2026-06-14):** with `BTC_FREEZE_MODEL=0`, the post-backtest
+auto-learner flagged 3m (`acc=0.400, degrading`) and kicked off ANOTHER full ~6h retrain. But the
+purged walk-forward shows ALL horizons `below_chance` (1m 0.36 → 30m 0.50) — that is the information
+ceiling, NOT a defect retraining can fix. **RESOLVED:** set `BTC_FREEZE_MODEL=1` in `start.bat`
+(2026-06-14). Boot now LOADS the saved v8 model (arch matches) → no startup retrain, no auto-retrain
+loop. The edge today remains P(hold) + selectivity/abstention, not direction.
+
+---
+
+## PART 5 — STATUS LEDGER (consolidated, 2026-06-14)
+
+**Runtime:** backend UP on :8000, serving the FROZEN 60-day v8 model (`BTC_FREEZE_MODEL=1`). The
+execution-decision layer is wired into NOTHING — the running app is unchanged. Per operator rule,
+nothing touches the live app/models without explicit sign-off ([[confirm-before-wiring]]).
+
+### ✅ DONE — offline execution-decision layer (built, self-tested, isolated)
+All in `backend/decision/` (+ reuses `backend/rules/microstructure_side_engine.py`):
+| File | Role |
+|---|---|
+| `cost_gate.py` | hard `move/cost ≥ 2.5` rule + 3-mode exec-cost model |
+| `decision_composer.py` | `NO_TRADE/WATCH/T1/T2/T2_SHADOW/T3` ladder (reuses side engine) |
+| `event_exits.py` | 9 event-driven exits (no fixed-time holds) |
+| `drift_monitor.py` | tier downgrade on live drift / negative EV / fakeouts |
+| `train_selectivity_models.py` | fits + persists `selectivity_models.pkl` (NOT the ensemble) |
+| `audit_selectivity_models.py` | leakage audit — **ran: no leakage** (gate on percentiles) |
+| `composed_decision_backtest.py` `--persist` | full-stack proof; writes to the separate DB |
+| `shadow_store.py` | **separate** `execution_layer.duckdb` (never `analytics.duckdb`) |
+| `shadow_report.py` | rejection / tier scorecard / calibration analytics |
+
+Honest results: 95% disciplined NO_TRADE; even at maker(0 bps) sided EV is ~0-to-negative; tiers
+INVERTED (T3 wins < T2). System value today = abstention, NOT a tradable signal → stays WATCH/shadow.
+
+### ❌ NOT DONE — live integration (0%, gated; cannot be done independently)
+| Item | Blocker |
+|---|---|
+| Wire composer into `server.py` + WS payload | live-app integration → needs sign-off |
+| Frontend `PrecisionSignalCard` (honest WATCH card) | needs the payload wired first |
+| Wire `event_exits` into the live position tracker | live-app integration → needs sign-off |
+| Live feature parity (`rv_*/vpin_15m/compression/shock` at serve time) | needs live feed; `perp_spot_basis_bps`/`cvd_divergence` are **geo-blocked** |
+| Standalone live-shadow runner → `execution_layer.duckdb` | needs live feed + VALIDATED parity (no "no-parity feature") |
+| `P(Good_Fill)` fill-quality + adverse-selection models | needs live-shadow fills that **don't exist yet** |
+| Live calibration dashboard + live rejection analytics | needs the live-shadow data above |
+
+### NEXT (operator picks)
+1. **Build the standalone live-shadow runner** — independent process, own public feed, writes the
+   separate DB; unblocks `P(Good_Fill)` + calibration. Needs careful parity work first.
+2. **OR sign-off to wire `compose_decision` into `server.py`** so the dashboard shows WATCH/tier
+   decisions (writes only to `execution_layer.duckdb`).
+Promotion to LIVE_ACTIVE stays gated: ≥500 resolved live-shadow candidates, positive paper EV after
+real fills, stable calibration, no fakeout increase, maker fill quality proven.
+
+---
+
+## PART 6 — POLYMARKET MISPRICING MODEL (the real ceiling-breaker, parked 2026-06-15)
+
+**Thesis.** BTC direction is a coin-flip (proven 11 ways) — so stop predicting direction. The edge
+that *can* exist is **MISPRICING**: the gap between our calibrated `P(Hold)` and the market's implied
+price. This is the one path that breaks the ceiling, because it doesn't need a direction edge:
+```
+edge = calibrated_P(Hold) − market_ask − spread/cost_buffer
+trade only if edge > 0 AND P(Hold) is calibrated AND line-cross risk is low
+```
+You need TWO histories joined: (1) BTC/oracle per-round (we have it → P(Hold)/P(Big_Move)/P(Tradable));
+(2) **Polymarket** price/spread/liquidity per round (we do NOT have it yet → this part).
+
+### Data sources (public APIs; app already has a live Polymarket CLOB WS to hook into)
+| Source | Endpoint | Gives |
+|---|---|---|
+| Gamma API | discovery | events/markets/slugs/condition_id/**clob_token_id**/start-end/resolution |
+| CLOB | `GET /prices-history` (+ batch) | historical UP/DOWN price series → implied prob, lag, overreaction |
+| Data API | `GET data-api.polymarket.com/trades` | trade prints (price/size) — but **trust trade direction only from on-chain `OrderFilled`**, public-feed inferred side disagrees with ground truth |
+| CLOB | `GET /book` | CURRENT orderbook (bids/asks/spread/depth) — **historical depth is NOT reliably free** (decommissioned; paid vendors exist) |
+
+### Scripts to build (`backend/polymarket/`)
+1. `fetch_markets_gamma.py` → `polymarket_markets.parquet` (find BTC 5m/15m markets, token IDs, times).
+2. `fetch_price_history.py` → `polymarket_price_history.parquet` (UP/DOWN price vs seconds_left).
+3. `fetch_trades.py` → `polymarket_trades.parquet` (trade prints).
+4. `live_quote_recorder.py` → record `/book` every 1–2s during active rounds (best_bid/ask UP+DOWN,
+   spread, mid, top_depth, seconds_left). **MANDATORY for realistic fill modeling; accrues from NOW.**
+5. `build_round_replay_matrix.py` → join BTC/Pyth + round metadata + PM price/spread/liquidity +
+   P(Hold) features + settlement → `polymarket_replay_matrix.parquet` (one row per second/update).
+
+### Labels & models
+- **Label 1 `hold_success`** (best): current side ahead now AND same side wins at expiry → trains
+  `P(Hold_UP)/P(Hold_DOWN)` (maps to our strongest edge).
+- **Label 4 `line_cross_risk`**: winning side flips before expiry (the danger model) — inputs
+  distance_bps, seconds_left, vol_30s, recent_cross_count, tick_intensity.
+- **`good_entry` / EV**: `EV = P(win) − price − buffer`; `good_entry = realized_roi > 0`.
+- Models: **calibrated Logistic + isotonic FIRST** (P(Hold) is smooth in distance/time/vol), then
+  LightGBM/CatBoost for P(Line_Cross)/P(Good_Entry); **DL only as challenger** (we proved sequence
+  models don't beat tabular here). Validation: **round-level purged split**, no same-round leakage,
+  report AUC + **Brier + calibration** (calibration matters more than accuracy) + precision@0.90/0.93/
+  0.95 + Wilson-LB + realized ROI after spread.
+
+### Decision logic (first production gate)
+```
+edge_up   = p_hold_up   − up_ask   − buffer
+edge_down = p_hold_down − down_ask − buffer
+if seconds_left > 120:                    WAIT
+if |distance_bps| < min_distance:         NO_TRADE_LINE_RISK
+if p_line_cross > 0.25:                    NO_TRADE_FLIP_RISK
+if edge_up   > 0.03:                       T3_UP
+if edge_down > 0.03:                       T3_DOWN
+else:                                      NO_TRADE_NO_PRICE_EDGE
+```
+
+### What's offline-testable NOW vs needs live recording
+- ✅ **Now (public APIs):** scripts 1–3 + a first `P(mispriced)` / entry-edge test on CLOB
+  price-history vs settlement ("Option B — good enough for first training").
+- ⏳ **Needs the recorder accruing for days/weeks:** spreads / fill quality / `P(Good_Fill)` — script 4
+  (the live `/book` recorder). Realistic execution modeling cannot be done from public history.
+- ❌ Historical orderbook depth — not reliably free (paid vendor only).
+
+### Next action when resumed
+Build scripts **1–3 + the first `P(mispriced)` test** (offline-testable), and stand up **script 4**
+(live quote recorder) so spread/fill data starts accruing immediately. The model we actually want is
+**calibrated P(Hold) + a Polymarket mispricing detector**, NOT a BTC up/down predictor.

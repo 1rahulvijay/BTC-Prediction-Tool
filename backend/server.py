@@ -11,6 +11,7 @@ import json
 import time
 import logging
 import os
+from types import SimpleNamespace
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
@@ -29,6 +30,7 @@ from data_ingestion import (
     CrossAssetWebSocketClient,
 )
 from order_flow import OrderFlowAnalyzer
+from decision_gate import compute_no_trade_reasons
 from features import (
     build_features_from_klines,
     build_sequences,
@@ -39,7 +41,8 @@ from features import (
     atr as compute_atr,
 )
 from model_verifier import PerModelVerifier
-from price_to_beat import PriceToBeatTracker
+from price_to_beat import PriceToBeatTracker, persistence_model_status
+import model_metrics_logger        # separate DuckDB; logs every model's live output (crash-safe)
 from exchange_verifier import PerVenueVerifier
 from model import MultiModelEnsemble, CascadeMonitor, MODEL_ARCH_VERSION
 from backtester import Backtester
@@ -60,6 +63,7 @@ from polymarket_model import PolymarketModel
 from polymarket_simulator import PolymarketSimulator
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
+from historical_replay import run_replay as run_historical_replay
 import database
 
 logging.basicConfig(
@@ -253,16 +257,16 @@ cascade_monitor = CascadeMonitor()
 model.cascade_monitor = cascade_monitor
 backtester = Backtester()
 verifier = PredictionVerifier()
-model_verifier = PerModelVerifier(horizons=(1, 3, 5, 7, 10, 15))
+model_verifier = PerModelVerifier(horizons=(1, 3, 5, 7, 10, 15, 30))
 # 1m/3m/7m/10m are PRACTICE mirrors (Polymarket's real BTC windows are 5m/15m):
 # same rule, same grading — they accrue evidence fast and map every horizon's
 # betting behavior; only 5m/15m are real markets.
-price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15))
+price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30))
 # Binance-priced MIRROR of the same up/down game — anchored on the live Binance feed
 # (the model's native data) instead of Pyth. In-memory only (persist=False) so it cannot
 # collide with the Pyth tracker's rows in the shared `price_to_beat` table. Powers the
 # "Binance — Price to Beat" tab; rebuilds live after a restart (no rehydration).
-price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15), persist=False)
+price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30), persist=False)
 exchange_verifier = PerVenueVerifier(horizons=(5, 15))
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
@@ -321,10 +325,15 @@ backend_state = {
     "last_fsr_ppo_summary": {},
     "backtest_status": _fresh_status(),
     "relearn_status": _fresh_status(),
+    "replay_status": _fresh_status(),
+    "last_historical_replay": {"summary": {}, "recent": []},
+    "last_historical_replay_time": 0.0,
+    "last_threshold_recommendations": {"recommendations": [], "summary": ""},
 }
 
 backtest_task = None
 relearn_task = None
+replay_task = None
 
 data_state = {
     "klines": [],
@@ -443,6 +452,7 @@ async def price_to_beat_ticker():
                     kl = None
                 else:
                     kl = data_state.get("klines")
+            _keepers = None   # live vol keepers for BOTH trackers; set in the `if ref` block
             if ref:
                 # FEED-FRESHNESS guard: a ref unchanged for >10s means the anchor feed is
                 # frozen; still resolve/refresh, but DO NOT open new rounds at a stale price.
@@ -450,6 +460,22 @@ async def price_to_beat_ticker():
                     _last_ref = ref
                     _last_change_t = time.time()
                 feed_fresh = (time.time() - _last_change_t) < 10.0
+                # Live volatility keepers (rv_15m/30m/60m, compression, shock + vpin) computed
+                # from the recent klines via edge_probe builders (parity-proven, live_keepers).
+                # Feeds the keeper P(hold) model + the signed-quantile band; None => fallback.
+                _keepers = None
+                try:
+                    _kl = data_state.get("klines") or []
+                    if len(_kl) >= 70:
+                        import live_keepers
+                        _rk = _kl[-130:]
+                        _keepers = live_keepers.compute_keepers(
+                            [int(k.get("time", 0)) // 60000 for k in _rk],
+                            [k["close"] for k in _rk], [k["high"] for k in _rk],
+                            [k["low"] for k in _rk],
+                            vpin=(_safe_dict(data_state.get("order_flow")) or {}).get("vpin"))
+                except Exception as _ke:
+                    logger.debug(f"live keepers compute skipped: {_ke}")
                 price_to_beat_tracker.update(
                     int(time.time() * 1000),
                     float(ref),
@@ -457,6 +483,7 @@ async def price_to_beat_ticker():
                     {},  # kronos removed in v6 — tracker records "NONE"
                     klines=kl,
                     feed_fresh=feed_fresh,
+                    keepers=_keepers,
                 )
             # Binance-priced MIRROR: always anchor on the live Binance feed (same-feed,
             # so klines boundary-recovery is valid). In-memory tracker → Binance PtB tab.
@@ -471,7 +498,17 @@ async def price_to_beat_ticker():
                     {},
                     klines=data_state.get("klines"),
                     feed_fresh=(time.time() - _last_binance_t) < 10.0,
+                    keepers=_keepers,
                 )
+            # Log the price-to-beat model outputs (P(Hold), tier, band, projection) to the
+            # separate metrics DuckDB — crash-safe, both venues.
+            try:
+                model_metrics_logger.log_ptb(
+                    list(price_to_beat_tracker.latest_round.values()), venue="pyth")
+                model_metrics_logger.log_ptb(
+                    list(price_to_beat_binance_tracker.latest_round.values()), venue="binance")
+            except Exception:
+                pass
         except Exception:
             pass
         await asyncio.sleep(1.0)
@@ -776,7 +813,8 @@ def handle_trade(trade):
     order_flow.process_trade(trade)
     data_state["order_flow"] = order_flow.get_summary()
     data_state["order_flow"]["freshness_ms"] = trade["freshness_ms"]
-    
+    data_state["order_flow_updated_ms"] = int(time.time() * 1000)  # wall-clock: DETECTS disconnects (§5bw)
+
     # Fire and forget parquet log
     import database
     database.log_raw_trade_parquet(trade)
@@ -791,7 +829,8 @@ def handle_depth(depth: dict) -> None:
     order_flow.process_depth(depth)
     data_state["order_flow"] = order_flow.get_summary()
     data_state["order_flow"]["freshness_ms"] = depth["freshness_ms"]
-    
+    data_state["order_flow_updated_ms"] = int(time.time() * 1000)  # wall-clock: DETECTS disconnects (§5bw)
+
     # Log orderbook to Parquet
     import database
     database.log_depth_parquet(depth)
@@ -970,12 +1009,22 @@ def build_scoreboard(predictions: list, verification: dict) -> dict:
         a = _safe_dict(acc.get(h) or acc.get(str(h)))
         board[h] = {
             "direction": p.get("direction", "NEUTRAL"),
+            "modelRawDirection": p.get("modelRawDirection", p.get("rawDirection", p.get("direction", "NEUTRAL"))),
             "rawDirection": p.get("rawDirection", p.get("direction", "NEUTRAL")),
+            "preServerDirection": p.get("preServerDirection", p.get("direction", "NEUTRAL")),
+            "finalDirection": p.get("finalDirection", p.get("direction", "NEUTRAL")),
+            "finalAction": p.get("finalAction", p.get("trade_verdict", "NO_TRADE")),
+            "tradeVerdict": p.get("trade_verdict", "NO_TRADE"),
+            "noTradeReasons": p.get("no_trade_reasons", []),
+            "noTradeReasonText": p.get("no_trade_reason_text", []),
             "signal": p.get("signal", "ABSTAIN"),
             "confidence": p.get("confidence", 0.0),
             "conviction": p.get("conviction", 0.0),
             "convictionGrade": p.get("convictionGrade", "WATCH"),
             "actionable": p.get("actionable", False),
+            "modelConfluenceScore": p.get("modelConfluenceScore", 0.0),
+            "modelConfluenceDetail": p.get("modelConfluenceDetail", {}),
+            "setupQuality": p.get("setupQuality", p.get("confluence", {})),
             "confluence": p.get("confluence", 0.0),
             "confluenceDetail": p.get("confluenceDetail", {}),
             "expectedMove": p.get("expectedMove", 0.0),
@@ -1781,6 +1830,212 @@ def schedule_relearn(reason: str = "manual") -> bool:
     return True
 
 
+def build_threshold_recommendations(replay_block: dict = None, forward_ev_block: dict = None) -> dict:
+    """Read-only threshold advice from replay + live paper-EV evidence.
+
+    This deliberately does not mutate model.confidence_threshold. Threshold changes
+    should be reviewed/applied explicitly after enough samples exist.
+    """
+    replay_block = replay_block or backend_state.get("last_historical_replay") or {}
+    forward_ev_block = forward_ev_block or backend_state.get("last_forward_ev") or {}
+    summary = replay_block.get("summary") or {}
+    latest_run_id = next(iter(summary.keys()), None)
+    recommendations = []
+
+    if latest_run_id:
+        for h_raw, stats in (summary.get(latest_run_id) or {}).items():
+            try:
+                h = int(h_raw)
+            except Exception:
+                h = h_raw
+            directional_n = int(stats.get("directional_n") or 0)
+            acc = stats.get("directional_accuracy")
+            price_match = stats.get("price_match_rate")
+            avg_err = float(stats.get("avg_move_error_usd") or 0.0)
+            action = "collect_more_data"
+            severity = "watch"
+            reason = f"{h}m replay has only {directional_n} directional calls."
+            if directional_n >= 100:
+                if acc is not None and acc < 0.50:
+                    action = "raise_or_skip"
+                    severity = "high"
+                    reason = f"{h}m replay is below coin-flip direction accuracy ({acc:.0%}). Keep it mostly AVOID until retrained."
+                elif acc is not None and acc < 0.53:
+                    action = "raise_threshold"
+                    severity = "medium"
+                    reason = f"{h}m replay edge is thin ({acc:.0%}). Require higher confidence/agreement before BUY/SELL."
+                elif price_match is not None and price_match < 0.30:
+                    action = "widen_target_tolerance"
+                    severity = "medium"
+                    reason = f"{h}m direction is usable, but price targets miss often ({price_match:.0%} close-match). Treat targets as zones."
+                else:
+                    action = "keep_current_gate"
+                    severity = "low"
+                    reason = f"{h}m replay is acceptable for monitoring ({acc:.0%} direction, {price_match:.0%} price-match)."
+            recommendations.append({
+                "source": "historical_replay",
+                "horizon": h,
+                "action": action,
+                "severity": severity,
+                "directional_n": directional_n,
+                "directional_accuracy": acc,
+                "price_match_rate": price_match,
+                "avg_move_error_usd": round(avg_err, 2),
+                "reason": reason,
+            })
+    else:
+        recommendations.append({
+            "source": "historical_replay",
+            "horizon": None,
+            "action": "run_replay",
+            "severity": "watch",
+            "reason": "No historical replay run found yet. Run 7-day replay before changing thresholds.",
+        })
+
+    ev_totals = (forward_ev_block or {}).get("totals") or {}
+    resolved = int(ev_totals.get("resolved") or 0)
+    net = float(ev_totals.get("net_pnl_usd") or 0.0)
+    avoided = float(ev_totals.get("avoided_loss_usd") or 0.0)
+    if resolved >= 20:
+        if net < 0:
+            recommendations.append({
+                "source": "forward_ev",
+                "horizon": "all",
+                "action": "tighten_trade_gate",
+                "severity": "high",
+                "reason": f"Forward paper EV is negative (${net:.2f}) after {resolved} resolved events. Fewer TRADE calls until expectancy improves.",
+            })
+        elif avoided > 0:
+            recommendations.append({
+                "source": "forward_ev",
+                "horizon": "all",
+                "action": "keep_avoid_gate",
+                "severity": "low",
+                "reason": f"Risk gate has avoided about ${avoided:.2f} of paper loss. Keep AVOID strict.",
+            })
+    else:
+        recommendations.append({
+            "source": "forward_ev",
+            "horizon": "all",
+            "action": "collect_more_live_outcomes",
+            "severity": "watch",
+            "reason": f"Only {resolved} forward-EV events resolved. Wait for 20+ before trusting live paper-PnL.",
+        })
+
+    high = sum(1 for r in recommendations if r.get("severity") == "high")
+    medium = sum(1 for r in recommendations if r.get("severity") == "medium")
+    if high:
+        label = "Tighten gates before trusting more BUY/SELL calls."
+    elif medium:
+        label = "Signals are usable only with stricter confidence/target caution."
+    else:
+        label = "Current gates can stay, but keep collecting live evidence."
+    return {
+        "latest_replay_run_id": latest_run_id,
+        "recommendations": recommendations,
+        "summary": label,
+        "high_count": high,
+        "medium_count": medium,
+    }
+
+
+async def run_historical_replay_background(days: int = 7, horizons: list[int] = None,
+                                           max_samples: int = 1000, step: int = 1,
+                                           stateful: bool = False):
+    """Run saved-model replay inside the backend process to avoid DuckDB writer conflicts."""
+    global replay_task
+    horizons = horizons or [5, 15]
+    started = time.time()
+
+    def _progress(evt: dict):
+        _set_status(
+            "replay_status",
+            running=True,
+            phase=evt.get("phase", "replay"),
+            message=evt.get("message", "Running historical replay..."),
+            progress=float(evt.get("progress", 0.0) or 0.0),
+            processed=evt.get("processed"),
+            windows=evt.get("windows"),
+        )
+
+    _set_status(
+        "replay_status",
+        running=True,
+        phase="queued",
+        message=f"Starting {days}d replay for {horizons}...",
+        progress=0.01,
+        started_at=started,
+        completed_at=None,
+        error=None,
+    )
+    try:
+        valid_horizons = []
+        for h in horizons:
+            try:
+                hi = int(h)
+                if hi in model.horizons:
+                    valid_horizons.append(hi)
+            except Exception:
+                pass
+        args = SimpleNamespace(
+            days=max(1, min(int(days), 30)),
+            start_ms=None,
+            end_ms=None,
+            horizons=sorted(set(valid_horizons)) or [5, 15],
+            max_samples=max(1, min(int(max_samples), 5000)),
+            step=max(1, int(step)),
+            offset=LOOKBACK,
+            run_id="",
+            stateful=bool(stateful),
+            log_every=250,
+        )
+        logger.info("[REPLAY] Scheduled in-process historical replay: days=%s horizons=%s max_samples=%s",
+                    args.days, args.horizons, args.max_samples)
+        result = await run_historical_replay(args, progress_cb=_progress)
+        replay_block = database.fetch_historical_replay_summary(75)
+        forward_ev = backend_state.get("last_forward_ev") or database.fetch_forward_ev_summary(30)
+        recs = build_threshold_recommendations(replay_block, forward_ev)
+        backend_state["last_historical_replay"] = replay_block
+        backend_state["last_historical_replay_time"] = time.time()
+        backend_state["last_threshold_recommendations"] = recs
+        _set_status(
+            "replay_status",
+            running=False,
+            phase="complete",
+            message=f"Replay complete: {result.get('windows', 0)} windows.",
+            progress=1.0,
+            completed_at=time.time(),
+            result=result,
+            error=None,
+        )
+        logger.info("[REPLAY] Complete in %.1fs: %s", time.time() - started, result)
+    except Exception as e:
+        _set_status(
+            "replay_status",
+            running=False,
+            phase="error",
+            message="Historical replay failed.",
+            completed_at=time.time(),
+            error=str(e),
+        )
+        logger.error("[REPLAY] Failed: %s", e, exc_info=True)
+    finally:
+        replay_task = None
+
+
+def schedule_historical_replay(days: int = 7, horizons: list[int] = None,
+                               max_samples: int = 1000, step: int = 1,
+                               stateful: bool = False) -> bool:
+    global replay_task
+    if replay_task and not replay_task.done():
+        logger.info("[REPLAY] Already running; skip schedule request")
+        return False
+    replay_task = asyncio.create_task(
+        run_historical_replay_background(days, horizons, max_samples, step, stateful)
+    )
+    return True
+
+
 def format_klines_for_chart(klines: list[dict], limit: int = 300) -> list[dict]:
     """Format klines for lightweight-charts candlestick rendering."""
     recent = klines[-limit:]
@@ -1866,7 +2121,7 @@ from collections import deque as _deque
 # *actual* confidence scale. A 3-class direction model rarely exceeds ~0.55, so a
 # fixed 0.64 bar makes everything NEUTRAL. The bar is clamped between recent
 # percentiles so a controlled fraction of the most-confident signals always pass.
-_recent_conf = {hh: _deque(maxlen=400) for hh in [1, 3, 5, 7, 10, 15]}
+_recent_conf = {hh: _deque(maxlen=400) for hh in [1, 3, 5, 7, 10, 15, 30]}
 
 # Stage 1+2 precision engine: isotonic calibration (auto-activates at >=150 resolved
 # leans/horizon) + shrunk empirical precision bins. Fitted off the event loop in the
@@ -1906,6 +2161,8 @@ def _conf_percentile(h: int, q: float):
 
 def _neutralize_prediction(prediction: dict, code: str, message: str, status: str = "blocked") -> dict:
     """Mark a raw directional lean as final WAIT/NEUTRAL with an auditable reason."""
+    prediction.setdefault("preNeutralDirection", prediction.get("direction", "NEUTRAL"))
+    prediction.setdefault("preNeutralSignal", prediction.get("signal", "NEUTRAL"))
     prediction["direction"] = "NEUTRAL"
     prediction["signal"] = "NEUTRAL"
     prediction["quality_filtered"] = True
@@ -1937,15 +2194,20 @@ def apply_live_quality_filters(
     acc = verifier_state.get_accuracy_summary().get(h, {})
     total = int(acc.get("total", 0) or 0)
 
-    # 1. Freshness Blocker
+    # 1. Freshness Blocker — DISCONNECT-AWARE (§5bw, 2026-06-14). The old check used
+    # `freshness_ms` = per-trade LATENCY, which is only set WHEN a trade arrives, so it FREEZES
+    # at ~5ms when the WS drops (no trades) — it silently missed the overnight outage that left
+    # the model predicting on a DEAD/zero order-flow feed for hours. Gate on WALL-CLOCK time since
+    # the last order_flow update, which actually grows during a disconnect (never-updated = dead).
     order_flow_state = _safe_dict(state.get("order_flow"))
-    freshness = order_flow_state.get("freshness_ms", 0)
-    if freshness > 5000:
+    _upd = state.get("order_flow_updated_ms", 0)
+    stale_ms = (int(time.time() * 1000) - _upd) if _upd else 10_000_000
+    if stale_ms > 5000:
         if prediction.get("direction") != "NEUTRAL":
             _neutralize_prediction(
                 prediction,
                 "stale_feed",
-                f"Feed is lagging ({freshness}ms stale). Safety block.",
+                f"Order-flow feed stale/disconnected ({stale_ms}ms since last update). Safety block.",
             )
         return prediction
 
@@ -2035,7 +2297,7 @@ def apply_live_quality_filters(
             prediction["qualityMessage"] = (
                 "Wide bid-ask spread requires more confidence to overcome slippage."
             )
-    elif h in [10, 15]:
+    elif h in [10, 15, 30]:
         # Slow horizons: strict volatility/spread
         if q_spread >= 2.5 and prediction.get("direction") != "NEUTRAL":
             threshold += 0.02
@@ -2531,7 +2793,15 @@ async def main_loop():
                         None, ab_runner.predict, h, seq, data_state, acc_cache, cascade_data
                     )
                     p["regime"] = regime.get("regime", "UNKNOWN")
-                    p["rawDirection"] = p.get("direction", "NEUTRAL")
+                    p["modelRawDirection"] = p.get(
+                        "modelRawDirection",
+                        p.get("rawDirection", p.get("direction", "NEUTRAL")),
+                    )
+                    p["rawDirection"] = p.get(
+                        "rawDirection",
+                        p.get("modelRawDirection", p.get("direction", "NEUTRAL")),
+                    )
+                    p["preServerDirection"] = p.get("direction", "NEUTRAL")
                     p["rawSignal"] = p.get("signal", "NEUTRAL")
                     current_price = data_state["klines"][-1]["close"]
                     order_flow_state = _safe_dict(data_state.get("order_flow"))
@@ -2561,7 +2831,12 @@ async def main_loop():
                     # gate can use calibrated confidence once the calibrator activates).
                     try:
                         _of_now = _safe_dict(data_state.get("order_flow"))
-                        p["confluence"] = _confluence(p, _of_now)
+                        if "modelConfluenceScore" not in p and isinstance(p.get("confluence"), (int, float)):
+                            p["modelConfluenceScore"] = p.get("confluence")
+                        if "modelConfluenceDetail" not in p:
+                            p["modelConfluenceDetail"] = p.get("confluenceDetail", {})
+                        p["setupQuality"] = _confluence(p, _of_now)
+                        p["confluence"] = p["setupQuality"]  # legacy UI/DB field
                         _cal = precision_engine.calibrated(h, float(p.get("confidence", 0.0) or 0.0))
                         if _cal is not None:
                             p["calibratedConfidence"] = round(_cal, 4)
@@ -2592,6 +2867,18 @@ async def main_loop():
                             "Negative Expectancy after costs",
                         )
                         p["meta_filtered"] = True
+
+                    # Do-not-trade reason engine — runs LAST, after EVERY filter (incl. the
+                    # expectancy neutralizer above) so `no_trade_reasons` + `trade_verdict` reflect
+                    # the FINAL state, not a pre-filter snapshot (external-review fix 2026-06-14).
+                    # Pure + crash-safe (decision_gate never raises).
+                    try:
+                        p = compute_no_trade_reasons(p)
+                    except Exception as _dge:
+                        logger.debug(f"decision_gate skipped: {_dge}")
+                    p["finalDirection"] = p.get("direction", "NEUTRAL")
+                    p["finalSignal"] = p.get("signal", "NEUTRAL")
+                    p["finalAction"] = p.get("trade_verdict", "NO_TRADE")
 
                     predictions.append(p)
                     cascade_data[h] = p
@@ -2643,16 +2930,21 @@ async def main_loop():
                         # Outcome already persists in predictions_*; no resolution hook.
                         # Crash-guarded — a logging failure must never break serving.
                         if not _feature_logged:
-                            try:
-                                database.log_feature_vector(
-                                    now_ms,
-                                    __import__("features").get_feature_schema()["schema_hash"],
-                                    regime.get("regime", "UNKNOWN"),
-                                    [float(x) for x in seq[-1]],
-                                )
-                                _feature_logged = True
-                            except Exception as _fe:
-                                logger.debug(f"B1 feature-vector log skipped: {_fe}")
+                            _feature_logged = True   # once-per-cycle gate (B1 + GEX below)
+                            # §5bw: only log when the order-flow feed is ALIVE. A disconnect makes
+                            # the microstructure half of the vector dead-zero; logging those rows
+                            # POISONS the retrain set (the overnight run logged 881 all-zero rows).
+                            _of_upd = data_state.get("order_flow_updated_ms", 0)
+                            if _of_upd and (now_ms - _of_upd) <= 5000:
+                                try:
+                                    database.log_feature_vector(
+                                        now_ms,
+                                        __import__("features").get_feature_schema()["schema_hash"],
+                                        regime.get("regime", "UNKNOWN"),
+                                        [float(x) for x in seq[-1]],
+                                    )
+                                except Exception as _fe:
+                                    logger.debug(f"B1 feature-vector log skipped: {_fe}")
                             # GEX recorder (start the clock on options positioning) —
                             # once per cycle, same guard. Crash-safe; never affects serving.
                             try:
@@ -2718,6 +3010,26 @@ async def main_loop():
                             p.get("targetPrice", current_price) - current_price
                         )
                         reference_target = reference_price + signed_move
+                        setup_quality = p.get("setupQuality") if isinstance(p.get("setupQuality"), dict) else {}
+                        decision_state = {
+                            "modelRawDirection": p.get("modelRawDirection", p.get("rawDirection", "")),
+                            "rawDirection": p.get("rawDirection", ""),
+                            "lockedDirection": p.get("lockedDirection", ""),
+                            "modelFilteredDirection": p.get("modelFilteredDirection", ""),
+                            "preServerDirection": p.get("preServerDirection", ""),
+                            "preNeutralDirection": p.get("preNeutralDirection", ""),
+                            "finalDirection": p.get("finalDirection", p.get("direction", "")),
+                            "finalSignal": p.get("finalSignal", p.get("signal", "")),
+                            "finalAction": p.get("finalAction", p.get("trade_verdict", "")),
+                            "tradeVerdict": p.get("trade_verdict", ""),
+                            "neutralReasonCode": p.get("neutralReasonCode", ""),
+                            "neutralReason": p.get("neutralReason", ""),
+                            "noTradeReasons": p.get("no_trade_reasons", []),
+                            "noTradeReasonText": p.get("no_trade_reason_text", []),
+                            "modelConfluenceScore": p.get("modelConfluenceScore", 0.0),
+                            "modelConfluenceDetail": p.get("modelConfluenceDetail", {}),
+                            "setupQuality": setup_quality,
+                        }
                         database.log_prediction(
                             pred_id=pred_id,
                             timestamp=now_ms,
@@ -2753,7 +3065,39 @@ async def main_loop():
                                 if isinstance(p.get("confluence"), dict) else "",
                             expected_precision=p.get("expectedPrecision"),
                             calibrated_confidence=p.get("calibratedConfidence"),
+                            model_raw_direction=p.get("modelRawDirection", p.get("rawDirection", "")),
+                            pre_server_direction=p.get("preServerDirection", ""),
+                            final_direction=p.get("finalDirection", p.get("direction", "")),
+                            trade_verdict=p.get("trade_verdict", ""),
+                            no_trade_reasons=p.get("no_trade_reasons", []),
+                            decision_state=decision_state,
+                            model_confluence=float(p.get("modelConfluenceScore", 0.0) or 0.0),
+                            setup_score=float(setup_quality.get("score", 0.0) or 0.0),
+                            setup_quality=setup_quality,
                         )
+                        try:
+                            database.log_forward_ev_event({
+                                "id": f"ev_{pred_id}",
+                                "prediction_id": pred_id,
+                                "source": "ensemble",
+                                "timestamp": now_ms,
+                                "horizon": h,
+                                "entry_price": current_price,
+                                "target_price": p.get("targetPrice", current_price),
+                                "expected_move": expected_move,
+                                "confidence": p.get("confidence", 0.0),
+                                "raw_direction": p.get("modelRawDirection", p.get("rawDirection", "")),
+                                "final_direction": p.get("finalDirection", p.get("direction", "")),
+                                "trade_verdict": p.get("trade_verdict", ""),
+                                "action": p.get("trade_verdict", "NO_TRADE"),
+                                "notional_usd": float(os.environ.get("BTC_PAPER_NOTIONAL_USD", "1000")),
+                                "fee_bps": float(os.environ.get("BTC_TAKER_FEE_BPS", "4.0")),
+                                "slippage_bps": float(os.environ.get("BTC_PAPER_SLIPPAGE_BPS", "2.0")),
+                                "no_trade_reasons": p.get("no_trade_reasons", []),
+                                "setup_quality": setup_quality,
+                            })
+                        except Exception as _ev:
+                            logger.debug(f"Forward-EV ledger log skipped: {_ev}")
                         # FSR-PPO logging only when the challenger is enabled (v6 R3
                         # mothballs it by default → fsr_ppo_block is never assigned;
                         # this guard prevents the UnboundLocalError that crashed the
@@ -2856,6 +3200,17 @@ async def main_loop():
                     avoid_success=v.get("avoid_success", False),
                     lean_hit=v.get("lean_hit"),
                 )
+                try:
+                    database.resolve_forward_ev_event(
+                        pred_id,
+                        v.get("actual_price", current_price),
+                        v.get("actual_move_usd", 0.0),
+                        v.get("actual_direction", "NEUTRAL"),
+                        v.get("hit", False),
+                        int(v.get("verified_at") or now_ms),
+                    )
+                except Exception as _evr:
+                    logger.debug(f"Forward-EV ledger resolve skipped: {_evr}")
 
             # Auto-learning feedback loop (every 10 seconds approx).
             # Skip entirely while a (re)train is in progress — otherwise it thrashes:
@@ -2943,11 +3298,48 @@ async def main_loop():
                 )
                 backend_state["last_fsr_ppo_summary_time"] = time.time()
             fsr_ppo_summary = backend_state.get("last_fsr_ppo_summary") or {}
+            if time.time() - backend_state.get("last_forward_ev_time", 0.0) >= 15:
+                try:
+                    backend_state["last_forward_ev"] = database.fetch_forward_ev_summary(30)
+                except Exception:
+                    backend_state["last_forward_ev"] = {
+                        "summary": {},
+                        "recent": [],
+                        "error": "temporarily_unavailable",
+                    }
+                backend_state["last_forward_ev_time"] = time.time()
+            forward_ev = backend_state.get("last_forward_ev") or {"summary": {}, "recent": []}
+            if time.time() - backend_state.get("last_historical_replay_time", 0.0) >= 30:
+                try:
+                    replay_block = database.fetch_historical_replay_summary(75)
+                    backend_state["last_historical_replay"] = replay_block
+                    backend_state["last_threshold_recommendations"] = build_threshold_recommendations(
+                        replay_block, forward_ev
+                    )
+                except Exception:
+                    replay_block = backend_state.get("last_historical_replay") or {
+                        "summary": {},
+                        "recent": [],
+                        "error": "temporarily_unavailable",
+                    }
+                backend_state["last_historical_replay_time"] = time.time()
+            historical_replay = backend_state.get("last_historical_replay") or {"summary": {}, "recent": []}
+            threshold_recommendations = backend_state.get("last_threshold_recommendations") or {
+                "recommendations": [],
+                "summary": "",
+            }
             
             # NOTE: The Polymarket "Value Engine" was removed — Polymarket only lists
             # long-dated BTC markets (e.g. "$150k by Dec 31"), which the fair-value model
             # could not price, producing misleading ~99% edges. The self-contained
             # PriceToBeatTracker (5m/15m) replaces it for the BTC up/down use case.
+
+            # Log every model's live per-horizon output to the SEPARATE metrics DuckDB
+            # (crash-safe; never touches the live DB). Read offline for model metrics.
+            try:
+                model_metrics_logger.log_direction(predictions, regime=regime)
+            except Exception:
+                pass
 
             # Construct dashboard payload
             payload = {
@@ -2981,6 +3373,9 @@ async def main_loop():
                 "relearn_status": _safe_public_status(
                     backend_state.get("relearn_status")
                 ),
+                "replay_status": _safe_public_status(
+                    backend_state.get("replay_status")
+                ),
                 "health": model.compute_health_score(
                     backend_state["last_backtest"], ws_client.running, model.is_trained
                 ),
@@ -2989,6 +3384,9 @@ async def main_loop():
                 "indicator_series": indicator_series,
                 "support_resistance": support_resistance,
                 "execution_simulator": simulator.get_metrics(),
+                "forward_ev": forward_ev,
+                "historical_replay": historical_replay,
+                "threshold_recommendations": threshold_recommendations,
                 "ab_test": ab_runner.get_comparison(),
                 "verification": {
                     "accuracy": accuracy_summary,
@@ -3021,6 +3419,7 @@ async def main_loop():
                 "price_to_beat": {
                     "latest": price_to_beat_tracker.latest(),
                     "accuracy": price_to_beat_tracker.accuracy(),
+                    "p_hold_status": persistence_model_status(),
                     # 60: six mirror horizons now resolve rounds; keep slow ones visible
                     "recent": price_to_beat_tracker.recent(200),
                 },
@@ -3084,6 +3483,7 @@ async def runtime_status():
         },
         "backtest_status": _safe_public_status(backend_state.get("backtest_status")),
         "relearn_status": _safe_public_status(backend_state.get("relearn_status")),
+        "replay_status": _safe_public_status(backend_state.get("replay_status")),
         "model_inventory": model.get_model_inventory(),
     }
 
@@ -3106,6 +3506,47 @@ async def api_backtest():
     }
 
 
+@app.post("/api/historical-replay/run")
+async def api_historical_replay_run(days: int = 7, max_samples: int = 1000,
+                                    step: int = 1, stateful: bool = False,
+                                    horizons: str = "5,15"):
+    try:
+        parsed_horizons = [
+            int(x.strip()) for x in str(horizons).replace(";", ",").split(",")
+            if x.strip()
+        ]
+    except Exception:
+        parsed_horizons = [5, 15]
+    scheduled = schedule_historical_replay(days, parsed_horizons, max_samples, step, stateful)
+    return {
+        "scheduled": scheduled,
+        "status": _safe_public_status(backend_state.get("replay_status")),
+    }
+
+
+@app.get("/api/historical-replay/status")
+async def api_historical_replay_status(limit: int = 75):
+    try:
+        replay_block = database.fetch_historical_replay_summary(limit)
+        forward_ev = backend_state.get("last_forward_ev") or database.fetch_forward_ev_summary(30)
+        recs = build_threshold_recommendations(replay_block, forward_ev)
+        backend_state["last_historical_replay"] = replay_block
+        backend_state["last_threshold_recommendations"] = recs
+        backend_state["last_historical_replay_time"] = time.time()
+        return {
+            "status": _safe_public_status(backend_state.get("replay_status")),
+            "historical_replay": replay_block,
+            "threshold_recommendations": recs,
+        }
+    except Exception as e:
+        logger.warning("historical replay status failed: %s", e)
+        return {
+            "status": _safe_public_status(backend_state.get("replay_status")),
+            "historical_replay": {"summary": {}, "recent": [], "error": "temporarily_unavailable"},
+            "threshold_recommendations": {"recommendations": [], "summary": "Replay status temporarily unavailable."},
+        }
+
+
 @app.get("/api/action-log")
 async def api_action_log(limit: int = 50):
     """Timestamped feed of recorded predictions across all horizons (latest first):
@@ -3122,6 +3563,30 @@ async def api_action_log(limit: int = 50):
     except Exception as e:
         logger.warning("action-log fetch failed (returning empty): %s", e)
         return {"items": [], "error": "temporarily_unavailable"}
+
+
+@app.get("/api/forward-ev")
+async def api_forward_ev(limit: int = 50):
+    try:
+        return database.fetch_forward_ev_summary(limit)
+    except Exception as e:
+        logger.warning("forward-ev fetch failed: %s", e)
+        return {"summary": {}, "recent": [], "error": "temporarily_unavailable"}
+
+
+@app.get("/api/historical-replay")
+async def api_historical_replay(limit: int = 50):
+    try:
+        replay_block = database.fetch_historical_replay_summary(limit)
+        forward_ev = backend_state.get("last_forward_ev") or database.fetch_forward_ev_summary(30)
+        return {
+            **replay_block,
+            "status": _safe_public_status(backend_state.get("replay_status")),
+            "threshold_recommendations": build_threshold_recommendations(replay_block, forward_ev),
+        }
+    except Exception as e:
+        logger.warning("historical replay fetch failed: %s", e)
+        return {"summary": {}, "recent": [], "error": "temporarily_unavailable"}
 
 
 @app.get("/api/scorecard")
@@ -3141,7 +3606,7 @@ async def get_scorecard():
                "horizons": {}, "mirror": {}, "partial_candle_buckets": []}
         conn = database._connect()
         try:
-            for h in [1, 3, 5, 7, 10, 15]:
+            for h in [1, 3, 5, 7, 10, 15, 30]:
                 try:
                     r = conn.execute(f"""
                         SELECT COUNT(*),
@@ -3163,7 +3628,7 @@ async def get_scorecard():
                     }
                 except Exception as e:
                     out["horizons"][h] = {"error": str(e)}
-            for h in (1, 3, 5, 7, 10, 15):
+            for h in (1, 3, 5, 7, 10, 15, 30):
                 try:
                     rows = conn.execute(f"""
                         SELECT COALESCE(lean_source,'model'), COUNT(*),

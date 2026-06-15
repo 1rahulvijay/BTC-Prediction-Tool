@@ -36,7 +36,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 OUT_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
 
 SNAP_INTERVAL_MS = 15_000        # one snapshot per 15s per window (matches the live recorder)
-HORIZONS = (1, 3, 5, 7, 10, 15)  # 5m/15m are the bettable ones; others are practice mirrors
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)  # 5m/15m are the bettable ones; others are practice mirrors
 
 
 def build_snapshots_for_day(ts: np.ndarray, price: np.ndarray, horizons=HORIZONS) -> list:
@@ -115,6 +115,20 @@ def _last_covered(col: str):
         return None
 
 
+def _first_covered(col: str):
+    """Date (UTC) of the OLDEST row in the existing parquet, or None."""
+    if not os.path.exists(OUT_PATH):
+        return None
+    try:
+        import pandas as pd
+        df = pd.read_parquet(OUT_PATH, columns=[col])
+        if df.empty:
+            return None
+        return datetime.fromtimestamp(int(df[col].min()) / 1000.0, tz=timezone.utc).date()
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", help="YYYY-MM-DD")
@@ -133,12 +147,21 @@ def main():
         dates, write = [args.validate], False
     elif args.auto:
         last = _last_covered("window_start_ms")
+        first = _first_covered("window_start_ms")
         yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
-        if last is not None and last >= yesterday:
+        want_start = yesterday - timedelta(days=args.days - 1)
+        if first is not None and first > want_start:
+            # Parquet doesn't reach back far enough for --days (e.g. window bumped
+            # 50 -> 60). --auto only tops up FORWARD, so rebuild the full window
+            # (merge stays False → overwrites). Without this a wider --days is silent.
+            ds = want_start.strftime("%Y-%m-%d")
+            print(f"[auto] parquet starts {first} but --days {args.days} wants {want_start} "
+                  f"— REBUILDING full window {ds} .. {yesterday} (backward extend).", flush=True)
+        elif last is not None and last >= yesterday:
             print(f"[auto] persistence dataset current (through {last}) — nothing to do.")
             return
-        if last is None:
-            ds = (yesterday - timedelta(days=args.days - 1)).strftime("%Y-%m-%d")
+        elif last is None:
+            ds = want_start.strftime("%Y-%m-%d")
             print(f"[auto] no parquet — full build {ds} .. {yesterday} (first run can be slow)", flush=True)
         else:
             ds = (last + timedelta(days=1)).strftime("%Y-%m-%d")

@@ -36,32 +36,126 @@ logger = logging.getLogger(__name__)
 # v6 ensemble or the feature schema; a missing/unreadable file simply disables P(hold)
 # (the card falls back to prior behavior). Loaded once, cached at module scope.
 _PERSIST_MODEL = None
-_PERSIST_MODEL_TRIED = False
+_PERSIST_MODEL_ERROR = ""
+_PERSIST_MODEL_PATH = ""
+_PERSIST_MODEL_MTIME = -2.0
+_PERSIST_MODEL_CHECKED = 0.0
 
 
 def _load_persistence_model():
-    """Return the persistence-model dict {clf, iso, features, ...} or None. Loaded once;
-    any failure is swallowed and P(hold) is silently disabled."""
-    global _PERSIST_MODEL, _PERSIST_MODEL_TRIED
-    if _PERSIST_MODEL_TRIED:
-        return _PERSIST_MODEL
-    _PERSIST_MODEL_TRIED = True
+    """Return the persistence-model dict {clf, iso, features, ...} or None. HOT-RELOADS when the
+    .pkl changes (mtime, throttled 30s) so a nightly refit goes live WITHOUT a restart; keeps the
+    PRIOR model on any load failure (crash-safe). P(hold) silently disabled if absent."""
+    global _PERSIST_MODEL, _PERSIST_MODEL_ERROR, _PERSIST_MODEL_PATH, _PERSIST_MODEL_MTIME, _PERSIST_MODEL_CHECKED
+    import os
+    import time
+    now = time.time()
+    if _PERSIST_MODEL_CHECKED and (now - _PERSIST_MODEL_CHECKED) < 30.0:
+        return _PERSIST_MODEL                       # throttle: re-check the file at most every 30s
+    _PERSIST_MODEL_CHECKED = now
     try:
-        import os
         import joblib
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "persistence_model.pkl")
-        if not os.path.exists(path):
-            logger.info(f"A1 persistence model absent at {path} — P(hold) disabled.")
-            return None
-        _PERSIST_MODEL = joblib.load(path)
-        logger.info("A1 persistence model loaded (P(hold) live): test_auc="
+        _PERSIST_MODEL_PATH = path
+        mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+        if mt == _PERSIST_MODEL_MTIME:
+            return _PERSIST_MODEL                    # unchanged (incl. still-missing) — no work
+        if mt < 0:
+            _PERSIST_MODEL_ERROR = "missing"; _PERSIST_MODEL_MTIME = mt
+            if _PERSIST_MODEL is None:
+                logger.info(f"A1 persistence model absent at {path} — P(hold) disabled.")
+            return _PERSIST_MODEL
+        loaded = joblib.load(path)                   # only reaches here when the file CHANGED
+        _PERSIST_MODEL = loaded; _PERSIST_MODEL_MTIME = mt; _PERSIST_MODEL_ERROR = ""
+        logger.info("A1 persistence model (re)loaded (P(hold) live): test_auc="
                     f"{_PERSIST_MODEL.get('test_auc')}, features={_PERSIST_MODEL.get('features')}")
     except Exception as e:
-        logger.warning(f"A1 persistence model load failed — P(hold) disabled: {e}")
-        _PERSIST_MODEL = None
+        _PERSIST_MODEL_ERROR = str(e)               # keep the PRIOR model — never break serving
+        logger.warning(f"A1 persistence model reload failed — keeping prior: {e}")
     return _PERSIST_MODEL
+
+
+_SIGNED_QMODEL = None
+_SIGNED_QMODEL_MTIME = -2.0
+_SIGNED_QMODEL_CHECKED = 0.0
+
+
+def _load_signed_quantile_model():
+    """Signed-quantile band head {models:{h:{q10,q50,q90,cqr}}, features, horizons} or None.
+    HOT-RELOADS on .pkl change (mtime, throttled 30s) so a nightly recalibration goes live without a
+    restart; keeps the PRIOR band on any failure (symmetric-band fallback if never loaded)."""
+    global _SIGNED_QMODEL, _SIGNED_QMODEL_MTIME, _SIGNED_QMODEL_CHECKED
+    import os
+    import time
+    now = time.time()
+    if _SIGNED_QMODEL_CHECKED and (now - _SIGNED_QMODEL_CHECKED) < 30.0:
+        return _SIGNED_QMODEL
+    _SIGNED_QMODEL_CHECKED = now
+    try:
+        import joblib
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "signed_quantile_model.pkl")
+        mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+        if mt == _SIGNED_QMODEL_MTIME:
+            return _SIGNED_QMODEL
+        if mt < 0:
+            _SIGNED_QMODEL_MTIME = mt
+            if _SIGNED_QMODEL is None:
+                logger.info("Signed-quantile band absent — using symmetric band.")
+            return _SIGNED_QMODEL
+        _SIGNED_QMODEL = joblib.load(path); _SIGNED_QMODEL_MTIME = mt
+        logger.info(f"Signed-quantile band (re)loaded: horizons={_SIGNED_QMODEL.get('horizons')}, "
+                    f"features={_SIGNED_QMODEL.get('features')}")
+    except Exception as e:
+        logger.warning(f"Signed-quantile band reload failed — keeping prior: {e}")
+    return _SIGNED_QMODEL
+
+
+# ── T2/T3 precision-tier PROOF panel — data/phold_tier.json (phold_tier_scorecard.py) ──────
+# The historical hold-rate evidence for the late-entry tier, shown on the live card. Lazy +
+# crash-safe; RELOADS when the operator re-runs the scorecard (mtime check). {} if absent →
+# the card still shows the live P(hold), just without the historical-proof numbers.
+def persistence_model_status() -> dict:
+    """Return P(hold) model status for the UI/API."""
+    mdl = _load_persistence_model()
+    status = "loaded" if mdl is not None else ("missing" if _PERSIST_MODEL_ERROR == "missing" else "disabled")
+    return {
+        "status": status,
+        "loaded": mdl is not None,
+        "tried": bool(_PERSIST_MODEL_CHECKED),
+        "path": _PERSIST_MODEL_PATH,
+        "mtime": _PERSIST_MODEL_MTIME if _PERSIST_MODEL_MTIME >= 0 else None,
+        "error": "" if _PERSIST_MODEL_ERROR == "missing" else _PERSIST_MODEL_ERROR,
+        "test_auc": mdl.get("test_auc") if isinstance(mdl, dict) else None,
+        "features": mdl.get("features") if isinstance(mdl, dict) else None,
+    }
+
+
+_TIER_PROOF = {}
+_TIER_PROOF_MTIME = 0
+
+
+def _load_tier_proof() -> dict:
+    global _TIER_PROOF, _TIER_PROOF_MTIME
+    try:
+        import os
+        import json
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "phold_tier.json")
+        if not os.path.exists(path):
+            return _TIER_PROOF
+        mt = os.path.getmtime(path)
+        if mt != _TIER_PROOF_MTIME:
+            with open(path, "r", encoding="utf-8") as f:
+                _TIER_PROOF = json.load(f) or {}
+            _TIER_PROOF_MTIME = mt
+    except Exception:
+        pass
+    return _TIER_PROOF
 
 
 def _hms(ms: int) -> str:
@@ -101,6 +195,7 @@ class PriceToBeatTracker:
         # Rolling (ts_ms, price) buffer for LIVE trailing-60s realized vol — the vol_60s_pct
         # feature the A1 P(hold) model needs. update() fires ~1/s, so 180 covers ~3 min.
         self._px_buf = deque(maxlen=180)
+        self._last_keepers = None                     # live vol keepers (set per update tick)
 
     @staticmethod
     def _bet_lean(p: dict) -> str:
@@ -156,7 +251,7 @@ class PriceToBeatTracker:
     LATE_MS = 3000  # ticks later than this use the kline-recovered boundary price
 
     def update(self, now_ms: int, ref_price: float, predictions_by_h: dict,
-               kronos_dir_by_h: dict, klines=None, feed_fresh: bool = True):
+               kronos_dir_by_h: dict, klines=None, feed_fresh: bool = True, keepers=None):
         """Open new clock-aligned rounds and resolve elapsed ones. Call once per tick.
 
         ref_price: the live BTC/USD anchor feed chosen by the caller — currently Pyth
@@ -174,6 +269,9 @@ class PriceToBeatTracker:
 
         # Feed the rolling price buffer for the live trailing-60s vol (A1 P(hold) feature).
         self._px_buf.append((int(now_ms), float(ref_price)))
+        # Live volatility keepers (from server via live_keepers; None when unavailable) — used
+        # by the keeper P(hold) model and the signed-quantile band, both fallback-guarded.
+        self._last_keepers = keepers
 
         for h in self.horizons:
             win_len = h * 60_000
@@ -269,6 +367,7 @@ class PriceToBeatTracker:
         # dist_vol_ratio. Crash-safe — any failure leaves p_hold None and the card + the ⚡
         # late-entry gate fall back to the pre-existing heuristic. Separate frozen head.
         p_hold = None
+        rnd["vol_60s_pct"] = None
         try:
             mdl = _load_persistence_model()
             if mdl and ptb > 0 and secs_left > 0:
@@ -276,6 +375,7 @@ class PriceToBeatTracker:
                 seg = [px for (t, px) in self._px_buf if t >= cutoff]
                 if len(seg) > 2:
                     vol_60s_pct = float(np.std(seg) / ptb * 100.0)
+                    rnd["vol_60s_pct"] = round(vol_60s_pct, 5)   # persisted in the A1 snapshot
                     abs_dist_pct = abs(cur_move) / ptb * 100.0
                     dist_vol_ratio = abs_dist_pct / (vol_60s_pct + 1e-6)
                     fvals = {
@@ -285,9 +385,21 @@ class PriceToBeatTracker:
                         "horizon": float(rnd.get("horizon", 5) or 5),
                         "dist_vol_ratio": dist_vol_ratio,
                     }
-                    feats = [[fvals[k] for k in mdl["features"]]]
-                    raw = mdl["clf"].predict_proba(feats)[:, 1]
-                    p_hold = float(mdl["iso"].predict(raw)[0])
+                    # Keeper model (validated +0.019 AUC on the late T3 region): use it when the
+                    # live volatility keepers are available this tick; else fall back to the base
+                    # 5-feature model — never breaks if keepers/keeper-model absent.
+                    _feats, _clf, _iso, _src = mdl["features"], mdl["clf"], mdl["iso"], "base"
+                    _kp = self._last_keepers
+                    _kf = ("rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude")
+                    if (mdl.get("clf_keeper") is not None and _kp
+                            and all(k in _kp and _kp[k] is not None for k in _kf)):
+                        fvals.update({k: float(_kp[k]) for k in _kf})
+                        _feats, _clf, _iso, _src = (mdl["features_keeper"], mdl["clf_keeper"],
+                                                    mdl["iso_keeper"], "keeper")
+                    feats = [[fvals[k] for k in _feats]]
+                    raw = _clf.predict_proba(feats)[:, 1]
+                    p_hold = float(_iso.predict(raw)[0])
+                    rnd["p_hold_source"] = _src
         except Exception as _pe:
             logger.debug(f"P(hold) compute skipped: {_pe}")
         rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
@@ -312,6 +424,29 @@ class PriceToBeatTracker:
                 # unreliable base, misleading rather than useful. The proper p_up
                 # returns with A3 (conditional quantile magnitude that breathes with
                 # volatility) → A2, in Retrain #2. Until then we show no probability.
+        # Signed-quantile band override (A3): calibrated ASYMMETRIC expected drop/high + a
+        # no-drift projection. Uses the live keepers; falls back to the symmetric band above
+        # when the head/keepers are absent. Median≈0 stops the manufactured lean-direction
+        # drift that caused the "DOWN lean projects above the line" contradiction.
+        try:
+            _sq = _load_signed_quantile_model()
+            _kp = self._last_keepers
+            _hh = int(rnd.get("horizon", 5) or 5)
+            if (_sq and _kp and _hh in _sq.get("models", {})
+                    and all(f in _kp and _kp[f] is not None for f in _sq["features"])):
+                _xv = [[float(_kp[f]) for f in _sq["features"]]]
+                _m = _sq["models"][_hh]
+                _cqr = float(_m.get("cqr", 0.0))
+                _drop = ref_price * (float(_m["q10"].predict(_xv)[0]) - _cqr) / 1e4
+                _med = ref_price * float(_m["q50"].predict(_xv)[0]) / 1e4
+                _high = ref_price * (float(_m["q90"].predict(_xv)[0]) + _cqr) / 1e4
+                rnd["expected_move_range"] = {"low": round(_drop, 2),
+                                              "median": round(_med, 2), "high": round(_high, 2)}
+                rnd["projected_close"] = round(ref_price + _med, 2)
+                rnd["projected_vs_beat"] = round(rnd["projected_close"] - ptb, 2)
+                rnd["band_source"] = "signed_quantile"
+        except Exception as _be:
+            logger.debug(f"signed band skipped: {_be}")
         # PATH OUTLOOK — a plain-English "how will price travel vs the line" forecast:
         # built from the model's expected move vs the distance to the line, with odds from
         # MEASURED precision (expectedPrecision) when available, else the two-way prob.
@@ -394,6 +529,25 @@ class PriceToBeatTracker:
             rnd["advice"]["text"] += (f" [LATE-ENTRY WINDOW: {secs_left}s left, already "
                                       f"{cur_move:+.0f} on the {live_lean} side — calibrated "
                                       f"P(hold)={p_hold*100:.0f}% favors {live_lean} holding to close.]")
+        # T2/T3 PRECISION TIER + proof panel (the precision card). `late` already requires the
+        # structural late-entry zone + committed model lean + P(hold)>=0.93, so it is at least T2.
+        # T3 (the high-precision, surfaceable tier) additionally requires the HISTORICAL proof to
+        # clear the gate: n>=100 AND hold>=90% AND Wilson-LB>=80% (phold_tier.json). Crash-safe.
+        rnd["tier"] = None
+        rnd["tier_proof"] = None
+        if late:
+            try:
+                _tiers = (_load_tier_proof().get("tiers") or {})
+                _ph = _tiers.get(str(rnd.get("horizon"))) or _tiers.get(rnd.get("horizon")) or {}
+                _t2 = _ph.get("T2_structural") or {}
+                _t3 = _ph.get("T3_phold>=0.93") or {}
+                _is_t3 = (int(_t3.get("n") or 0) >= 100
+                          and float(_t3.get("hold_pct") or 0) >= 90.0
+                          and float(_t3.get("wilson_lb") or 0) >= 80.0)
+                rnd["tier"] = "T3" if _is_t3 else "T2"
+                rnd["tier_proof"] = {"t2": _t2, "t3": _t3}
+            except Exception as _te:
+                logger.debug(f"T2/T3 tier proof skipped: {_te}")
         # (EARLY-EXIT cents hint removed with p_up — same flat-magnitude basis. The
         # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
         # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────
@@ -408,7 +562,8 @@ class PriceToBeatTracker:
                 try:
                     database.log_persistence_snapshot(
                         _rid, int(rnd.get("horizon", 0) or 0), int(now_ms),
-                        int(secs_left), float(cur_move), cur_pos)
+                        int(secs_left), float(cur_move), cur_pos,
+                        vol_60s_pct=rnd.get("vol_60s_pct"), p_hold=rnd.get("p_hold"))
                 except Exception as _se:
                     logger.debug(f"A1 persistence snapshot skipped: {_se}")
 

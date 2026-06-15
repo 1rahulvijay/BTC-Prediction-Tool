@@ -12,7 +12,7 @@ from collections import deque, defaultdict
 logger = logging.getLogger(__name__)
 
 # All supported horizons
-ALL_HORIZONS = [1, 3, 5, 7, 10, 15]
+ALL_HORIZONS = [1, 3, 5, 7, 10, 15, 30]
 
 
 class PredictionVerifier:
@@ -101,7 +101,12 @@ class PredictionVerifier:
         entry = {
             "horizon": h,
             "direction": prediction["direction"],
+            "model_raw_direction": prediction.get("modelRawDirection", prediction.get("rawDirection", prediction["direction"])),
             "raw_direction": prediction.get("rawDirection", prediction["direction"]),
+            "pre_server_direction": prediction.get("preServerDirection", prediction["direction"]),
+            "final_direction": prediction.get("finalDirection", prediction["direction"]),
+            "trade_verdict": prediction.get("trade_verdict", ""),
+            "no_trade_reasons": prediction.get("no_trade_reasons", []),
             "skip_reason": prediction.get("skipReason", ""),
             "neutral_reason_code": prediction.get("neutralReasonCode", ""),
             "neutral_reason": prediction.get("neutralReason", prediction.get("skipReason", "")),
@@ -198,14 +203,23 @@ class PredictionVerifier:
                     "verified_at": current_time_ms,
                 }
                 
-                # Per-model-per-regime correctness for learned regime weights.
+                # Per-model-per-regime correctness for the LEARNED regime weights.
+                # §5ba / external-review #8 (2026-06-14): grade ONLY committed (UP/DOWN) votes, by
+                # STRICT close-vs-ref sign — the SAME definition model_verifier uses for the UI panel.
+                # Previously this counted NEUTRAL abstentions as misses (and used a neutral BAND for the
+                # outcome), so the regime weights learned from a neutral-poisoned definition that
+                # disagreed with the displayed per-model accuracy and penalized models for abstaining.
                 model_dirs = pred.get("model_dirs") or {}
                 regime = pred.get("regime", "UNKNOWN")
                 _lbl = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
+                _actual_strict = "UP" if current_price >= pred["predicted_price"] else "DOWN"
                 for mkey, d in model_dirs.items():
-                    pred_lbl = _lbl.get(int(d)) if d is not None else None
-                    if pred_lbl is not None:
-                        self.regime_model_stats[regime][mkey].append(1 if pred_lbl == actual_direction else 0)
+                    try:
+                        pred_lbl = _lbl.get(int(d)) if d is not None else None
+                    except Exception:
+                        pred_lbl = None
+                    if pred_lbl in ("UP", "DOWN"):           # committed votes only; NEUTRAL excluded
+                        self.regime_model_stats[regime][mkey].append(1 if pred_lbl == _actual_strict else 0)
 
                 h = pred["horizon"]
                 self.verified_by_horizon[h].append(verified)

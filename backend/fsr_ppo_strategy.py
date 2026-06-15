@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 
-HORIZONS = (1, 3, 5, 7, 10, 15)
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

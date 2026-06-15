@@ -5,7 +5,7 @@ import os
 # (now under data/ or BTC_DB_PATH). Importing it here prevents analytics/reports from
 # reading a stale/empty root-level analytics.duckdb.
 from database import DB_PATH
-HORIZONS = [1, 3, 5, 7, 10, 15]
+HORIZONS = [1, 3, 5, 7, 10, 15, 30]
 
 
 def _prediction_union(horizons=None) -> str:
@@ -156,7 +156,7 @@ def validate_regime_thresholds(horizons=None):
     sub-50% accuracy is a candidate for a forced-NEUTRAL override in regime.py.
     """
     if horizons is None:
-        horizons = [1, 3, 5, 10, 15]
+        horizons = [1, 3, 5, 7, 10, 15, 30]
     results = {}
     for horizon in horizons:
         # LEAN-truth grading (raw_direction vs realized move sign), NOT the `hit` column:
@@ -231,7 +231,7 @@ def analyze_conviction_performance(horizon: int = None):
     This is the core validation of the win-rate thesis: actionable signals should
     out-hit the raw directional rate by a wide margin.
     """
-    horizons = [horizon] if horizon else [1, 3, 5, 7, 10, 15]
+    horizons = [horizon] if horizon else [1, 3, 5, 7, 10, 15, 30]
     for h in horizons:
         try:
             with duckdb.connect(DB_PATH) as conn:

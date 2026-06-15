@@ -30,7 +30,7 @@ import database
 
 logger = logging.getLogger(__name__)
 
-HORIZONS = [1, 3, 5, 7, 10, 15]
+HORIZONS = [1, 3, 5, 7, 10, 15, 30]
 MIN_CALIB_SAMPLES = 150       # isotonic below this overfits
 REFIT_SEC = 6 * 3600
 SHRINK = 8.0                  # Laplace prior weight for the precision bins

@@ -34,7 +34,7 @@ SHADOW_DIR = os.path.join(DATA_DIR, "shadow")
 MODEL_PATH = os.path.join(SHADOW_DIR, "shadow_models.pkl")
 OUT_PATH = os.path.join(SHADOW_DIR, "shadow_live_resolved.parquet")
 KLINES_URL = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit={limit}"
-HORIZONS = (1, 3, 5, 7, 10, 15)
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 
 
 # ───────────────────────── live feed (read-only, independent) ──────────────────────────

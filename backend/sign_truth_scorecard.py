@@ -4,7 +4,7 @@ import duckdb, os, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
 from database import DB_PATH
 
-HORIZONS = [1, 3, 5, 7, 10, 15]
+HORIZONS = [1, 3, 5, 7, 10, 15, 30]
 
 
 def _http_fallback():
@@ -52,7 +52,7 @@ def _http_fallback():
     print("=" * 70)
     models = d.get("models") or {}
     if isinstance(models, dict) and models and not models.get("error"):
-        hs = [1, 3, 5, 7, 10, 15]
+        hs = [1, 3, 5, 7, 10, 15, 30]
         print(f"  {'model':<10}" + "".join(f"{str(h)+'m':>12}" for h in hs))
         for m, by_h in sorted(models.items()):
             cells = []
@@ -153,7 +153,7 @@ print("=" * 70)
 print("3) POLYMARKET MIRROR (price_to_beat) — committed bets, model vs fallback")
 print("   (1m/3m/7m/10m are PRACTICE mirrors — only 5m/15m are real markets)")
 print("=" * 70)
-for h in (1, 3, 5, 7, 10, 15):
+for h in (1, 3, 5, 7, 10, 15, 30):
     try:
         rows = conn.execute(f"""
             SELECT COALESCE(lean_source,'model') src, COUNT(*) n,

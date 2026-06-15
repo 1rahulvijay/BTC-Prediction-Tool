@@ -89,6 +89,44 @@
 </div>
 
 <!-- ============================================================ -->
+<h2 id="changes2">🆕 What changed (2026-06-15) — the prediction upgrades & how they help you bet</h2>
+<div class="card">
+<p><b>Everything on the card is now an ML model output</b> — nothing is a hand-coded guess:
+direction &amp; P(up/down/neutral) (the ensemble), <b>P(Hold)</b> (persistence model + volatility
+"keeper" features), <b>P(big_move)</b> selectivity (a LogReg+RandomForest ensemble), the
+<b>expected drop/high band</b> and <b>projected close</b> (a signed-quantile model). The exhaustive
+study behind these is in <code>docs/active/PRICE_TO_BEAT_MODEL_ANALYSIS</code>.</p>
+<ul>
+  <li><b>Calibrated 80% move-range band (the big one).</b> The "expected drop ≈ $X / expected high
+  ≈ $Y" range is now a <b>conformally-calibrated 80% band</b> — it genuinely contains ~80% of
+  outcomes (it used to claim a range but only cover ~72%). It widens in volatile conditions and
+  tightens in calm ones. <b>How it helps:</b> you can trust the projected close vs the beat line —
+  if the 80% band sits entirely on one side of the line, that's a real, calibrated read.</li>
+  <li><b>No more manufactured direction drift.</b> The projection is now anchored at the model's
+  median (≈ no drift), so you'll never again see "DOWN lean → projects a price ABOVE the line."
+  The card leads with the band + P(Hold), and on coin-flip windows it explicitly labels the
+  direction <i>"~coin-flip — informational only."</i> <b>How it helps:</b> it stops you betting a
+  side the model can't actually call.</li>
+  <li><b>Keeper-boosted P(Hold) + the late-entry tier.</b> P(Hold) now also reads the live
+  volatility regime. The late-entry edge is the app's one validated money-maker: when price is
+  already ahead with little time left, it holds 87–99% of the time (e.g. ≥10 bps ahead with &lt;30s
+  left = ~99.7%). <b>How it helps:</b> wait, let the round reveal a side, then ride the
+  already-winning side — don't predict from the open.</li>
+  <li><b>Why we DON'T just predict UP/DOWN every round:</b> we tested 145 features × 14 model
+  families × deep/sequence models over 60 days — 5-minute direction is a <b>coin-flip, 10 ways
+  confirmed</b>. The app's edge is <b>selectivity + late-entry persistence</b>, not louder direction
+  calls. Most rounds the honest answer is AVOID.</li>
+  <li><b>Every model's live output is now logged</b> to a separate <code>model_metrics.duckdb</code>
+  (direction, all probabilities, P(Hold), tier, band, projection — per horizon, per tick) so the
+  predictions can be audited and scored over time.</li>
+</ul>
+<p style="color:var(--dim)"><b>The bet workflow this enables:</b> 1) check P(big_move) — low ⇒ skip the
+round. 2) Don't bet the open. 3) In the final 30–120 s, if your side is already ahead and P(Hold)
+is high, that's the high-precision entry. 4) Use the calibrated 80% band to sanity-check that the
+projected close clears the line. Direction-from-the-open stays last.</p>
+</div>
+
+<!-- ============================================================ -->
 <h2 id="ladder">📊 The win-rate ladder (sign-truth, re-based 2026-06-11)</h2>
 <div class="card">
 <table class="ladder">

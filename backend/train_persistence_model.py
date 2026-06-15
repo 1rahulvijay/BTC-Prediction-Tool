@@ -21,6 +21,8 @@ set (the honest T3-tier precision), with coverage.
 
 Usage:  python backend/train_persistence_model.py
 """
+from __future__ import annotations
+
 import os
 import joblib
 import numpy as np
@@ -33,8 +35,14 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 IN_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
+HEAD_VERSION = "2026-06-15-keeper-dual"   # train_heads.py retrains when this changes
 
 FEATURES = ["abs_distance_pct", "seconds_left", "vol_60s_pct", "horizon", "dist_vol_ratio"]
+# Volatility KEEPERS — validated to LIFT P(hold) (+0.0135 AUC overall, +0.027 on the late
+# T3 subset; phold_keeper_test.py). Trained as a SECOND model saved alongside the base one;
+# the live serve path keeps using the base model until the keepers are plumbed into
+# price_to_beat (no breakage). Joined from research_matrix_1m.parquet at the current minute.
+KEEPERS = ["rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude"]
 
 
 def _add_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -43,6 +51,55 @@ def _add_features(df: pd.DataFrame) -> pd.DataFrame:
     # how many trailing-60s-vol units the price is ahead — the core persistence predictor
     df["dist_vol_ratio"] = df["abs_distance_pct"] / (df["vol_60s_pct"] + 1e-6)
     return df
+
+
+def _join_keepers(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Join the volatility keepers at each row's CURRENT minute. Returns None if the
+    research matrix is absent (keeper model is then skipped — base model unaffected)."""
+    mpath = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
+    if not os.path.exists(mpath):
+        return None
+    m = pd.read_parquet(mpath, columns=["ts_ms"] + KEEPERS).replace([np.inf, -np.inf], np.nan)
+    d = df.copy()
+    d["cur_min_ms"] = (((d["window_start_ms"] + d["seconds_elapsed"] * 1000) // 60000) * 60000).astype("int64")
+    out = d.merge(m.rename(columns={"ts_ms": "cur_min_ms"}), on="cur_min_ms", how="inner")
+    return out.dropna(subset=KEEPERS)
+
+
+def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
+    """Train base+keeper model; return (bundle_extra dict) or {} if not enough joined data.
+    Reports the honest lift vs the base model on the SAME held-out test windows."""
+    kdf = _join_keepers(df)
+    if kdf is None or len(kdf) < 50_000:
+        print("\n[keeper] research matrix absent or too few joined rows — keeper model SKIPPED.")
+        return {}
+    wins = np.sort(kdf["window_start_ms"].unique())
+    n = len(wins)
+    tr_cut, ca_cut = wins[int(n * 0.70)], wins[int(n * 0.85)]
+    tr = kdf[kdf["window_start_ms"] < tr_cut]
+    ca = kdf[(kdf["window_start_ms"] >= tr_cut) & (kdf["window_start_ms"] < ca_cut)]
+    te = kdf[kdf["window_start_ms"] >= ca_cut]
+    KF = FEATURES + KEEPERS
+    kclf = HistGradientBoostingClassifier(max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
+                                          l2_regularization=0.1, random_state=42,
+                                          validation_fraction=0.1)
+    kclf.fit(tr[KF].values, tr["label"].values)
+    kiso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    kiso.fit(kclf.predict_proba(ca[KF].values)[:, 1], ca["label"].values)
+    yte = te["label"].values
+    kp = kiso.predict(kclf.predict_proba(te[KF].values)[:, 1])
+    kauc = roc_auc_score(yte, kp)
+    bp = base_iso.predict(base_clf.predict_proba(te[FEATURES].values)[:, 1])
+    bauc = roc_auc_score(yte, bp)
+    late = te["seconds_left"].values <= 120
+    kauc_l = roc_auc_score(yte[late], kp[late]) if late.sum() > 500 else float("nan")
+    bauc_l = roc_auc_score(yte[late], bp[late]) if late.sum() > 500 else float("nan")
+    print(f"\n[keeper] joined={len(kdf):,}  test={len(te):,}")
+    print(f"[keeper] AUC  base={bauc:.4f}  base+keepers={kauc:.4f}  lift={kauc-bauc:+.4f}")
+    print(f"[keeper] T3 late (<=120s): base={bauc_l:.4f}  base+keepers={kauc_l:.4f}  lift={kauc_l-bauc_l:+.4f}")
+    return {"clf_keeper": kclf, "iso_keeper": kiso, "features_keeper": KF,
+            "keeper_test_auc": float(kauc), "keeper_base_auc": float(bauc),
+            "keeper_test_auc_late": float(kauc_l), "keeper_base_auc_late": float(bauc_l)}
 
 
 def main():
@@ -110,12 +167,16 @@ def main():
               f"coverage={naive.mean()*100:.1f}% — the model should match this AND extend "
               f"high-precision coverage to more setups.")
 
+    # Keeper model (additive; live serve keeps using the base model until keepers are plumbed).
+    keeper_extra = _train_keeper_model(df, clf, iso)
+
+    bundle = {"clf": clf, "iso": iso, "features": FEATURES,
+              "trained_rows": int(len(tr)), "test_auc": float(auc), "version": HEAD_VERSION,
+              "note": "P(hold|abs_distance_pct,seconds_left,vol_60s_pct,horizon,dist_vol_ratio)"}
+    bundle.update(keeper_extra)
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    joblib.dump({"clf": clf, "iso": iso, "features": FEATURES,
-                 "trained_rows": int(len(tr)), "test_auc": float(auc),
-                 "note": "P(hold|abs_distance_pct,seconds_left,vol_60s_pct,horizon,dist_vol_ratio)"},
-                OUT_PATH)
-    print(f"\nSaved -> {OUT_PATH}")
+    joblib.dump(bundle, OUT_PATH)
+    print(f"\nSaved -> {OUT_PATH}  (keeper model: {'yes' if keeper_extra else 'no'})")
 
 
 if __name__ == "__main__":

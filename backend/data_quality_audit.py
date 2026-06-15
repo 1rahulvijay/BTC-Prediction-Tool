@@ -67,7 +67,6 @@ def label_ambiguity(o, c, horizons=(3, 5, 15)):
         y = beat_labels(o, c, hh); m = y >= 0
         if m.sum() < 50:
             continue
-        end = (m).sum()
         oo = o[:len(o) - hh]; cc = c[hh - 1:hh - 1 + len(oo)]
         rel = np.abs(cc - oo) / np.where(oo > 0, oo, 1.0)
         out[hh] = round(float((rel < TIE_EPS).mean()), 4)

@@ -104,7 +104,7 @@ class AutoMLChallenger:
 
     def run(self):
         logger.info("Starting Continuous AutoML optimization cycle...")
-        for h in [1, 3, 5, 10, 15]:
+        for h in [1, 3, 5, 7, 10, 15, 30]:
             self.optimize_horizon(h)
             
         if self.best_params:

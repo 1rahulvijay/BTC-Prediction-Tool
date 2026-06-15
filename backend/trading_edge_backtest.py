@@ -32,7 +32,7 @@ import numpy as np
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 REPORT_PATH = os.path.join(DATA_DIR, "trading_edge_report.json")
-HORIZONS = (1, 3, 5, 7, 10, 15)
+HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 COSTS_BPS = (0.0, 5.0, 10.0)               # round-trip cost: 0=frictionless probe, 5/10=realistic
 DELTAS = (0.0, 0.02, 0.05, 0.08, 0.10)     # edge threshold over 0.50 required to trade
 MIN_YEAR = 365.25 * 24 * 60                # minutes per year

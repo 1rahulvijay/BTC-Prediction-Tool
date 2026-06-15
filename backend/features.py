@@ -563,7 +563,7 @@ def load_retired_feature_indices() -> list:
             db_path = os.environ.get("BTC_DB_PATH") or os.path.join(data_dir, "analytics.duckdb")
         if not os.path.exists(db_path):
             return []
-        with duckdb.connect(db_path) as conn:
+        with duckdb.connect(db_path, read_only=True) as conn:
             try:
                 df = conn.execute("SELECT feature FROM feature_retirement_events WHERE status = 'retired'").df()
                 names = df["feature"].tolist()
@@ -571,7 +571,11 @@ def load_retired_feature_indices() -> list:
             except Exception:
                 return []
     except Exception as e:
-        print(f"Failed to load retired features: {e}")
+        # Importing features.py should never fail or spam the terminal because a
+        # separate live backend process holds DuckDB's Windows file lock. In that
+        # case feature retirement simply becomes inactive for this isolated process.
+        if os.environ.get("BTC_VERBOSE_FEATURE_RETIREMENT") == "1":
+            print(f"Failed to load retired features: {e}")
     return []
 
 
@@ -1398,7 +1402,7 @@ def build_sequences(
             objectives with different losses).
     """
     if horizons is None:
-        horizons = [1, 3, 5, 7, 10, 15]  # full set — was [1,5,10,15], silently dropped 3m/7m
+        horizons = [1, 3, 5, 7, 10, 15, 30]  # full set — was [1,5,10,15], silently dropped 3m/7m
 
     # Compute adaptive threshold (used as the TP/SL barrier)
     if atr_arr is not None:
