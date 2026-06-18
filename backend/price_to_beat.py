@@ -26,6 +26,7 @@ from collections import deque
 import numpy as np
 
 import database
+import decision_champion
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,179 @@ def _load_persistence_model():
 _SIGNED_QMODEL = None
 _SIGNED_QMODEL_MTIME = -2.0
 _SIGNED_QMODEL_CHECKED = 0.0
+
+
+_BIGMOVE_MODEL = None
+_BIGMOVE_CHECKED = False
+
+
+def _load_bigmove_keeper_model():
+    """P(big_move) keeper head {pipe, features, tiers, auc} or None — load-once, crash-safe.
+    Served on the 4 parity-proven keepers only, so it never needs new live features."""
+    global _BIGMOVE_MODEL, _BIGMOVE_CHECKED
+    if _BIGMOVE_CHECKED:
+        return _BIGMOVE_MODEL
+    _BIGMOVE_CHECKED = True
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "bigmove_keeper_model.pkl")
+        if os.path.exists(path):
+            _BIGMOVE_MODEL = joblib.load(path)
+            logger.info(f"Big-move keeper head loaded: AUC={_BIGMOVE_MODEL.get('auc'):.3f}, "
+                        f"features={_BIGMOVE_MODEL.get('features')}")
+    except Exception as _e:
+        logger.debug(f"big-move keeper model load skipped: {_e}")
+    return _BIGMOVE_MODEL
+
+
+_BIGDROP_MODEL = None
+_BIGDROP_CHECKED = False
+
+
+def _load_bigdrop_keeper_model():
+    """Big-Drop-Risk keeper head {pipe, features, tiers, auc, top5_prec} or None — load-once, crash-safe."""
+    global _BIGDROP_MODEL, _BIGDROP_CHECKED
+    if _BIGDROP_CHECKED:
+        return _BIGDROP_MODEL
+    _BIGDROP_CHECKED = True
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "bigdrop_keeper_model.pkl")
+        if os.path.exists(path):
+            _BIGDROP_MODEL = joblib.load(path)
+            logger.info(f"Big-drop keeper head loaded: AUC={_BIGDROP_MODEL.get('auc'):.3f}, "
+                        f"top5%={_BIGDROP_MODEL.get('top5_prec'):.2f}")
+    except Exception as _e:
+        logger.debug(f"big-drop keeper model load skipped: {_e}")
+    return _BIGDROP_MODEL
+
+
+_DIRECTIONAL_MODEL = None
+_DIRECTIONAL_CHECKED = False
+
+
+def _load_directional_keeper_model():
+    """Directional big-up/down keeper heads or None. Confirmation only."""
+    global _DIRECTIONAL_MODEL, _DIRECTIONAL_CHECKED
+    if _DIRECTIONAL_CHECKED:
+        return _DIRECTIONAL_MODEL
+    _DIRECTIONAL_CHECKED = True
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "directional_keeper_model.pkl")
+        if os.path.exists(path):
+            _DIRECTIONAL_MODEL = joblib.load(path)
+            logger.info("Directional keeper heads loaded: %s", list((_DIRECTIONAL_MODEL.get("models") or {}).keys()))
+    except Exception as _e:
+        logger.debug(f"directional keeper model load skipped: {_e}")
+    return _DIRECTIONAL_MODEL
+
+
+_ACTIVITY_MODEL = None
+_ACTIVITY_CHECKED = False
+
+
+def _load_activity_keeper_model():
+    """Activity/range keeper head or None. Proxy for participation, not true future volume."""
+    global _ACTIVITY_MODEL, _ACTIVITY_CHECKED
+    if _ACTIVITY_CHECKED:
+        return _ACTIVITY_MODEL
+    _ACTIVITY_CHECKED = True
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "activity_keeper_model.pkl")
+        if os.path.exists(path):
+            _ACTIVITY_MODEL = joblib.load(path)
+            logger.info(f"Activity keeper head loaded: AUC={_ACTIVITY_MODEL.get('auc'):.3f}")
+    except Exception as _e:
+        logger.debug(f"activity keeper model load skipped: {_e}")
+    return _ACTIVITY_MODEL
+
+
+def _select_keeper_config(bundle: dict, model_key: str = None, horizon: int = None):
+    """Pick a keeper-head config from legacy, per-head, or per-horizon bundles."""
+    if not bundle:
+        return None
+    models = bundle.get("models") or {}
+    cfg = None
+    if horizon is not None and models:
+        hcfg = models.get(int(horizon)) or models.get(str(int(horizon)))
+        if model_key:
+            cfg = (hcfg or {}).get(model_key) if isinstance(hcfg, dict) else None
+        else:
+            cfg = hcfg if isinstance(hcfg, dict) and "pipe" in hcfg else None
+    if cfg is None and model_key:
+        cfg = models.get(model_key)
+    if cfg is None and not model_key:
+        cfg = bundle
+    return cfg if isinstance(cfg, dict) and "pipe" in cfg else None
+
+
+def _keeper_move_buckets(bundle: dict, horizon: int):
+    """Return {meaningful, large, extreme} dollar buckets from a keeper bundle."""
+    if not bundle:
+        return None
+    buckets = bundle.get("move_buckets_usd_by_horizon") or {}
+    vals = buckets.get(int(horizon)) or buckets.get(str(int(horizon)))
+    if vals is None:
+        thresholds = bundle.get("move_threshold_usd_by_horizon") or bundle.get("drop_threshold_usd_by_horizon") or {}
+        base = thresholds.get(int(horizon)) or thresholds.get(str(int(horizon)))
+        vals = (base, float(base) * 2.0, float(base) * 4.0) if base is not None else None
+    if isinstance(vals, dict):
+        out = {
+            "meaningful": vals.get("meaningful"),
+            "large": vals.get("large"),
+            "extreme": vals.get("extreme"),
+        }
+    else:
+        try:
+            a, b, c = list(vals)[:3]
+            out = {"meaningful": a, "large": b, "extreme": c}
+        except Exception:
+            return None
+    try:
+        return {k: round(float(v), 2) for k, v in out.items() if v is not None}
+    except Exception:
+        return None
+
+
+def _score_keeper_head(bundle: dict, keepers: dict, model_key: str = None, horizon: int = None):
+    """Score one keeper-head bundle. Returns calibrated score or None."""
+    if not bundle or not keepers:
+        return None
+    cfg = _select_keeper_config(bundle, model_key=model_key, horizon=horizon)
+    if not cfg:
+        return None
+    features = cfg.get("features") or bundle.get("features") or []
+    if not features or not all(keepers.get(k) is not None for k in features):
+        return None
+    raw = float(cfg["pipe"].predict_proba([[float(keepers[k]) for k in features]])[:, 1][0])
+    iso = cfg.get("iso") or bundle.get("iso")
+    if iso is not None:
+        try:
+            return float(iso.predict([raw])[0])
+        except Exception:
+            return raw
+    return raw
+
+
+def _tier(score: float, tiers: dict, labels=("LOW", "ELEVATED", "HIGH")):
+    if score is None or not tiers:
+        return None
+    low, mid, high = labels
+    return high if score >= tiers.get("t3", 1.0) else mid if score >= tiers.get("t2", 1.0) else low
 
 
 def _load_signed_quantile_model():
@@ -316,6 +490,7 @@ class PriceToBeatTracker:
                     # Stage-3 setup grade computed server-side (model lean + regime +
                     # flow confirmations). A ≈ the high-precision subset; C ≈ skip.
                     "confluence": p.get("confluence"),
+                    "regime": p.get("regime", "UNKNOWN"),
                     "our_action": p.get("signal", p.get("direction", "NEUTRAL")),
                     "signal": p.get("signal", p.get("direction", "NEUTRAL")),
                     "conviction": float(p.get("conviction", 0.0) or 0.0),
@@ -359,6 +534,7 @@ class PriceToBeatTracker:
         rnd["current_move"] = cur_move                     # signed $ vs price-to-beat
         rnd["current_position"] = cur_pos                  # UP/DOWN/NEUTRAL right now
         rnd["seconds_left"] = secs_left
+        rnd["regime"] = p.get("regime", rnd.get("regime", "UNKNOWN"))
         rnd["live_lean"] = live_lean
         rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
         # ── A1 / T3 P(hold): calibrated prob the side price is CURRENTLY ahead on holds to
@@ -403,6 +579,91 @@ class PriceToBeatTracker:
         except Exception as _pe:
             logger.debug(f"P(hold) compute skipped: {_pe}")
         rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
+        # P(big_move) — servable keeper head (timing/tradability; rank-calibrated tiers, not a
+        # calibrated probability). Uses ONLY the 4 parity-proven keepers, so it never needs new
+        # live features. Crash-safe: any failure leaves both fields None and the card hides it.
+        rnd["p_big_move"] = None
+        rnd["big_move_tier"] = None
+        rnd["move_buckets_usd"] = None
+        rnd["move_threshold_usd"] = None
+        try:
+            _bm = _load_bigmove_keeper_model()
+            _kp = self._last_keepers
+            _hh = int(rnd.get("horizon", 5) or 5)
+            _bk = _keeper_move_buckets(_bm, _hh)
+            if _bk:
+                rnd["move_buckets_usd"] = _bk
+                rnd["move_threshold_usd"] = _bk.get("meaningful")
+            _bcfg = _select_keeper_config(_bm, horizon=_hh)
+            _bfeats = (_bcfg or {}).get("features") or (_bm or {}).get("features") or []
+            if _bm and _kp and _bcfg and all(_kp.get(k) is not None for k in _bfeats):
+                _bs = _score_keeper_head(_bm, _kp, horizon=_hh)
+                if _bs is not None:
+                    _t = _bcfg["tiers"]
+                    rnd["p_big_move"] = round(_bs, 4)
+                    rnd["big_move_tier"] = ("likely" if _bs >= _t["t3"] else "elevated" if _bs >= _t["t2"]
+                                            else "moderate" if _bs >= _t["t1"] else "quiet")
+        except Exception as _bme:
+            logger.debug(f"big-move compute skipped: {_bme}")
+        # P(big_drop) — downside path-risk head (parity-safe keepers; gated AUC 0.751 / top-5% 63.5%).
+        # A RISK/WARNING head, NOT a trade trigger: HIGH = avoid-long / flag a DOWN-side setup.
+        rnd["p_big_drop"] = None
+        rnd["big_drop_risk"] = None
+        try:
+            _bd = _load_bigdrop_keeper_model()
+            _kp = self._last_keepers
+            _dcfg = _select_keeper_config(_bd, horizon=int(rnd.get("horizon", 5) or 5))
+            _dfeats = (_dcfg or {}).get("features") or (_bd or {}).get("features") or []
+            if _bd and _kp and _dcfg and all(_kp.get(k) is not None for k in _dfeats):
+                _ds = _score_keeper_head(_bd, _kp, horizon=int(rnd.get("horizon", 5) or 5))
+                if _ds is not None:
+                    _dt = _dcfg["tiers"]
+                    rnd["p_big_drop"] = round(_ds, 4)
+                    rnd["big_drop_risk"] = ("HIGH" if _ds >= _dt["t3"] else "ELEVATED" if _ds >= _dt["t2"] else "LOW")
+        except Exception as _bde:
+            logger.debug(f"big-drop compute skipped: {_bde}")
+        # Directional big-up/down confirmation heads. These are deliberately confirmation-only;
+        # raw side prediction was weak in research, so they never authorize a trade by themselves.
+        rnd["p_big_up"] = None
+        rnd["p_big_down"] = None
+        rnd["big_up_tier"] = None
+        rnd["big_down_tier"] = None
+        try:
+            _dh = _load_directional_keeper_model()
+            _kp = self._last_keepers
+            _models = (_dh or {}).get("models") or {}
+            if _dh and _kp and _models:
+                for _key, _prob_key, _tier_key in [
+                    ("big_up", "p_big_up", "big_up_tier"),
+                    ("big_down", "p_big_down", "big_down_tier"),
+                ]:
+                    _cfg = _select_keeper_config(_dh, model_key=_key, horizon=int(rnd.get("horizon", 5) or 5))
+                    _feats = (_cfg or {}).get("features") or (_dh or {}).get("features") or []
+                    if _cfg and all(_kp.get(k) is not None for k in _feats):
+                        _ps = _score_keeper_head(_dh, _kp, _key, horizon=int(rnd.get("horizon", 5) or 5))
+                        if _ps is not None:
+                            rnd[_prob_key] = round(_ps, 4)
+                            rnd[_tier_key] = _tier(_ps, _cfg.get("tiers", {}))
+        except Exception as _de:
+            logger.debug(f"directional keeper compute skipped: {_de}")
+        # Activity/range head: deployable proxy for volume/activity until a future-volume
+        # matrix exists. It predicts unusually active 5m range, not exact volume.
+        rnd["p_activity"] = None
+        rnd["activity_tier"] = None
+        try:
+            _ah = _load_activity_keeper_model()
+            _kp = self._last_keepers
+            _acfg = _select_keeper_config(_ah, horizon=int(rnd.get("horizon", 5) or 5))
+            _afeats = (_acfg or {}).get("features") or (_ah or {}).get("features") or []
+            if _ah and _kp and _acfg and all(_kp.get(k) is not None for k in _afeats):
+                _as = _score_keeper_head(_ah, _kp, horizon=int(rnd.get("horizon", 5) or 5))
+                if _as is not None:
+                    _at = _acfg["tiers"]
+                    rnd["p_activity"] = round(_as, 4)
+                    rnd["activity_tier"] = ("likely" if _as >= _at["t3"] else "elevated" if _as >= _at["t2"]
+                                            else "moderate" if _as >= _at["t1"] else "quiet")
+        except Exception as _ae:
+            logger.debug(f"activity keeper compute skipped: {_ae}")
         # Magnitude FORECAST for the Polymarket card: the model's directional move-size
         # regressor (conformal low/median/high band) projected onto a close estimate vs
         # the price-to-beat. Lets the bettor see "expected drop/rise of ~$X" and whether
@@ -451,7 +712,7 @@ class PriceToBeatTracker:
         # built from the model's expected move vs the distance to the line, with odds from
         # MEASURED precision (expectedPrecision) when available, else the two-way prob.
         rnd["path_outlook"] = self._path_outlook(
-            cur_move, cur_pos, live_lean, p, rnd.get("lean_source"))
+            cur_move, cur_pos, live_lean, p, rnd.get("lean_source"), rnd.get("p_hold"))
         rnd["advice"] = self._advice(rnd.get("our_direction", "NEUTRAL"),
                                      cur_pos, live_lean, secs_left, cur_move)
         # COHERENCE override (operator-caught, 2026-06-12): when the path outlook says
@@ -550,6 +811,15 @@ class PriceToBeatTracker:
                 logger.debug(f"T2/T3 tier proof skipped: {_te}")
         # (EARLY-EXIT cents hint removed with p_up — same flat-magnitude basis. The
         # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
+        # ── CHAMPION DECISION VALIDATOR (Final Plan §3/P5) ────────────────────────
+        # Strict rules-first combiner of every head above → one honest ACTION + reason.
+        # No live Polymarket ask here, so it reports probability/risk and "edge not
+        # evaluated"; the recorder/bot supplies `market` to unlock the edge gate. Crash-safe.
+        try:
+            rnd["champion"] = decision_champion.champion_decision(rnd)
+        except Exception as _ce:
+            logger.debug(f"champion decision skipped: {_ce}")
+            rnd["champion"] = None
         # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────
         # Log intra-window snapshots (distance to line, seconds left, side) for the
         # late-entry / T3 persistence model. Pyth tracker only (the settlement feed);
@@ -566,10 +836,14 @@ class PriceToBeatTracker:
                         vol_60s_pct=rnd.get("vol_60s_pct"), p_hold=rnd.get("p_hold"))
                 except Exception as _se:
                     logger.debug(f"A1 persistence snapshot skipped: {_se}")
+                try:
+                    database.log_champion_snapshot(rnd, int(now_ms))
+                except Exception as _ce:
+                    logger.debug(f"Champion snapshot skipped: {_ce}")
 
     @staticmethod
     def _path_outlook(cur_move: float, cur_pos: str, lean: str, p: dict,
-                      lean_source: str) -> dict:
+                      lean_source: str, p_hold: float = None) -> dict:
         """Expected price JOURNEY vs the price-to-beat line, in plain English.
         Scenarios: HOLD (already on the leaned side, expect wobbles that hold),
         CROSS (on the wrong side but expected move covers the distance — dip/pop then
@@ -580,33 +854,30 @@ class PriceToBeatTracker:
         dist = abs(float(cur_move or 0.0))
         wobble = max(5.0, exp_move * 0.4)  # typical intra-window wiggle around the path
 
-        odds = p.get("expectedPrecision")
-        if odds is None:
-            pu = float(p.get("probUp", 0.0) or 0.0)
-            pd = float(p.get("probDown", 0.0) or 0.0)
-            if (pu + pd) > 0 and lean in ("UP", "DOWN"):
-                odds = (pu if lean == "UP" else pd) / (pu + pd)
-        odds_txt = f" Measured odds for this setup: {odds * 100:.0f}%." if odds else ""
+        # FIX (2026-06-16): quote P(hold) — the side-survival odds — NOT the direction model's
+        # precision (expectedPrecision), which is ~coin-flip and contradicted the P(hold) header
+        # (the 98%-vs-40% inconsistency). This outlook is position/P(hold)-framed, so P(hold) is the
+        # only consistent "odds this side survives" number to show here.
+        odds_txt = f" P(hold) for this setup: {p_hold * 100:.0f}%." if p_hold is not None else ""
 
-        if lean not in ("UP", "DOWN") or lean_source == "fallback":
-            return {"scenario": "CHOP", "text":
-                    f"No strong drift expected — price will likely wobble ±${wobble:.0f} "
-                    f"around the line and the closing side is near coin-flip. Best skipped."}
-        side = "above" if lean == "UP" else "below"
-        if cur_pos == lean:
+        # DIRECTION-HONEST (2026-06-15): 5m/15m direction is ~coin-flip, so the path outlook is framed
+        # on the POSITION vs the line + the calibrated move SIZE — NOT a lean prediction. We never claim
+        # "will cross and finish <lean>" (that manufactured the card contradiction). P(hold) carries the
+        # only reliable read of whether the CURRENT side survives.
+        if cur_pos not in ("UP", "DOWN"):
+            return {"scenario": "AT LINE", "text":
+                    f"Price is right at the line — expect ±${wobble:.0f} wobble and a near coin-flip "
+                    f"close. Best skipped."}
+        side = "above" if cur_pos == "UP" else "below"
+        if dist >= max(exp_move, 1.0):
             return {"scenario": "HOLD", "text":
-                    f"Price is already {side} the line ({cur_move:+.0f}$). Expect wobbles of "
-                    f"about ±${wobble:.0f} that test the line, but the model expects it to "
-                    f"HOLD {side} into the close.{odds_txt}"}
-        if exp_move >= dist:
-            return {"scenario": "CROSS", "text":
-                    f"Price is on the wrong side ({cur_move:+.0f}$) but the model expects "
-                    f"~${exp_move:.0f} of travel — enough to wobble here first, then CROSS "
-                    f"the line and finish {lean} (needs ${dist:.0f}).{odds_txt}"}
-        return {"scenario": "STRETCH", "text":
-                f"Model leans {lean} but expects only ~${exp_move:.0f} of travel while the "
-                f"line is ${dist:.0f} away — crossing is a stretch. Low-quality setup; "
-                f"consider skipping or waiting for price to come closer to the line."}
+                    f"Price is {side} the line ({cur_move:+.0f}$) — further than a typical ±${exp_move:.0f} "
+                    f"move, so it would take an above-average swing to cross back. P(hold) is the "
+                    f"calibrated odds this {cur_pos} side survives to close.{odds_txt}"}
+        return {"scenario": "NEAR LINE", "text":
+                f"Price is {side} the line ({cur_move:+.0f}$) but within a typical ±${exp_move:.0f} move, "
+                f"so it can wobble across — the close is near coin-flip. Lean on P(hold) + the calibrated "
+                f"band, not a direction call.{odds_txt}"}
 
     @staticmethod
     def _advice(bet_dir: str, cur_pos: str, live_lean: str, secs_left: int, cur_move: float) -> dict:

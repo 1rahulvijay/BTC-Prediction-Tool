@@ -581,11 +581,38 @@ def init_db():
     # grade-discipline win rates are measurable from the DB, not just the small
     # in-memory recent-rounds buffer.
     for _ddl in ["ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
-                 "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE"]:
+                 "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE",
+                 "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'"]:
         try:
             conn.execute(f"ALTER TABLE price_to_beat {_ddl}")
         except Exception:
             pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS champion_snapshots (
+            round_id VARCHAR,
+            ts BIGINT,
+            horizon INT,
+            seconds_left INT,
+            current_position VARCHAR,
+            current_move DOUBLE,
+            p_hold DOUBLE,
+            p_big_move DOUBLE,
+            big_move_tier VARCHAR,
+            p_big_drop DOUBLE,
+            big_drop_risk VARCHAR,
+            p_big_up DOUBLE,
+            big_up_tier VARCHAR,
+            p_big_down DOUBLE,
+            big_down_tier VARCHAR,
+            p_activity DOUBLE,
+            activity_tier VARCHAR,
+            regime VARCHAR,
+            champion_action VARCHAR,
+            champion_confidence DOUBLE,
+            champion_label VARCHAR,
+            PRIMARY KEY(round_id, ts)
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fsr_ppo_decisions (
             id VARCHAR PRIMARY KEY,
@@ -718,6 +745,54 @@ def log_persistence_snapshot(round_id: str, horizon: int, ts: int,
               (float(p_hold) if p_hold is not None else None)))
     except Exception as e:
         print(f"DuckDB persistence-snapshot Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_champion_snapshot(round_data: dict, ts: int):
+    """Append one live champion decision snapshot for later meta-model training.
+
+    Labels are joined later from price_to_beat by round_id. This keeps the live app
+    lightweight while preserving every specialist-head input that the champion saw.
+    """
+    conn = None
+    try:
+        champ = round_data.get("champion") or {}
+        conn = _connect()
+        conn.execute("""
+            INSERT OR REPLACE INTO champion_snapshots
+            (round_id, ts, horizon, seconds_left, current_position, current_move,
+             p_hold, p_big_move, big_move_tier, p_big_drop, big_drop_risk,
+             p_big_up, big_up_tier, p_big_down, big_down_tier, p_activity,
+             activity_tier, regime, champion_action, champion_confidence,
+             champion_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(round_data.get("id") or ""),
+            int(ts),
+            int(round_data.get("horizon") or 0),
+            int(round_data.get("seconds_left") or 0),
+            str(round_data.get("current_position") or ""),
+            float(round_data.get("current_move") or 0.0),
+            (float(round_data.get("p_hold")) if round_data.get("p_hold") is not None else None),
+            (float(round_data.get("p_big_move")) if round_data.get("p_big_move") is not None else None),
+            str(round_data.get("big_move_tier") or ""),
+            (float(round_data.get("p_big_drop")) if round_data.get("p_big_drop") is not None else None),
+            str(round_data.get("big_drop_risk") or ""),
+            (float(round_data.get("p_big_up")) if round_data.get("p_big_up") is not None else None),
+            str(round_data.get("big_up_tier") or ""),
+            (float(round_data.get("p_big_down")) if round_data.get("p_big_down") is not None else None),
+            str(round_data.get("big_down_tier") or ""),
+            (float(round_data.get("p_activity")) if round_data.get("p_activity") is not None else None),
+            str(round_data.get("activity_tier") or ""),
+            str(round_data.get("regime") or "UNKNOWN"),
+            str(champ.get("action") or ""),
+            float(champ.get("confidence") or 0.0),
+            str(champ.get("label") or ""),
+        ))
+    except Exception as e:
+        print(f"DuckDB champion-snapshot Insert Error: {e}")
     finally:
         if conn:
             conn.close()
@@ -1151,14 +1226,14 @@ def log_price_to_beat(entry: dict):
             INSERT OR REPLACE INTO price_to_beat
             (id, timestamp, horizon, price_to_beat, our_direction, signal, conviction,
              actionable, kronos_direction, target_price, verify_at, lean_source,
-             confluence_grade, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+             confluence_grade, regime, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
         """, (
             entry["id"], entry["timestamp"], entry["horizon"], entry["price_to_beat"],
             entry["our_direction"], entry.get("signal", ""), float(entry.get("conviction", 0.0)),
             bool(entry.get("actionable", False)), entry.get("kronos_direction", ""),
             entry.get("target_price"), entry["verify_at"], entry.get("lean_source", ""),
-            grade,
+            grade, entry.get("regime", "UNKNOWN"),
         ))
     except Exception as e:
         print(f"DuckDB PriceToBeat Insert Error: {e}")

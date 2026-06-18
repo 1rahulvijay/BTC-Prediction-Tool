@@ -8,6 +8,7 @@ Includes direction locking, hysteresis, prediction cooldown, and persistence.
 
 import time
 import os
+import hashlib
 import logging
 import numpy as np
 import warnings
@@ -18,7 +19,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
 from typing import Optional, Dict
-from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES
+from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES, FEATURE_NAMES
 
 warnings.filterwarnings("ignore", message=".*Falling back to prediction using DMatrix due to mismatched devices.*")
 
@@ -46,6 +47,51 @@ STACKER_MAX_SAMPLES = _env_int("BTC_STACKER_MAX_SAMPLES", 6000)
 # UI doesn't freeze mid-train. Default: all cores minus 4 (min 2). Env: BTC_TRAIN_THREADS.
 TRAIN_THREADS = max(2, _env_int("BTC_TRAIN_THREADS", max(2, (os.cpu_count() or 4) - 4)))
 DL_ARCH = os.getenv("BTC_DL_ARCH", "TCN").upper()
+
+
+def _resolve_model_feature_schema() -> tuple[list[int], list[str], str]:
+    """
+    Main-ensemble feature pruning.
+
+    The app still builds the full feature vector because UI, diagnostics, signal
+    explanations, live-only analytics, and historical replay depend on it. The
+    learnable direction/move models consume a narrower mask so training and live
+    inference use the same pruned schema without breaking the rest of the system.
+    """
+    mode = os.getenv("BTC_MODEL_FEATURE_PRUNING", "SAFE").strip().upper()
+    if mode in {"0", "OFF", "FALSE", "NONE", "FULL"}:
+        return list(range(NUM_FEATURES)), list(FEATURE_NAMES), "off"
+
+    allowed = {
+        a.strip().upper()
+        for a in os.getenv("BTC_MODEL_FEATURE_ACTIONS", "KEEP,PARITY-FIX").split(",")
+        if a.strip()
+    }
+    try:
+        from dead_feature_classifier import classify
+
+        cls = classify()
+        indices = [
+            i for i, name in enumerate(FEATURE_NAMES)
+            if (cls.get(name, ("", "", ""))[1] or "").upper() in allowed
+        ]
+        names = [FEATURE_NAMES[i] for i in indices]
+        if len(indices) < 20:
+            raise ValueError(f"pruned feature set too small: {len(indices)}")
+        return indices, names, ",".join(sorted(allowed))
+    except Exception as exc:
+        logger.warning(
+            "Feature pruning disabled; falling back to full feature schema: %s",
+            exc,
+        )
+        return list(range(NUM_FEATURES)), list(FEATURE_NAMES), "fallback-full"
+
+
+MODEL_FEATURE_INDICES, MODEL_FEATURE_NAMES, MODEL_FEATURE_PRUNING = _resolve_model_feature_schema()
+MODEL_NUM_FEATURES = len(MODEL_FEATURE_INDICES)
+MODEL_FEATURE_SCHEMA_HASH = hashlib.sha1(
+    "\n".join(MODEL_FEATURE_NAMES).encode("utf-8")
+).hexdigest()[:12]
 
 # Optional LightGBM
 try:
@@ -266,7 +312,10 @@ MODEL_DIR = os.path.join(
 # OOF in live-relevant buckets), TCN promoted to a full stacker seat with a real
 # epoch budget, XGBoost/CatBoost GPU probes. "classbal" MUST stay in this string —
 # the inference-time prior-division retirement is keyed on it.
-MODEL_ARCH_VERSION = f"2026-06-15-v9-7horizon-30m-rf-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
+MODEL_ARCH_VERSION = (
+    f"2026-06-15-v11-pruned{MODEL_NUM_FEATURES}-{MODEL_FEATURE_SCHEMA_HASH}-"
+    f"7horizon-30m-rf-persist-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
+)
 
 CASCADE_MIN_ACCURACY = 0.62
 CASCADE_MIN_PREDICTIONS = 30
@@ -362,6 +411,7 @@ class MultiModelEnsemble:
       - XGBoost
       - LightGBM, when installed
       - CatBoost, when installed
+      - Random Forest
       - HistGradientBoosting
       - optional PyTorch TCN/sequence model
       - Logistic Regression
@@ -391,6 +441,7 @@ class MultiModelEnsemble:
             7: 410,   # ~7 min
             10: 580,  # ~10 min
             15: 880,  # ~15 min
+            30: 1780, # ~30 min
         }
         
         # Auto-learning state
@@ -433,6 +484,7 @@ class MultiModelEnsemble:
             "dl": 0.20 if HAS_TORCH else 0.0,
             "histgb": 0.10,
             "lr": 0.05,
+            "rf": 0.08,
         })
         # Sub-signal weights
         self.sub_weights = {
@@ -462,6 +514,44 @@ class MultiModelEnsemble:
         # Calibrated to the model's real 3-class confidence scale (~0.40–0.55).
         self.confidence_threshold = self.config.get("confidence_threshold", 0.42)
 
+        # Feature pruning is model-local. Full feature rows still flow through UI,
+        # diagnostics, signal explanations, and historical replay; only train/predict
+        # paths are narrowed here so train and live inference stay dimension-aligned.
+        self.model_feature_indices = np.asarray(MODEL_FEATURE_INDICES, dtype=int)
+        self.model_feature_names = list(MODEL_FEATURE_NAMES)
+        self.model_num_features = int(MODEL_NUM_FEATURES)
+        self.model_feature_schema_hash = MODEL_FEATURE_SCHEMA_HASH
+        self.model_feature_pruning = MODEL_FEATURE_PRUNING
+        self.feature_reference_names = list(self.model_feature_names)
+
+    def _select_model_features(self, X: np.ndarray) -> np.ndarray:
+        """Select the model's feature mask from full 2D/3D feature arrays."""
+        arr = np.asarray(X)
+        if arr.ndim == 3:
+            if arr.shape[2] == self.model_num_features:
+                return arr
+            if arr.shape[2] == NUM_FEATURES:
+                return arr[:, :, self.model_feature_indices]
+            return arr
+        if arr.ndim == 2:
+            if arr.shape[1] == self.model_num_features:
+                return arr
+            if arr.shape[1] == NUM_FEATURES:
+                return arr[:, self.model_feature_indices]
+            if arr.shape[1] == LOOKBACK * self.model_num_features:
+                return arr
+            if arr.shape[1] == LOOKBACK * NUM_FEATURES:
+                seq = arr.reshape(arr.shape[0], LOOKBACK, NUM_FEATURES)
+                return seq[:, :, self.model_feature_indices].reshape(arr.shape[0], -1)
+        return arr
+
+    def _flatten_model_features(self, X: np.ndarray) -> np.ndarray:
+        """Return a flat matrix using the exact schema the models trained on."""
+        arr = self._select_model_features(X)
+        if arr.ndim == 3:
+            return arr.reshape(arr.shape[0], arr.shape[1] * arr.shape[2])
+        return arr
+
     def train(self, X: np.ndarray, Y: dict[int, np.ndarray], Ymag: dict = None,
               regime_labels: list = None):
         """
@@ -475,7 +565,9 @@ class MultiModelEnsemble:
         """
         train_started = time.time()
         n_samples, lookback, n_features = X.shape
-        X_flat = X.reshape((n_samples, lookback * n_features))
+        X_model = self._select_model_features(X)
+        _, _, model_n_features = X_model.shape
+        X_flat = X_model.reshape((n_samples, lookback * model_n_features))
 
         # Per-horizon class priors [DOWN, NEUTRAL, UP] for inference-time de-biasing.
         self.class_priors = {}
@@ -504,11 +596,13 @@ class MultiModelEnsemble:
         logger.info("[TRAIN] split_frac=%.3f (holdout=%s rows for conformal+backtest)",
                     _split_frac, n_samples - split_idx)
         logger.info(
-            "[TRAIN] Starting ensemble training: samples=%s, train_samples=%s, lookback=%s, features=%s, horizons=%s",
+            "[TRAIN] Starting ensemble training: samples=%s, train_samples=%s, lookback=%s, model_features=%s/%s, pruning=%s, horizons=%s",
             n_samples,
             split_idx,
             lookback,
+            model_n_features,
             n_features,
+            self.model_feature_pruning,
             self.horizons,
         )
         
@@ -544,7 +638,7 @@ class MultiModelEnsemble:
 
         self._build_move_size_stats(Ymag, regime_indices, split_idx)
 
-        direction_models = ["XGBoost", "HistGradientBoosting", "LogisticRegression"]
+        direction_models = ["XGBoost", "RandomForest", "HistGradientBoosting", "LogisticRegression"]
         if HAS_LGBM:
             direction_models.append(f"LightGBM({LGB_DEVICE})")
         if HAS_CATBOOST:
@@ -745,7 +839,6 @@ class MultiModelEnsemble:
                         try:
                             import shap
                             import database
-                            from features import FEATURE_NAMES, NUM_FEATURES as NF
                             fitted = base_xgb
                             if hasattr(xgb_model, "calibrated_classifiers_") and xgb_model.calibrated_classifiers_:
                                 cc = xgb_model.calibrated_classifiers_[0]
@@ -757,9 +850,13 @@ class MultiModelEnsemble:
 
                             arr = np.abs(shap_values)
                             per_col = arr.mean(axis=0).mean(axis=-1) if arr.ndim == 3 else arr.mean(axis=0)
-                            per_feat = per_col.reshape(lookback, NF).sum(axis=0) if per_col.shape[0] == lookback * NF else per_col[:NF]
+                            per_feat = (
+                                per_col.reshape(lookback, self.model_num_features).sum(axis=0)
+                                if per_col.shape[0] == lookback * self.model_num_features
+                                else per_col[:self.model_num_features]
+                            )
 
-                            top10 = sorted(zip(FEATURE_NAMES, per_feat), key=lambda x: x[1], reverse=True)[:10]
+                            top10 = sorted(zip(self.model_feature_names, per_feat), key=lambda x: x[1], reverse=True)[:10]
                             for rank, (feature, importance) in enumerate(top10):
                                 database.insert_feature_importance(h, rank + 1, feature, float(importance))
                             logger.info(f"Logged SHAP importance for {h}m (top feature: {top10[0][0]})")
@@ -844,7 +941,7 @@ class MultiModelEnsemble:
                 if HAS_TORCH:
                     try:
                         _t0 = log_component_start(h, reg, DL_ARCH, len(X_train_h))
-                        dl_model = PyTorchSequenceModel(input_dim=NUM_FEATURES, lookback=LOOKBACK)
+                        dl_model = PyTorchSequenceModel(input_dim=self.model_num_features, lookback=LOOKBACK)
                         dl_model.fit(X_train_h, y_train_h, sample_weight=sw)
                         self.models_by_regime[reg]["dl"][h] = dl_model
                         log_component_done(h, reg, DL_ARCH, _t0)
@@ -1130,7 +1227,7 @@ class MultiModelEnsemble:
                 except Exception as e:
                     logger.error(f"Stacker training failed for h={h} reg={reg}: {e}")
 
-        self._build_feature_reference(X)
+        self._build_feature_reference(X_model)
         self.is_trained = True
         self.train_count += 1
         self._save_models()
@@ -1197,17 +1294,20 @@ class MultiModelEnsemble:
             pct = np.clip(counts / max(1, counts.sum()), 1e-4, None)
             ref[int(j)] = {"edges": edges.tolist(), "ref_pct": pct.tolist()}
         self.feature_reference = ref
+        self.feature_reference_names = list(self.model_feature_names[:flat.shape[1]])
 
     def compute_psi(self, recent_features) -> dict:
         """Population Stability Index of recent live features vs training reference.
         PSI < 0.1 stable, 0.1-0.25 moderate, > 0.25 significant drift."""
-        from features import FEATURE_NAMES
         ref = self.feature_reference or {}
         if not ref or recent_features is None or len(recent_features) < 50:
             return {"status": "insufficient_data", "max_psi": 0.0, "drifted": [], "n_features_tracked": 0}
-        rf = np.asarray(recent_features)
+        rf = self._select_model_features(np.asarray(recent_features))
+        if rf.ndim == 3:
+            rf = rf[:, -1, :]
         psi_by_feature = {}
         drifted = []
+        names = self.feature_reference_names or self.model_feature_names
         for j, r in ref.items():
             if j >= rf.shape[1]:
                 continue
@@ -1220,7 +1320,7 @@ class MultiModelEnsemble:
             live_pct = np.clip(counts / max(1, counts.sum()), 1e-4, None)
             ref_pct = np.array(r["ref_pct"])
             psi = float(np.sum((live_pct - ref_pct) * np.log(live_pct / ref_pct)))
-            name = FEATURE_NAMES[j] if j < len(FEATURE_NAMES) else str(j)
+            name = names[j] if j < len(names) else str(j)
             psi_by_feature[name] = round(psi, 4)
             if psi > 0.25:
                 drifted.append({"feature": name, "psi": round(psi, 3)})
@@ -1237,7 +1337,7 @@ class MultiModelEnsemble:
 
     def _get_dynamic_weights(self, horizon: int, data_state: dict = None) -> dict:
         """Compute model weights dynamically based on backtest accuracy and real-time live performance, and regime."""
-        model_names = ["xgboost", "lightgbm", "catboost", "histgb", "dl", "lr"]
+        model_names = ["xgboost", "lightgbm", "catboost", "histgb", "dl", "lr", "rf"]
         weights = {
             model_name: max(0.0, float(self.base_weights.get(model_name, 0.0)))
             for model_name in model_names
@@ -1725,7 +1825,7 @@ class MultiModelEnsemble:
 
     def predict_base(self, seq_batch: np.ndarray, horizon: int, data_state: dict = None) -> tuple[float, float, float]:
         """Raw prediction from multi-model ensemble. Returns (prob_down, prob_neutral, prob_up)."""
-        X_flat = seq_batch.reshape((seq_batch.shape[0], -1))
+        X_flat = self._flatten_model_features(seq_batch)
         return self._predict_model_probs(X_flat, horizon, data_state)
 
     def generate_ensemble_prediction(self, h: int, seq: np.ndarray, data_state: dict, acc_cache: dict = None, cascade_data: dict = None) -> dict:
@@ -1744,7 +1844,7 @@ class MultiModelEnsemble:
             ml_down, ml_neutral, ml_up = 0.0, 1.0, 0.0
 
         # Ensemble agreement + pairwise disagreement
-        _xflat = np.expand_dims(seq, axis=0).reshape(1, -1)
+        _xflat = self._flatten_model_features(np.expand_dims(seq, axis=0))
         # Compute per-model directions ONCE, then derive agreement from them — this avoids
         # a second full predict_proba pass over all 7 base models every cycle (it was ~half
         # the per-cycle inference cost and a big contributor to the event-loop blocking). (perf)
@@ -2339,19 +2439,25 @@ class MultiModelEnsemble:
             "histgb": True,
             "dl": HAS_TORCH,
             "lr": True,
+            "rf": True,
         }
         trained_by_regime = {}
         for reg, stores in self.models_by_regime.items():
             trained_by_regime[reg] = {
                 name: len(stores.get(name, {}))
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr"]
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"]
             }
         move_size_prior_count = sum(len(hs) for hs in self.move_size_stats.values())
         return {
             "installed": installed,
             "trained_by_regime": trained_by_regime,
-            "available_model_keys": ["xgb", "lgb", "cat", "histgb", "dl", "lr"],
+            "available_model_keys": ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"],
             "move_size_prior_count": move_size_prior_count,
+            "raw_feature_count": NUM_FEATURES,
+            "model_feature_count": self.model_num_features,
+            "retired_from_model_count": max(0, NUM_FEATURES - self.model_num_features),
+            "feature_pruning": self.model_feature_pruning,
+            "model_feature_schema_hash": self.model_feature_schema_hash,
             "catboost_available": HAS_CATBOOST,
             "torch_available": HAS_TORCH,
             "deep_model_arch": DL_ARCH if HAS_TORCH else "n/a",
@@ -2369,7 +2475,7 @@ class MultiModelEnsemble:
             for reg in self.regimes:
                 reg_dir = os.path.join(MODEL_DIR, reg)
                 os.makedirs(reg_dir, exist_ok=True)
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                     store = self.models_by_regime[reg][name]
                     for h in self.horizons:
                         if h in store:
@@ -2378,6 +2484,17 @@ class MultiModelEnsemble:
             joblib.dump(self.model_accuracies, os.path.join(MODEL_DIR, "accuracies.pkl"))
             joblib.dump(self.conformal_residuals, os.path.join(MODEL_DIR, "conformal_residuals.pkl"))
             joblib.dump(self.feature_reference, os.path.join(MODEL_DIR, "feature_reference.pkl"))
+            joblib.dump(self.feature_reference_names, os.path.join(MODEL_DIR, "feature_reference_names.pkl"))
+            joblib.dump(
+                {
+                    "mode": self.model_feature_pruning,
+                    "raw_count": NUM_FEATURES,
+                    "model_count": self.model_num_features,
+                    "hash": self.model_feature_schema_hash,
+                    "names": self.model_feature_names,
+                },
+                os.path.join(MODEL_DIR, "model_feature_schema.pkl"),
+            )
             joblib.dump(self.move_size_stats, os.path.join(MODEL_DIR, "move_size_stats.pkl"))
             joblib.dump(self.class_priors, os.path.join(MODEL_DIR, "class_priors.pkl"))
             joblib.dump(self.stackers_by_regime, os.path.join(MODEL_DIR, "stackers.pkl"))
@@ -2397,7 +2514,7 @@ class MultiModelEnsemble:
                 reg_dir = os.path.join(MODEL_DIR, reg)
                 if not os.path.exists(reg_dir):
                     continue
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                     for h in self.horizons:
                         path = os.path.join(reg_dir, f"{name}_{h}.pkl")
                         if os.path.exists(path):
@@ -2422,6 +2539,15 @@ class MultiModelEnsemble:
                     self.feature_reference = joblib.load(ref_path)
                 except Exception:
                     self.feature_reference = {}
+
+            ref_names_path = os.path.join(MODEL_DIR, "feature_reference_names.pkl")
+            if os.path.exists(ref_names_path):
+                try:
+                    loaded_names = joblib.load(ref_names_path)
+                    if isinstance(loaded_names, list):
+                        self.feature_reference_names = loaded_names
+                except Exception:
+                    self.feature_reference_names = list(self.model_feature_names)
 
             priors_path = os.path.join(MODEL_DIR, "class_priors.pkl")
             if os.path.exists(priors_path):
@@ -2473,13 +2599,13 @@ class MultiModelEnsemble:
                         MODEL_ARCH_VERSION,
                     )
                     for r in self.regimes:
-                        for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
+                        for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                             self.models_by_regime[r][n].clear()
                     self.is_trained = False
                     return False
 
                 # Verify feature dimension compatibility
-                dummy_input = np.zeros((1, LOOKBACK * NUM_FEATURES))
+                dummy_input = np.zeros((1, LOOKBACK * self.model_num_features))
                 for reg in self.regimes:
                     for h in self.horizons:
                         if h in self.models_by_regime[reg]["xgb"]:
@@ -2488,7 +2614,7 @@ class MultiModelEnsemble:
                             except Exception as e:
                                 logger.warning(f"Saved models are incompatible with current features count: {e}. Purging saved models to trigger retraining.")
                                 for r in self.regimes:
-                                    for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "mag"]:
+                                    for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                                         self.models_by_regime[r][n].clear()
                                 self.is_trained = False
                                 return False

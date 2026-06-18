@@ -104,6 +104,10 @@ MODEL_BOOT_BACKTEST = os.getenv("BTC_RUN_STARTUP_BACKTEST", "1") != "0"
 # (POST /api/relearn) still works. This default means a stray/missing env var can't silently
 # kick off a 4-hour retrain again.
 MODEL_FROZEN = os.getenv("BTC_FREEZE_MODEL", "1") != "0"
+FORCE_MAIN_RETRAIN = (
+    os.getenv("BTC_FORCE_MAIN_RETRAIN", "0") == "1"
+    or os.getenv("BTC_OVERNIGHT_TRAIN_ALL", "0") == "1"
+)
 # Main prediction-loop tick interval (seconds). Inference is the heaviest per-tick work, but
 # predictions are only RECORDED every 60s+ (per-horizon) and the live price/charts/Polymarket
 # windows run on their own fast tickers (0.25s / 1s) — so the heavy loop can run slower with no
@@ -267,7 +271,7 @@ price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30))
 # collide with the Pyth tracker's rows in the shared `price_to_beat` table. Powers the
 # "Binance — Price to Beat" tab; rebuilds live after a restart (no rehydration).
 price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30), persist=False)
-exchange_verifier = PerVenueVerifier(horizons=(5, 15))
+exchange_verifier = PerVenueVerifier(horizons=(5, 15, 30))
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
 regime_engine = MarketRegime()
@@ -1000,11 +1004,11 @@ def build_exchanges_block(data_state: dict) -> dict:
 
 
 def build_scoreboard(predictions: list, verification: dict) -> dict:
-    """Compact 5m/15m decision board: our call + conviction (kronos removed in v6)."""
+    """Compact 5m/15m/30m decision board: our call + conviction (kronos removed in v6)."""
     by_h = {p.get("horizon"): p for p in (predictions or [])}
     acc = _safe_dict(verification.get("accuracy")) if verification else {}
     board = {}
-    for h in (5, 15):
+    for h in (5, 15, 30):
         p = by_h.get(h) or {}
         a = _safe_dict(acc.get(h) or acc.get(str(h)))
         board[h] = {
@@ -1234,7 +1238,14 @@ async def train_model(target_model=None):
         f"Signal-history coverage for training: {signal_buffer.coverage(train_ts) * 100:.1f}% of {len(train_ts)} candles"
     )
     feature_t0 = time.time()
-    logger.info("[TRAIN] Building %s-feature matrix...", NUM_FEATURES)
+    _model_feature_count = getattr(target_model, "model_num_features", NUM_FEATURES)
+    _model_pruning = getattr(target_model, "model_feature_pruning", "unknown")
+    logger.info(
+        "[TRAIN] Building raw %s-feature app matrix; main ensemble will train on %s pruned model features (pruning=%s).",
+        NUM_FEATURES,
+        _model_feature_count,
+        _model_pruning,
+    )
     # Off-load the heavy feature build so it can't stall WebSocket pings. (#6)
     features = await asyncio.get_event_loop().run_in_executor(
         None,
@@ -1247,9 +1258,10 @@ async def train_model(target_model=None):
         ),
     )
     logger.info(
-        "[TRAIN] Feature matrix complete: rows=%s cols=%s elapsed=%.1fs",
+        "[TRAIN] Feature matrix complete: rows=%s raw_cols=%s model_cols=%s elapsed=%.1fs",
         features.shape[0] if hasattr(features, "shape") else len(features),
         features.shape[1] if hasattr(features, "shape") and len(features.shape) > 1 else "?",
+        _model_feature_count,
         time.time() - feature_t0,
     )
 
@@ -1944,7 +1956,7 @@ async def run_historical_replay_background(days: int = 7, horizons: list[int] = 
                                            stateful: bool = False):
     """Run saved-model replay inside the backend process to avoid DuckDB writer conflicts."""
     global replay_task
-    horizons = horizons or [5, 15]
+    horizons = horizons or [5, 15, 30]
     started = time.time()
 
     def _progress(evt: dict):
@@ -1981,7 +1993,7 @@ async def run_historical_replay_background(days: int = 7, horizons: list[int] = 
             days=max(1, min(int(days), 30)),
             start_ms=None,
             end_ms=None,
-            horizons=sorted(set(valid_horizons)) or [5, 15],
+            horizons=sorted(set(valid_horizons)) or [5, 15, 30],
             max_samples=max(1, min(int(max_samples), 5000)),
             step=max(1, int(step)),
             offset=LOOKBACK,
@@ -2415,6 +2427,8 @@ async def main_loop():
         "Set BTC_FREEZE_MODEL=0 to allow auto-retrain." if MODEL_FROZEN
         else "WARNING: a background retrain will saturate the CPU and freeze the live feed.",
     )
+    if FORCE_MAIN_RETRAIN:
+        logger.warning("[BOOT] BTC_FORCE_MAIN_RETRAIN=1: saved main ensemble will be ignored and retrained.")
     await broadcast(
         {
             "type": "status",
@@ -2464,7 +2478,7 @@ async def main_loop():
     )
     step_t0 = time.time()
     logger.info("[BOOT 5/7] Loading saved models from disk...")
-    loaded = model.load_models()
+    loaded = False if FORCE_MAIN_RETRAIN else model.load_models()
     if loaded:
         # Restore the saved model's out-of-sample boundary so backtests stay honest
         # across restarts (models loaded from disk, no retrain → boundary from json).
@@ -2526,7 +2540,7 @@ async def main_loop():
                     completed_at=time.time(),
                     error=None,
                 )
-                if MODEL_BOOT_BACKTEST and not _load_backtest_cache():
+                if MODEL_BOOT_BACKTEST and (FORCE_MAIN_RETRAIN or not _load_backtest_cache()):
                     schedule_backtest("startup")
             except Exception as e:
                 logger.error("[BOOT] Background startup training failed: %s", e, exc_info=True)
@@ -2551,7 +2565,7 @@ async def main_loop():
 
     # 4. Backtest is intentionally backgrounded. The app should become usable as
     # soon as models are available; validation keeps running with visible progress.
-    if _load_backtest_cache():
+    if not FORCE_MAIN_RETRAIN and _load_backtest_cache():
         await broadcast(
             {
                 "type": "status",
@@ -2963,7 +2977,7 @@ async def main_loop():
                         # Durably log A/B variant predictions for this recorded id.
                         ab_runner.persist(pred_id, h, now_ms)
                         # Per-venue: snapshot exchange prices for this directional call.
-                        if h in (5, 15) and p.get("direction") in ("UP", "DOWN"):
+                        if h in (5, 15, 30) and p.get("direction") in ("UP", "DOWN"):
                             exchange_verifier.record(p["direction"], h, current_venue_prices(data_state), now_ms)
 
                         # Per-model live accuracy: record every base model's vote.
@@ -3509,14 +3523,14 @@ async def api_backtest():
 @app.post("/api/historical-replay/run")
 async def api_historical_replay_run(days: int = 7, max_samples: int = 1000,
                                     step: int = 1, stateful: bool = False,
-                                    horizons: str = "5,15"):
+                                    horizons: str = "5,15,30"):
     try:
         parsed_horizons = [
             int(x.strip()) for x in str(horizons).replace(";", ",").split(",")
             if x.strip()
         ]
     except Exception:
-        parsed_horizons = [5, 15]
+        parsed_horizons = [5, 15, 30]
     scheduled = schedule_historical_replay(days, parsed_horizons, max_samples, step, stateful)
     return {
         "scheduled": scheduled,

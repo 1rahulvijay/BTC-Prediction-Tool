@@ -87,13 +87,19 @@ up/down call.
 | 15m | 49.9% (coin-flip) | 0.739 | 75.2% |
 - (Caught + fixed a leak in the test itself: `ret_5m` is the realized outcome, not a feature — it gave a fake 99.8% before removal.)
 
-### 2.8 Dead-feature retirement — `test_deadfeatures_30d.py`
+### 2.8 Dead-feature retirement / model-local pruning — `test_deadfeatures_30d.py`
 - **81 / 136 features are dead** (backfill-constant): `cvd_change/1m/5m, book_imbalance, obi_5/10/20, trade_intensity, spread_norm, funding_rate, funding_velocity, oi_change, long_short_ratio, fear_greed_norm`, … (all live-only microstructure/derivatives/sentiment).
 | | big_move AUC | direction AUC |
 |---|---|---|
 | ALL 136 | 0.7524 | 0.5194 |
 | LIVE-ACTIVE 55 (81 removed) | **0.7524** | **0.5194** |
-- **Verdict: retiring dead features is EXACTLY NEUTRAL — a hygiene win (leaner, less train/serve mismatch), NOT an accuracy win. Direction stays 0.52 either way.**
+- **Verdict: retiring dead features is EXACTLY NEUTRAL for accuracy — a hygiene win (leaner, less
+  train/serve mismatch), NOT an accuracy win. Direction stays 0.52 either way.**
+- **Implemented 2026-06-15:** the main ensemble now keeps the full 136-feature app schema but trains and
+  predicts on a **69-feature model mask** from `dead_feature_classifier.py` (`KEEP` + `PARITY-FIX`).
+  This cuts the flattened learner width from **8160 → 4140** values at current `LOOKBACK=60`. SHAP,
+  PSI drift, move-size regressors, OOF stackers, RF, TCN and live prediction all use the same pruned
+  schema. Arch bumped to `v11-pruned69-7977e0559560...`, forcing one retrain and then fast loads.
 
 ### 2.9 "Add models to the ensemble" — measured for every case
 | Add what | Target | Result |
@@ -134,16 +140,16 @@ up/down call.
 ---
 
 ## 4. FEATURE PRUNING (the dead-feature analysis)
-- **136 live features → 81 dead (backfill-constant), 55 live-active.** Dead = live-only microstructure/
-  derivatives/sentiment that are zero/broadcast in the historical backfill, so the trees can't split on
-  them during training.
-- Retiring them: **offline-neutral** (identical AUC). Benefit = leaner/faster model + removes the
-  train/serve "zero-in-training, non-zero-live" mismatch. Risk = losing untested live signal (but since
-  the model never trained on them, no live signal is actually being used → safe).
-- **Recommendation:** retire as a *deliberate* later step (a `features.py` change + schema bump); do NOT
-  do it inside an overnight retrain — it won't change the numbers, only cleanliness. The keeper features
-  (`rv_15m/30m/60m, vpin, compression_ratio, shock_magnitude`) are the ones that DO carry signal and are
-  in the heads that use them (selectivity, keeper-P(Hold), magnitude).
+- **136 raw app features → 69 model features.** The full vector remains available for UI, replay,
+  feed-health, live diagnostics and future live-only research. The main learners now consume only the
+  columns classified as `KEEP` or `PARITY-FIX`: **57 KEEP + 12 PARITY-FIX**.
+- Excluded from the direction/move learners: **63 RETIRE + 4 RECORD-LIVE**. This is model-local, not a
+  destructive `FEATURE_NAMES` shrink, so the rest of the app remains compatible.
+- Expected effect: **faster training, lower RAM/GPU pressure, cleaner train/live parity.** Accuracy lift
+  is not promised; the retirement tests showed identical AUC. The purpose is to stop spending hours on
+  columns that historical training cannot learn from.
+- Validation: `dead_feature_classifier --selftest` passes; backend AST passes; `model.py` import confirms
+  raw=136, model=69, flat shape `(2, 4140)`, schema hash `7977e0559560`.
 
 ---
 

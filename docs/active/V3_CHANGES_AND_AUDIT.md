@@ -2387,6 +2387,31 @@ the 5m ceiling is INFORMATIONAL, not a code bug** — retraining the same featur
   and the bet workflow. Copied public/ -> dist/ (served build).
 - **Restart: NO retrain.** `BTC_FREEZE_MODEL=1` -> restart LOADS the saved heads (selectivity RF
   ensemble, 80% band, keeper P(Hold)) in ~12s, no 6h retrain. All new models already on disk.
+- **Post-audit RF persistence correction (2026-06-15, pre-restart).** A cross-session status note
+  claimed tabular RF was fully in the main ensemble, but source review found RF was only half-wired:
+  it trained and entered the OOF stacker, while save/load, dynamic fallback weights, model inventory,
+  per-model verifier and the UI roster still omitted `rf`. FIX: `model.py` now persists/loads/clears
+  `rf` alongside the other base models, includes `rf` in dynamic weights and inventory, and initially
+  bumped `MODEL_ARCH_VERSION` to `v10-rf-persist` so the stale v9 bundle was rejected. This is
+  superseded by the v11 pruned-69 schema below. `model_verifier.py` and `main.js` now expose
+  Random Forest live accuracy. Added the missing 30m direction lock (`1780s`) and surfaced 30m in the
+  scoreboard, price-to-beat tabs, replay default, exchange verifier and verification/timeframe tabs.
+  Validation: Python AST clean across 121 backend files, `model.py` import confirms v10 + 7 horizons +
+  RF weights/inventory + 30m lock, `node --check` clean, Vite build clean.
+- **Main-ensemble feature pruning wired (2026-06-15, pre-restart).** Earlier docs correctly said the
+  dead-feature classifier existed but was not speeding up training because `model.py` still flattened
+  all 136 features. FIX: the full app schema remains 136 for UI, explanations, replay, feed-health and
+  live-only analytics, but the train/predict model path now applies a model-local feature mask from
+  `dead_feature_classifier.py`. The main ensemble trains and serves on **69 model features**:
+  **57 KEEP + 12 PARITY-FIX**, excluding **63 RETIRE + 4 RECORD-LIVE** from the direction/move learners.
+  This changes the flattened model width from `LOOKBACK * 136` to `LOOKBACK * 69`; with current
+  `LOOKBACK=60`, that is **8160 -> 4140 inputs per row**. SHAP, PSI drift, move-size regressors, OOF
+  stackers, Random Forest, TCN and live `predict_base()` all use the same pruned schema, so train/live
+  dimensions stay aligned. `MODEL_ARCH_VERSION` is now
+  `2026-06-15-v11-pruned69-7977e0559560-...`, forcing one clean retrain and fast loads after the new
+  bundle is saved. Inventory now reports raw/model feature counts and the pruning hash.
+  Validation: `dead_feature_classifier --selftest` passes (57/12/63/4), backend AST clean across 118
+  files, and `model.py` import confirms raw=136, model=69, flat shape `(2, 4140)`.
 
 ## 6. Known limitations / honest notes
 - `vpin` IS now backfilled into training (slot 112): the streaming-VPIN recorder in
@@ -2398,5 +2423,6 @@ the 5m ceiling is INFORMATIONAL, not a code bug** — retraining the same featur
   improves only with live coverage).
 - Expected accuracy lift from this batch is **modest** (Class-A features are real but
   secondary); the larger gains remain calibration + meta-labeling once data accrues.
-- The schema hash changed → any cached feature-importance/PSI baselines recompute on the new
-  130-feature set after the retrain (expected, additive).
+- The model schema hash changed → any cached feature-importance/PSI baselines recompute on the new
+  v11 pruned-69 model feature set after the retrain (expected, additive). The raw app feature schema
+  remains 136 for UI/replay/live diagnostics.

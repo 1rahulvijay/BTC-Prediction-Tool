@@ -83,7 +83,7 @@ below in collapsible groups (`<details class="pa-group">`).
 - **Top Indicator Analysis** — readable translation of the strongest live inputs.
 
 ### Bottom of tab (always visible)
-- **BTC Direction Scoreboard — 5m & 15m** (`#scoreboard-grid`, `renderScoreboard`) — our model vs Kronos, conviction-gated. Only high-conviction (ensemble + Kronos + order flow + regime agreeing) calls are "actionable". Source: `payload.scoreboard` (`build_scoreboard`).
+- **BTC Direction Scoreboard — 5m, 15m & 30m** (`#scoreboard-grid`, `renderScoreboard`) — our model, conviction-gated. Only high-conviction calls are "actionable". Source: `payload.scoreboard` (`build_scoreboard`).
 - **Multi-Exchange Consensus** (`#exchange-strip`, `renderExchanges`) — median consensus price + per-venue bps deviation across Binance, Coinbase, Bybit, KuCoin, **Chainlink** (now live again). Source: `payload.exchanges` (`build_exchanges_block`).
 
 ---
@@ -92,7 +92,7 @@ below in collapsible groups (`<details class="pa-group">`).
 
 Renders from the WS payload (`renderModelsView`) plus a REST fetch for the log.
 
-### Price to Beat — 5m & 15m (`#ptb-grid`, `renderPriceToBeat`)
+### Price to Beat — 5m, 15m & 30m (`#ptb-grid`, `renderPriceToBeat`)
 The self-contained replacement for the removed Polymarket "Value Engine". Each round:
 - **Price to beat** — the reference price locked at round start.
 - **Our call + action** — UP/DOWN and STRONG BUY / STRONG SELL / WAIT.

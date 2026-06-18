@@ -332,3 +332,82 @@ else:                                      NO_TRADE_NO_PRICE_EDGE
 Build scripts **1–3 + the first `P(mispriced)` test** (offline-testable), and stand up **script 4**
 (live quote recorder) so spread/fill data starts accruing immediately. The model we actually want is
 **calibrated P(Hold) + a Polymarket mispricing detector**, NOT a BTC up/down predictor.
+
+---
+
+## PART 7 — CHAMPION / CHALLENGER FRAMEWORK (strategy parked 2026-06-15, NOT implemented)
+
+**Decision (operator, 2026-06-15):** keep the champion/challenger idea as V10 strategy — do NOT build now.
+The frozen `v11-pruned69` ensemble is the **champion**. A challenger is trained separately, scored
+head-to-head on the same OOS/live stream, and **promoted only if it beats the champion on a pre-set
+gate** — never auto-promoted (per [[confirm-before-wiring]]). Offline-safe: separate saved-models dir +
+separate `challenger_eval.duckdb`, never touches the frozen champion or the live `analytics.duckdb`.
+
+### Why a keeper-augmented DIRECTION challenger will NOT win (measured, don't re-litigate)
+Ablation on `research_matrix_1m.parquet` (HistGB, temporal 70/30 split, leak-free):
+| Target | 6 keepers (rv_15/30/60m, compression, shock, vpin) | the 4 (rv_30m, rv_60m, compression_ratio, shock_magnitude) |
+|---|---|---|
+| **Direction (up/down)** | **0.503** | **0.509** |
+| **Magnitude (big-move)** | **0.703** | **0.703** |
+The keepers carry **strong magnitude signal, ZERO direction signal**. A challenger that adds them to a
+**direction** ensemble ties the champion at ~0.50 — a ~6.4h retrain for a measured null. The keeper
+magnitude signal is ALREADY deployed where it works: the band (`signed_quantile`), `P(big_move)`
+(`selectivity`), and `P(Hold)` (`persistence` keeper model). **Direction stays at the information ceiling.**
+
+### Option B (the challenger that CAN win) — Polymarket mispricing model
+Point the first real challenger at **PART 6**: `edge = calibrated_P(Hold) − market_ask − buffer`. This is
+NOT fighting the direction ceiling, so a second model can genuinely beat the champion's economics. The
+harness scores it on shadow data (the live quote recorder's spreads + settlement) before any promotion.
+
+### Option C (the "see-it-yourself" challenger) — keeper-augmented direction ensemble
+Only to settle it empirically. To build: add rv_30m/rv_60m/compression_ratio/shock_magnitude to
+`features.py` (136→140; parity already proven via `live_keepers.py`), train a SEPARATE bundle with its
+own arch tag + `saved_models/challenger/` dir, score head-to-head vs `v11-pruned69` on the OOS holdout +
+live shadow. **Expected: a tie (~0.50 direction).** Build only if you want the head-to-head with your own eyes.
+
+### Harness sketch (when built)
+`backend/champion_challenger.py` — loads both bundles, scores both on the same OOS/live candle stream,
+writes per-prediction rows + a head-to-head summary to a separate `challenger_eval.duckdb`. Reports
+sign-accuracy, Brier, calibration, and (for Option B) realized EV after spread. **Promotion gate:**
+challenger replaces champion only if it beats it on the target metric by a margin on ≥500 resolved
+samples with stable calibration — and only on explicit operator sign-off. Otherwise it stays shadow.
+
+### Next action when resumed
+Decide the first challenger target (recommended: **Option B**, the Polymarket mispricing model — it's
+the only one with measured upside). Build the harness + `challenger_eval.duckdb` first, then the
+challenger model. Option C is available as an empirical sanity check but is a measured null for direction.
+
+---
+
+## PART 8 — 180-DAY MULTITARGET FORECASTER RESULTS (research, 2026-06-16) — CLOSES THE BTC-SIDE BOOK
+The expanded forecaster (`backend/research/train_360d_multitarget_forecaster.py`, run at **180 days**) —
+~14 targets × {5m, 15m} × 8 tabular models + LightGBM/GBR quantile + CQR. Test = **newest 20% (51,789
+samples)**. This is the larger-scale repeat of the 90-day bakeoff (VNEXT §12).
+
+| Target | Best model | Result | Verdict |
+|---|---|---|---|
+| **Direction 5m** | RF | 51.6% / **AUC 0.528** | **COIN-FLIP** |
+| **Direction 15m** | RF | 51.1% / **AUC 0.526** | **COIN-FLIP** |
+| **Big-move 5m** | CatBoost | 74.3% / **AUC 0.745** | USEFUL |
+| **Big-move 15m** | CatBoost | 70.1% / **AUC 0.707** | USEFUL |
+| **Exact price 5m** | *current-price baseline wins* | $60.71 MAE | NOT predictable |
+| **Exact price 15m** | *baseline wins* | $104.84 MAE | NOT predictable |
+| Return 5m / 15m | ExtraTrees / RF | 8.76 / 15.22 bps MAE | weak |
+| High/Low/Range 5m | ElasticNet | ~5.9 bps MAE | USEFUL (beats baseline) |
+| High/Low/Range 15m | ElasticNet | ~10.4 bps MAE | USEFUL |
+| Volume 5m / 15m | CatBoost | 0.45 / 0.41 log-vol MAE | USEFUL |
+| Quantile bands | LightGBM / GBR | coverage **81–83%** | CALIBRATED (~80%) |
+
+**VERDICT (13th independent confirmation):** 180 days — 2× the data, 4× the compute of the 90-day run —
+reproduces the **exact same conclusion**. Direction is a coin-flip (more data ≠ signal: variance, not bias,
+is the limit); predicting **exact price is impossible** (the naive "current price" baseline beats every model).
+The genuinely useful heads are **big-move, range, high/low, volume**. → This **confirms the BTC-side FREEZE**
+— no reason to expand BTC modeling further; the frozen stack (fair_value / danger / timing / band) stands.
+The product should decide via **big-move + range + P(Hold) + abstention, NOT raw direction**.
+
+**Operational:** GBR quantile ≈ **2 h/target** (CPU) — too slow; script patched with
+`--quantile-backends lightgbm` + `--skip-{regression,classification,quantile,sequence}` for fast GPU
+quantiles. Outputs: `data/research/forecast_360d_*.csv`, `FORECAST_360D_RESEARCH_RUNBOOK_2026-06-16.md`.
+
+**Make-or-break is UNCHANGED:** still `fair_value − ask − buffer` on recorder data. This run closes the book
+on BTC-side direction research — the next lever is the **execution/edge layer**, not more BTC models.

@@ -16,7 +16,11 @@ REM train too. The dashboard stays usable throughout (non-blocking boot). The
 REM microstructure features only fill from UPTIME, so after training, LEAVE IT RUNNING.
 REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samples is enough to
 REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=60"
+REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
+REM head. Set BTC_HISTORICAL_DAYS=180 (or 360) and big-move/up/down/drop/activity all retrain on
+REM that window. 180d is comfortable for the tiny heads; 360d works but the FIRST build downloads
+REM ~that many days of spot aggTrades (multi-GB, cached after) and the heads train ~1-2h.
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=100"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
@@ -36,6 +40,13 @@ REM It runs in the BACKGROUND after the app is ready, so it does not block live 
 if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=1"
 REM Backtest window: recent N rows (faster) or 0 = full historical replay (heavy on a laptop).
 if not defined BTC_BACKTEST_MAX_ROWS set "BTC_BACKTEST_MAX_ROWS=12000"
+REM Specialist-head move buckets in dollars. Used by big-move, big-up, big-down,
+REM big-drop, and activity/range heads. Each horizon has:
+REM   meaningful | large | extreme
+REM The first value is the binary training event boundary; all three are saved
+REM for interpretation and future UI labels.
+REM Format: horizon_minutes:meaningful|large|extreme;...
+if not defined BTC_MOVE_BUCKETS_USD_BY_HORIZON set "BTC_MOVE_BUCKETS_USD_BY_HORIZON=1:10|20|40;3:20|35|70;5:30|60|100;7:40|80|140;10:50|100|180;15:60|120|300;30:100|200|600"
 REM FREEZE MODE (set to 1 for this 16GB machine): 1 = no auto/scheduled retraining, so the
 REM model is STABLE and the live feed NEVER freezes (a background retrain pegs all cores for
 REM hours and this box has no headroom for that). 0 = auto-improve, but on 16GB the feed WILL
@@ -46,7 +57,7 @@ REM purged walk-forward showed ALL horizons at the information ceiling (1m 0.36 
 REM below_chance) — retraining cannot lift that, it only burns ~6h and freezes the feed. The
 REM saved v8 model's arch MATCHES the code, so boot LOADS it (no startup retrain). Set back to
 REM 0 only for a deliberate, operator-chosen retrain (e.g. new features / longer window).
-set "BTC_FREEZE_MODEL=1"
+if not defined BTC_FREEZE_MODEL set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
 set "BTC_MAIN_LOOP_SEC=3"
@@ -106,18 +117,31 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     echo [0/3] c. Updating A4 cross-venue flow - spot-vs-perp divergence...
     python backend\build_crossvenue_flow.py --auto --days %BTC_BACKFILL_DAYS%
     if errorlevel 1 echo [0/3c] Cross-venue build failed - continuing.
-    echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
-    echo          HEAD_VERSION changed, same idea as the ensemble arch. Bump a trainer's
-    echo          HEAD_VERSION to force just that head to rebuild; else restarts skip them:
-    python backend\train_heads.py
-    if errorlevel 1 echo [0/3d] Head training had an issue - continuing.
-    echo [0/3] e. Data-quality health check - last 3 days - report only:
-    python backend\data_quality_audit.py --days 3
-    if errorlevel 1 echo [0/3e] Data-quality audit skipped - continuing.
-    echo [0/3] f. Cleanup superseded research artifacts - safe allow-list only:
-    python backend\cleanup_artifacts.py --apply
-    if errorlevel 1 echo [0/3f] Cleanup skipped - continuing.
 )
+echo [0/3] c2. Rebuilding the 1m research matrix to the BTC_HISTORICAL_DAYS window. This is
+echo          the SINGLE knob that drives ALL specialist heads (big-move/up/down/drop/activity):
+echo          set BTC_HISTORICAL_DAYS=180 and every head trains on 180 days. Skips instantly
+echo          only when the matrix coverage and source mtimes are already valid:
+python backend\build_research_matrix.py --days %BTC_HISTORICAL_DAYS%
+if errorlevel 1 (
+    echo [0/3c2] Research-matrix build failed or coverage is too low.
+    echo          Skipping specialist-head training to avoid stamping stale data as fresh.
+) else (
+    echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
+    echo          HEAD_VERSION changed. Set BTC_FORCE_HEAD_RETRAIN=1 to train every head one by one:
+    if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (
+        python backend\train_heads.py --force
+    ) else (
+    python backend\train_heads.py
+    )
+    if errorlevel 1 echo [0/3d] Head training had an issue - continuing.
+)
+echo [0/3] e. Data-quality health check - last 3 days - report only:
+python backend\data_quality_audit.py --days 3
+if errorlevel 1 echo [0/3e] Data-quality audit skipped - continuing.
+echo [0/3] f. Cleanup superseded research artifacts - safe allow-list only:
+python backend\cleanup_artifacts.py --apply
+if errorlevel 1 echo [0/3f] Cleanup skipped - continuing.
 REM =======================================================================
 
 echo [1/3] Checking dependencies...

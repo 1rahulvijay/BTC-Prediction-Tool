@@ -23,6 +23,8 @@ not building bigger models.
 | Change | File(s) | Result |
 |---|---|---|
 | **RF added to selectivity (timing) ensemble** | `decision/train_selectivity_models.py` | `VotingClassifier(lr+rf)`, OOS **0.741 vs 0.739** (+0.002); drop-in `predict_proba`; saved to `selectivity_models.pkl` |
+| **RF persistence correction for main ensemble** | `model.py`, `model_verifier.py`, `src/main.js` | RF is now a persisted/measured 7th direction seat: train -> save/load -> fallback weights -> inventory -> live accuracy roster. Arch bumped to v10 so stale v9 bundles retrain once. |
+| **30m visibility/cadence correction** | `model.py`, `server.py`, `index.html`, `src/main.js` | Added 30m lock (`1780s`) and exposed 30m in scoreboard, price-to-beat tabs, replay default, exchange verifier, and UI timeframe tabs. |
 | **Conformal band FIX → honest 80%** | `train_signed_quantiles.py` | recalibrate `cqr` on the **most-recent 20%** → coverage **80.0% at every horizon** (was 68–73%) |
 | **Keeper P(Hold) + signed band wired live** | `server.py`, `price_to_beat.py`, `live_keepers.py` | fallback-safe; card serves keeper P(Hold) + calibrated asymmetric band on restart |
 | **Card: abstain-on-direction + band labels** | `src/main.js` | AVOID labels direction "~coin-flip, informational"; band shows "80% (calibrated)" not "50%" |
@@ -65,6 +67,7 @@ already filled and in the heads.
 | **Conformal recency-calibration** | 72% → **80.0%** coverage | ✅ real fix |
 | **Selectivity calibration (isotonic)** | composer gates on **percentiles** (calibration-robust) | ✅ not needed |
 | **Dead-feature classification** | 57/12/63/4 | ✅ actionable plan |
+| **Main-ensemble feature pruning** | 136 raw → **69 model features** | ✅ wired in `model.py`; speed/RAM hygiene, not an accuracy promise |
 
 ---
 
@@ -91,8 +94,12 @@ already filled and in the heads.
 ## 5. What CHANGED (files this session)
 - **New:** `model_metrics_logger.py`, `dead_feature_classifier.py`, `phold_dynamics_probe.py`,
   `PROJECT_STATE_FOR_EXTERNAL_REVIEW_2026-06-15.md`, `TRAINING_PLAN_DISCUSSION_2026-06-15.md`, this file.
-- **Modified:** `decision/train_selectivity_models.py` (RF ensemble), `train_signed_quantiles.py`
-  (recency-cqr → 80%), `server.py` (metrics logging), `src/main.js` (abstain + band labels),
+- **Modified:** `decision/train_selectivity_models.py` (RF selectivity ensemble), `model.py`
+  (main-ensemble RF persistence + v11 pruned-69 arch + 30m lock + train/serve feature mask),
+  `model_verifier.py` / `src/main.js`
+  (RF live accuracy), `train_signed_quantiles.py` (recency-cqr → 80%), `server.py`
+  (metrics logging + 30m scoreboard/replay/exchange verification), `index.html`
+  (30m tabs), `src/main.js` (abstain + band labels + 30m PTB/replay),
   `public/guide.html` (enhancements section), `V3_CHANGES_AND_AUDIT.md` (log entries),
   `ENSEMBLE_ENHANCEMENTS_AND_TESTS_2026-06-15.md` (corrected stale 75%→80% band line).
 - **Models on disk (current):** `selectivity_models.pkl` (voting lr+rf), `signed_quantile_model.pkl`
@@ -114,7 +121,10 @@ features, trading the timing gate directionally (−21.63 bps), retiring dead fe
 1. **Live Polymarket price logger + edge scorecard** — `P(Hold) − implied_price − spread`. The ONLY
    path to *profit* (vs. calibrated probability); can't be backfilled. **The frontier.**
 2. **Parity-fix** the 12 aggTrade flow features (verify they're filled in training; close the train/serve gap).
-3. **Retire** the 63 external-feed features from the training schema (neutral hygiene; bump arch version).
+3. ~~Retire the 63 external-feed features from the training schema~~ **DONE 2026-06-15 as a model-local
+   mask:** `model.py` now trains/predicts on 69 features (`KEEP` + `PARITY-FIX`) while preserving the
+   136-feature app schema for UI/replay/live diagnostics. Arch bumped to
+   `v11-pruned69-7977e0559560`; next boot retrains once, then loads cached pruned models.
 4. ~~Auto-finetune~~ **DONE 2026-06-15**: mtime hot-reload in `price_to_beat.py` (both loaders,
    throttled 30s, crash-safe) + `auto_finetune.py` (nightly refit/recalibrate the 3 cheap heads;
    `--with-backfill --days N`) + Task Scheduler command (below). Refreshed `.pkl`s go live within 30s,

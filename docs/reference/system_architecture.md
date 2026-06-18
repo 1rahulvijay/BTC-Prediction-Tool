@@ -12,6 +12,13 @@
 
 This document is the canonical source of truth for the current codebase. It replaces the older four-model / 61-feature architecture description.
 
+**Current correction, 2026-06-15 pre-restart:** the raw app feature schema is **136** columns.
+The main ensemble now applies a model-local pruning mask and trains/predicts on **69** model
+features (`KEEP` + `PARITY-FIX`) while preserving the full 136-feature vector for UI, replay,
+diagnostics and live-only research. The current bundle architecture is
+`v11-pruned69-7977e0559560-...`; old full-width bundles retrain once, then cached pruned
+bundles should load normally.
+
 Status: research and decision-support platform, not a proven production trading system. It uses serious quant concepts, but live edge still has to be proven over enough out-of-sample predictions.
 
 ---
@@ -20,8 +27,8 @@ Status: research and decision-support platform, not a proven production trading 
 
 | Area | Current Score | Reason |
 |---|---:|---|
-| Feature engineering | 8/10 | 109-feature vector with technical, microstructure, derivatives, cross-exchange, institutional, multi-timeframe, Polymarket/event and interaction features. Some legacy cross-asset/Chainlink columns are neutral unless re-enabled. Live-only feature coverage improves as the signal-history buffer accumulates. |
-| Ensemble models | 8.7/10 | XGBoost, LightGBM, optional CatBoost, HistGradientBoosting, optional PyTorch TCN/sequence model, Logistic Regression, fast SGD log-loss, plus separate move-size regressors and regime move-size priors. |
+| Feature engineering | 8/10 | 136 raw app features with technical, microstructure, derivatives, cross-exchange, institutional, multi-timeframe, Polymarket/event and interaction features. The main ensemble consumes a 69-feature pruned model schema for speed/RAM hygiene. Live-only feature coverage improves as the signal-history buffer accumulates. |
+| Ensemble models | 8.7/10 | XGBoost, LightGBM, optional CatBoost, Random Forest, HistGradientBoosting, optional PyTorch TCN/sequence model, Logistic Regression, plus separate move-size regressors and regime move-size priors. |
 | Verification system | 9/10 | Per-horizon prediction recording, direction accuracy, miss rate, price-match rate, target-size error, BUY/SELL/AVOID action accuracy, and avoid-success tracking. |
 | Auto learning | 8/10 | Live verification feeds confidence thresholds, retraining flags, regime-specific model weights, and meta-model training data. |
 | Reinforcement policy layer | 5/10 | New FSR-PPO inspired challenger computes denoised-signal state, flexible BUY/SELL/AVOID sizing and paper rewards. It is measured in DuckDB but does not override the ensemble yet. |
@@ -81,15 +88,27 @@ Polling and streaming:
 `backend/features.py` currently exposes:
 
 ```text
-NUM_FEATURES = 109
+NUM_FEATURES = 136
 LOOKBACK = 60
 ```
 
-Each model sequence is shaped approximately:
+The app builds full sequences shaped approximately:
 
 ```text
-[samples, 60 candles, 109 features]
+[samples, 60 candles, 136 raw features]
 ```
+
+The main ensemble then applies a model-local feature mask before flattening:
+
+```text
+MODEL_NUM_FEATURES = 69
+MODEL_FEATURE_ACTIONS = KEEP,PARITY-FIX
+flattened learner row = 60 * 69 = 4140 values
+```
+
+This is deliberate: UI, replay, feed-health and future live-only research still need the full
+136-column vector, while the train/predict path should not spend hours fitting columns that
+historical training cannot learn from.
 
 Feature groups:
 
@@ -253,13 +272,13 @@ Current base direction models:
 | XGBoost | Always attempted | CPU `hist` mode; `eval_metric="mlogloss"` (string, so models serialize correctly). |
 | LightGBM | Optional dependency | GPU support **probed once at import** (`LGB_DEVICE`); automatic CPU fallback if the build/hardware lacks GPU, so LightGBM is never silently skipped on CPU-only machines. |
 | CatBoost | Optional dependency | Noisy-tabular specialist. **Installed in this environment** and active; if missing elsewhere, the ensemble skips it safely (weight 0). |
-| HistGradientBoosting | Always attempted | CPU baseline replacing the old Random Forest classifier. |
+| Random Forest | Always attempted | Decorrelated tabular seat. It is trained, persisted, loaded, included in OOF stacker inputs, dynamic weights, inventory and per-model live accuracy. |
+| HistGradientBoosting | Always attempted | CPU baseline anchor. |
 | PyTorch TCN / sequence model | Optional dependency | Defaults to `BTC_DL_ARCH=TCN`; uses CUDA if `torch.cuda.is_available()`, else CPU. `BTC_DL_ARCH=LSTM_GRU` keeps the older recurrent stack available. |
 | Logistic Regression | Always attempted | Linear sanity-check baseline; recent sample cap keeps startup bounded. |
-| SGD Log-Loss | Always attempted | Fast adaptive linear vote with small weight; adds cheap model diversity without a heavy startup cost. |
 
-The old Random Forest classifier is no longer part of the direction ensemble. Move-size
-modeling now uses faster histogram regressors plus cheap regime priors.
+SGD log-loss is retired from the main roster. Move-size modeling uses faster histogram
+regressors plus cheap regime priors.
 
 **Per-regime class-balancing.** Thin regime buckets often contain only {DOWN, UP} and no
 NEUTRAL, which made multiclass models (`num_class=3`) fail on the non-contiguous label set
@@ -268,8 +287,10 @@ bucket now tops every class up to ≥3 tiny-noise samples before training, so XG
 LightGBM and CatBoost train reliably in **every** regime. The move-size regressors train on
 the *original* (non-augmented) rows so the dummies don't skew magnitude.
 
-`model_inventory` (payload) now also reports `lightgbm_device` and `deep_model_arch`
-so the real LightGBM execution mode and deep sequence architecture are observable.
+`model_inventory` (payload) now also reports `lightgbm_device`, `deep_model_arch`,
+`raw_feature_count`, `model_feature_count`, `retired_from_model_count`,
+`feature_pruning` and `model_feature_schema_hash`, so the real execution mode and
+pruned schema are observable.
 
 Saved model keys:
 
@@ -280,11 +301,12 @@ cat
 histgb
 dl
 lr
-sgd
+rf
 mag
-mag_q25
-mag_q50
-mag_q75
+stackers.pkl
+feature_reference.pkl
+feature_reference_names.pkl
+model_feature_schema.pkl
 ```
 
 The WebSocket payload exposes `model_inventory`, including optional dependency availability and trained model counts.
@@ -610,6 +632,13 @@ The top bar includes a Boot chip showing backend startup-to-ready time.
 
 These queries are the main way to check whether the system is improving with live evidence.
 
+**Current main-ensemble pruning path (2026-06-15):** training speed comes from the
+model-local mask in `backend/model.py`, not from DuckDB zeroing. `dead_feature_classifier.py`
+classifies all 136 raw features; `model.py` passes only 69 `KEEP`/`PARITY-FIX` columns into
+the direction, move-size, stacker, SHAP, PSI and live prediction paths. The older DuckDB
+feature-retirement flow below is still a reversible hygiene layer, but it is not the main
+speed lever.
+
 **Feature retirement is now an actual prune step**, not just a report.
 `analytics.apply_feature_retirement(dry_run=False)` finds features that never reach any
 horizon's SHAP top-10 over a window and writes them to DuckDB's `feature_retirement_events` table;
@@ -632,7 +661,9 @@ The main operational risks are now:
 6. The simulator is not live exchange execution.
 7. Profitability is unproven until 30-90 days of out-of-sample live evidence exists.
 8. Kronos is lazy-loaded and falls back to a deterministic volatility projection unless the local Kronos package/model is installed and compatible.
-9. Chainlink and ETH/SOL cross-asset runtime feeds are disabled; their feature columns remain neutral to avoid breaking saved 109-feature models.
+9. Chainlink and ETH/SOL cross-asset runtime feeds may be disabled in some runtime configs; their raw
+   feature columns remain in the 136-feature app schema, while the current main ensemble consumes the
+   69-feature pruned model schema.
 
 Recently resolved (no longer limitations):
 
@@ -803,16 +834,16 @@ when warranted without flattening real asymmetry.
   divergence = risk flag. Persists to `exchange_verifications`.
 
 ### 20.7 UI: Direction Scoreboard
-The Plain Analysis tab now leads with a **"BTC Direction Scoreboard — 5m & 15m"** (conviction
+The Plain Analysis tab now leads with a **"BTC Direction Scoreboard — 5m, 15m & 30m"** (conviction
 bar + grade + confluence chips + our-model-vs-Kronos with live accuracy) and a
 **Multi-Exchange Consensus** strip. The Polymarket "Value Engine" (0 logged predictions,
 broken long-dated fair value) is demoted to experimental. `build_scoreboard` feeds the payload.
 
 ### 20.8 Audited reality (Pass 42 — read before trusting headline accuracy)
-- **Only ~27 of 109 features contribute** (SHAP top-10 is all volatility/volume); the
-  order-flow / derivatives / institutional / cross-asset features are still inert until the
-  signal-history buffer accrues days of per-candle coverage. The model is currently a
-  volatility-momentum model. **This is the #1 limiter of accuracy.**
+- **Only a minority of the raw 136 features contribute materially** (SHAP top-10 is mostly
+  volatility/volume). The main ensemble now trains on a 69-feature pruned schema; live-only
+  order-flow / derivatives / institutional / cross-asset research still needs live buffer coverage
+  before it can be trusted. This remains a primary limiter of directional accuracy.
 - Raw directional accuracy (small n): 1m 57%, 3m 53%, 5m 46%, 7m 41%, 10m 59%, 15m 64%.
 - Unanimous model agreement underperforms (contrarian tell) — a future conviction refinement.
 - **Everything above activates only on backend restart**; it then sharpens as verified

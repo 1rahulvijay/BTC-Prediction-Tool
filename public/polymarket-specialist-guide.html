@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Specialist Decision Guide</title>
+<style>
+  :root{--bg:#0a0e17;--card:#121826;--text:#e6ebf5;--dim:#8892a6;--green:#00e676;--amber:#ffb74d;--red:#ff5252;--blue:#64b5f6;--border:rgba(255,255,255,.1)}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:Segoe UI,system-ui,sans-serif;line-height:1.6}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 24px 80px}
+  h1{margin:0 0 6px;font-size:1.9rem} h2{margin:34px 0 12px;border-left:4px solid var(--blue);padding-left:12px}
+  .sub,.muted{color:var(--dim)} .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.93rem} th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--border)} th{color:var(--dim);text-transform:uppercase;font-size:.78rem;letter-spacing:.4px}
+  code{background:rgba(255,255,255,.07);padding:1px 6px;border-radius:4px}.good{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.blue{color:var(--blue)}
+  .flow{white-space:pre-wrap;font-family:Consolas,monospace;background:#0e131f;border:1px solid var(--border);border-radius:10px;padding:14px 18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Polymarket Specialist Decision Guide</h1>
+<div class="sub">Current guide for the Champion validator, specialist heads, price-to-beat cards, and 180-360 day training expectations.</div>
+
+<h2>What Is Fully Wired</h2>
+<div class="card">
+<table>
+  <tr><th>Part</th><th>Status</th><th>Meaning</th></tr>
+  <tr><td>Big-move keeper</td><td class="good">Wired</td><td>Predicts whether this timeframe has enough movement to care.</td></tr>
+  <tr><td>Big-drop risk</td><td class="good">Wired</td><td>Warns that BTC may flush lower inside the window.</td></tr>
+  <tr><td>Big-up / big-down</td><td class="good">Wired as confirmation</td><td>Explains whether the specialist side agrees with UP or DOWN. It is not a standalone trade trigger.</td></tr>
+  <tr><td>Activity/range</td><td class="good">Wired</td><td>Checks whether the window has enough movement/fuel.</td></tr>
+  <tr><td>P(hold)</td><td class="good">Wired</td><td>Calibrated hold model for the side currently ahead of the line.</td></tr>
+  <tr><td>Signed quantile band</td><td class="good">Wired</td><td>Expected high/low zone and reward/risk room.</td></tr>
+  <tr><td>Rules-first Champion</td><td class="good">Wired</td><td>Combines specialist heads into WAIT, AVOID, WATCH, LEAN, SETUP, or PAPER_BET.</td></tr>
+  <tr><td>Meta Champion</td><td class="warn">Implemented, data-gated</td><td>Will train only after enough resolved live Champion snapshots exist.</td></tr>
+  <tr><td>ElasticNet/Ridge live price-zone head</td><td class="warn">Research, not live</td><td>Tested in research, but not promoted into the live app as a separate serving head.</td></tr>
+</table>
+</div>
+
+<h2>Timeframes</h2>
+<div class="card">
+<p>The specialist heads now support these horizons:</p>
+<p><code>1m</code> <code>3m</code> <code>5m</code> <code>7m</code> <code>10m</code> <code>15m</code> <code>30m</code></p>
+<p><b>Important:</b> only 5m and 15m are real Polymarket-style markets in the app. The other horizons are useful practice/evidence mirrors unless you have an actual matching market.</p>
+<p>The default big-move buckets are horizon-aware: <code>BTC_MOVE_BUCKETS_USD_BY_HORIZON=1:10|20|40;3:20|35|70;5:30|60|100;7:40|80|140;10:50|100|180;15:60|120|300;30:100|200|600</code>. Each horizon stores <b>meaningful | large | extreme</b> boundaries. The first value is the binary training line; the full range helps the app explain whether movement is quiet, meaningful, large, or extreme.</p>
+</div>
+
+<h2>How To Read A Card</h2>
+<div class="card">
+<table>
+  <tr><th>Read this</th><th>Plain meaning</th><th>Action impact</th></tr>
+  <tr><td>Champion label</td><td>The final combined verdict.</td><td>This is the first thing to read.</td></tr>
+  <tr><td>P(hold)</td><td>Odds the current winning side stays winning.</td><td>High P(hold), especially late, is the cleanest signal.</td></tr>
+  <tr><td>Big-drop HIGH</td><td>Downside flush risk is high.</td><td>Avoid weak longs. Watch DOWN only if other heads agree.</td></tr>
+  <tr><td>Big move quiet</td><td>Window likely lacks movement.</td><td>Usually WAIT unless P(hold) is already strong.</td></tr>
+  <tr><td>Big-up / big-down</td><td>Specialist side confirmation.</td><td>Confirmation/conflict only. Never trade it alone.</td></tr>
+  <tr><td>Activity quiet</td><td>Not enough range/fuel.</td><td>Downgrades weak calls to WAIT.</td></tr>
+  <tr><td>Quantile band</td><td>Expected zone, not exact price.</td><td>Skip if reward room is thin or the band straddles the line.</td></tr>
+</table>
+</div>
+
+<h2>Decision Flow</h2>
+<div class="flow">1. Feed stale? -> AVOID
+2. Price sitting exactly at the line? -> WAIT
+3. Big-move quiet and P(hold) not strong? -> WAIT
+4. Big-drop HIGH and setup is UP? -> AVOID LONG
+5. Big-drop HIGH, side is DOWN, model confirms DOWN, range supports? -> POSSIBLE DOWN (WATCH_DOWN)
+6. Activity quiet and P(hold) below 93%? -> WAIT
+7. Big-up/down conflicts with current side and P(hold) below 93%? -> WAIT
+8. Model lean disagrees with the live side and P(hold) below 93%? -> WAIT
+9. Side is UP, model confirms UP, big-up HIGH, room ok, P(hold) 85-93%? -> POSSIBLE UP (WATCH_UP)
+10. P(hold) above 93%? -> SETUP, then check market price
+11. Live ask is cheaper than fair value after buffer? -> PAPER_BET candidate
+12. No edge after price/spread/costs? -> NO_EDGE / WAIT
+13. (If trained) learned meta Champion below its gate? -> downgrade to WAIT</div>
+
+<h2>What The App Does Not Yet Prove</h2>
+<div class="card">
+<ul>
+  <li>It does not prove profitable betting until live market ask/spread, fees, slippage, and resolved outcomes are measured.</li>
+  <li>It does not use ElasticNet/Ridge as a separate live app head yet. Those are research candidates.</li>
+  <li>The learned meta Champion is not trained yet. It needs at least hundreds of resolved Champion snapshots.</li>
+  <li>More history does not guarantee higher accuracy. BTC regimes decay; stale data can hurt.</li>
+</ul>
+</div>
+
+<h2>Can This Laptop Train 180-360 Days?</h2>
+<div class="card">
+<table>
+  <tr><th>Target</th><th>180 days</th><th>360 days</th><th>Recommendation</th></tr>
+  <tr><td>Specialist heads</td><td class="good">Usually manageable</td><td class="warn">Possible, slower</td><td>Good overnight candidate.</td></tr>
+  <tr><td>Research scripts</td><td class="good">Good overnight job</td><td class="warn">Possible if sequential and memory-cleaned</td><td>Use research lane, not live app.</td></tr>
+  <tr><td>Main live ensemble</td><td class="warn">Heavy, multi-hour, high RAM</td><td class="bad">Not recommended on 16 GB without redesign</td><td>Keep live app smaller; compare 180/360 offline first.</td></tr>
+  <tr><td>Sequence/deep models</td><td class="warn">Slow unless CUDA PyTorch works</td><td class="bad">Very slow</td><td>Use RTX 4050 only after CUDA PyTorch is verified.</td></tr>
+</table>
+<p><b>One knob:</b> set <code>BTC_HISTORICAL_DAYS=180</code> (or 360) in <code>start.bat</code>. On the next launch it rebuilds the 1m research matrix to that window and every specialist head retrains on it automatically (the window is baked into each head version). Each head fits on <b>98%</b> of the window and keeps the most recent <b>2%</b> as an honest held-out test (<code>BTC_TRAIN_SPLIT_FRAC</code>). The first wide build downloads that many days of spot aggTrades once (cached after).</p>
+<p>Practical recommendation: the tiny specialist heads handle 180/360 days comfortably; keep the heavy main ensemble on a smaller window and compare 180/360 offline first, promoting only heads that beat the current Champion on the held-out test and live-like validation.</p>
+</div>
+
+</div>
+</body>
+</html>

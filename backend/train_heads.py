@@ -32,6 +32,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 SM = os.path.join(DATA_DIR, "saved_models")
 PY = sys.executable
 DAYS = os.environ.get("BTC_BACKFILL_DAYS") or os.environ.get("BTC_HISTORICAL_DAYS") or "60"
+TRAIN_LEGACY_MISSING = os.environ.get("BTC_TRAIN_LEGACY_HEADS", "0") == "1"
 
 
 def _import_version(rel_dir: str, module: str) -> str | None:
@@ -61,6 +62,11 @@ def main():
     sel_ver = _import_version("backend/decision", "train_selectivity_models")
     sq_ver = _import_version("backend", "train_signed_quantiles")
     pers_ver = _import_version("backend", "train_persistence_model")
+    bm_ver = _import_version("backend", "train_bigmove_keeper")
+    bd_ver = _import_version("backend", "train_bigdrop_keeper")
+    dir_ver = _import_version("backend", "train_directional_keeper")
+    act_ver = _import_version("backend", "train_activity_keeper")
+    champ_ver = _import_version("backend", "train_champion_meta")
 
     heads = [
         # versioned heads — retrain on MISSING or version change
@@ -70,7 +76,17 @@ def main():
          "cmd": [PY, os.path.join("backend", "train_signed_quantiles.py")]},
         {"name": "persistence", "out": os.path.join(SM, "persistence_model.pkl"), "ver": pers_ver,
          "cmd": [PY, os.path.join("backend", "train_persistence_model.py")]},
+        {"name": "bigmove", "out": os.path.join(SM, "bigmove_keeper_model.pkl"), "ver": bm_ver,
+         "cmd": [PY, os.path.join("backend", "train_bigmove_keeper.py")]},
+        {"name": "bigdrop", "out": os.path.join(SM, "bigdrop_keeper_model.pkl"), "ver": bd_ver,
+         "cmd": [PY, os.path.join("backend", "train_bigdrop_keeper.py")]},
+        {"name": "directional", "out": os.path.join(SM, "directional_keeper_model.pkl"), "ver": dir_ver,
+         "cmd": [PY, os.path.join("backend", "train_directional_keeper.py")]},
+        {"name": "activity", "out": os.path.join(SM, "activity_keeper_model.pkl"), "ver": act_ver,
+         "cmd": [PY, os.path.join("backend", "train_activity_keeper.py")]},
         # legacy heads — retrain only if MISSING (no version tag)
+        {"name": "champion_meta", "out": os.path.join(SM, "champion_meta_model.pkl"), "ver": champ_ver,
+         "cmd": [PY, os.path.join("backend", "train_champion_meta.py")]},
         {"name": "beat", "out": os.path.join(SM, "beat_model.pkl"), "ver": None,
          "cmd": [PY, os.path.join("backend", "train_beat_classifier.py"), "--days", DAYS]},
         {"name": "magnitude", "out": os.path.join(SM, "magnitude_model.pkl"), "ver": None,
@@ -86,6 +102,8 @@ def main():
         exists = os.path.exists(h["out"])
         if args.force:
             need, why = True, "forced"
+        elif not exists and h["ver"] is None and not TRAIN_LEGACY_MISSING:
+            need, why = False, "missing legacy skipped (set BTC_TRAIN_LEGACY_HEADS=1 to build)"
         elif not exists:
             need, why = True, "missing"
         elif h["ver"] is not None:

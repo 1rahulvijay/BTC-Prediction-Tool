@@ -525,7 +525,7 @@ async function triggerReplay() {
   els.replayRunButton.textContent = 'Queued...';
   if (els.replayStatus) els.replayStatus.textContent = 'Starting replay...';
   try {
-    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15&max_samples=1000`, { method: 'POST' });
+    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15,30&max_samples=1000`, { method: 'POST' });
     const data = await res.json();
     if (!data.scheduled && data.status?.message && els.replayStatus) {
       els.replayStatus.textContent = data.status.message;
@@ -2686,7 +2686,7 @@ function renderScoreboard(data) {
   const grid = document.getElementById('scoreboard-grid');
   if (!grid) return;
   const sb = data.scoreboard || {};
-  const horizons = [5, 15];
+  const horizons = [5, 15, 30];
   const dirColor = (d) => d === 'UP' ? '#00e676' : d === 'DOWN' ? '#ff1744' : '#8892a6';
   const dirArrow = (d) => d === 'UP' ? '▲' : d === 'DOWN' ? '▼' : '●';
   const gradeColor = (g) => ({ 'A+': '#00e676', 'A': '#26c281', 'B': '#ffd700', 'C': '#ff9100', 'WATCH': '#8892a6' }[g] || '#8892a6');
@@ -2789,9 +2789,9 @@ function renderExchanges(data) {
 // ══════════════════════════════════════════════
 const MODEL_LABELS = {
   xgb: 'XGBoost', lgb: 'LightGBM', cat: 'CatBoost', histgb: 'HistGradientBoosting',
-  dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression',
+  dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression', rf: 'Random Forest',
 };
-const PTB_HORIZONS = [5, 15];
+const PTB_HORIZONS = [5, 15, 30];
 const ROSTER_HORIZONS = [1, 3, 5, 7, 10, 15, 30];
 
 // ══════════════════════════════════════════════
@@ -3060,27 +3060,59 @@ function renderPMCore(data, cfg) {
     const lateChip = r.late_entry
       ? `<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge${phPct!=null?` · ${phPct}% hold`:''}</span>` : '';
     const practice = (h!==5&&h!==15) ? ' <span style="background:rgba(255,255,255,.08);color:var(--text-secondary);border-radius:4px;padding:0 .35rem;font-size:.6em;vertical-align:middle">PRACTICE — no real market</span>' : '';
+    // Expected PRICE to reach (band as absolute prices, anchored from current) + the ensemble's
+    // directional target (shown informational only — direction is ~coin-flip).
+    const _cp = Number(r.current_price!=null?r.current_price:r.price_to_beat||0);
+    const _emr2 = r.expected_move_range||{};
+    const _reachLo = _emr2.low!=null ? _cp + Number(_emr2.low) : null;   // down-reach price (low<0)
+    const _reachHi = _emr2.high!=null ? _cp + Number(_emr2.high) : null; // up-reach price
+    const _ensTgt = (r.live_expected_move!=null && dir!=='NEUTRAL')
+      ? _cp + (dir==='UP'?1:-1)*Math.abs(Number(r.live_expected_move)) : null;
+    // Champion validator strip: synthesized verdict from the specialist heads.
+    const champHtml = (()=>{
+      const c = r.champion; if (resolved || !c) return '';
+      const A = c.action;
+      const col2 = (A==='PAPER_BET'||A==='SETUP')?'#00e676'
+        : (A==='AVOID'||A==='AVOID_LONG')?'#ff5252'
+        : (A==='WAIT')?'#ffb74d'
+        : (A==='NO_EDGE'||A==='WATCH_DOWN'||A==='WATCH_UP'||A==='LEAN')?'#64b5f6':'#8892a6';
+      return `<div style="margin:.5rem 0 .2rem;padding:.55rem .75rem;border-radius:8px;background:${col2}1f;border:1px solid ${col2}">
+        <div style="font-size:1.05em;font-weight:800;color:${col2};letter-spacing:.2px">${c.label||A} <span style="font-size:.72em;font-weight:600;color:var(--text-secondary)">- confidence ${c.confidence}/100</span></div>
+        <div style="font-size:.82em;color:var(--text-secondary);margin-top:.2rem">${c.reason||''}</div>
+        ${c.risk_flags&&c.risk_flags.length?`<div style="font-size:.77em;color:#ffb74d;margin-top:.2rem">Risk flags: ${c.risk_flags.join(' | ')}</div>`:''}
+        ${c.meta_hold_probability!=null?`<div style="font-size:.77em;color:${c.meta_hold_probability>=0.55?'#00e676':'#ffb74d'};margin-top:.2rem">Meta champion: ${Math.round(c.meta_hold_probability*100)}% chance current side holds</div>`:''}
+        ${c.zone?`<div style="font-size:.76em;color:var(--text-secondary);margin-top:.15rem">80% band: $${Number(c.zone.low).toLocaleString()} - $${Number(c.zone.high).toLocaleString()}</div>`:''}
+        ${c.invalidate?`<div style="font-size:.74em;color:var(--text-secondary);margin-top:.15rem;font-style:italic">invalidated by: ${c.invalidate}</div>`:''}
+        <div style="font-size:.67em;color:#888;margin-top:.2rem">Champion validator: one call from all heads. ${c.bet_candidate?'Paper-bet candidate (recorder/paper only - NOT live).':'Probability/risk read only. A bet needs the Polymarket edge gate: fair - ask - buffer > 0.'}</div>
+      </div>`;
+    })();
     return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
       <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}${practice}</strong>
         <span style="font-size:.8em;color:var(--text-secondary)">${accStr}</span></div>
       <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (${cfg.beatLabel}):</span>
         <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
         ${r.ref_captured_late_ms?`<span style="color:#ffb74d;font-size:.7em"> (late anchor capture +${(r.ref_captured_late_ms/1000).toFixed(1)}s)</span>`:''}</div>
-      <div style="font-size:1.2em;color:${col};font-weight:700">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN — no bet':dir} ${cfl.grade?`· Grade ${cfl.grade}`:''} ${srcBadge}${lateChip}</div>
+      ${champHtml}
+      ${!resolved&&r.p_hold!=null?`<div style="margin-top:.3rem"><span style="background:${r.p_hold>=0.93?'rgba(0,230,118,.18)':r.p_hold>=0.85?'rgba(255,183,77,.18)':'rgba(255,82,82,.18)'};color:${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border:1px solid ${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border-radius:5px;padding:.12rem .5rem;font-size:.82em;font-weight:700">● CONFIDENCE: ${r.p_hold>=0.93?'HIGH':r.p_hold>=0.85?'MEDIUM':'LOW'}</span> <span style="font-size:.72em;color:var(--text-secondary)">from P(hold) ${Math.round(r.p_hold*100)}% — the real signal, NOT the direction lean</span></div>`:''}
+      <div style="margin-top:.2rem"><span style="font-size:1.25em;font-weight:700;color:${dirColor(dir)}">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN':dir}</span>${cfl.grade?`<span style="background:rgba(${cfl.grade[0]==='A'?'0,230,118':cfl.grade[0]==='B'?'255,183,77':cfl.grade[0]==='C'?'255,112,67':'136,146,166'},.16);border:1px solid ${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};border-radius:4px;padding:.05rem .4rem;margin-left:.4rem;font-size:.82em;font-weight:700;color:${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};vertical-align:middle">Grade ${cfl.grade}</span>`:''} ${srcBadge}${lateChip}<div style="font-size:.7em;color:#888;margin-top:.1rem">↑ direction lean — ≈coin-flip at 5m/15m, informational only (Grade ≠ confidence). NOT a trade signal — read the CONFIDENCE badge + P(hold) + band.</div></div>
       ${!resolved&&r.current_price!=null?`<div style="margin-top:.4rem;font-size:.9em">Now: <strong>$${Number(r.current_price).toLocaleString()}</strong>
         <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
-      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.25rem;font-size:.82em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold>=0.93?'#64b5f6':'var(--text-secondary)'}">P(hold ${r.current_position})=${Math.round(r.p_hold*100)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 persistence model; ⚡ fires at ≥93%)</div>`:''}
+      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.3rem;font-size:1.15em;font-weight:700;color:${r.p_hold>=0.93?'#64b5f6':(r.p_hold>=0.85?'#ffb74d':'var(--text-secondary)')}">🎯 P(hold ${r.current_position}) = ${Math.round(r.p_hold*100)}%<div style="font-size:.6em;font-weight:400;color:var(--text-secondary);margin-top:.05rem">calibrated odds the ${r.current_position} side survives to close (A1/T3 persistence) · ⚡≥93% = high-confidence · updates live each second as price/time move — a live gauge, NOT a fixed forecast</div></div>`:''}
+      ${!resolved&&r.big_move_tier?`<div style="margin-top:.25rem;font-size:.85em">⚡ <strong style="color:${r.big_move_tier==='likely'?'#ff7043':r.big_move_tier==='elevated'?'#ffb74d':'var(--text-secondary)'}">Big move: ${r.big_move_tier.toUpperCase()}</strong> <span style="color:var(--text-secondary)">— ${r.big_move_tier==='likely'?'large move likely this round':r.big_move_tier==='quiet'?'quiet round expected':'moderate move expected'} (timing head, AUC 0.73)</span></div>`:''}
+      ${!resolved&&r.big_drop_risk?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:${r.big_drop_risk==='HIGH'?'#ff5252':r.big_drop_risk==='ELEVATED'?'#ffb74d':'var(--text-secondary)'}">Big-drop risk: ${r.big_drop_risk}</strong> <span style="color:var(--text-secondary)">- ${r.big_drop_risk==='HIGH'?'hard downside flush plausible; avoid long unless a confirmed DOWN setup appears':r.big_drop_risk==='ELEVATED'?'some downside path risk; size down longs':'downside path looks contained'} (risk head, AUC 0.75; input, not a trade trigger)</span></div>`:''}
+      ${!resolved&&(r.big_up_tier||r.big_down_tier)?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:var(--text-primary)">Directional heads:</strong> <span style="color:#00e676">UP ${(r.big_up_tier||'n/a')}</span> / <span style="color:#ff5252">DOWN ${(r.big_down_tier||'n/a')}</span> <span style="color:var(--text-secondary)">- confirmation only; used to explain conflicts, not to trade alone</span></div>`:''}
+      ${!resolved&&r.activity_tier?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:${r.activity_tier==='likely'?'#ff7043':r.activity_tier==='elevated'?'#ffb74d':r.activity_tier==='quiet'?'#8892a6':'var(--text-secondary)'}">Activity/range: ${String(r.activity_tier).toUpperCase()}</strong> <span style="color:var(--text-secondary)">- predicts whether this window has enough movement for a useful decision</span></div>`:''}
       ${!resolved&&r.tier?`<div style="margin-top:.35rem;padding:.5rem .7rem;border-radius:8px;background:rgba(100,181,246,.12);border:1px solid ${r.tier==='T3'?'#64b5f6':'rgba(100,181,246,.4)'};font-size:.84em">
         <strong style="color:#64b5f6;letter-spacing:.4px">${r.tier} PRECISION SETUP</strong>${tProof&&tProof.n?` — <strong>${tProof.n}</strong> similar late-entry setups held <strong style="color:#00e676">${tProof.hold_pct}%</strong> <span style="color:var(--text-secondary)">(Wilson-LB ${tProof.wilson_lb}%)</span>`:` <span style="color:var(--text-secondary)">— proof panel pending: run <code>phold_tier_scorecard.py</code> (app stopped)</span>`}
         ${r.tier==='T2'?`<div style="color:var(--text-secondary);font-size:.92em;margin-top:.2rem">T2 = structural late-entry zone. T3 (surfaceable high-precision) needs proof n≥100, hold≥90%, Wilson-LB≥80%.</div>`:''}</div>`:''}
-      ${!resolved&&r.live_expected_move!=null&&dir!=='NEUTRAL'?`<div style="margin-top:.4rem;padding:.4rem .6rem;border-radius:6px;background:rgba(255,255,255,.03);font-size:.85em">
-        📐 Typical <strong style="color:${col}">${dir==='UP'?'rise':'drop'} for this setup ≈ $${Math.round(Math.abs(r.live_expected_move))}</strong>${r.expected_move_range?` <span style="color:var(--text-secondary)">· ${r.band_source==='signed_quantile'?'80%':'50%'} band $${Math.round(Math.abs(r.expected_move_range.low))}–$${Math.round(Math.abs(r.expected_move_range.high))}${r.band_source==='signed_quantile'?' (calibrated)':' (tails run larger)'}</span>`:''}
-        ${r.projected_close!=null?`→ projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong>
-          <span style="color:${(r.projected_vs_beat||0)>=0?'#00e676':'#ff5252'}">(${(r.projected_vs_beat||0)>=0?'+':''}$${Math.round(r.projected_vs_beat||0)} vs beat → ${(r.projected_vs_beat||0)>=0?'UP':'DOWN'} resolves)</span>`:''}
-        <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">This is the median move size for current conditions, not a path call — ${r.band_source==='signed_quantile'?'the calibrated 80% band contains ~80% of outcomes (≈20% land outside)':'a $100+ window lands outside the band ~50% of the time by design'}.</div></div>`:''}
-      ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}</div>`:''}
+      ${!resolved&&r.expected_move_range!=null&&_reachLo!=null?`<div style="margin-top:.4rem;padding:.4rem .6rem;border-radius:6px;background:rgba(255,255,255,.03);font-size:.85em">
+        📐 <strong>Expected price to reach</strong> <span style="color:var(--text-secondary)">(${r.band_source==='signed_quantile'?'calibrated 80% band':'indicative band'})</span>: down to <strong style="color:#ff5252">$${Math.round(_reachLo).toLocaleString()}</strong> / up to <strong style="color:#00e676">$${Math.round(_reachHi).toLocaleString()}</strong> <span style="color:var(--text-secondary)">(move −$${Math.round(Math.abs(r.expected_move_range.low))} / +$${Math.round(Math.abs(r.expected_move_range.high))})</span>
+        ${r.projected_close!=null?`<div style="margin-top:.15rem">vs beat $${Number(r.price_to_beat||0).toLocaleString()} → projects close <strong>$${Number(r.projected_close).toLocaleString()}</strong> <span style="color:${(r.projected_vs_beat||0)>=0?'#00e676':'#ff5252'}">(${(r.projected_vs_beat||0)>=0?'+':''}$${Math.round(r.projected_vs_beat||0)} → ${(r.projected_vs_beat||0)>=0?'UP':'DOWN'} resolves)</span></div>`:''}
+        ${_ensTgt!=null?`<div style="margin-top:.15rem;color:var(--text-secondary)">Ensemble lean target: <strong>$${Math.round(_ensTgt).toLocaleString()}</strong> <span style="color:#ffb74d">(~coin-flip — informational, NOT the call)</span></div>`:''}
+        <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">Band ≈ 80% of outcomes; median move ≈ 0 (no reliable drift), so the projection carries the current position forward. The reliable read is the band + P(hold), not the lean target.</div></div>`:''}
+      ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}<div style="color:var(--text-secondary);font-size:.85em;margin-top:.15rem">Path scenario describes the position vs the line (no direction call) — the calibrated band + P(hold) above are the reliable reads.</div></div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
       ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
     </div>`;
@@ -3686,7 +3718,7 @@ function renderModelRoster(data) {
 }
 
 // inventory `installed` uses full names for some models; trained counts are nested by regime
-const INV_AVAIL_KEY = { xgb: 'xgboost', lgb: 'lightgbm', cat: 'catboost', histgb: 'histgb', dl: 'dl', lr: 'lr', sgd: 'sgd' };
+const INV_AVAIL_KEY = { xgb: 'xgboost', lgb: 'lightgbm', cat: 'catboost', histgb: 'histgb', dl: 'dl', lr: 'lr', rf: 'rf', sgd: 'sgd' };
 function renderModelInventory(data) {
   if (!els.modelInventoryGrid) return;
   const inv = data.model_inventory || {};

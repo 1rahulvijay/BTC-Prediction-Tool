@@ -1,6 +1,9 @@
+import argparse
+import json
 import os
 import pandas as pd
 import numpy as np
+import time
 
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -9,14 +12,80 @@ from edge_probe import _load_bars, FEATURE_BUILDERS
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data"
 )
+DAYS_SIDECAR = os.path.join(DATA_DIR, "research_matrix_1m.days.txt")
+MANIFEST_PATH = os.path.join(DATA_DIR, "research_matrix_1m.manifest.json")
 
-def export_base_csv():
+
+def _path_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _source_mtimes() -> dict:
+    return {
+        "trade_features_backfill.parquet": _path_mtime(os.path.join(DATA_DIR, "trade_features_backfill.parquet")),
+        "crossvenue_flow.parquet": _path_mtime(os.path.join(DATA_DIR, "crossvenue_flow.parquet")),
+        "btc_1m_data.csv": _path_mtime(os.path.join(DATA_DIR, "btc_1m_data.csv")),
+    }
+
+
+def _matrix_summary(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        ts = pd.read_parquet(path, columns=["ts_ms"])["ts_ms"]
+        if ts.empty:
+            return None
+        min_ts = int(ts.min())
+        max_ts = int(ts.max())
+        return {
+            "rows": int(len(ts)),
+            "min_ts_ms": min_ts,
+            "max_ts_ms": max_ts,
+            "span_days": max(0.0, (max_ts - min_ts) / 86_400_000.0),
+        }
+    except Exception:
+        return None
+
+
+def _coverage_ok(summary: dict | None, days: int) -> bool:
+    if not summary:
+        return False
+    # Crypto trades 24/7, so a genuine N-day 1m matrix should be close to N*1440 rows.
+    # Leave tolerance for exchange archive outages, but reject obvious stale fallbacks
+    # such as a 60-day matrix being stamped as 180d.
+    min_span = max(1.0, float(days) * 0.90)
+    min_rows = int(float(days) * 1440.0 * 0.80)
+    return summary.get("span_days", 0.0) >= min_span and summary.get("rows", 0) >= min_rows
+
+
+def _load_manifest() -> dict:
+    try:
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _default_days() -> int:
+    raw = os.environ.get("BTC_HISTORICAL_DAYS") or os.environ.get("BTC_BACKFILL_DAYS") or "60"
+    try:
+        return max(5, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return 60
+
+
+def export_base_csv(days=60):
     """
     Exports the base OHLCV from edge_probe._load_bars into data/btc_1m_data.csv.
+    `days` controls the window (the daily aggTrade downloads are cached in backfill_cache/,
+    so re-exporting a wider window only re-downloads days not already on disk).
     """
     csv_path = os.path.join(DATA_DIR, "btc_1m_data.csv")
-    print("Loading base OHLCV from cache via _load_bars(60)...")
-    bars = _load_bars(60)
+    print(f"Loading base OHLCV from cache via _load_bars({days})...")
+    bars = _load_bars(days)
     
     if bars is not None and len(bars["close"]) > 0:
         # Build pandas dataframe from bars
@@ -73,17 +142,53 @@ def make_labels(df):
     
     return df
 
-def main():
-    print("Building unified research matrix...")
-    
-    # 1. Base Data
-    csv_path = os.path.join(DATA_DIR, "btc_1m_data.csv")
-    if os.path.exists(csv_path):
-        base_df = pd.read_csv(csv_path)
-    else:
-        base_df = export_base_csv()
-        
-    if base_df.empty:
+def main(days=None, force=False):
+    days = days or _default_days()
+    out_path = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
+
+    # Idempotent skip: only skip when the requested window matches, coverage is believable,
+    # and upstream source files have not changed since the matrix was written.
+    if not force and os.path.exists(out_path):
+        manifest = _load_manifest()
+        summary = _matrix_summary(out_path)
+        matrix_mtime = _path_mtime(out_path)
+        sources = _source_mtimes()
+        sources_older = all(float(v or 0.0) <= matrix_mtime for v in sources.values())
+        legacy_days = None
+        if os.path.exists(DAYS_SIDECAR):
+            try:
+                legacy_days = int(open(DAYS_SIDECAR).read().strip())
+            except (ValueError, OSError):
+                legacy_days = None
+        manifest_days = int(manifest.get("requested_days", 0) or 0)
+        if (
+            (manifest_days == days or legacy_days == days)
+            and _coverage_ok(summary, days)
+            and sources_older
+        ):
+            print(
+                f"Research matrix already built for {days}d "
+                f"({summary['rows']:,} rows, span={summary['span_days']:.1f}d). "
+                "Skipping. Use --force to rebuild."
+            )
+            return
+        print(
+            "Research matrix rebuild required: "
+            f"days_match={manifest_days == days or legacy_days == days}, "
+            f"coverage_ok={_coverage_ok(summary, days)}, sources_older={sources_older}."
+        )
+
+    print(f"Building unified research matrix for {days} days...")
+
+    # 1. Base Data — always (re)export to the requested window so the span is correct.
+    base_df = export_base_csv(days=days)
+    if base_df is None or base_df.empty:
+        csv_path = os.path.join(DATA_DIR, "btc_1m_data.csv")
+        if os.path.exists(csv_path):
+            print("Base export empty; falling back to existing btc_1m_data.csv")
+            base_df = pd.read_csv(csv_path)
+
+    if base_df is None or base_df.empty:
         print("No base data found.")
         return
 
@@ -127,12 +232,45 @@ def main():
     merged = make_labels(merged)
     
     # Cleanup and Save
-    out_path = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
     merged.to_parquet(out_path, index=False)
-    
+    summary = _matrix_summary(out_path)
+    sources = _source_mtimes()
+    ok = _coverage_ok(summary, days)
+    manifest = {
+        "requested_days": int(days),
+        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "coverage_ok": bool(ok),
+        "summary": summary or {},
+        "source_mtimes": sources,
+    }
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+    if not ok:
+        print("\nERROR: Research matrix coverage is too low for the requested window.")
+        if summary:
+            print(
+                f"Requested: {days}d | Actual rows: {summary['rows']:,} | "
+                f"Actual span: {summary['span_days']:.1f}d"
+            )
+        print("Not writing the days sidecar. Refusing to mark this matrix as complete.")
+        raise SystemExit(2)
+
+    try:
+        with open(DAYS_SIDECAR, "w") as f:
+            f.write(str(days))
+    except OSError:
+        pass
+
     print(f"\nFinal Research Matrix saved to {out_path}")
-    print(f"Rows: {len(merged)}")
+    print(f"Window: {days} days | Rows: {len(merged)}")
+    print(f"Coverage: span={summary['span_days']:.1f}d | manifest={MANIFEST_PATH}")
     print(f"Columns: {list(merged.columns)}")
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="Build the 1m research matrix for the keeper heads.")
+    ap.add_argument("--days", type=int, default=None,
+                    help="History window in days (default: BTC_HISTORICAL_DAYS or 60).")
+    ap.add_argument("--force", action="store_true", help="Rebuild even if the sidecar matches.")
+    args = ap.parse_args()
+    main(days=args.days, force=args.force)

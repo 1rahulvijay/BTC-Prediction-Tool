@@ -1,8 +1,9 @@
 # Training Plan — Discussion Doc (2026-06-15)
 
-**Status: FOR DISCUSSION — nothing executed.** Operator wants to review before training. Covers:
-95% split, 90-day window, laptop feasibility, auto-appending new data, and the dead-feature question.
-Every claim here is verified against the current code, not assumed.
+**Status: UPDATED AFTER IMPLEMENTATION.** This began as a discussion note; as of 2026-06-15 the
+main-ensemble feature-pruning part has been implemented in `backend/model.py`. Covers 95% split,
+90-day window, laptop feasibility, auto-appending new data, and the dead-feature question. Every claim
+here is verified against the current code, not assumed.
 
 ---
 
@@ -10,9 +11,11 @@ Every claim here is verified against the current code, not assumed.
 - **95% / 90-day will NOT raise accuracy.** Direction is at the information ceiling (proven ~10 ways);
   timing is saturated (~0.72); P(Hold) ~0.73. More data buys **robustness across more regimes**, not
   a higher number. Don't expect the win-rate to move.
-- **The dead features are NOT removed** (still 136). Removing the truly-dead ones is the **single
-  highest-value training change** here — it speeds training, halves RAM/GPU, and makes 90-day feasible
-  on your laptop. The 95%/90-day knobs alone do ~nothing for accuracy.
+- **Feature pruning is now wired into the main ensemble.** The full app still builds 136 features for
+  UI, replay, diagnostics and live-only analytics, but `backend/model.py` trains/predicts on a
+  69-feature model mask (`KEEP` + `PARITY-FIX`). This is the single highest-value speed/RAM hygiene
+  change here. It is **not an accuracy promise**; the 95%/90-day knobs alone still do ~nothing for
+  direction accuracy.
 - **The band has a calibration tradeoff:** pushing it to 95% train steals from the slice that makes
   its 80% coverage honest. Keep the recent calibration holdout.
 - **For "auto-append new data": keep periodic full-retrain** (the backfill already auto-appends missing
@@ -53,9 +56,10 @@ more training rows.**
 - **Direction ensemble retrain:** the **heavy** one (~6 h at 60d, GPU + ~12 cores, the live feed
   freezes during it). 90 days ≈ +50% data → a bigger 90d×136 feature matrix + larger sequence tensors
   (TCN/LSTM). **On 16 GB this is the risk** — matrix + sequence buffers could get tight.
-- **Mitigation (important):** removing the 78 dead features (§5) ~**halves** the matrix width and the
-  DL input dim → less RAM, ~2× faster DL, half the GPU memory. **Do dead-feature removal first; then
-  90-day is much more comfortable on 16 GB.**
+- **Mitigation (implemented):** model-local pruning now cuts the learner input from 136 raw features to
+  69 model features. With current `LOOKBACK=60`, flattened rows shrink from **8160 → 4140** values.
+  That lowers RAM pressure and should reduce tree/RF/stacker/TCN training time. Do the next long retrain
+  on this pruned schema, not the old full-width schema.
 - **Practical:** run the ensemble retrain overnight with the IDE/browser closed (as the 60-day run was).
   The heads can run anytime (they don't freeze the feed).
 
@@ -85,14 +89,15 @@ or run the trainer).
 
 ---
 
-## 5. Dead features — the real opportunity (NOT done yet)
-**Verified:** `NUM_FEATURES = 136`, `len(FEATURE_NAMES) = 136`, arch `...session-136-tcn`. The 78
-dead-zero features `diagnose_model` found were **identified but never removed** from the training
-schema. **So training is NOT faster yet** — the model still carries 78 all-zero columns.
+## 5. Dead features — the real opportunity (DONE AS MODEL-LOCAL PRUNING)
+**Verified:** `NUM_FEATURES = 136`, `len(FEATURE_NAMES) = 136`, but the main ensemble now applies a
+model-local mask before flattening. `dead_feature_classifier.py` maps all features to
+**57 KEEP / 12 PARITY-FIX / 63 RETIRE / 4 RECORD-LIVE**; `model.py` keeps the first two groups for
+learners, so **model_feature_count = 69** and **retired_from_model_count = 67**.
 
-**(a) Removing the truly-dead → big speed/RAM win:** ~136 → ~58 features halves the matrix → faster
-tree training, **~2× faster TCN/LSTM, ~half the GPU memory** → makes 90-day feasible on 16 GB. This is
-the highest-value training change in this whole list.
+**(a) Model-local pruning → big speed/RAM win:** 136 → 69 model features almost halves the matrix →
+faster tree training, faster TCN/LSTM, lower GPU/RAM pressure → makes longer windows more realistic on
+16 GB. This is implemented without deleting the full feature vector used by UI and diagnostics.
 
 **(b) The critical caveat — don't remove blindly:** some features are "dead in BACKFILL" only because
 the offline builder can't compute them — but they DO have **live** values (live-only microstructure).
@@ -102,16 +107,15 @@ So split the 78 into:
 - **Live-only, no backfill history** → keep, and let the live recorders fill them; include in a future
   retrain once they have history (this is the §4 "real new-data win").
 
-**Action:** run an audit that classifies the 78 (constant-everywhere vs live-only), remove group 1,
-bump `MODEL_ARCH_VERSION`, retrain. Net: faster + cleaner + 90-day-feasible, with the live-only
-features preserved for the data that actually matters.
+**Action taken:** `MODEL_ARCH_VERSION` bumped to `v11-pruned69-7977e0559560...`, so the next boot
+rejects old full-width bundles and retrains once. After that, saved v11-pruned models should load fast.
 
 ---
 
 ## Recommendation (for our discussion)
 Ranked by value:
-1. **Audit + remove the truly-dead features, then retrain** — the only change here that materially helps
-   (speed, RAM, 90-day feasibility). Distinguish constant-everywhere from live-only first.
+1. **Retrain once on the pruned schema** — now implemented. This materially helps speed, RAM, and
+   90-day feasibility; it is hygiene, not a promised direction-accuracy lift.
 2. **Keep the band's recent calibration holdout** — don't push the signed-quantile band to 95%.
 3. **90 days: optional**, robustness-only, ~0 accuracy; do it *after* dead-feature removal so it fits in
    16 GB.
@@ -120,6 +124,5 @@ Ranked by value:
    not 95%/90-day on the saturated offline features.
 
 **Open questions for you:**
-- Do you want me to build the dead-feature audit (classify the 78) next?
 - Weekly or monthly retrain cadence?
-- 90 days now, or wait until dead features are removed (so it fits comfortably)?
+- After the first pruned retrain saves, do we test 90 days again for robustness?
