@@ -63,6 +63,8 @@
 
 <div class="toc">
   <a href="#tldr">⚡ 30-second version</a>
+  <a href="#action">✅ How to take action</a>
+  <a href="#path-engine">🛤️ The path engine — how to trade the window</a>
   <a href="#tiers">🏆 The decision tiers (best → worst)</a>
   <a href="#lifecycle">🔄 In-window states (offside / flipped / lock-in)</a>
   <a href="#flip">🌀 Why the lean flips — and why that's a SKIP</a>
@@ -84,6 +86,74 @@
   <li><b>The bet only profits if your win-rate &gt; the share price you pay.</b> 60% wins at 65¢ loses money.</li>
 </ol>
 <p style="margin:.6rem 0 0;color:var(--amber)"><b>Reality check:</b> 5m BTC direction is ~coin-flip for almost everyone. The edge is <b>selectivity</b> — bet only the few stable, high-grade, magnitude-clears windows; sit out the rest (which is most of them). Fewer bets, higher win rate. That's the whole game.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="action">✅ How to take action — the actual workflow</h2>
+<div class="card">
+<p><b>Default = NO BET.</b> On 5m/15m BTC, direction is a coin-flip — live: <b>49.8% over 8,039 settled rounds</b>. Sitting out is the <i>correct</i> action on ~90%+ of windows; <span class="chip c-green">WAIT</span>/<span class="chip c-red">AVOID</span> are wins, not failures. You are hunting the rare window where the <b>market misprices a calibrated edge</b> — not trying to call every move.</p>
+
+<h3>The 6 steps (stop at the first one that fails)</h3>
+<ol>
+  <li><b>Market is real.</b> Only <b>5m & 15m</b> are bettable. 1/3/7/10m are practice mirrors — never fund them.</li>
+  <li><b>Lean is trustworthy.</b> Source = <span class="chip c-blue">MODEL</span> (not <span class="chip c-amber">⚠ fallback</span>) <b>and</b> the lean is <b>stable</b> (not flipping UP↔DOWN). A flipping or fallback lean is a measured coin-flip → stop here.</li>
+  <li><b>Regime is favorable <span class="chip c-amber">(this flipped — read it)</span>.</b> Act in <span class="chip c-green">RANGE</span> or <span class="chip c-green">LOW_VOLATILITY</span> — the measured-best cells (~59–63% over the recent regime-era window). Be cautious / sit out <span class="chip c-red">TRENDING_UP</span> and <span class="chip c-red">HIGH_VOLATILITY</span> (~46%, the weakest) — trends eat mean-reversion leans alive. <span style="color:var(--dim)">(Selection tendency, still being confirmed forward — see the shadow monitor.)</span></li>
+  <li><b>Magnitude clears the line.</b> The 📐 band's <i>near</i> edge must project <b>past the beat</b>, not just the median.</li>
+  <li><b>THE GATE — the only reason to place money.</b> The champion flags a <span class="chip c-green">PAPER_BET</span> candidate <b>only when</b>:
+    <div class="flow" style="margin:8px 0">fair_value − ask − costs − buffer  &gt;  required_edge</div>
+    In plain terms: the live Polymarket share (<b>ask</b>) is <b>cheaper than the model's fair value by more than the safety buffer</b>. A perfect-looking setup with a <i>rich</i> ask reads <span class="chip c-amber">NO_EDGE</span> → <b>no bet</b>. The model is <i>never</i> the edge by itself; the mispriced market price is.</li>
+  <li><b>Size small &amp; manage live.</b> Late-entry biggest, Grade-A full, Grade-B half. Once the bet is open, act on the <b>advice box</b> (HOLD / LOCK IN / EXIT), not the frozen header.</li>
+</ol>
+
+<h3>Reading the champion's action word</h3>
+<table>
+  <tr><th>Action</th><th>What it means</th><th>Do</th></tr>
+  <tr><td><span class="chip c-red">AVOID / WAIT</span></td><td>No play — feed/regime/edge not there</td><td>Sit out</td></tr>
+  <tr><td><span class="chip c-red">AVOID_LONG</span></td><td>High big-drop risk — don't buy the UP side</td><td>Sit out (or look DOWN only if confirmed)</td></tr>
+  <tr><td><span class="chip c-amber">WATCH_UP / WATCH_DOWN · SETUP · LEAN</span></td><td>Probability is there, but <b>no tradeable edge yet</b></td><td>Watch — do <b>not</b> bet</td></tr>
+  <tr><td><span class="chip c-amber">NO_EDGE</span></td><td>Right side, but the ask is too rich (HIGH PROBABILITY, NO EDGE)</td><td>Wait for a cheaper ask</td></tr>
+  <tr><td><span class="chip c-green">PAPER_BET</span></td><td>The gate cleared — fair_value beats ask after buffer</td><td><b>The only "take action" signal</b></td></tr>
+</table>
+
+<div class="card warn" style="margin-top:12px">
+<b>Still paper-only.</b> Whether <code>fair − ask − buffer</code> is actually positive <i>after costs</i> on real settled rounds is unproven — <b>0 settled Polymarket rounds recorded so far</b>. Until that edge table is positive, every <span class="chip c-green">PAPER_BET</span> is a <i>paper</i> bet. Track it, don't fund it.</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ============================================================ -->
+<h2 id="path-engine">🛤️ The path engine — how to trade the window (any direction)</h2>
+<div class="card">
+<p><b>This is the validated edge.</b> Direction (which way it closes) is a coin-flip — so you never bet the side.
+The <b>path engine</b> instead forecasts the <i>shape</i> of the window: will it move, will it CHOP or TREND, will
+it touch an extreme early. All of that is <b>measured predictable out-of-sample (AUC 0.75–0.91)</b>. Polymarket
+lets you bet either side and exit on share-price moves, so you trade the path: <b>fade extremes in chop, ride
+trends, skip quiet.</b></p>
+
+<h3>Read the <span class="big">▶ PLAY</span> on the PATH PLAN card first</h3>
+<table>
+  <tr><th>▶ PLAY</th><th>What the window will do</th><th>The trade (bet either side)</th></tr>
+  <tr><td><span class="chip c-amber">FADE-SETUP</span></td><td>active <b>CHOP</b> + an early extreme likely (both ±$50 get visited)</td><td><b>Wait for the early touch</b> of one side → the <i>losing</i> side's share is now cheap → <b>buy it</b> (bet the reversal) → exit as price reverts toward the anchor.</td></tr>
+  <tr><td><span class="chip c-green">RIDE</span></td><td>one-sided <b>TREND</b> (won't round-trip)</td><td><b>Don't fade.</b> The moving side likely keeps going — hold the winning side or stay out; a fade here loses.</td></tr>
+  <tr><td><span class="chip c-dim">SKIP</span></td><td><b>QUIET</b> — a large move is unlikely</td><td><b>Sit out.</b> No $ range to capture, no fade room.</td></tr>
+  <tr><td><span class="chip c-blue">WATCH</span></td><td><b>MIXED</b> — unresolved</td><td>Watch for the touch; don't pre-commit.</td></tr>
+</table>
+
+<h3>The fields behind the play (all calibrated)</h3>
+<ul>
+  <li><b>P(moves ≥$50)</b> — will it move enough to matter (AUC 0.85 / 0.91). Low → SKIP, there's nothing to trade.</li>
+  <li><b>ROUND-TRIP % + style</b> — CHOP (visits both ±$50) vs TREND. Out-of-sample, CHOP round-trips <b>24% / 48%</b> vs quiet <b>0.5% / 1.7%</b> → this is the fade-vs-ride call.</li>
+  <li><b>early-touch %</b> — will the extreme arrive in the FIRST HALF (AUC 0.75 / 0.83). High = the fade is coming soon, and an <b>early</b> touch reverts <b>~2× more</b> than a late one.</li>
+  <li><b>HIGH / LOW band</b> — where the extremes land (~50% empirical coverage). Your fade entry + revert-target zone.</li>
+  <li><b>expected close displacement</b> — typical net move size (calibrated in aggregate, noisy per single window).</li>
+</ul>
+
+<div class="card warn" style="margin-top:12px">
+<b>The honest gate (do NOT skip this):</b> the path engine gives you <b>window-selection + timing + fade-vs-ride</b>.
+It does <b>not</b> pick which side <i>settles</i>, and it is <b>not profit by itself.</b> A FADE-SETUP only pays if,
+at the touch, the cheap (losing) share is <i>actually mispriced</i> versus the reversal odds — i.e. it still has to
+clear <code>fair_value − ask − costs − buffer &gt; required_edge</code>. <b>Path tells you <i>when &amp; where</i> to
+look; the edge gate tells you <i>whether it's +EV.</i></b> Until the Polymarket recorder proves that edge after
+costs, treat every fade as PAPER.</div>
 </div>
 
 <!-- ============================================================ -->
@@ -134,7 +204,7 @@ model leans, magnitude clearing the line, and the late-entry structure.
     <tr><td>Setup grade</td><td><span class="chip c-green">A</span> (4–5 confirmations)</td></tr>
     <tr><td>Magnitude</td><td>📐 Projected close clears the beat <b>by more than the band's low</b></td></tr>
     <tr><td>Path outlook</td><td>HOLD or BREAKOUT toward the lean</td></tr>
-    <tr><td>Regime</td><td>Anything except LOW_VOLATILITY</td></tr>
+    <tr><td>Regime</td><td><span class="chip c-green">RANGE</span> or <span class="chip c-green">LOW_VOLATILITY</span> (measured-best); avoid <span class="chip c-red">TRENDING_UP</span> / <span class="chip c-red">HIGH_VOLATILITY</span></td></tr>
   </table>
 </div>
 
@@ -281,7 +351,7 @@ becomes trustworthy (a future retrain) — and only if it then proves out. No fa
   <li><b>Flipping lean.</b> If it changes UP↔DOWN every minute, the model is at 50/50. Instability = no edge. Skip.</li>
   <li><b>Fallback lean.</b> ⚠ WEAK = coin-flip. The price can look like free money; it isn't.</li>
   <li><b>CHOP / STRETCH outlook.</b> The model is telling you the closing side is random, or the move can't reach the line. Believe it.</li>
-  <li><b>LOW_VOLATILITY regime.</b> A weak cell in live evidence — the line and the noise overlap.</li>
+  <li><b>TRENDING_UP / HIGH_VOLATILITY regime.</b> The weakest cells in live evidence (~46%) — trends run over mean-reversion leans. (Quiet <span class="chip c-green">RANGE</span> / <span class="chip c-green">LOW_VOLATILITY</span> regimes are where calls actually clear coin-flip, ~59–63%.)</li>
   <li><b>Band straddles the line.</b> Right sign, wrong size — the magnitude is a coin-flip even when the direction isn't.</li>
   <li><b>Tiny sample win-rate.</b> "model 100% (2)" means nothing. Wait for n≥100 before trusting the strip.</li>
   <li><b>Paying above your edge.</b> The single most common way to lose while being "right" — win-rate must beat the share price.</li>
@@ -302,8 +372,9 @@ becomes trustworthy (a future retrain) — and only if it then proves out. No fa
 </div>
 
 <footer>
-  BTC Quantum Trader · Polymarket betting decision guide · updated 2026-06-13
-  (flip=skip, lifecycle states, fair-value removed, honest accuracy ceiling)<br>
+  BTC Quantum Trader · Polymarket betting decision guide · updated 2026-06-30
+  (added the PATH ENGINE — FADE-SETUP/RIDE/SKIP, P(touch)/early-touch/CHOP-TREND, the validated
+  fade-the-early-extreme play; plus "How to take action" + champion edge gate + regime correction)<br>
   Companion to <code>guide.html</code>. Open while the app runs: <code>http://localhost:3000/polymarket-betting.html</code>
 </footer>
 

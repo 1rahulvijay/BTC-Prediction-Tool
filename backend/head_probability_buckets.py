@@ -27,6 +27,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 import joblib
@@ -107,10 +108,21 @@ def _score_classifier_head(name, df, features, label, fav_col, adv_col, ensemble
     fav = fav[seen] if fav is not None else None
     adv = adv[seen] if adv is not None else None
     auc = float(roc_auc_score(y, oof))
+    # Honest OUT-OF-SAMPLE calibrated ECE: fit isotonic on the first 80% of the OOF and evaluate
+    # calibration on the held-out last 20% — the SAME shape serving uses. (In-sample iso would
+    # report a misleading ~0; the raw rank score reports a misleading ~0.18. The OOS number is
+    # the truth.) AUC and the top-N buckets are rank-invariant, so only calibration changes.
+    raw_ece = _calibration(y, oof)[1]
+    cut = int(len(oof) * 0.8)
+    try:
+        iso = IsotonicRegression(out_of_bounds="clip").fit(oof[:cut], y[:cut])
+        calib, ece, mono = _calibration(y[cut:], iso.predict(oof[cut:]))
+    except Exception:
+        calib, ece, mono = _calibration(y, oof)
     base, buckets = _top_buckets(y, oof, fav, adv)
-    calib, ece, mono = _calibration(y, oof)
     return {"head": name, "n": int(len(y)), "base_rate": round(base, 4), "oof_auc": round(auc, 3),
-            "saved_auc": saved_auc, "ece": ece, "monotonic": mono, "buckets": buckets, "calibration": calib}
+            "saved_auc": saved_auc, "ece": ece, "raw_ece": raw_ece, "monotonic": mono,
+            "buckets": buckets, "calibration": calib}
 
 
 def _score_quantile_coverage(df):
@@ -149,7 +161,8 @@ def _md(results, qcov):
         L.append(f"## {r['head']}")
         L.append(f"n={r['n']:,} · base rate **{r['base_rate']*100:.1f}%** · OOF AUC **{r['oof_auc']}**"
                  + (f" (saved {r['saved_auc']})" if r.get("saved_auc") else "")
-                 + f" · ECE {r['ece']} · monotonic deciles: **{'YES' if r['monotonic'] else 'NO'}**")
+                 + f" · **ECE {r['ece']}** (isotonic OOS-calibrated; raw-rank {r.get('raw_ece', '—')})"
+                 + f" · monotonic deciles: **{'YES' if r['monotonic'] else 'NO'}**")
         L.append("")
         L.append("| bucket | n | event rate | lift | avg favorable | avg adverse |")
         L.append("|---|---:|---:|---:|---:|---:|")
@@ -185,12 +198,14 @@ def main():
     # bigmove
     try:
         import train_bigmove_keeper as bm
+        _b = joblib.load(os.path.join(SM, "bigmove_keeper_model.pkl"))
+        _thr = _b.get("move_threshold_usd_by_horizon") or {}
+        t5 = float(_thr.get(5) or _thr.get("5") or 30.0)   # the threshold the head ACTUALLY trained on
+        sv = _b.get("auc")
         df_bm = df.copy()
-        t5 = bm.move_threshold_for(5)
         delta = df_bm["close"].shift(-5) - df_bm["close"]
         df_bm["_bm_abs"] = delta.abs()
         df_bm["_bm_label"] = (df_bm["_bm_abs"] >= t5).astype(int)
-        sv = joblib.load(os.path.join(SM, "bigmove_keeper_model.pkl")).get("auc")
         r = _score_classifier_head(f"bigmove (5m abs close move >= ${t5:.0f})", df_bm,
                                     bm.FEATURES, "_bm_label", "_bm_abs", None, bm._ensemble, sv)
         results.append(r)
@@ -199,8 +214,10 @@ def main():
     # bigdrop
     try:
         import train_bigdrop_keeper as bd
+        _b = joblib.load(os.path.join(SM, "bigdrop_keeper_model.pkl"))
+        _thr = _b.get("drop_threshold_usd_by_horizon") or {}
+        t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_bd = df.copy()
-        t5 = bd.move_threshold_for(5)
         lows = df_bd["low"].to_numpy()
         future_low = np.full(len(df_bd), np.nan)
         for i in range(max(0, len(df_bd) - 5)):
@@ -208,7 +225,7 @@ def main():
         drop_usd = future_low - df_bd["close"].to_numpy()
         df_bd["_bd_label"] = (drop_usd <= -t5).astype(int)
         df_bd["_bd_adverse"] = drop_usd
-        sv = joblib.load(os.path.join(SM, "bigdrop_keeper_model.pkl")).get("auc")
+        sv = _b.get("auc")
         r = _score_classifier_head(f"bigdrop (5m low <= -${t5:.0f})", df_bd,
                                     bd.FEATURES, "_bd_label", "future_abs_move_5m", "_bd_adverse",
                                     bd._ensemble, sv)
@@ -218,8 +235,9 @@ def main():
     # directional confirmation heads
     try:
         import train_directional_keeper as dh
+        _thr = joblib.load(os.path.join(SM, "directional_keeper_model.pkl")).get("move_threshold_usd_by_horizon") or {}
+        t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_dh = df.copy()
-        t5 = dh.move_threshold_for(5)
         delta = df_dh["close"].shift(-5) - df_dh["close"]
         df_dh["_delta_usd"] = delta
         df_dh["_big_up_label"] = (delta >= t5).astype(int)
@@ -239,15 +257,17 @@ def main():
     # activity/range proxy
     try:
         import train_activity_keeper as ah
+        _b = joblib.load(os.path.join(SM, "activity_keeper_model.pkl"))
+        _thr = _b.get("range_threshold_usd_by_horizon") or {}
+        t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_ah = df.copy()
-        t5 = ah.move_threshold_for(5)
         highs, lows = df_ah["high"].to_numpy(), df_ah["low"].to_numpy()
         future_range = np.full(len(df_ah), np.nan)
         for i in range(max(0, len(df_ah) - 5)):
             future_range[i] = np.max(highs[i + 1:i + 6]) - np.min(lows[i + 1:i + 6])
         df_ah["_range_usd"] = future_range
         df_ah["_activity_label"] = (future_range >= t5).astype(int)
-        sv = joblib.load(os.path.join(SM, "activity_keeper_model.pkl")).get("auc")
+        sv = _b.get("auc")
         results.append(_score_classifier_head(f"activity_range (5m range >= ${t5:.0f})", df_ah,
                                              ah.FEATURES, "_activity_label",
                                              "_range_usd", None, ah._ensemble, sv))

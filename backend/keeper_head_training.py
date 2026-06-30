@@ -20,7 +20,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 FEATURES = ["rv_15m", "rv_30m", "compression_ratio", "shock_magnitude"]
-HORIZONS = (1, 3, 5, 7, 10, 15, 30)
+HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip direction)
 
 # Training window the heads were built for. Baked into each head's HEAD_VERSION so that
 # changing BTC_HISTORICAL_DAYS (e.g. 100 -> 180) makes the version differ and train_heads
@@ -116,6 +116,79 @@ def move_buckets_by_horizon() -> dict[int, tuple[float, float, float]]:
         val = float(os.environ["BTC_BIG_MOVE_USD"])
         return {h: (val, val * 2.0, val * 4.0) for h in HORIZONS}
     return dict(DEFAULT_MOVE_BUCKETS_USD_BY_HORIZON)
+
+
+def move_bucket_pcts() -> tuple[float, float, float]:
+    """Percentiles for (meaningful, large, extreme) when AUTO-deriving buckets from data.
+    Override with BTC_MOVE_BUCKET_PCTS="0.75,0.90,0.97" (default = top-quartile / top-10% / top-3%)."""
+    raw = os.environ.get("BTC_MOVE_BUCKET_PCTS", "0.75,0.90,0.97")
+    try:
+        p = tuple(float(x) for x in raw.split(",")[:3])
+        if len(p) == 3 and 0.0 < p[0] < p[1] < p[2] < 1.0:
+            return p
+    except (TypeError, ValueError):
+        pass
+    return (0.75, 0.90, 0.97)
+
+
+def _round_nice(x: float) -> float:
+    """Round a dollar boundary to a clean step so the buckets read nicely."""
+    x = float(x)
+    if x >= 200:
+        return float(round(x / 10) * 10)
+    if x >= 50:
+        return float(round(x / 5) * 5)
+    return float(round(x))
+
+
+def derive_buckets(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[float, float, float]]:
+    """Self-calibrating dollar buckets from the ACTUAL |close[t+h]-close[t]| distribution:
+    meaningful=pcts[0] (default p75), large=pcts[1] (p90), extreme=pcts[2] (p97). Returns {} if the
+    series is too short. Keeps "big move" a genuinely notable event at any price level — absolute
+    dollar thresholds otherwise go stale as BTC re-prices (a $30 5m move is top-quartile at $65k,
+    noise at $130k)."""
+    close = np.asarray(close, dtype=float)
+    pcts = pcts or move_bucket_pcts()
+    out = {}
+    for h in horizons:
+        h = int(h)
+        if h >= len(close):
+            continue
+        d = np.abs(close[h:] - close[:-h])
+        d = d[np.isfinite(d)]
+        if len(d) < 100:
+            continue
+        a, b, c = sorted(_round_nice(float(np.quantile(d, p))) for p in pcts)
+        b = max(b, a + 1.0)            # guarantee strictly-increasing boundaries
+        c = max(c, b + 1.0)
+        out[h] = (float(a), float(b), float(c))
+    return out
+
+
+def buckets_for_training(close=None) -> dict[int, tuple[float, float, float]]:
+    """Buckets to train on: an explicit env override (BTC_MOVE_BUCKETS_USD_BY_HORIZON) wins; else
+    AUTO-DERIVE from `close` (the self-calibrating default); else the static defaults. Serving reads
+    the result back from the saved bundle, so train/serve parity is automatic."""
+    parsed = _parse_bucket_map(os.environ.get("BTC_MOVE_BUCKETS_USD_BY_HORIZON", ""))
+    if parsed:
+        out = dict(DEFAULT_MOVE_BUCKETS_USD_BY_HORIZON)
+        out.update(parsed)
+        return out
+    if close is not None:
+        derived = derive_buckets(close)
+        if derived:
+            return derived
+    return dict(DEFAULT_MOVE_BUCKETS_USD_BY_HORIZON)
+
+
+def _bucket_tag() -> str:
+    """Short tag for HEAD_VERSION so changing the bucket policy forces a one-shot retrain."""
+    if os.environ.get("BTC_MOVE_BUCKETS_USD_BY_HORIZON"):
+        return "envbkt"
+    return "p" + "-".join(str(int(round(x * 100))) for x in move_bucket_pcts())
+
+
+BUCKET_TAG = _bucket_tag()
 
 
 def move_thresholds_by_horizon() -> dict[int, float]:

@@ -44,6 +44,7 @@ order, each behind a validation gate. All code-complete, parse-checked, and **ac
 | **P3** | **Probability-bucket scorecard** for every head (leak-free OOF top-1/5/10/20% event rate + lift + favorable/adverse move + calibration deciles + ECE + monotonicity); signed_quantile coverage | `head_probability_buckets.py` → `docs/active/HEAD_PROBABILITY_BUCKETS_2026-06-17.md`, `data/head_probability_buckets.parquet` | bigmove top-5% **58.7%** (lift), bigdrop top-5% **63.7%**, **both monotonic**; band coverage **87.5%** (target 80%). ECE high (~0.18) = rank-calibrated → **gate on tiers, not raw prob** | ✅ |
 | **P4** | **Quantile range → champion reward/risk veto** (favorable-room calc, 80% band zone, thin-room flag, DOWN-setup room gate) | folded into `decision_champion.py` | exercised in champion smoke-test (9 scenarios) | ✅ |
 | **P5** | **Champion decision validator** — rules-first, strict: feed→quiet→at-line→drop-risk×direction→P(Hold) fair value→range veto→**edge gate** (fair − ask − buffer); outputs ACTION + confidence + plain-English reason + risk flags + invalidate + zone; **bet candidate ONLY when a live market ask clears the buffer** | `decision_champion.py`, `price_to_beat.py` (`rnd["champion"]`), `main.js` (verdict strip) | 9-scenario smoke-test: stale→AVOID, quiet→WAIT, HIGH-drop+UP→AVOID_LONG, HIGH-drop+DOWN→POSSIBLE DOWN, strong+no-ask→SETUP (no edge eval), ask-pass→PAPER_BET +3c, ask-priced→NO_EDGE, weak→WAIT | ✅ |
+| **N5** | **Single days-knob + 98/2 split** — `BTC_HISTORICAL_DAYS` rebuilds the 1m matrix (manifest/coverage-aware) and every head retrains on that window (window baked into `HEAD_VERSION`); each head fits 98% / honest 2% held-out test | `build_research_matrix.py`, `keeper_head_training.py`, 4 trainers, `start.bat` | confirmed on the **150d** run: matrix→216k rows, every head `test_AUC (n=4,320=2%)`; see [OVERNIGHT_150D…2026-06-18](OVERNIGHT_150D_RETRAIN_RESULTS_2026-06-18.md) | ✅ |
 
 **Doctrine preserved in code:** direction stays confirmation-only; the champion never raises a *bet candidate*
 on probability alone — only `fair_value − ask − costs − buffer > required_edge` with a live Polymarket ask does.
@@ -52,9 +53,16 @@ Without an ask it reports "edge not evaluated." The make-or-break (§6) is uncha
 ---
 
 ## 2. VALIDATIONS RUN — the evidence ledger (every number measured)
+> **Latest run:** see [`OVERNIGHT_150D_RETRAIN_RESULTS_2026-06-18.md`](OVERNIGHT_150D_RETRAIN_RESULTS_2026-06-18.md)
+> — 150-day full retrain (single-knob matrix rebuild + 98/2 split, both confirmed working). Reconfirms
+> P(hold)/big-drop/activity generalize to the held-out 2%; **raw-direction backtest net-negative at every
+> horizon** (profit factor < 1, negative Sharpe; 30m UP-preds close DOWN more often than UP = anti-predictive).
+
 | Claim | Method | Result |
 |---|---|---|
 | Direction = coin-flip (live) | `analytics.duckdb` price_to_beat, committed sign-acc, Wilson | REAL 5m+15m **49.3% [46.2,52.4]** (n=974); practice **49.9%** (n=4,855); **no grade beats 50%** (A 47/B 55[47.7,61.8]/C 48) |
+| Direction unprofitable @150d (OOS backtest) | startup backtest, 11,970 held-out candles | **profit factor < 1 every horizon** (0.32–0.49); Sharpe −0.25..−0.41; 1m = 100% abstain (NEUTRAL); 30m anti-predictive |
+| 150d heads hold out (98/2 split) | held-out most-recent 2% (n=4,320/head) | P(hold) test 0.746 (97.2% @≥0.95) · activity 0.78–0.86 · big-drop 0.643–0.665 · directional collapses 0.55–0.59 |
 | P(Hold) calibrated + deployable | persistence holdout | P≥0.93 → **95.1%**, P≥0.95 → **96.0%** realized |
 | ML P(Hold) ≈ analytic barrier | σ-recalibrated barrier vs model | Brier 0.163 ≈ 0.160; barrier saturates → model carves the deployable tier |
 | Near-line danger surface | persistence buckets | `dist<0.02% & >60s` → hold ≤68% (NO_TRADE); `dist>0.1% & <60s` → **98–99%** hold (T3) |
@@ -63,7 +71,7 @@ Without an ask it reports "edge not evaluated." The make-or-break (§6) is uncha
 | Big-move keeper | `train_bigmove_keeper` OOS | **0.733**; quiet 14% → likely 56% |
 | live_keepers parity | recompute vs research matrix | median **0**, p99 ~1e-12 |
 | Directional big-move (Codex-run, Claude-analyzed) | 180d directional bakeoff | **big_drop real** (5m AUC 0.762 / top-5% **65.9%**; 15m 0.738 / **71.3%**); big_up/down high-AUC but **low precision 33–36%** = magnitude-in-disguise |
-| Recorder edge | `analyze_recorder_edge` | **PENDING** — needs ≥30 resolved rounds (currently 0 settled) |
+| Recorder edge | `analyze_pm_recorder.py` | **PENDING** — 364 official outcomes, only 4 joined quote rounds; needs ≥500 joined rounds |
 
 ---
 

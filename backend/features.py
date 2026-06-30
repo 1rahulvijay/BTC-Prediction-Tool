@@ -1143,7 +1143,9 @@ def build_features_from_klines(
     # 111: volume-profile value-area position (where price sits in the rolling range).
     features[:, 111] = np.clip(_va_pos[1:], 0.0, 1.0)
     # 112: VPIN (order-flow toxicity) — backfilled from SPOT aggTrades + recorded live.
-    _vpin_raw = series("vpin", 0.0)
+    # 2026-06-28: snapshot was hardcoded 0.0, so a warm live vpin never reached the model. Now falls
+    # back to of.get("vpin") (train path is unaffected: overlay_backfill overwrites this from parquet).
+    _vpin_raw = series("vpin", of.get("vpin", 0.0))
     features[:, 112] = np.clip(_vpin_raw[1:], 0.0, 1.0)
     # 113: CVD/price divergence — SAME shared fn as the backfill (causal, no look-ahead).
     _div = _tf.cvd_divergence(cvd_1m_raw, closes, lookback=20)
@@ -1193,8 +1195,11 @@ def build_features_from_klines(
     features[:, 123] = np.clip(_ret[1:] * 100.0 * oi_change_raw[1:], -1.0, 1.0)
     # 124-125: large-trade flow — backfilled from trades + recorded live (already normalized
     # to [-1,1] by order_flow / trade_features). Big-player aggressive flow & its imbalance.
-    _ltd_raw = series("large_trade_delta", 0.0)
-    _lti_raw = series("large_trade_imbalance", 0.0)
+    # Live serving drops these sparse history arrays so the current order-flow snapshot
+    # is used. Passing a literal zero here defeated that overlay and left both selected
+    # model features dead-zero even after the 2026-06-28 parity fix.
+    _ltd_raw = series("large_trade_delta", of.get("large_trade_delta", 0.0))
+    _lti_raw = series("large_trade_imbalance", of.get("large_trade_imbalance", 0.0))
     features[:, 124] = np.clip(_ltd_raw[1:], -1.0, 1.0)
     features[:, 125] = np.clip(_lti_raw[1:], -1.0, 1.0)
     # ── Trend-persistence batch (126-129) — kline-derived, fixes mean-reversion-into-trend ──
@@ -1385,6 +1390,7 @@ def build_sequences(
     highs: np.ndarray = None,
     lows: np.ndarray = None,
     return_magnitude: bool = False,
+    memmap_path: str = None,
 ):
     """
     Build sliding-window sequences for ML training.
@@ -1402,7 +1408,7 @@ def build_sequences(
             objectives with different losses).
     """
     if horizons is None:
-        horizons = [1, 3, 5, 7, 10, 15, 30]  # full set — was [1,5,10,15], silently dropped 3m/7m
+        horizons = [5, 15]  # pruned 2026-06-21: only the two tradeable market horizons
 
     # Compute adaptive threshold (used as the TP/SL barrier)
     if atr_arr is not None:
@@ -1412,13 +1418,20 @@ def build_sequences(
 
     max_h = max(horizons)
 
-    X = []
-    Y = {h: [] for h in horizons}
-    Ymag = {h: [] for h in horizons}
+    n_samples = max(0, len(features) - max_h - lookback)
+    shape = (n_samples, lookback, features.shape[1])
+    if memmap_path and n_samples > 0:
+        os.makedirs(os.path.dirname(memmap_path), exist_ok=True)
+        if os.path.exists(memmap_path):
+            os.remove(memmap_path)
+        X = np.memmap(memmap_path, mode="w+", dtype=np.float32, shape=shape)
+    else:
+        X = np.empty(shape, dtype=np.float32)
+    Y = {h: np.zeros((n_samples, 3), dtype=np.float32) for h in horizons}
+    Ymag = {h: np.zeros(n_samples, dtype=np.float32) for h in horizons}
 
-    for i in range(lookback, len(features) - max_h):
-        seq = features[i - lookback: i]
-        X.append(seq)
+    for row, i in enumerate(range(lookback, len(features) - max_h)):
+        X[row] = features[i - lookback: i]
 
         # Entry = close of candle `i`, which is the SAME candle the last feature row
         # (features[i-1] -> candle i) is built from. This matches inference exactly
@@ -1430,7 +1443,7 @@ def build_sequences(
             # Magnitude target: realized |move| over the horizon as a fraction.
             end_idx = min(i + h, len(closes) - 1)
             mag = abs(closes[end_idx] - current_price) / current_price if current_price > 0 else 0.0
-            Ymag[h].append(mag)
+            Ymag[h][row] = mag
             # TRIPLE BARRIER METHOD
             # We look ahead up to h periods.
             # Barrier 1 (TP): current_price * (1 + threshold)
@@ -1471,16 +1484,15 @@ def build_sequences(
                     break
                     
             if hit_up:
-                Y[h].append([0, 0, 1])   # UP
+                Y[h][row, 2] = 1.0   # UP
             elif hit_down:
-                Y[h].append([1, 0, 0])   # DOWN
+                Y[h][row, 0] = 1.0   # DOWN
             else:
-                Y[h].append([0, 1, 0])   # NEUTRAL (Timeout)
+                Y[h][row, 1] = 1.0   # NEUTRAL (Timeout)
 
-    X = np.array(X, dtype=np.float32)
-    Y = {h: np.array(labels, dtype=np.float32) for h, labels in Y.items()}
+    if isinstance(X, np.memmap):
+        X.flush()
 
     if return_magnitude:
-        Ymag = {h: np.array(v, dtype=np.float32) for h, v in Ymag.items()}
         return X, Y, Ymag
     return X, Y

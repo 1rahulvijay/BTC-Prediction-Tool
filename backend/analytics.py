@@ -5,7 +5,7 @@ import os
 # (now under data/ or BTC_DB_PATH). Importing it here prevents analytics/reports from
 # reading a stale/empty root-level analytics.duckdb.
 from database import DB_PATH
-HORIZONS = [1, 3, 5, 7, 10, 15, 30]
+HORIZONS = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
 
 
 def _prediction_union(horizons=None) -> str:
@@ -22,12 +22,12 @@ def analyze_confidence_buckets(horizon: int):
             horizon,
             ROUND(confidence, 1) AS confidence_bucket,
             COUNT(*) AS total_predictions,
-            SUM(CASE WHEN hit THEN 1 ELSE 0 END) AS correct,
-            ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS actual_hit_rate,
+            SUM(CASE WHEN lean_hit THEN 1 ELSE 0 END) AS correct,
+            ROUND(AVG(CASE WHEN lean_hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS actual_hit_rate,
             ROUND(AVG(confidence) * 100, 1) AS avg_stated_confidence,
             ROUND(AVG(move_error), 2) AS avg_dollar_error
         FROM predictions_{horizon}m
-        WHERE resolved = TRUE AND hit IS NOT NULL
+        WHERE resolved = TRUE AND lean_hit IS NOT NULL   -- sign-truth: directional confidence honesty over committed leans
         GROUP BY horizon, confidence_bucket
         ORDER BY confidence_bucket
     """
@@ -48,7 +48,8 @@ def analyze_regime_accuracy(horizon: int):
             SUM(CASE WHEN signal = 'DOWN' THEN 1 ELSE 0 END) AS sell_signals,
             SUM(CASE WHEN signal = 'NEUTRAL' THEN 1 ELSE 0 END) AS avoid_signals,
             ROUND((MAX(timestamp) - MIN(timestamp)) / 86400000.0, 1) AS days_covered,
-            ROUND(AVG(CASE WHEN resolved = TRUE AND hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy,
+            -- sign-truth: committed (UP/DOWN) leans only via lean_hit, NEUTRAL (NULL) excluded (canonical, never the dual-semantic `hit`)
+            ROUND(AVG(CASE WHEN lean_hit IS TRUE THEN 1.0 WHEN lean_hit IS FALSE THEN 0.0 END) * 100, 1) AS accuracy,
             ROUND(AVG(confidence) * 100, 1) AS avg_confidence,
             ROUND(AVG(move_error), 2) AS avg_error_usd
         FROM predictions_{horizon}m
@@ -67,10 +68,10 @@ def analyze_cascade_impact(horizon: int):
         SELECT 
             cascade_active,
             COUNT(*) AS predictions,
-            ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy,
+            ROUND(AVG(CASE WHEN lean_hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy,
             ROUND(AVG(confidence) * 100, 1) AS avg_confidence
         FROM predictions_{horizon}m
-        WHERE resolved = TRUE AND hit IS NOT NULL
+        WHERE resolved = TRUE AND lean_hit IS NOT NULL
         GROUP BY cascade_active
     """
     try:
@@ -89,9 +90,9 @@ def analyze_time_of_day(horizon: int):
         SELECT 
             (timestamp / 3600000) % 24 AS hour_utc,
             COUNT(*) AS predictions,
-            ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy
+            ROUND(AVG(CASE WHEN lean_hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS accuracy
         FROM predictions_{horizon}m
-        WHERE resolved = TRUE AND hit IS NOT NULL
+        WHERE resolved = TRUE AND lean_hit IS NOT NULL
         GROUP BY hour_utc
         ORDER BY hour_utc
     """
@@ -107,11 +108,11 @@ def analyze_calibration(horizon: int):
         SELECT 
             ROUND(confidence / 0.05) * 0.05 AS confidence_bucket,
             COUNT(*) AS predictions,
-            ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END), 3) AS actual_hit_rate,
+            ROUND(AVG(CASE WHEN lean_hit THEN 1.0 ELSE 0.0 END), 3) AS actual_hit_rate,
             ROUND(AVG(confidence), 3) AS stated_confidence,
-            ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) - AVG(confidence), 3) AS calibration_error
+            ROUND(AVG(CASE WHEN lean_hit THEN 1.0 ELSE 0.0 END) - AVG(confidence), 3) AS calibration_error
         FROM predictions_{horizon}m
-        WHERE hit IS NOT NULL AND confidence BETWEEN 0.55 AND 0.95
+        WHERE lean_hit IS NOT NULL AND confidence BETWEEN 0.55 AND 0.95
         GROUP BY confidence_bucket
         HAVING COUNT(*) >= 10
         ORDER BY confidence_bucket
@@ -156,7 +157,7 @@ def validate_regime_thresholds(horizons=None):
     sub-50% accuracy is a candidate for a forced-NEUTRAL override in regime.py.
     """
     if horizons is None:
-        horizons = [1, 3, 5, 7, 10, 15, 30]
+        horizons = [5, 15]   # pruned 2026-06-21
     results = {}
     for horizon in horizons:
         # LEAN-truth grading (raw_direction vs realized move sign), NOT the `hit` column:
@@ -231,7 +232,7 @@ def analyze_conviction_performance(horizon: int = None):
     This is the core validation of the win-rate thesis: actionable signals should
     out-hit the raw directional rate by a wide margin.
     """
-    horizons = [horizon] if horizon else [1, 3, 5, 7, 10, 15, 30]
+    horizons = [horizon] if horizon else [5, 15]   # pruned 2026-06-21
     for h in horizons:
         try:
             with duckdb.connect(DB_PATH) as conn:
@@ -499,7 +500,7 @@ def analyze_quantile_width_vs_error(horizon: int = None):
                ROUND(AVG(move_range_width), 2) AS avg_range_width,
                ROUND(AVG(move_error), 2) AS avg_move_error,
                ROUND(AVG(CASE WHEN price_match THEN 1.0 ELSE 0.0 END) * 100, 1) AS price_match_rate,
-               ROUND(AVG(CASE WHEN hit THEN 1.0 ELSE 0.0 END) * 100, 1) AS direction_hit_rate
+               ROUND(AVG(CASE WHEN lean_hit IS TRUE THEN 1.0 WHEN lean_hit IS FALSE THEN 0.0 END) * 100, 1) AS direction_hit_rate
         FROM allp
         WHERE resolved = TRUE
           AND hit IS NOT NULL
@@ -574,13 +575,13 @@ def generate_monthly_report(days_back: int = 30) -> dict:
         WITH all_preds AS ({_prediction_union()})
         SELECT 
             COUNT(*) as total_predictions,
-            SUM(CASE WHEN resolved = TRUE AND hit THEN 1 ELSE 0 END) as total_hits,
+            SUM(CASE WHEN lean_hit IS TRUE THEN 1 ELSE 0 END) as total_hits,
             SUM(CASE WHEN resolved = TRUE THEN 1 ELSE 0 END) as total_resolved,
             SUM(CASE WHEN expectancy_usd > 0 THEN expectancy_usd ELSE 0 END) as gross_profit,
             SUM(CASE WHEN expectancy_usd < 0 THEN ABS(expectancy_usd) ELSE 0 END) as gross_loss,
             AVG(expectancy_usd) as avg_expectancy,
             regime,
-            AVG(CASE WHEN resolved = TRUE AND hit THEN 1.0 ELSE 0.0 END) as accuracy
+            AVG(CASE WHEN lean_hit IS TRUE THEN 1.0 WHEN lean_hit IS FALSE THEN 0.0 END) as accuracy
         FROM all_preds
         WHERE timestamp >= {cutoff_ms}
         GROUP BY GROUPING SETS ((), (regime))

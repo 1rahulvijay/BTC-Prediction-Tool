@@ -32,8 +32,8 @@ MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
 OUT = os.path.join(DATA_DIR, "saved_models", "signed_quantile_model.pkl")
 
 MOVE_FEATS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio"]
-HORIZONS = [3, 5, 7, 10, 15, 30]
-HEAD_VERSION = "2026-06-15-cqr-recency"   # train_heads.py retrains when this changes
+HORIZONS = [5, 15]   # pruned 2026-06-21: band only for the tradeable markets
+HEAD_VERSION = "2026-06-21-cqr-recency-h5-15"   # train_heads.py retrains when this changes
 
 
 def _fit_q(X, y, q):

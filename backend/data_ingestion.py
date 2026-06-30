@@ -63,6 +63,7 @@ class BinanceWebSocketClient:
                     self.reconnect_delay = 1.0
 
                     async for message in ws:
+                        stream = ""
                         try:
                             msg = json.loads(message)
                             stream = msg.get("stream", "")
@@ -111,7 +112,7 @@ class BinanceWebSocketClient:
                                     },
                                 )
                         except Exception as e:
-                            logger.debug(f"Parse error: {e}")
+                            logger.warning(f"[ws] parse/emit error on stream={stream!r}: {type(e).__name__}: {e}")
 
             except Exception as e:
                 logger.warning(f"WebSocket disconnected: {e}")
@@ -194,6 +195,7 @@ class BinanceFuturesWebSocketClient:
                     self.reconnect_delay = 1.0
 
                     async for message in ws:
+                        stream = ""
                         try:
                             msg = json.loads(message)
                             stream = msg.get("stream", "")
@@ -715,6 +717,7 @@ class CrossAssetWebSocketClient:
                     self.reconnect_delay = 1.0
 
                     async for message in ws:
+                        stream = ""
                         try:
                             msg = json.loads(message)
                             stream = msg.get("stream", "")

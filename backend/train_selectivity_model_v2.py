@@ -121,7 +121,7 @@ def main(days=60, horizon=5, percentile=75):
     # 5. Evaluate Out-of-Sample
     probs = pipe.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test, probs)
-    print(f"\n--- SELECTIVITY MODEL V2 SCORECARD ---")
+    print("\n--- SELECTIVITY MODEL V2 SCORECARD ---")
     print(f"Out-of-Sample AUC: {auc:.3f}")
     print(f"Baseline Rate:     {baseline_test:.1%}")
     

@@ -340,7 +340,6 @@ def build_snapshots(features: pd.DataFrame, rounds: pd.DataFrame, horizons: list
         snap["range_so_far_bps"] = (snap["high_so_far"] / snap["low_so_far"] - 1.0) * 10_000
         snap["anchor_path_efficiency"] = safe_div(snap["abs_distance_from_anchor_bps"], snap["range_so_far_bps"], 0.0)
 
-        sign = snap["current_side"].replace(0, np.nan)
         snap["side_ffill"] = g["current_side"].transform(lambda s: s.replace(0, np.nan).ffill().fillna(0))
         snap["side_changed"] = g["side_ffill"].transform(lambda s: ((s != s.shift(1)) & (s.shift(1).fillna(0) != 0) & (s != 0)).astype(int))
         snap["recent_cross_count"] = g["side_changed"].cumsum()

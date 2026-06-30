@@ -35,7 +35,7 @@ from backfill_trade_features import download_day, load_aggtrades, _daterange as 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "beat_model.pkl")
-HORIZONS = (1, 3, 5, 7, 10, 15, 30)
+HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30
 NOISE_AUC = 0.55           # bettable floor (SPEC §6); below this on unseen test = no signal → not saved
 FEATURE_NAMES = ["ret_1", "ret_5", "ret_15", "rv_short", "rv_long", "variance_ratio",
                  "range_pos", "atr_norm", "mom_20", "hour_sin", "hour_cos"]

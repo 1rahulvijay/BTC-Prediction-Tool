@@ -37,33 +37,64 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 DB_PATH = os.environ.get("BTC_EXEC_DB") or os.path.join(DATA_DIR, "execution_layer.duckdb")
 MODEL_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
 GAMMA = "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=500&order=startDate&ascending=false"
-GAMMA_MARKET = "https://gamma-api.polymarket.com/markets?slug={slug}"
+GAMMA_MARKET = "https://gamma-api.polymarket.com/markets?closed=true&slug={slug}"
+GAMMA_SLUG = "https://gamma-api.polymarket.com/markets?slug={slug}"   # live (un-filtered) lookup by exact slug
 CLOB_BOOK = "https://clob.polymarket.com/book?token_id={tid}"
+CLOB_MARKET = "https://clob.polymarket.com/markets/{condition_id}"
 BINANCE = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+PYTH = "https://hermes.pyth.network/v2/updates/price/latest"
+PYTH_BTC_ID = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+HTTP = requests.Session()
+HTTP.headers.update({"User-Agent": "btc-polymarket-shadow-recorder/2.0"})
+ANCHOR_CAPTURE_MAX_LATE_SEC = 5.0
 
 
 # --------------------------------------------------------------------------- sources
 def get_btc():
+    """Return (price, source), preferring the settlement-oracle proxy used by the app."""
     try:
-        return float(requests.get(BINANCE, timeout=5).json()["price"])
+        data = HTTP.get(PYTH, params={"ids[]": PYTH_BTC_ID}, timeout=5).json()
+        price = data["parsed"][0]["price"]
+        return float(price["price"]) * (10 ** int(price["expo"])), "pyth"
+    except Exception:
+        try:
+            return float(HTTP.get(BINANCE, timeout=5).json()["price"]), "binance_fallback"
+        except Exception:
+            return None, "unavailable"
+
+
+def _market_tokens(market):
+    """Map Gamma token ids by outcome name instead of assuming array order."""
+    try:
+        outcomes = json.loads(market.get("outcomes", "[]") or "[]")
+        tokens = json.loads(market.get("clobTokenIds", "[]") or "[]")
+        if len(outcomes) != len(tokens):
+            return None
+        mapped = {str(outcome).strip().lower(): str(token)
+                  for outcome, token in zip(outcomes, tokens)}
+        if mapped.get("up") and mapped.get("down"):
+            return mapped["up"], mapped["down"]
     except Exception:
         return None
+    return None
 
 
 def discover_rounds():
     out = []
     try:
-        ev = requests.get(GAMMA, timeout=12).json()
+        ev = HTTP.get(GAMMA, timeout=12).json()
     except Exception:
-        return out
+        # Exact-slug discovery below is independent and must still run when the
+        # broad event listing is unavailable.
+        ev = []
     for e in ev:
         for m in e.get("markets", []):
             slug = m.get("slug", "") or ""
             if not (slug.startswith("btc-updown-5m") or slug.startswith("btc-updown-15m")):
                 continue
             try:
-                toks = json.loads(m.get("clobTokenIds", "[]") or "[]")
-                if len(toks) < 2:
+                toks = _market_tokens(m)
+                if not toks:
                     continue
                 anchor_ts = int(slug.split("-")[-1]); dur = 300 if "updown-5m" in slug else 900
                 out.append({"slug": slug, "condition_id": m.get("conditionId", ""),
@@ -71,12 +102,40 @@ def discover_rounds():
                             "end_ts": anchor_ts + dur, "dur": dur, "up": toks[0], "down": toks[1]})
             except Exception:
                 continue
+    # BUG FIX (2026-06-29): the Gamma list (order=startDate desc) surfaces only far-future pre-created
+    # rounds (~23h out), so the CURRENTLY-LIVE round (0<=elapsed<=dur) was never discovered and NO
+    # snapshots were ever written -> the whole mispricing dataset stayed empty. Slugs are deterministic,
+    # so fetch the live 5m + 15m round directly each cycle. (Settlement coverage still comes from the
+    # list path above.)
+    now = int(time.time())
+    have = {r["slug"] for r in out}
+    for dur in (300, 900):
+        current = (now // dur) * dur
+        # Pre-discover the next round so its anchor can be captured at the true open.
+        for anc in (current, current + dur):
+            slug = f"btc-updown-{dur // 60}m-{anc}"
+            if slug in have:
+                continue
+            try:
+                j = HTTP.get(GAMMA_SLUG.format(slug=slug), timeout=8).json()
+                if not j:
+                    continue
+                m = j[0]
+                toks = _market_tokens(m)
+                if not toks:
+                    continue
+                out.append({"slug": slug, "condition_id": m.get("conditionId", ""),
+                            "horizon": dur // 60, "anchor_ts": anc, "start_ts": anc,
+                            "end_ts": anc + dur, "dur": dur, "up": toks[0], "down": toks[1]})
+                have.add(slug)
+            except Exception:
+                continue
     return out
 
 
 def get_book(tid):
     try:
-        b = requests.get(CLOB_BOOK.format(tid=tid), timeout=6).json()
+        b = HTTP.get(CLOB_BOOK.format(tid=tid), timeout=6).json()
         bids = sorted(((float(x["price"]), float(x["size"])) for x in b.get("bids", [])), reverse=True)
         asks = sorted((float(x["price"]), float(x["size"])) for x in b.get("asks", []))
         if not bids or not asks:
@@ -90,16 +149,48 @@ def get_book(tid):
         return None
 
 
-def get_winner(slug):
+def _winner_from_tokens(tokens):
+    winners = [t for t in (tokens or []) if t.get("winner") is True]
+    if len(winners) != 1:
+        return None
+    outcome = str(winners[0].get("outcome", "")).strip().lower()
+    if outcome == "up":
+        return 1
+    if outcome == "down":
+        return 0
+    return None
+
+
+def get_winner(slug, condition_id=None):
+    """Return (settled_side, official_source), never a price-feed proxy.
+
+    Closed markets disappear from Gamma's default active-market query. The CLOB market
+    endpoint remains addressable by the persisted condition id and exposes an explicit
+    winner token, so it is the primary restart-safe settlement source.
+    """
+    if condition_id:
+        try:
+            market = HTTP.get(CLOB_MARKET.format(condition_id=condition_id), timeout=8).json()
+            winner = _winner_from_tokens(market.get("tokens")) if market.get("closed") else None
+            if winner is not None:
+                return winner, "polymarket_clob"
+        except Exception:
+            pass
     try:
-        j = requests.get(GAMMA_MARKET.format(slug=slug), timeout=8).json()
+        j = HTTP.get(GAMMA_MARKET.format(slug=slug), timeout=8).json()
         if j:
-            op = json.loads(j[0].get("outcomePrices", "[]") or "[]")
-            if len(op) == 2 and abs(float(op[0]) - float(op[1])) > 0.5:
-                return 1 if float(op[0]) > float(op[1]) else 0
+            market = j[0]
+            outcomes = json.loads(market.get("outcomes", "[]") or "[]")
+            prices = [float(x) for x in json.loads(market.get("outcomePrices", "[]") or "[]")]
+            if market.get("closed") and len(outcomes) == len(prices) == 2:
+                winning = int(np.argmax(prices))
+                if prices[winning] >= 0.99 and prices[1 - winning] <= 0.01:
+                    outcome = str(outcomes[winning]).strip().lower()
+                    if outcome in ("up", "down"):
+                        return (1 if outcome == "up" else 0), "polymarket_gamma"
     except Exception:
         pass
-    return None
+    return None, None
 
 
 # --------------------------------------------------------------------------- P(Hold)
@@ -141,40 +232,100 @@ COLS = ("ts slug condition_id horizon anchor_ts seconds_left seconds_elapsed anc
         "distance_pct distance_bps current_side vol_60s_pct model_version p_hold_cur p_hold_up p_hold_down "
         "decision_tier no_trade_reason up_bid up_ask up_mid up_spread up_top_ask_size up_d1 up_d2 up_d5 "
         "down_bid down_ask down_mid down_spread down_top_ask_size down_d1 down_d2 down_d5 "
-        "edge_up_1c edge_up_2c edge_up_3c edge_down_1c edge_down_2c edge_down_3c shadow_label").split()
+        "edge_up_1c edge_up_2c edge_up_3c edge_down_1c edge_down_2c edge_down_3c shadow_label "
+        "price_source").split()
 
 
-def init_db():
+def init_db(path=None):
     import duckdb
     try:
-        con = duckdb.connect(DB_PATH)
+        con = duckdb.connect(path or DB_PATH)
     except Exception as e:
         raise SystemExit(f"[recorder] cannot open {DB_PATH} ({e}). Set BTC_EXEC_DB to a free path "
                          f"(the live app or shadow_store may hold it).")
     con.execute("CREATE TABLE IF NOT EXISTS pm_round_snapshots(" + ", ".join(
         c + (" VARCHAR" if c in ("slug", "condition_id", "model_version", "decision_tier",
-                                 "no_trade_reason", "shadow_label") else " DOUBLE") for c in COLS) + ")")
+                                 "no_trade_reason", "shadow_label", "price_source") else " DOUBLE")
+        for c in COLS) + ")")
+    con.execute("ALTER TABLE pm_round_snapshots ADD COLUMN IF NOT EXISTS price_source VARCHAR")
     con.execute("""CREATE TABLE IF NOT EXISTS pm_round_meta(slug VARCHAR PRIMARY KEY, condition_id VARCHAR,
         horizon INT, anchor_ts BIGINT, start_ts BIGINT, end_ts BIGINT, up_token VARCHAR, down_token VARCHAR,
         discovered_ts DOUBLE)""")
     con.execute("""CREATE TABLE IF NOT EXISTS pm_round_settlements(slug VARCHAR PRIMARY KEY, horizon INT,
         anchor_ts BIGINT, anchor_price DOUBLE, expiry_btc DOUBLE, settled_side INT, up_win INT, down_win INT,
         resolution_source VARCHAR, resolved_at DOUBLE)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS pm_settlement_attempts(slug VARCHAR PRIMARY KEY,
+        attempts INT, last_attempt DOUBLE, last_error VARCHAR)""")
     return con
 
 
-def vol60(buf):
+def _snapshot_prices(con, slug):
+    first = con.execute(
+        "SELECT anchor_price FROM pm_round_snapshots WHERE slug=? AND anchor_price IS NOT NULL "
+        "ORDER BY ts LIMIT 1", [slug]).fetchone()
+    last = con.execute(
+        "SELECT btc_price FROM pm_round_snapshots WHERE slug=? AND btc_price IS NOT NULL "
+        "ORDER BY ts DESC LIMIT 1", [slug]).fetchone()
+    return (first[0] if first else None), (last[0] if last else None)
+
+
+def pending_settlement_count(con, now=None):
+    now = time.time() if now is None else float(now)
+    return int(con.execute("""
+        SELECT count(*) FROM pm_round_meta m
+        WHERE m.end_ts <= ? AND NOT EXISTS (
+            SELECT 1 FROM pm_round_settlements s WHERE s.slug=m.slug)
+    """, [now]).fetchone()[0])
+
+
+def resolve_pending_settlements(con, now=None, limit=50, retry_after=60.0, winner_fetcher=None):
+    """Resolve persisted expired rounds, including those discovered before a restart."""
+    now = time.time() if now is None else float(now)
+    fetcher = winner_fetcher or get_winner
+    rows = con.execute("""
+        SELECT m.slug, m.condition_id, m.horizon, m.anchor_ts
+        FROM pm_round_meta m
+        LEFT JOIN pm_settlement_attempts a USING(slug)
+        WHERE m.end_ts <= ?
+          AND NOT EXISTS (SELECT 1 FROM pm_round_settlements s WHERE s.slug=m.slug)
+          AND coalesce(a.last_attempt, 0) <= ?
+        ORDER BY m.end_ts
+        LIMIT ?
+    """, [now - 5.0, now - float(retry_after), int(limit)]).fetchall()
+    resolved = 0
+    for slug, condition_id, horizon, anchor_ts in rows:
+        side, source = fetcher(slug, condition_id)
+        if side not in (0, 1):
+            old = con.execute("SELECT attempts FROM pm_settlement_attempts WHERE slug=?", [slug]).fetchone()
+            con.execute("INSERT OR REPLACE INTO pm_settlement_attempts VALUES (?,?,?,?)",
+                        [slug, int(old[0] if old else 0) + 1, now, "official_result_pending"])
+            continue
+        anchor_price, expiry_btc = _snapshot_prices(con, slug)
+        con.execute("INSERT OR REPLACE INTO pm_round_settlements VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [slug, int(horizon), int(anchor_ts), anchor_price, expiry_btc, int(side),
+                     int(side == 1), int(side == 0), source, now])
+        con.execute("DELETE FROM pm_settlement_attempts WHERE slug=?", [slug])
+        resolved += 1
+    return {"attempted": len(rows), "resolved": resolved,
+            "remaining": pending_settlement_count(con, now)}
+
+
+def vol60(buf, reference_price=None):
+    """Mirror price_to_beat's P(Hold) feature: std(price over 60s)/anchor*100."""
     if len(buf) < 3:
         return 0.02
     pts = [p for t, p in buf if t >= buf[-1][0] - 60]
     if len(pts) < 3:
         return 0.02
-    px = np.array(pts)
-    return float(np.std(np.diff(px) / px[:-1] * 100.0)) or 0.02
+    px = np.asarray(pts, dtype=float)
+    ref = float(reference_price or px[-1])
+    if not np.isfinite(ref) or ref <= 0:
+        return 0.02
+    return float(np.std(px) / ref * 100.0) or 0.02
 
 
 # --------------------------------------------------------------------------- run
-def run(poll=1.5, discover=30.0, smoke=False):
+def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
     con = init_db()
     model = load_phold()
     mver = (model or {}).get("version", "unknown") if isinstance(model, dict) else "unknown"
@@ -182,12 +333,13 @@ def run(poll=1.5, discover=30.0, smoke=False):
     rounds = {}
     last_disc = 0.0
     print(f"[recorder] DB={DB_PATH}  model={'loaded:'+str(mver) if model else 'NONE'}  smoke={smoke}")
+    print(f"[recorder] persisted rounds={con.execute('SELECT count(*) FROM pm_round_meta').fetchone()[0]} "
+          f"pending_settlements={pending_settlement_count(con)}")
     while True:
         now = time.time()
-        btc = get_btc()
+        btc, price_source = get_btc()
         if btc:
             buf.append((now, btc))
-        v = vol60(buf)
         if now - last_disc > discover or smoke:
             for r in discover_rounds():
                 if r["slug"] not in rounds:
@@ -195,19 +347,31 @@ def run(poll=1.5, discover=30.0, smoke=False):
                     con.execute("INSERT OR REPLACE INTO pm_round_meta VALUES (?,?,?,?,?,?,?,?,?)",
                                 [r["slug"], r["condition_id"], r["horizon"], r["anchor_ts"], r["start_ts"],
                                  r["end_ts"], r["up"], r["down"], now])
+            settlement = resolve_pending_settlements(con, now=now, limit=settle_batch)
+            if settlement["attempted"] or settlement["remaining"]:
+                print(f"[settlement] attempted={settlement['attempted']} resolved={settlement['resolved']} "
+                      f"remaining={settlement['remaining']}")
             last_disc = now
             _export(con)
 
         n = 0
+        smoke_v = 0.02
         for slug, r in list(rounds.items()):
             elapsed = now - r["anchor_ts"]
-            if "anchor_price" not in r and elapsed >= 0 and btc:
+            if ("anchor_price" not in r and 0 <= elapsed <= ANCHOR_CAPTURE_MAX_LATE_SEC
+                    and btc):
                 r["anchor_price"] = btc
+            elif "anchor_price" not in r and elapsed > ANCHOR_CAPTURE_MAX_LATE_SEC:
+                # A current round discovered after its open has no trustworthy anchor.
+                # Skip that partial round instead of manufacturing distance/P(Hold).
+                r["anchor_missed"] = True
             if smoke and "anchor_price" not in r and btc:
                 r["anchor_price"] = btc
             if (0 <= elapsed <= r["dur"] or smoke) and btc and "anchor_price" in r:
                 ap = r["anchor_price"]; dist = (btc - ap) / ap * 100.0; side = 1 if dist >= 0 else 0
                 sl = max(r["end_ts"] - now, 0.0)
+                v = vol60(buf, ap)
+                smoke_v = v
                 pc = phold_current(model, abs(dist), min(sl, r["dur"]), v, r["horizon"])
                 pu = pc if side == 1 else (1 - pc if pc is not None else None)
                 pd = pc if side == 0 else (1 - pc if pc is not None else None)
@@ -222,25 +386,18 @@ def run(poll=1.5, discover=30.0, smoke=False):
                            btc, dist, dist * 100, side, v, mver, pc, pu, pd, tier, reason,
                            ub["bid"], ub["ask"], ub["mid"], ub["spread"], ub["top_ask_size"], ub["d1"], ub["d2"], ub["d5"],
                            dbk["bid"], dbk["ask"], dbk["mid"], dbk["spread"], dbk["top_ask_size"], dbk["d1"], dbk["d2"], dbk["d5"],
-                           eu[0], eu[1], eu[2], ed[0], ed[1], ed[2], lab]
-                    con.execute("INSERT INTO pm_round_snapshots VALUES (" + ",".join("?" * len(COLS)) + ")", row)
+                           eu[0], eu[1], eu[2], ed[0], ed[1], ed[2], lab, price_source]
+                    con.execute("INSERT INTO pm_round_snapshots (" + ",".join(COLS) + ") VALUES (" +
+                                ",".join("?" * len(COLS)) + ")", row)
                     n += 1
-            if elapsed > r["dur"] + 5 and not r.get("settled"):
-                wor = get_winner(slug)
-                wbtc = (1 if btc and btc > r.get("anchor_price", btc) else 0) if btc else None
-                sside = wor if wor is not None else wbtc
-                con.execute("INSERT OR REPLACE INTO pm_round_settlements VALUES (?,?,?,?,?,?,?,?,?,?)",
-                            [slug, r["horizon"], r["anchor_ts"], r.get("anchor_price"), btc, sside,
-                             (1 if sside == 1 else 0), (1 if sside == 0 else 0),
-                             "oracle" if wor is not None else "btc_proxy", now])
-                r["settled"] = True
-                if elapsed > r["dur"] + 3600:
-                    rounds.pop(slug, None)
+            if elapsed > r["dur"] + 3600:
+                rounds.pop(slug, None)
 
         if smoke:
             g = con.execute("SELECT count(*), round(avg(p_hold_cur),3), round(avg(up_ask),3), "
                             "count(*) FILTER(WHERE shadow_label!='NO_EDGE') FROM pm_round_snapshots").fetchone()
-            print(f"[recorder] smoke: rounds={len(rounds)} snaps_written={n} btc={btc} vol60={v:.4f}")
+            print(f"[recorder] smoke: rounds={len(rounds)} snaps_written={n} btc={btc} "
+                  f"price_source={price_source} vol60={smoke_v:.4f}")
             print(f"[recorder] pm_round_snapshots rows={g[0]} avg_p_hold={g[1]} avg_up_ask={g[2]} shadow_signals={g[3]}")
             con.close(); return
         time.sleep(poll)
@@ -257,6 +414,46 @@ def _export(con):
         con.execute(f"COPY pm_round_settlements TO '{_fwd(os.path.join(DATA_DIR, 'pm_export_settlements.parquet'))}' (FORMAT PARQUET)")
     except Exception:
         pass
+
+
+def settle_once(limit=1000):
+    con = init_db()
+    before = pending_settlement_count(con)
+    result = resolve_pending_settlements(con, limit=limit, retry_after=0.0)
+    _export(con)
+    total = con.execute("SELECT count(*) FROM pm_round_settlements").fetchone()[0]
+    con.close()
+    print(f"[settlement] backlog_before={before} attempted={result['attempted']} "
+          f"resolved={result['resolved']} remaining={result['remaining']} total={total}")
+    return result
+
+
+def selftest():
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), f"pm_recorder_selftest_{os.getpid()}.duckdb")
+    for suffix in ("", ".wal"):
+        try:
+            os.remove(tmp + suffix)
+        except FileNotFoundError:
+            pass
+    con = init_db(tmp)
+    now = 10_000.0
+    con.execute("INSERT INTO pm_round_meta VALUES (?,?,?,?,?,?,?,?,?)",
+                ["btc-updown-5m-test", "cond-test", 5, 9_000, 9_000, 9_300,
+                 "up-token", "down-token", 9_000])
+    assert _winner_from_tokens([{"outcome": "Up", "winner": True},
+                                {"outcome": "Down", "winner": False}]) == 1
+    assert _market_tokens({"outcomes": '["Down","Up"]',
+                           "clobTokenIds": '["down-id","up-id"]'}) == ("up-id", "down-id")
+    vb = deque([(0.0, 100.0), (1.0, 101.0), (2.0, 99.0)])
+    assert abs(vol60(vb, 100.0) - float(np.std([100.0, 101.0, 99.0]))) < 1e-12
+    fake = lambda slug, condition_id: (0, "polymarket_clob")
+    out = resolve_pending_settlements(con, now=now, limit=10, retry_after=0, winner_fetcher=fake)
+    row = con.execute("SELECT settled_side,resolution_source FROM pm_round_settlements").fetchone()
+    assert out["resolved"] == 1 and row == (0, "polymarket_clob"), (out, row)
+    con.close()
+    os.remove(tmp)
+    print("live_btc_updown_recorder self-test: PASS")
 
 
 def report():
@@ -301,11 +498,20 @@ def main():
     ap.add_argument("--discover", type=float, default=30.0)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--settle-once", action="store_true",
+                    help="resolve persisted expired rounds from official Polymarket outcomes, then exit")
+    ap.add_argument("--settle-limit", type=int, default=1000)
+    ap.add_argument("--settle-batch", type=int, default=50)
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
-    if a.report:
+    if a.selftest:
+        selftest()
+    elif a.report:
         report()
+    elif a.settle_once:
+        settle_once(limit=a.settle_limit)
     else:
-        run(poll=a.poll, discover=a.discover, smoke=a.smoke)
+        run(poll=a.poll, discover=a.discover, smoke=a.smoke, settle_batch=a.settle_batch)
 
 
 if __name__ == "__main__":

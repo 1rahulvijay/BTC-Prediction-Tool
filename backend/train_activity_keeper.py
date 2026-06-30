@@ -13,9 +13,8 @@ import numpy as np
 import pandas as pd
 
 from keeper_head_training import (
-    FEATURES, HORIZONS, TRAIN_DAYS_TAG, fit_binary_head, future_window,
-    model_summary, move_buckets_by_horizon, move_threshold_for,
-    move_thresholds_by_horizon,
+    BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, buckets_for_training,
+    fit_binary_head, future_window, model_summary,
 )
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -23,7 +22,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 )
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
 OUT = os.path.join(DATA_DIR, "saved_models", "activity_keeper_model.pkl")
-HEAD_VERSION = f"2026-06-18-activity-range-keeper4-horizons-buckets-iso-split-{TRAIN_DAYS_TAG}"
+HEAD_VERSION = f"2026-06-18-activity-range-keeper4-horizons-buckets-iso-split-{TRAIN_DAYS_TAG}-{BUCKET_TAG}"
 
 
 def _ensemble():
@@ -37,14 +36,18 @@ def main():
         return
 
     df = pd.read_parquet(MATRIX).replace([np.inf, -np.inf], np.nan)
-    df = df.dropna(subset=FEATURES + ["high", "low"]).copy()
+    df = df.dropna(subset=FEATURES + ["high", "low", "close"]).copy()
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
     X_all = df[FEATURES].values
+    buckets = buckets_for_training(close)   # shared p75/p90/p97 buckets (close-move based); env-overridable
 
     models = {}
     for h in HORIZONS:
-        threshold = move_threshold_for(h)
+        if h not in buckets:
+            continue
+        threshold = buckets[h][0]
         future_high = future_window(high, h, np.max)
         future_low = future_window(low, h, np.min)
         future_range = future_high - future_low
@@ -59,8 +62,8 @@ def main():
         "models": models,
         "features": FEATURES,
         "horizons": sorted(models),
-        "range_threshold_usd_by_horizon": move_thresholds_by_horizon(),
-        "move_buckets_usd_by_horizon": move_buckets_by_horizon(),
+        "range_threshold_usd_by_horizon": {h: v[0] for h, v in buckets.items()},
+        "move_buckets_usd_by_horizon": buckets,
         "version": HEAD_VERSION,
         "note": "P(active_range|keepers): future high-low range >= horizon meaningful bucket. Proxy for activity, not true volume.",
     }

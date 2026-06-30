@@ -12,7 +12,7 @@ from collections import deque, defaultdict
 logger = logging.getLogger(__name__)
 
 # All supported horizons
-ALL_HORIZONS = [1, 3, 5, 7, 10, 15, 30]
+ALL_HORIZONS = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30
 
 
 class PredictionVerifier:

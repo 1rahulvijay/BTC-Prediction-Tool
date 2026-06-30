@@ -37,7 +37,7 @@ def _phold(distance_pct, seconds_left, vol_60s_pct, horizon):
     if not os.path.exists(mp):
         return None
     m = joblib.load(mp)
-    feats, clf, iso = m.get("features"), m.get("clf"), m.get("iso")
+    feats, clf, iso = m.get("features"), m.get("clf"), m.get("iso")   # global iso (per-horizon = wash)
     if not feats or clf is None:
         return None
     out = []
@@ -55,8 +55,11 @@ def _phold(distance_pct, seconds_left, vol_60s_pct, horizon):
 
 def _served_phold(snaps):
     """SERVED keeper P(Hold) from analytics.persistence_snapshot (the EXACT value the card shows),
-    matched to each round snapshot by (horizon, nearest ts within 5s). List aligned to snaps, or None."""
+    matched to the latest same-horizon value at or before each quote (max age 5s).
+    Recorder timestamps are seconds while analytics timestamps are milliseconds; normalize
+    explicitly. Backward-only matching prevents future P(Hold) from leaking into an earlier quote."""
     import duckdb
+    import pandas as pd
     try:
         a = duckdb.connect(os.path.join(DATA, "analytics.duckdb"), read_only=True)
         ps = a.execute("SELECT horizon, ts, p_hold FROM persistence_snapshot "
@@ -66,111 +69,183 @@ def _served_phold(snaps):
         return None
     if len(ps) == 0:
         return None
-    out = []
-    for _, s in snaps.iterrows():
-        cand = ps[ps["horizon"] == s["horizon"]]
-        if len(cand) == 0:
-            out.append(None); continue
-        di = (cand["ts"] - s["ts"]).abs()
-        j = di.idxmin()
-        out.append(float(cand.loc[j, "p_hold"]) if di.loc[j] < 5000 else None)
-    return out
+    left = snaps[["horizon", "ts"]].copy()
+    left["horizon"] = left["horizon"].astype("int64")
+    left["_order"] = np.arange(len(left))
+    left["ts_ms"] = np.where(left["ts"].abs() < 1e11, left["ts"] * 1000.0, left["ts"])
+    right = ps[["horizon", "ts", "p_hold"]].copy().rename(columns={"p_hold": "served_p_hold"})
+    right["horizon"] = right["horizon"].astype("int64")
+    right["ts_ms"] = np.where(right["ts"].abs() < 1e11, right["ts"] * 1000.0, right["ts"])
+    merged = pd.merge_asof(
+        left.sort_values("ts_ms"),
+        right[["horizon", "ts_ms", "served_p_hold"]].sort_values("ts_ms"),
+        on="ts_ms",
+        by="horizon",
+        direction="backward",
+        tolerance=5000.0,
+    ).sort_values("_order")
+    return [float(v) if v is not None and np.isfinite(v) else None
+            for v in merged["served_p_hold"]]
 
 
-def _roi_table(edge, won, ask, label):
-    """ROI/hit-rate at each buffer over rows that pass edge>=buffer."""
-    print(f"\n  {label}: {len(edge)} (snapshot,quote) pairs with an outcome")
+def _first_signal_indices(edge, slugs, ts, buffer):
+    """Return the first executable signal per market that clears the buffer."""
+    candidates = np.flatnonzero(edge >= buffer)
+    if slugs is None or ts is None:
+        return candidates
+    ordered = sorted(candidates, key=lambda i: float(ts[i]))
+    seen = set()
+    keep = []
+    for i in ordered:
+        slug = str(slugs[i])
+        if slug not in seen:
+            seen.add(slug)
+            keep.append(i)
+    return np.asarray(keep, dtype=int)
+
+
+def _roi_table(edge, won, ask, label, slugs=None, ts=None):
+    """ROI/hit-rate at each buffer, allowing at most one position per round."""
+    print(f"\n  {label}: {len(edge)} eligible snapshots with an official outcome")
     print(f"    {'buffer':>7} {'n_trades':>9} {'win%':>7} {'avg_ROI':>9} {'total_ROI':>10}")
     for b in BUFFERS:
-        m = edge >= b
-        n = int(m.sum())
+        idx = _first_signal_indices(edge, slugs, ts, b)
+        n = len(idx)
         if n == 0:
             print(f"    {int(b*100):>6}c {'0':>9}  (none clear this buffer)"); continue
-        w = won[m].astype(bool); a = ask[m]
+        w = won[idx].astype(bool); a = ask[idx]
         roi = np.where(w, (1.0 - a) / np.maximum(a, 1e-6), -1.0)
         print(f"    {int(b*100):>6}c {n:>9} {w.mean()*100:>6.1f}% {roi.mean():>+9.3f} {roi.sum():>+10.2f}")
 
 
-def run():
+def _load_recorder_tables():
+    """Read DuckDB directly, or its periodic exports while the recorder owns the lock."""
     import duckdb
+    try:
+        con = duckdb.connect(os.path.join(DATA, "execution_layer.duckdb"), read_only=True)
+        snaps = con.execute("""SELECT ts,slug,condition_id,horizon,seconds_left,distance_pct,
+            current_side,vol_60s_pct,p_hold_cur,up_ask,down_ask FROM pm_round_snapshots""").df()
+        setts = con.execute("""SELECT slug,settled_side,up_win,resolution_source
+            FROM pm_round_settlements
+            WHERE resolution_source IN ('polymarket_clob','polymarket_gamma')""").df()
+        con.close()
+        return snaps, setts, "duckdb"
+    except Exception as db_error:
+        snap_path = os.path.join(DATA, "pm_export_snapshots.parquet")
+        sett_path = os.path.join(DATA, "pm_export_settlements.parquet")
+        if not (os.path.exists(snap_path) and os.path.exists(sett_path)):
+            raise RuntimeError(f"cannot read recorder DB or exports: {str(db_error)[:100]}")
+        con = duckdb.connect()
+        snaps = con.execute("""SELECT ts,slug,condition_id,horizon,seconds_left,distance_pct,
+            current_side,vol_60s_pct,p_hold_cur,up_ask,down_ask FROM read_parquet(?)""",
+                            [snap_path]).df()
+        setts = con.execute("""SELECT slug,settled_side,up_win,resolution_source
+            FROM read_parquet(?)
+            WHERE resolution_source IN ('polymarket_clob','polymarket_gamma')""",
+                            [sett_path]).df()
+        con.close()
+        return snaps, setts, "parquet_export"
+
+
+def run():
     # --- recorder: round snapshots + settlements ---
     try:
-        e = duckdb.connect(os.path.join(DATA, "execution_layer.duckdb"), read_only=True)
+        snaps, setts, recorder_source = _load_recorder_tables()
     except Exception as ex:
-        sys.exit(f"cannot read execution_layer.duckdb: {str(ex)[:80]}")
-    snaps = e.execute("SELECT ts, slug, condition_id, horizon, seconds_left, distance_pct, "
-                      "current_side, vol_60s_pct FROM pm_round_snapshots").df()
-    setts = e.execute("SELECT slug, settled_side, up_win FROM pm_round_settlements").df()
-    e.close()
+        sys.exit(str(ex))
     print(f"recorder: {len(snaps)} snapshots over {snaps['slug'].nunique() if len(snaps) else 0} rounds | "
-          f"{len(setts)} settled")
+          f"{len(setts)} official settlements | source={recorder_source}")
     if len(snaps) == 0:
         sys.exit("no round snapshots yet — let live_btc_updown_recorder.py run, then rerun.")
+    # Before 2026-06-30, exact-slug discovery could first see an already-open round
+    # and silently use that late price as its anchor. Such rounds start more than five
+    # seconds after the timestamp encoded in the slug with exactly zero distance.
+    # Remove the entire round; it cannot support an honest P(Hold)/ROI test.
+    first = snaps.sort_values("ts").groupby("slug", as_index=False).first()
+    invalid_slugs = set()
+    for _, row in first.iterrows():
+        try:
+            anchor_ts = int(str(row["slug"]).rsplit("-", 1)[1])
+            quote_ts = float(row["ts"])
+            if quote_ts > 1e11:
+                quote_ts /= 1000.0
+            if quote_ts - anchor_ts > 5.0 and abs(float(row["distance_pct"])) < 1e-12:
+                invalid_slugs.add(str(row["slug"]))
+        except Exception:
+            continue
+    if invalid_slugs:
+        before = len(snaps)
+        snaps = snaps[~snaps["slug"].astype(str).isin(invalid_slugs)].reset_index(drop=True)
+        print(f"anchor-quality filter: removed {len(invalid_slugs)} late-anchored rounds / "
+              f"{before - len(snaps)} snapshots")
+    if len(snaps) == 0:
+        sys.exit("no trustworthy near-open anchors remain; keep the fixed recorder running.")
+    print("market asks: exact UP/DOWN asks recorded in each shadow snapshot")
 
-    # --- market quotes (ask) joined by condition_id + nearest time ---
-    try:
-        a = duckdb.connect(os.path.join(DATA, "analytics.duckdb"), read_only=True)
-        mk = a.execute("SELECT market_id, condition_id, yes_token, no_token FROM polymarket_markets").df()
-        qt = a.execute("SELECT market_id, timestamp, yes_ask, no_ask, spread FROM polymarket_quotes").df()
-        a.close()
-        print(f"market: {len(qt)} quotes over {qt['market_id'].nunique() if len(qt) else 0} markets")
-    except Exception as ex:
-        print(f"(quotes unavailable: {str(ex)[:60]}) — reporting P(Hold) coverage only")
-        qt = mk = None
-
-    # --- P(Hold) per snapshot --- #4 PARITY: prefer the SERVED keeper P(Hold) (persistence_snapshot,
-    # the EXACT value the card shows), matched by (horizon, nearest ts within 5s). Fall back to a base
-    # recompute only if no served value is near. This makes the edge use the same P(Hold) as the UI.
+    # Prefer the actual keeper P(Hold) served by the app. The recorder's same-tick value
+    # is the smaller base model (no keeper inputs), so it is a fallback rather than the
+    # probability whose market mispricing this project is trying to test.
+    recorded = [float(x) if x is not None and np.isfinite(x) else None for x in snaps["p_hold_cur"]]
     served = _served_phold(snaps)
     base = _phold(snaps["distance_pct"], snaps["seconds_left"], snaps["vol_60s_pct"], snaps["horizon"])
-    if served is None and base is None:
-        sys.exit("no served P(Hold) and persistence_model.pkl missing — can't compute P(Hold).")
-    snaps["p_hold"] = [s if s is not None else (b if base is not None else None)
-                       for s, b in zip(served or [None] * len(snaps), base or [None] * len(snaps))]
-    n_served = sum(1 for s in (served or []) if s is not None)
-    print(f"P(Hold) source: {n_served} served (keeper, card-parity) + "
-          f"{int(snaps['p_hold'].notna().sum()) - n_served} base-recompute fallback")
+    if not any(x is not None for x in recorded) and served is None and base is None:
+        sys.exit("no recorded/served P(Hold) and persistence_model.pkl missing — can't compute P(Hold).")
+    served_values = served or [None] * len(snaps)
+    base_values = base or [None] * len(snaps)
+    chosen, source = [], []
+    for s, r, b in zip(served_values, recorded, base_values):
+        if s is not None:
+            chosen.append(s); source.append("served_keeper")
+        elif r is not None:
+            chosen.append(r); source.append("recorded_base")
+        elif b is not None:
+            chosen.append(b); source.append("recomputed_base")
+        else:
+            chosen.append(None); source.append("missing")
+    snaps["p_hold"] = chosen
+    snaps["p_hold_source"] = source
+    counts = snaps["p_hold_source"].value_counts().to_dict()
+    print("P(Hold) source: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     valid = snaps["p_hold"].notna()
     print(f"P(Hold) computed for {int(valid.sum())}/{len(snaps)} snapshots "
           f"(mean {snaps.loc[valid,'p_hold'].mean():.3f})" if valid.any() else "P(Hold) none")
 
-    if qt is None or len(qt) == 0 or len(setts) == 0:
-        print("\nINSUFFICIENT DATA for ROI: " + ("no settled rounds yet" if len(setts) == 0 else "no quotes")
-              + ". The recorder + this tool are READY — rerun once rounds resolve with market quotes.")
+    if len(setts) == 0:
+        print("\nINSUFFICIENT DATA for ROI: no official settled rounds yet. "
+              "Run the recorder (or --settle-once), then rerun.")
         print("Need ~500-1000 resolved rounds to judge the edge (per the strategy).")
         return
 
-    # join: snapshot.condition_id -> market_id -> nearest quote in time; ask of the CURRENT side
-    import pandas as pd
-    cond2mkt = dict(zip(mk["condition_id"], mk["market_id"]))
+    # The quote and P(Hold) came from the same recorder tick. No cross-process nearest-time join.
     rows = []
     sett = dict(zip(setts["slug"], setts["settled_side"]))
     for _, s in snaps[valid].iterrows():
         if s["slug"] not in sett:
             continue
-        mid = cond2mkt.get(s["condition_id"])
-        if mid is None:
-            continue
-        mq = qt[qt["market_id"] == mid]
-        if len(mq) == 0:
-            continue
-        nearest = mq.iloc[(mq["timestamp"] - s["ts"]).abs().argmin()]
-        side = s["current_side"]
-        ask = float(nearest["yes_ask"] if side == "UP" else nearest["no_ask"])
+        raw_side = s["current_side"]
+        side = 1 if raw_side in (1, 1.0, "UP", "up") else 0
+        ask = float(s["up_ask"] if side == 1 else s["down_ask"])
         if not (0.0 < ask < 1.0):
             continue
-        won = 1 if s["current_side"] == sett[s["slug"]] else 0
-        rows.append((float(s["p_hold"]) - ask, won, ask))
+        won = int(side == int(sett[s["slug"]]))
+        rows.append((float(s["p_hold"]) - ask, won, ask, str(s["slug"]), float(s["ts"])))
     if not rows:
         print("\nNo (snapshot↔quote↔outcome) joins yet — rerun as data accrues.")
         return
     edge = np.array([r[0] for r in rows]); won = np.array([r[1] for r in rows]); ask = np.array([r[2] for r in rows])
-    _roi_table(edge, won, ask, "EDGE = P(Hold) - ask")
-    print("\nREAD: positive avg_ROI at >=3c over hundreds of rounds = a real mispricing edge. "
-          "All buffers <=0 = Polymarket prices it efficiently (ceiling holds).")
+    slugs = np.array([r[3] for r in rows]); ts = np.array([r[4] for r in rows])
+    _roi_table(edge, won, ask, "EDGE = best available P(Hold) - recorded ask", slugs=slugs, ts=ts)
+    trade_counts = {b: len(_first_signal_indices(edge, slugs, ts, b)) for b in BUFFERS}
+    if max(trade_counts.values(), default=0) < 500:
+        print("\nINSUFFICIENT DATA: fewer than 500 one-entry-per-round signals. "
+              "Displayed ROI is diagnostic only and cannot prove or reject an edge.")
+    else:
+        print("\nREAD: positive avg_ROI at >=3c over hundreds of rounds is a candidate mispricing edge; "
+              "flat/negative recent and horizon-specific results reject it.")
 
 
 def selftest():
+    global DATA
     # _roi_table math: a planted +edge winner set yields positive ROI; a losing set negative.
     edge = np.array([0.05, 0.04, 0.06, 0.02, 0.01])
     won = np.array([1, 1, 1, 0, 0]); ask = np.array([0.85, 0.88, 0.84, 0.90, 0.95])
@@ -179,7 +254,27 @@ def selftest():
     # at buffer 3c, only the 3 winners (edge .05/.04/.06) clear -> all won -> positive
     m = edge >= 0.03
     assert won[m].mean() == 1.0, "buffer filter wrong"
-    print(f"analyze_pm_recorder self-test: ALL PASS (ROI math + buffer filter; sample avg ROI "
+    dedup = _first_signal_indices(np.array([.05, .06, .04]),
+                                  np.array(["round-a", "round-a", "round-b"]),
+                                  np.array([1.0, 2.0, 1.5]), .03)
+    assert dedup.tolist() == [0, 2], f"one-entry-per-round filter wrong: {dedup}"
+    # Recorder snapshots use epoch seconds; analytics uses epoch milliseconds. Confirm
+    # the join normalizes units and never selects a future probability.
+    import tempfile
+    import duckdb
+    import pandas as pd
+    old_data = DATA
+    with tempfile.TemporaryDirectory(prefix="pm_analyzer_selftest_") as tmp:
+        DATA = tmp
+        con = duckdb.connect(os.path.join(tmp, "analytics.duckdb"))
+        con.execute("CREATE TABLE persistence_snapshot(horizon INT, ts BIGINT, p_hold DOUBLE)")
+        con.execute("INSERT INTO persistence_snapshot VALUES "
+                    "(5,1780000000000,0.70),(5,1780000003000,0.90)")
+        con.close()
+        matched = _served_phold(pd.DataFrame({"horizon": [5], "ts": [1780000002.0]}))
+        assert matched == [0.70], f"backward ms-normalized P(Hold) join wrong: {matched}"
+    DATA = old_data
+    print(f"analyze_pm_recorder self-test: ALL PASS (ROI math + buffer + one-entry-per-round; sample avg ROI "
           f"@3c={np.where(won[m].astype(bool),(1-ask[m])/ask[m],-1.0).mean():+.3f})")
 
 

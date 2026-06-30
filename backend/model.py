@@ -42,11 +42,44 @@ QUANTILE_MAX_ITER = _env_int("BTC_QUANTILE_MAX_ITER", 45)
 LINEAR_MAX_SAMPLES = _env_int("BTC_LINEAR_MAX_SAMPLES", 12000)
 # (SGD_MAX_ITER removed in v6 — SGD retired from the roster)
 STACKER_MAX_SAMPLES = _env_int("BTC_STACKER_MAX_SAMPLES", 6000)
+# Memory-safe cap for each direction-model regime bucket. A value of 0 uses every row.
+# Long-window laptop runs set this explicitly and sample across the full history plus a
+# recent tail; this avoids materializing a multi-gigabyte GLOBAL advanced-index copy.
+DIRECTION_MAX_SAMPLES = _env_int("BTC_DIRECTION_MAX_SAMPLES", 0)
 # Cap booster training threads so a background retrain does NOT saturate every core —
 # leave headroom for the asyncio event loop (live price + charts + WebSocket feeds) so the
 # UI doesn't freeze mid-train. Default: all cores minus 4 (min 2). Env: BTC_TRAIN_THREADS.
 TRAIN_THREADS = max(2, _env_int("BTC_TRAIN_THREADS", max(2, (os.cpu_count() or 4) - 4)))
 DL_ARCH = os.getenv("BTC_DL_ARCH", "TCN").upper()
+
+
+def _representative_training_indices(indices: np.ndarray, max_samples: int) -> np.ndarray:
+    """Cover the full window while reserving half the budget for the recent tail."""
+    indices = np.asarray(indices, dtype=np.int64)
+    if not max_samples or len(indices) <= max_samples:
+        return indices
+    recent_n = max(1, max_samples // 2)
+    history_n = max_samples - recent_n
+    recent = indices[-recent_n:]
+    older = indices[:-recent_n]
+    if history_n <= 0 or len(older) == 0:
+        return recent
+    positions = np.linspace(0, len(older) - 1, num=history_n, dtype=np.int64)
+    return np.unique(np.concatenate([older[positions], recent]))
+
+
+def _atomic_joblib_dump(value, path: str) -> None:
+    """Write one model artifact atomically so an interrupted save keeps the prior file."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        joblib.dump(value, tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _resolve_model_feature_schema() -> tuple[list[int], list[str], str]:
@@ -314,7 +347,7 @@ MODEL_DIR = os.path.join(
 # the inference-time prior-division retirement is keyed on it.
 MODEL_ARCH_VERSION = (
     f"2026-06-15-v11-pruned{MODEL_NUM_FEATURES}-{MODEL_FEATURE_SCHEMA_HASH}-"
-    f"7horizon-30m-rf-persist-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
+    f"2horizon-5-15-rf-persist-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
 )
 
 CASCADE_MIN_ACCURACY = 0.62
@@ -332,13 +365,13 @@ class CascadeMonitor:
         self.window = window
         self.min_samples = min_samples
 
+        # Pruned to {5,15} 2026-06-21. Only valid chain is 15m<-5m (cascade_map={15:5}); the TARGET
+        # 15m is tracked here (compares 15m accuracy WITH vs WITHOUT the 5m bias). (was 3m+5m.)
         self.cascade_on_results = {
-            '3m': deque(maxlen=window),
-            '5m': deque(maxlen=window)
+            '15m': deque(maxlen=window)
         }
         self.cascade_off_results = {
-            '3m': deque(maxlen=window),
-            '5m': deque(maxlen=window)
+            '15m': deque(maxlen=window)
         }
         self.cascade_enabled = True
         self.avg_impact = 0.0
@@ -356,7 +389,7 @@ class CascadeMonitor:
         report = {}
         net_impact_scores = []
 
-        for horizon in ['3m', '5m']:
+        for horizon in ['15m']:   # cascade target of {15:5} (was 3m+5m); pruned 2026-06-21
             on_results = self.cascade_on_results[horizon]
             off_results = self.cascade_off_results[horizon]
 
@@ -382,8 +415,8 @@ class CascadeMonitor:
             }
             net_impact_scores.append(impact)
 
-        if len(net_impact_scores) == 2:
-            avg_impact = sum(net_impact_scores) / 2
+        if net_impact_scores:   # was hardcoded ==2 (3m+5m); now horizon-count-agnostic (5m-only)
+            avg_impact = sum(net_impact_scores) / len(net_impact_scores)
             self.avg_impact = avg_impact
             if avg_impact < -0.02:
                 self.cascade_enabled = False
@@ -425,7 +458,7 @@ class MultiModelEnsemble:
 
     def __init__(self, horizons=None, config=None):
         if horizons is None:
-            self.horizons = [1, 3, 5, 7, 10, 15, 30]
+            self.horizons = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
         else:
             self.horizons = horizons
             
@@ -520,6 +553,8 @@ class MultiModelEnsemble:
         self.model_feature_indices = np.asarray(MODEL_FEATURE_INDICES, dtype=int)
         self.model_feature_names = list(MODEL_FEATURE_NAMES)
         self.model_num_features = int(MODEL_NUM_FEATURES)
+        self.train_split_frac = 0.8
+        self.train_split_idx = 0
         self.model_feature_schema_hash = MODEL_FEATURE_SCHEMA_HASH
         self.model_feature_pruning = MODEL_FEATURE_PRUNING
         self.feature_reference_names = list(self.model_feature_names)
@@ -593,6 +628,8 @@ class MultiModelEnsemble:
             _split_frac = 0.8
         _split_frac = min(max(_split_frac, 0.5), 0.98)
         split_idx = int(n_samples * _split_frac)
+        self.train_split_frac = _split_frac
+        self.train_split_idx = split_idx
         logger.info("[TRAIN] split_frac=%.3f (holdout=%s rows for conformal+backtest)",
                     _split_frac, n_samples - split_idx)
         logger.info(
@@ -627,8 +664,10 @@ class MultiModelEnsemble:
                                "legacy threshold clustering.", len(regime_labels), split_idx)
             for i in range(split_idx):
                 regime_indices["GLOBAL"].append(i)
-                adx_val = X[i, -1, 22]
-                vol_val = X[i, -1, 50]
+                adx_idx = self.model_feature_names.index("adx_norm")
+                vol_idx = self.model_feature_names.index("ewma_vol")
+                adx_val = X_model[i, -1, adx_idx]
+                vol_val = X_model[i, -1, vol_idx]
                 if vol_val > 0.6:
                     regime_indices["VOLATILE"].append(i)
                 elif adx_val > 0.25:
@@ -653,7 +692,8 @@ class MultiModelEnsemble:
             y_classes_plan = np.argmax(Y[h], axis=1)
             y_train_plan = y_classes_plan[:split_idx]
             for reg in self.regimes:
-                reg_idx_plan = np.array(regime_indices[reg])
+                reg_idx_plan = _representative_training_indices(
+                    np.array(regime_indices[reg]), DIRECTION_MAX_SAMPLES)
                 if reg != "GLOBAL" and len(reg_idx_plan) < 1000:
                     continue
                 if len(reg_idx_plan) == 0:
@@ -692,7 +732,8 @@ class MultiModelEnsemble:
             ", ".join(direction_models),
         )
         logger.info(
-            "[TRAIN] Target-size mode: move_scope=%s quantile_scope=%s move_max_samples=%s quantile_max_samples=%s quantile_max_iter=%s",
+            "[TRAIN] Target-size mode: direction_max_samples=%s move_scope=%s quantile_scope=%s move_max_samples=%s quantile_max_samples=%s quantile_max_iter=%s",
+            DIRECTION_MAX_SAMPLES,
             MOVE_SIZE_REGIME_SCOPE,
             QUANTILE_REGIME_SCOPE,
             MOVE_SIZE_MAX_SAMPLES,
@@ -734,15 +775,11 @@ class MultiModelEnsemble:
             )
 
         def regression_slice(reg_idx: np.ndarray, max_samples: int):
-            X_reg = X_flat[reg_idx]
-            sw_reg = recency_w[reg_idx]
-            if max_samples and len(X_reg) > max_samples:
-                keep = np.arange(len(X_reg))[-max_samples:]
-                X_reg = X_reg[keep]
-                sw_reg = sw_reg[keep]
-                target_idx = reg_idx[keep]
-            else:
-                target_idx = reg_idx
+            target_idx = np.asarray(reg_idx, dtype=np.int64)
+            if max_samples and len(target_idx) > max_samples:
+                target_idx = target_idx[-max_samples:]
+            X_reg = X_flat[target_idx]
+            sw_reg = recency_w[target_idx]
             return X_reg, sw_reg, target_idx
 
         def recent_classification_slice(X_local: np.ndarray, y_local: np.ndarray, sw_local: np.ndarray, max_samples: int):
@@ -778,10 +815,11 @@ class MultiModelEnsemble:
                         h, [round(float(w), 3) for w in class_w])
 
             for reg in self.regimes:
-                reg_idx = np.array(regime_indices[reg])
-                if reg != "GLOBAL" and len(reg_idx) < 1000:
-                    logger.info(f"Skipping {reg} for {h}m (only {len(reg_idx)} samples). Will fallback to GLOBAL.")
+                reg_idx_all = np.array(regime_indices[reg])
+                if reg != "GLOBAL" and len(reg_idx_all) < 1000:
+                    logger.info(f"Skipping {reg} for {h}m (only {len(reg_idx_all)} samples). Will fallback to GLOBAL.")
                     continue
+                reg_idx = _representative_training_indices(reg_idx_all, DIRECTION_MAX_SAMPLES)
 
                 X_train_h = X_flat[reg_idx]
                 y_train_h = y_train[reg_idx]
@@ -978,15 +1016,8 @@ class MultiModelEnsemble:
                             raise SkipComponent()
                         # Regressors use the ORIGINAL (non-augmented) regime rows —
                         # the classifier class-balancing dummies must not skew move size.
-                        X_reg = X_flat[reg_idx]
-                        sw_reg = recency_w[reg_idx]
-                        if MOVE_SIZE_MAX_SAMPLES and len(X_reg) > MOVE_SIZE_MAX_SAMPLES:
-                            keep = np.arange(len(X_reg))[-MOVE_SIZE_MAX_SAMPLES:]
-                            X_reg = X_reg[keep]
-                            sw_reg = sw_reg[keep]
-                            target_idx = reg_idx[keep]
-                        else:
-                            target_idx = reg_idx
+                        X_reg, sw_reg, target_idx = regression_slice(
+                            reg_idx_all, MOVE_SIZE_MAX_SAMPLES)
                         mag_target = np.asarray(Ymag[h][:split_idx])[target_idx]
                         _t0 = log_component_start(h, reg, "MoveSizeRegressorFast", len(X_reg))
                         reg_mag = HistGradientBoostingRegressor(
@@ -1230,7 +1261,8 @@ class MultiModelEnsemble:
         self._build_feature_reference(X_model)
         self.is_trained = True
         self.train_count += 1
-        self._save_models()
+        if not self._save_models():
+            raise RuntimeError("Ensemble trained in memory but the saved bundle was not committed")
         logger.info(
             "[TRAIN] Ensemble training finished in %.1fs. Completed/attempted components=%s/%s",
             time.time() - train_started,
@@ -1884,7 +1916,9 @@ class MultiModelEnsemble:
         # ──── Hierarchical Cascade Bias ────
         cascade_applied = False
         if cascade_data and acc_cache:
-            cascade_map = {3: 1, 5: 3, 7: 5, 10: 7, 15: 10}
+            # Pruned to {5,15} 2026-06-21: the only valid hierarchical chain is 15m<-5m.
+            # (was {3:1,5:3,7:5,10:7,15:10}; those lowers 1/3/7/10 are gone -> cascade never fired.)
+            cascade_map = {15: 5}
             if h in cascade_map:
                 h_lower = cascade_map[h]
                 lower_pred = cascade_data.get(h_lower)
@@ -1964,10 +1998,25 @@ class MultiModelEnsemble:
         prob_neutral = self.smoothed_probs[h]["neutral"]
 
         # ──── Raw direction determination ────
-        if prob_up > prob_down and prob_up > prob_neutral + 0.02:
+        # Symmetric up-vs-down dead-zone (BTC_DIR_MARGIN). A bare `prob_up > prob_down`
+        # fired a directional call on ANY offset, so a ~1-2% systematic UP bias in the
+        # calibrated ensemble probs became an 81% UP-lean skew on 5m (probe_direction_tilt
+        # 2026-06-23) -- the +0.02 margin only guarded NEUTRAL, never UP-vs-DOWN. Requiring
+        # a real margin BETWEEN the two directional classes sends marginal/coin-flip calls to
+        # NEUTRAL instead of defaulting to the slightly-higher side -> balanced, honest leans
+        # + more abstention (on-brand). Symmetric, so no DOWN favoritism; 15m is already
+        # balanced and barely affected. Serving-only; frozen weights untouched; reversible.
+        # Default 0.0 == prior behavior; set BTC_DIR_MARGIN (~0.015) to neutralize the tilt,
+        # then re-check with probe_direction_tilt before trusting it (measure-before-gate).
+        # Per-horizon first (BTC_DIR_MARGIN_5 / _15), then global BTC_DIR_MARGIN, then 0.0.
+        # The tilt is 5m-SPECIFIC (15m leans are already balanced, tilt -1.7pt), so we target
+        # 5m and leave the balanced + more-tradeable 15m untouched by default.
+        _dir_margin = float(os.environ.get(f"BTC_DIR_MARGIN_{h}",
+                                           os.environ.get("BTC_DIR_MARGIN", "0.0")) or 0.0)
+        if prob_up > prob_down + _dir_margin and prob_up > prob_neutral + 0.02:
             raw_direction = "UP"
             conf = prob_up
-        elif prob_down > prob_up and prob_down > prob_neutral + 0.02:
+        elif prob_down > prob_up + _dir_margin and prob_down > prob_neutral + 0.02:
             raw_direction = "DOWN"
             conf = prob_down
         else:
@@ -2030,13 +2079,8 @@ class MultiModelEnsemble:
                 pass
 
         # ──── Signal strength ────
+        # (Removed the h==1 noise-threshold bump 2026-06-22: 1m was pruned, so h is never 1 — dead branch.)
         threshold = self.confidence_threshold
-        if h == 1:
-            # 1m is very noisy. Increase threshold and require stronger agreement
-            threshold = max(0.48, self.confidence_threshold + 0.06)
-            if agreement < max(agreement_threshold, 0.67):
-                direction = "NEUTRAL"
-                conf = prob_neutral
 
         if conf < threshold:
             signal = "NEUTRAL"
@@ -2466,9 +2510,9 @@ class MultiModelEnsemble:
         }
 
     def _save_models(self):
-        """Persist trained models to disk."""
+        """Persist trained models atomically. Return True only after the version commits."""
         if not HAS_JOBLIB:
-            return
+            return False
         try:
             os.makedirs(MODEL_DIR, exist_ok=True)
             saved_count = 0
@@ -2479,13 +2523,13 @@ class MultiModelEnsemble:
                     store = self.models_by_regime[reg][name]
                     for h in self.horizons:
                         if h in store:
-                            joblib.dump(store[h], os.path.join(reg_dir, f"{name}_{h}.pkl"))
+                            _atomic_joblib_dump(store[h], os.path.join(reg_dir, f"{name}_{h}.pkl"))
                             saved_count += 1
-            joblib.dump(self.model_accuracies, os.path.join(MODEL_DIR, "accuracies.pkl"))
-            joblib.dump(self.conformal_residuals, os.path.join(MODEL_DIR, "conformal_residuals.pkl"))
-            joblib.dump(self.feature_reference, os.path.join(MODEL_DIR, "feature_reference.pkl"))
-            joblib.dump(self.feature_reference_names, os.path.join(MODEL_DIR, "feature_reference_names.pkl"))
-            joblib.dump(
+            _atomic_joblib_dump(self.model_accuracies, os.path.join(MODEL_DIR, "accuracies.pkl"))
+            _atomic_joblib_dump(self.conformal_residuals, os.path.join(MODEL_DIR, "conformal_residuals.pkl"))
+            _atomic_joblib_dump(self.feature_reference, os.path.join(MODEL_DIR, "feature_reference.pkl"))
+            _atomic_joblib_dump(self.feature_reference_names, os.path.join(MODEL_DIR, "feature_reference_names.pkl"))
+            _atomic_joblib_dump(
                 {
                     "mode": self.model_feature_pruning,
                     "raw_count": NUM_FEATURES,
@@ -2495,13 +2539,17 @@ class MultiModelEnsemble:
                 },
                 os.path.join(MODEL_DIR, "model_feature_schema.pkl"),
             )
-            joblib.dump(self.move_size_stats, os.path.join(MODEL_DIR, "move_size_stats.pkl"))
-            joblib.dump(self.class_priors, os.path.join(MODEL_DIR, "class_priors.pkl"))
-            joblib.dump(self.stackers_by_regime, os.path.join(MODEL_DIR, "stackers.pkl"))
-            joblib.dump(MODEL_ARCH_VERSION, os.path.join(MODEL_DIR, "architecture_version.pkl"))
+            _atomic_joblib_dump(self.move_size_stats, os.path.join(MODEL_DIR, "move_size_stats.pkl"))
+            _atomic_joblib_dump(self.class_priors, os.path.join(MODEL_DIR, "class_priors.pkl"))
+            _atomic_joblib_dump(self.stackers_by_regime, os.path.join(MODEL_DIR, "stackers.pkl"))
+            # Commit the architecture marker last. Launch preflight never sees the new
+            # version before every component and metadata artifact has been replaced.
+            _atomic_joblib_dump(MODEL_ARCH_VERSION, os.path.join(MODEL_DIR, "architecture_version.pkl"))
             logger.info("[MODEL SAVE] Saved %s model components to %s", saved_count, MODEL_DIR)
+            return True
         except Exception as e:
             logger.error(f"Failed to save models: {e}")
+            return False
 
     def load_models(self) -> bool:
         """Load persisted models from disk. Returns True if successful."""

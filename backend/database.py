@@ -63,7 +63,7 @@ def init_db():
         _ANCHOR_CONN = duckdb.connect(DB_PATH)
     conn = _connect()
     # For each timeframe, create a table if it doesn't exist
-    timeframes = [1, 3, 5, 7, 10, 15, 30]
+    timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     for tf in timeframes:
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS predictions_{tf}m (
@@ -582,7 +582,25 @@ def init_db():
     # in-memory recent-rounds buffer.
     for _ddl in ["ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
                  "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE",
-                 "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'"]:
+                 "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'",
+                 # price anchor: 'pyth' (Polymarket settlement) or 'binance' (the live mirror).
+                 # Lets both trackers persist to one table; readers filter by source.
+                 "ADD COLUMN source VARCHAR DEFAULT 'pyth'",
+                 # Path forecaster (Layer-2) plan, frozen once at open. SHADOW LOG ONLY — recorded
+                 # alongside the outcome so the path head can be verified on LIVE rounds (not just the
+                 # backtest matrix) and re-scored forward. Does NOT gate any live decision. The lift
+                 # probe (PATH_CHAMPION_LIFT) reconstructed `play` from the matrix because these were
+                 # never stored; logging them gives a real out-of-sample holdout in ~3-4 weeks.
+                 "ADD COLUMN path_play VARCHAR DEFAULT ''",
+                 "ADD COLUMN path_style VARCHAR DEFAULT ''",
+                 "ADD COLUMN path_p_move_50 DOUBLE",
+                 "ADD COLUMN path_p_move_100 DOUBLE",
+                 "ADD COLUMN path_p_roundtrip DOUBLE",
+                 "ADD COLUMN path_p_early DOUBLE",
+                 "ADD COLUMN path_p_touch_asym DOUBLE",
+                 "ADD COLUMN path_pred_high DOUBLE",
+                 "ADD COLUMN path_pred_low DOUBLE",
+                 "ADD COLUMN path_net_move DOUBLE"]:
         try:
             conn.execute(f"ALTER TABLE price_to_beat {_ddl}")
         except Exception:
@@ -1226,17 +1244,44 @@ def log_price_to_beat(entry: dict):
             INSERT OR REPLACE INTO price_to_beat
             (id, timestamp, horizon, price_to_beat, our_direction, signal, conviction,
              actionable, kronos_direction, target_price, verify_at, lean_source,
-             confluence_grade, regime, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+             confluence_grade, regime, source, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
         """, (
             entry["id"], entry["timestamp"], entry["horizon"], entry["price_to_beat"],
             entry["our_direction"], entry.get("signal", ""), float(entry.get("conviction", 0.0)),
             bool(entry.get("actionable", False)), entry.get("kronos_direction", ""),
             entry.get("target_price"), entry["verify_at"], entry.get("lean_source", ""),
-            grade, entry.get("regime", "UNKNOWN"),
+            grade, entry.get("regime", "UNKNOWN"), entry.get("source", "pyth"),
         ))
     except Exception as e:
         print(f"DuckDB PriceToBeat Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_path_plan(round_id: str, plan: dict):
+    """SHADOW LOG: persist the frozen Layer-2 path plan onto an existing price_to_beat row.
+    Pure record-forward — written once when the plan freezes at window open, never gates a decision.
+    Lets the path head be verified on live rounds and gives PATH_CHAMPION_LIFT a real forward holdout."""
+    if not plan:
+        return
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            UPDATE price_to_beat SET
+              path_play=?, path_style=?, path_p_move_50=?, path_p_move_100=?, path_p_roundtrip=?,
+              path_p_early=?, path_p_touch_asym=?, path_pred_high=?, path_pred_low=?, path_net_move=?
+            WHERE id=?
+        """, (
+            str(plan.get("play", "")), str(plan.get("style", "")),
+            plan.get("p_move_50"), plan.get("p_move_100"), plan.get("p_roundtrip"),
+            plan.get("p_early"), plan.get("p_touch_asym"), plan.get("pred_high"),
+            plan.get("pred_low"), plan.get("net_move_usd"), round_id,
+        ))
+    except Exception as e:
+        print(f"DuckDB PathPlan Update Error: {e}")
     finally:
         if conn:
             conn.close()
@@ -1478,6 +1523,7 @@ def fetch_price_to_beat_history(horizon: int, limit: int = 500) -> list:
             SELECT CASE WHEN hit THEN 1 ELSE 0 END, COALESCE(lean_source, '')
             FROM price_to_beat
             WHERE horizon = ? AND resolved AND our_direction IN ('UP','DOWN')
+              AND COALESCE(source, 'pyth') = 'pyth'
               AND timestamp >= {int(min_ts)}
             ORDER BY timestamp DESC LIMIT {int(limit)}
         """, (horizon,)).fetchall()
@@ -1546,6 +1592,7 @@ def fetch_price_to_beat_recent(limit: int = 20) -> list:
                    COALESCE(late_entry, FALSE) AS late_entry
             FROM price_to_beat
             WHERE resolved AND our_direction IN ('UP','DOWN')
+              AND COALESCE(source, 'pyth') = 'pyth'
               AND timestamp >= {int(min_ts)}
             ORDER BY timestamp DESC LIMIT {int(limit)}
         """).fetchall()
@@ -1570,7 +1617,7 @@ def fetch_price_to_beat_recent(limit: int = 20) -> list:
 
 def fetch_action_log(limit: int = 50) -> list:
     """Union recent predictions across all horizons for the UI action feed."""
-    timeframes = [1, 3, 5, 7, 10, 15, 30]
+    timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     selects = []
     for tf in timeframes:
         # Push the ORDER BY/LIMIT into each per-table subquery so DuckDB only reads
@@ -1709,7 +1756,7 @@ def fetch_ab_variant_profit_stats() -> dict:
     directional PnL after the same cost floor used by labels.
     """
     out = {}
-    timeframes = [1, 3, 5, 7, 10, 15, 30]
+    timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     union_sql = " UNION ALL ".join([
         f"""
         SELECT id, horizon, binance_price, actual_move, resolved
@@ -1892,7 +1939,7 @@ def fetch_unresolved_predictions(max_age_hours: int = 48) -> list[dict]:
     conn = None
     try:
         conn = _connect()
-        for h in [1, 3, 5, 7, 10, 15, 30]:
+        for h in [5, 15]:   # pruned 2026-06-21: dropped 3/7/10/30
             df = conn.execute(f"""
                 SELECT id, horizon, signal, raw_direction, skip_reason, confidence,
                        target_price, expected_move, binance_price, timestamp, verify_at,
@@ -1942,7 +1989,7 @@ def get_last_prediction_timestamps() -> dict[int, int]:
     conn = None
     try:
         conn = _connect()
-        for h in [1, 3, 5, 7, 10, 15, 30]:
+        for h in [5, 15]:   # pruned 2026-06-21: dropped 3/7/10/30
             ts = conn.execute(f"SELECT MAX(timestamp) FROM predictions_{h}m").fetchone()[0]
             if ts is not None:
                 out[h] = int(ts)

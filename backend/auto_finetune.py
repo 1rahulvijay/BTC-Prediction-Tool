@@ -14,7 +14,7 @@ Payload = RECALIBRATION, not accuracy: with `--with-backfill` it appends new day
 recalibrate on the newer recent slice (the conformal cqr / isotonic that actually drift with vol).
 
 Usage:
-  python backend/auto_finetune.py                    # refit the 3 heads on existing data
+  python backend/auto_finetune.py                    # refit the 4 heads on existing data
   python backend/auto_finetune.py --with-backfill --days 90   # append new days, then refit (nightly)
   python backend/auto_finetune.py --dry-run          # show the plan, run nothing
 """
@@ -27,17 +27,26 @@ import time
 BACKEND = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
+# The matrix + cheap heads recalibrate on the SAME window as the main retrain, so every head stays
+# consistent (operator choice 2026-06-23). Defaults to 360d. The scheduled task does NOT set
+# BTC_HISTORICAL_DAYS, so without this explicit window the matrix step silently fell back to
+# build_research_matrix's 60d default and recalibrated the band/selectivity/P(Hold) on 60d while the
+# main model trained on 360d -- the bug this fixes. (The task's --days flag only sizes the incremental
+# backfill append; it never reached the matrix step, which has supports_days=False.)
+FULL_DAYS = int(os.environ.get("BTC_HISTORICAL_DAYS") or 360)
+
 # (label, script-relative-to-backend, extra-args, supports_--auto/--days)
 BACKFILL = [
     ("backfill trade-features", "backfill_trade_features.py", ["--auto"], True),
     ("backfill persistence", "build_persistence_dataset.py", ["--auto"], True),
     ("backfill cross-venue", "build_crossvenue_flow.py", ["--auto"], True),
-    ("rebuild research matrix", "build_research_matrix.py", [], False),
+    ("rebuild research matrix", "build_research_matrix.py", ["--days", str(FULL_DAYS)], False),
 ]
 REFIT = [
     ("signed-quantile band (recalibrate cqr)", "train_signed_quantiles.py", [], False),
     ("selectivity ensemble", os.path.join("decision", "train_selectivity_models.py"), [], False),
     ("persistence P(Hold)", "train_persistence_model.py", [], False),
+    ("path forecaster (high/low band + touch)", "train_path_forecaster.py", [], False),
 ]
 
 
@@ -77,13 +86,14 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     print(f"AUTO-FINETUNE {time.strftime('%Y-%m-%d %H:%M:%S')} - cheap-head refit (recalibration payload)")
+    print(f"  recalibration window = {FULL_DAYS}d (matrix + cheap heads match the main retrain).")
     print("  direction ensemble NOT touched (6h FREEZE=0 job; at the ceiling). Live app hot-reloads pkls <=30s.")
     steps = (BACKFILL if a.with_backfill else []) + REFIT
     if a.dry_run:
         for label, script, extra, sd in steps:
             d = f" --days {a.days}" if (sd and a.with_backfill) else ""
             print(f"  would run: {label}  ->  {script} {' '.join(extra)}{d}")
-        return
+        return 0
     ok = run = 0
     for label, script, extra, sd in steps:
         res = _run(label, script, extra, sd, a.days)
@@ -92,12 +102,13 @@ def main():
             ok += int(bool(res))
     print(f"\nDONE: {ok}/{run} steps succeeded. Heads refreshed -> live app hot-reloads within 30s "
           "(no restart). Recalibration keeps the band/P(Hold) honest; accuracy is unchanged by design.")
+    return 0 if run > 0 and ok == run else 1
 
 
 def selftest():
     # dry-run plan builds without running anything; step scripts resolve to real paths or SKIP.
     steps = BACKFILL + REFIT
-    assert len(REFIT) == 3 and len(BACKFILL) == 4
+    assert len(REFIT) == 4 and len(BACKFILL) == 4
     present = [s for _, s, _, _ in steps if os.path.exists(os.path.join(BACKEND, s))]
     assert os.path.exists(os.path.join(BACKEND, "train_signed_quantiles.py")), "missing band trainer"
     assert os.path.exists(os.path.join(BACKEND, "decision", "train_selectivity_models.py")), "missing selectivity trainer"
@@ -108,4 +119,4 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
     else:
-        main()
+        sys.exit(main())

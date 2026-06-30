@@ -25,10 +25,19 @@ from collections import deque
 
 import numpy as np
 
+import os
+
 import database
 import decision_champion
 
 logger = logging.getLogger(__name__)
+
+# Throttle the per-tick SPECIALIST-head inference (big-move / big-drop / directional / activity).
+# Those 4-model ensembles run on slow vol keepers (rv_15m/30m/compression/shock) and barely change
+# second-to-second, but recomputing them every tick for every horizon × both trackers was the bulk
+# of the price-to-beat CPU and blocked the asyncio event loop (→ frozen live price, laggy Pyth).
+# Recompute at most this often PER ROUND; P(hold) (time-sensitive) + champion stay per-tick.
+_HEADS_THROTTLE_MS = max(0, int(float(os.environ.get("BTC_PTB_HEADS_THROTTLE_SEC", "4")) * 1000))
 
 # ── A1 / T3 persistence model (P(hold)) — separate head, lazy + crash-safe ──────────
 # Calibrated P(side-currently-ahead holds to close | abs_distance, seconds_left, vol,
@@ -180,6 +189,126 @@ def _load_activity_keeper_model():
     except Exception as _e:
         logger.debug(f"activity keeper model load skipped: {_e}")
     return _ACTIVITY_MODEL
+
+
+_PATH_FORECASTER = None
+_PATH_MODEL_MTIME = -2.0
+_PATH_MODEL_CHECKED = 0.0
+_PATH_MODEL_ERROR = ""
+_PATH_MODEL_VERSION = "2026-06-30-path-v3-usd-early"   # informational; the loader gates on threshold_units, not exact version
+
+
+def _load_path_forecaster():
+    """Intra-window PATH head (Layer 2): quantile high/low band + conformal + touch odds, or None.
+    Served on the SAME parity-proven keepers as big-move (rv_15m/rv_30m/rv_60m/compression_ratio/
+    shock_magnitude). A SEPARATE head -- never merged into the frozen direction ensemble."""
+    global _PATH_FORECASTER, _PATH_MODEL_MTIME, _PATH_MODEL_CHECKED, _PATH_MODEL_ERROR
+    import time
+    now = time.time()
+    if _PATH_MODEL_CHECKED and now - _PATH_MODEL_CHECKED < 30.0:
+        return _PATH_FORECASTER
+    _PATH_MODEL_CHECKED = now
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "path_forecaster.pkl")
+        mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+        if mt == _PATH_MODEL_MTIME:
+            return _PATH_FORECASTER
+        if mt < 0:
+            _PATH_MODEL_MTIME = mt
+            _PATH_MODEL_ERROR = "missing"
+            return _PATH_FORECASTER
+        loaded = joblib.load(path)
+        if loaded.get("threshold_units") != "usd":   # accept any usd-barriers bundle (v2/v3); units is the real safety guard
+            _PATH_MODEL_MTIME = mt
+            _PATH_MODEL_ERROR = "incompatible path-forecaster schema"
+            logger.warning("Path forecaster ignored: saved schema is stale; run train_path_forecaster.py.")
+            return _PATH_FORECASTER
+        _PATH_FORECASTER = loaded
+        _PATH_MODEL_MTIME = mt
+        _PATH_MODEL_ERROR = ""
+        _m5 = (_PATH_FORECASTER.get("horizons") or {}).get(5, {}).get("metrics", {})
+        logger.info(f"Path forecaster head (re)loaded: features={_PATH_FORECASTER.get('features')}, "
+                    f"5m touch_auc={_m5.get('touch_auc')}")
+    except Exception as _e:
+        _PATH_MODEL_ERROR = str(_e)
+        logger.warning(f"Path forecaster reload failed; keeping prior model: {_e}")
+    return _PATH_FORECASTER
+
+
+def _predict_path_plan(bundle, horizon, keepers, price):
+    """STABLE intra-window trade plan from live keepers: ENSEMBLE high/low band + touch / round-trip
+    odds + net-drift + chop/trend style. Pure numpy; crash-safe at the call site. Once per window."""
+    hz = (bundle.get("horizons") or {}).get(horizon) or (bundle.get("horizons") or {}).get(5)
+    if not hz or bundle.get("threshold_units") != "usd":
+        return None
+    values = [float(keepers[f]) for f in bundle["features"]]
+    if not all(np.isfinite(v) for v in values) or not np.isfinite(price) or price <= 0:
+        return None
+    x = np.array([values], dtype=float)
+    _epred = lambda models: float(np.mean([m.predict(x)[0] for m in models]))
+    _eproba = lambda models: float(np.mean([m.predict_proba(x)[:, 1][0] for m in models]))
+    up50 = _epred(hz["qhi"][0.5]); dn50 = _epred(hz["qlo"][0.5])
+    up_lo = _epred(hz["qhi"][0.25]) - hz["conformal"]["up"]
+    up_hi = _epred(hz["qhi"][0.75]) + hz["conformal"]["up"]
+    dn_lo = _epred(hz["qlo"][0.25]) - hz["conformal"]["dn"]
+    dn_hi = _epred(hz["qlo"][0.75]) + hz["conformal"]["dn"]
+    _bps = lambda v: price * v / 1e4
+
+    def _p_move(dollars):
+        lvl = min(bundle["touch_usd"], key=lambda L: abs(float(L) - float(dollars)))
+        t = hz["touch"][lvl]
+        return float(t["iso"].transform([_eproba(t["models"])])[0])
+
+    _rt, _asym, _nm = hz.get("roundtrip"), hz.get("touch_asym"), hz.get("net_mag")
+    p_rt = float(_rt["iso"].transform([_eproba(_rt["models"])])[0]) if _rt else None
+    p_asym = float(_asym["iso"].transform([_eproba(_asym["models"])])[0]) if _asym else None
+    net_mag = _bps(_epred(_nm["models"])) if _nm else None
+    _te = hz.get("touch_early")   # v3+ only; backward-compatible (None on the v2 bundle)
+    p_early = float(_te["iso"].transform([_eproba(_te["models"])])[0]) if _te else None
+    p_move_50 = _p_move(50.0)
+    style = None
+    play = "WATCH"   # composed live engine: SKIP / FADE-SETUP / RIDE / WATCH
+    if p_rt is not None:
+        rt_base = (_rt or {}).get("base", 0.25) or 0.25
+        move50 = hz["touch"][min(bundle["touch_usd"], key=lambda L: abs(float(L) - 50.0))]
+        move_base = move50.get("base", 0.5) or 0.5
+        if p_move_50 < move_base * 0.8:
+            style = "quiet"
+        elif p_rt >= rt_base * 1.25:
+            style = "two_sided"
+        elif p_move_50 >= move_base * 1.1 and p_rt <= rt_base * 0.75:
+            style = "one_sided"
+        else:
+            style = "mixed"
+        # Composed live play (validated engine): fade the early extreme in active chop, ride trends, skip quiet.
+        if style == "quiet":
+            play = "SKIP"                                   # no room, no fade
+        elif style == "two_sided" and (p_early or 0.0) >= 0.5:
+            play = "FADE-SETUP"                             # active chop + early touch likely -> fade the extreme
+        elif style == "one_sided":
+            play = "RIDE"                                   # trend -> ride, don't fade
+        else:
+            play = "WATCH"                                  # mixed -> wait for the touch
+    return {
+        "pred_high": round(price + _bps(up50)),
+        "pred_low": round(price + _bps(dn50)),
+        "high_band": [round(price + _bps(up_lo)), round(price + _bps(up_hi))],
+        "low_band": [round(price + _bps(dn_lo)), round(price + _bps(dn_hi))],
+        "pred_range_usd": round(_bps(up50 - dn50)),
+        "p_move_50": round(p_move_50, 3),
+        "p_move_100": round(_p_move(100.0), 3),
+        "p_roundtrip": round(p_rt, 3) if p_rt is not None else None,
+        "p_touch_asym": round(p_asym, 3) if p_asym is not None else None,
+        "net_move_usd": round(net_mag) if net_mag is not None else None,
+        "p_early": round(p_early, 3) if p_early is not None else None,
+        "style": style,
+        "play": play,
+        "threshold_units": "usd",
+    }
 
 
 def _select_keeper_config(bundle: dict, model_key: str = None, horizon: int = None):
@@ -347,17 +476,20 @@ def _hms(ms: int) -> str:
 
 
 class PriceToBeatTracker:
-    def __init__(self, horizons=(5, 15), neutral_band=0.0, persist=True):  # 0.0 = strict up/down (Polymarket mirror)
+    def __init__(self, horizons=(5, 15), neutral_band=0.0, persist=True, source="pyth"):  # 0.0 = strict up/down (Polymarket mirror)
         # neutral_band = 0.0 makes resolution STRICT (any close above the open = UP, below
         # = DOWN), mirroring Polymarket's BTC up/down markets — where even a +$50 move on
         # $63k (0.08%) is a clear UP, not "stayed near reference". The cost-floored band
         # belongs on the trade-decision side, not on this market-outcome mirror.
         self.horizons = list(horizons)
         self.neutral_band = neutral_band
-        # persist=False → in-memory only (a SECONDARY tracker, e.g. the Binance-priced
-        # mirror, must NOT write to the shared `price_to_beat` table: it reuses the same
-        # `ptb_{h}m_{win_start}` ids as the Pyth tracker and would collide/corrupt rows).
+        # persist=True → write rounds to the shared `price_to_beat` table. A SECONDARY tracker
+        # (e.g. the Binance-priced mirror) is disambiguated by `source` + a source-prefixed round
+        # id, so it persists alongside the Pyth rows without id collision. Pyth-only auxiliary
+        # recorders (persistence/champion snapshots) stay gated on `source == "pyth"` below, and the
+        # boot rehydration filters source='pyth', so the mirror never poisons the Pyth model's data.
         self.persist = persist
+        self.source = source
         self.pending: list[dict] = []
         self.history = {h: deque(maxlen=500) for h in self.horizons}
         self.recent_rounds = deque(maxlen=250)        # resolved rounds for the UI feed
@@ -470,7 +602,8 @@ class PriceToBeatTracker:
                 if late_ms > self.LATE_MS:
                     anchor = self._price_at_boundary(win_start, klines, ref_price)
                 entry = {
-                    "id": f"ptb_{h}m_{win_start}",
+                    "id": f"ptb_{'' if self.source == 'pyth' else self.source + '_'}{h}m_{win_start}",
+                    "source": self.source,
                     "timestamp": win_start,
                     "horizon": h,
                     "price_to_beat": round(anchor, 2),
@@ -518,67 +651,11 @@ class PriceToBeatTracker:
 
         self._resolve(now_ms, ref_price, klines)
 
-    def _refresh_live(self, rnd: dict, now_ms: int, ref_price: float, p: dict, win_end: int):
-        """Attach live intra-window state + hold/exit advice to an open round."""
-        ptb = rnd.get("price_to_beat") or 0.0
-        cur_move = round(ref_price - ptb, 2)
-        cur_pos = self._direction(ref_price, ptb)          # where it stands RIGHT NOW (strict)
-        # Model's CURRENT lean — must use the SAME _bet_lean rule that opened the bet
-        # (two-way prob fallback). Using rawDirection here while the bet used _bet_lean made
-        # the advice see "lean faded to NEUTRAL" on nearly every tick (rawDirection is usually
-        # NEUTRAL at 5-15m) and wrongly push LOCK-IN/EXIT while the model still favored the side.
-        live_lean = self._bet_lean(p)
-        live_exp = p.get("expectedMove")                   # model's expected move (magnitude)
-        secs_left = max(0, int((win_end - now_ms) // 1000))
-        rnd["current_price"] = round(ref_price, 2)
-        rnd["current_move"] = cur_move                     # signed $ vs price-to-beat
-        rnd["current_position"] = cur_pos                  # UP/DOWN/NEUTRAL right now
-        rnd["seconds_left"] = secs_left
-        rnd["regime"] = p.get("regime", rnd.get("regime", "UNKNOWN"))
-        rnd["live_lean"] = live_lean
-        rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
-        # ── A1 / T3 P(hold): calibrated prob the side price is CURRENTLY ahead on holds to
-        # close. Mirrors the offline label (pos==actual) and feature recipe EXACTLY:
-        # abs_distance_pct, seconds_left, vol_60s_pct (trailing-60s std/anchor*100), horizon,
-        # dist_vol_ratio. Crash-safe — any failure leaves p_hold None and the card + the ⚡
-        # late-entry gate fall back to the pre-existing heuristic. Separate frozen head.
-        p_hold = None
-        rnd["vol_60s_pct"] = None
-        try:
-            mdl = _load_persistence_model()
-            if mdl and ptb > 0 and secs_left > 0:
-                cutoff = now_ms - 60_000
-                seg = [px for (t, px) in self._px_buf if t >= cutoff]
-                if len(seg) > 2:
-                    vol_60s_pct = float(np.std(seg) / ptb * 100.0)
-                    rnd["vol_60s_pct"] = round(vol_60s_pct, 5)   # persisted in the A1 snapshot
-                    abs_dist_pct = abs(cur_move) / ptb * 100.0
-                    dist_vol_ratio = abs_dist_pct / (vol_60s_pct + 1e-6)
-                    fvals = {
-                        "abs_distance_pct": abs_dist_pct,
-                        "seconds_left": float(secs_left),
-                        "vol_60s_pct": vol_60s_pct,
-                        "horizon": float(rnd.get("horizon", 5) or 5),
-                        "dist_vol_ratio": dist_vol_ratio,
-                    }
-                    # Keeper model (validated +0.019 AUC on the late T3 region): use it when the
-                    # live volatility keepers are available this tick; else fall back to the base
-                    # 5-feature model — never breaks if keepers/keeper-model absent.
-                    _feats, _clf, _iso, _src = mdl["features"], mdl["clf"], mdl["iso"], "base"
-                    _kp = self._last_keepers
-                    _kf = ("rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude")
-                    if (mdl.get("clf_keeper") is not None and _kp
-                            and all(k in _kp and _kp[k] is not None for k in _kf)):
-                        fvals.update({k: float(_kp[k]) for k in _kf})
-                        _feats, _clf, _iso, _src = (mdl["features_keeper"], mdl["clf_keeper"],
-                                                    mdl["iso_keeper"], "keeper")
-                    feats = [[fvals[k] for k in _feats]]
-                    raw = _clf.predict_proba(feats)[:, 1]
-                    p_hold = float(_iso.predict(raw)[0])
-                    rnd["p_hold_source"] = _src
-        except Exception as _pe:
-            logger.debug(f"P(hold) compute skipped: {_pe}")
-        rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
+    def _compute_specialist_heads(self, rnd: dict):
+        """Score the THROTTLED specialist heads (big-move/drop/directional/activity) onto an open
+        round. Called from _refresh_live at most every _HEADS_THROTTLE_MS. Pure keeper inference on
+        self._last_keepers + rnd['horizon']; each head is crash-safe. P(hold) is intentionally NOT
+        here — it stays per-tick in _refresh_live because it is time-sensitive (seconds_left)."""
         # P(big_move) — servable keeper head (timing/tradability; rank-calibrated tiers, not a
         # calibrated probability). Uses ONLY the 4 parity-proven keepers, so it never needs new
         # live features. Crash-safe: any failure leaves both fields None and the card hides it.
@@ -605,6 +682,35 @@ class PriceToBeatTracker:
                                             else "moderate" if _bs >= _t["t1"] else "quiet")
         except Exception as _bme:
             logger.debug(f"big-move compute skipped: {_bme}")
+        # Intra-window PATH plan (Layer-2 keeper head): a STABLE high/low band + touch odds for
+        # Polymarket early-exit. Computed ONCE per window here (throttled), NOT per-tick, on the
+        # same parity-proven keepers. Crash-safe: any failure leaves trade_plan None and the card hides.
+        # Freeze the path plan after its first successful open-window computation. The
+        # surrounding specialist heads refresh every few seconds, but recomputing this
+        # forecast with later keepers while still anchoring it to the opening price would
+        # mix timestamps and turn a stable plan into a moving target.
+        if rnd.get("trade_plan") is None and not rnd.get("ref_captured_late_ms"):
+            try:
+                _pf = _load_path_forecaster()
+                _kp = self._last_keepers
+                _hh = int(rnd.get("horizon", 5) or 5)
+                _ref = rnd.get("price_to_beat")
+                if _pf and _kp and _ref and all(_kp.get(k) is not None for k in _pf.get("features", [])):
+                    _plan = _predict_path_plan(_pf, _hh, _kp, float(_ref))
+                    if _plan:
+                        _plan["generated_at_ms"] = int(rnd.get("_heads_ts") or 0)
+                        rnd["trade_plan"] = _plan
+                        # SHADOW LOG (record-forward, no decision change): persist the frozen plan
+                        # onto this round's price_to_beat row so the path head can be verified on
+                        # LIVE rounds and the lift probe gets a real out-of-sample holdout. Once only.
+                        if self.persist and not rnd.get("_plan_logged"):
+                            try:
+                                database.log_path_plan(rnd.get("id"), _plan)
+                                rnd["_plan_logged"] = True
+                            except Exception as _ple:
+                                logger.debug(f"path-plan log failed: {_ple}")
+            except Exception as _tpe:
+                logger.debug(f"trade-plan compute skipped: {_tpe}")
         # P(big_drop) — downside path-risk head (parity-safe keepers; gated AUC 0.751 / top-5% 63.5%).
         # A RISK/WARNING head, NOT a trade trigger: HIGH = avoid-long / flag a DOWN-side setup.
         rnd["p_big_drop"] = None
@@ -664,6 +770,81 @@ class PriceToBeatTracker:
                                             else "moderate" if _as >= _at["t1"] else "quiet")
         except Exception as _ae:
             logger.debug(f"activity keeper compute skipped: {_ae}")
+
+    def _refresh_live(self, rnd: dict, now_ms: int, ref_price: float, p: dict, win_end: int):
+        """Attach live intra-window state + hold/exit advice to an open round."""
+        ptb = rnd.get("price_to_beat") or 0.0
+        cur_move = round(ref_price - ptb, 2)
+        cur_pos = self._direction(ref_price, ptb)          # where it stands RIGHT NOW (strict)
+        # Model's CURRENT lean — must use the SAME _bet_lean rule that opened the bet
+        # (two-way prob fallback). Using rawDirection here while the bet used _bet_lean made
+        # the advice see "lean faded to NEUTRAL" on nearly every tick (rawDirection is usually
+        # NEUTRAL at 5-15m) and wrongly push LOCK-IN/EXIT while the model still favored the side.
+        live_lean = self._bet_lean(p)
+        live_exp = p.get("expectedMove")                   # model's expected move (magnitude)
+        secs_left = max(0, int((win_end - now_ms) // 1000))
+        rnd["current_price"] = round(ref_price, 2)
+        rnd["current_move"] = cur_move                     # signed $ vs price-to-beat
+        rnd["current_position"] = cur_pos                  # UP/DOWN/NEUTRAL right now
+        rnd["seconds_left"] = secs_left
+        rnd["regime"] = p.get("regime", rnd.get("regime", "UNKNOWN"))
+        rnd["live_lean"] = live_lean
+        rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
+        # ── A1 / T3 P(hold): calibrated prob the side price is CURRENTLY ahead on holds to
+        # close. Mirrors the offline label (pos==actual) and feature recipe EXACTLY:
+        # abs_distance_pct, seconds_left, vol_60s_pct (trailing-60s std/anchor*100), horizon,
+        # dist_vol_ratio. Crash-safe — any failure leaves p_hold None and the card + the ⚡
+        # late-entry gate fall back to the pre-existing heuristic. Separate frozen head.
+        p_hold = None
+        rnd["vol_60s_pct"] = None
+        try:
+            mdl = _load_persistence_model()
+            if mdl and ptb > 0 and secs_left > 0:
+                cutoff = now_ms - 60_000
+                seg = [px for (t, px) in self._px_buf if t >= cutoff]
+                if len(seg) > 2:
+                    vol_60s_pct = float(np.std(seg) / ptb * 100.0)
+                    rnd["vol_60s_pct"] = round(vol_60s_pct, 5)   # persisted in the A1 snapshot
+                    abs_dist_pct = abs(cur_move) / ptb * 100.0
+                    dist_vol_ratio = abs_dist_pct / (vol_60s_pct + 1e-6)
+                    fvals = {
+                        "abs_distance_pct": abs_dist_pct,
+                        "seconds_left": float(secs_left),
+                        "vol_60s_pct": vol_60s_pct,
+                        "horizon": float(rnd.get("horizon", 5) or 5),
+                        "dist_vol_ratio": dist_vol_ratio,
+                    }
+                    # Keeper model (validated +0.019 AUC on the late T3 region): use it when the
+                    # live volatility keepers are available this tick; else fall back to the base
+                    # 5-feature model — never breaks if keepers/keeper-model absent.
+                    _feats, _clf, _iso, _src = mdl["features"], mdl["clf"], mdl["iso"], "base"
+                    _kp = self._last_keepers
+                    _kf = ("rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude")
+                    if (mdl.get("clf_keeper") is not None and _kp
+                            and all(k in _kp and _kp[k] is not None for k in _kf)):
+                        fvals.update({k: float(_kp[k]) for k in _kf})
+                        _feats, _clf, _iso, _src = (mdl["features_keeper"], mdl["clf_keeper"],
+                                                    mdl["iso_keeper"], "keeper")
+                    feats = [[fvals[k] for k in _feats]]
+                    raw = _clf.predict_proba(feats)[:, 1]
+                    # GLOBAL isotonic: per-horizon iso was MEASURED a wash offline and slightly worse on
+                    # 5m/15m (train_persistence_model diagnostic) -> the global mapping is already well
+                    # calibrated per-horizon; live 1m drift is a train/serve gap, cured by retraining on
+                    # fresher data, not a mapping swap. (bundle still carries iso_by_horizon for diagnostics.)
+                    p_hold = float(_iso.predict(raw)[0])
+                    rnd["p_hold_source"] = _src
+        except Exception as _pe:
+            logger.debug(f"P(hold) compute skipped: {_pe}")
+        rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
+        # ── Specialist heads (big-move / big-drop / directional / activity): THROTTLED. Their
+        # 4-model ensembles are the bulk of the per-tick CPU but barely move second-to-second, so
+        # recompute at most every _HEADS_THROTTLE_MS PER ROUND (last values stay on rnd between).
+        # This keeps the asyncio event loop free so the live price stays realtime. P(hold) above +
+        # the band/champion below stay per-tick. First tick of a round always computes (ts is None).
+        if (rnd.get("_heads_ts") is None
+                or (now_ms - int(rnd.get("_heads_ts") or 0)) >= _HEADS_THROTTLE_MS):
+            rnd["_heads_ts"] = now_ms
+            self._compute_specialist_heads(rnd)
         # Magnitude FORECAST for the Polymarket card: the model's directional move-size
         # regressor (conformal low/median/high band) projected onto a close estimate vs
         # the price-to-beat. Lets the bettor see "expected drop/rise of ~$X" and whether
@@ -714,7 +895,7 @@ class PriceToBeatTracker:
         rnd["path_outlook"] = self._path_outlook(
             cur_move, cur_pos, live_lean, p, rnd.get("lean_source"), rnd.get("p_hold"))
         rnd["advice"] = self._advice(rnd.get("our_direction", "NEUTRAL"),
-                                     cur_pos, live_lean, secs_left, cur_move)
+                                     cur_pos, live_lean, secs_left, cur_move, rnd.get("p_hold"))
         # COHERENCE override (operator-caught, 2026-06-12): when the path outlook says
         # STRETCH — expected travel can't plausibly cover the gap to the line — the
         # advice must NOT say "hold, reversal possible". The lean can be RIGHT about
@@ -825,7 +1006,7 @@ class PriceToBeatTracker:
         # late-entry / T3 persistence model. Pyth tracker only (the settlement feed);
         # deduped to ~15s per round; label derived at TRAIN time by joining round_id ->
         # price_to_beat.actual_direction (no resolution hook — same pattern as B1).
-        if self.persist:
+        if self.persist and self.source == "pyth":
             _rid = rnd.get("id")
             if _rid and (now_ms - self._last_snap.get(_rid, 0)) >= 15000:
                 self._last_snap[_rid] = now_ms
@@ -858,7 +1039,9 @@ class PriceToBeatTracker:
         # precision (expectedPrecision), which is ~coin-flip and contradicted the P(hold) header
         # (the 98%-vs-40% inconsistency). This outlook is position/P(hold)-framed, so P(hold) is the
         # only consistent "odds this side survives" number to show here.
-        odds_txt = f" P(hold) for this setup: {p_hold * 100:.0f}%." if p_hold is not None else ""
+        # Display cap at 99%: no calibrated probability is truly 100% — showing it reads as
+        # overconfident/broken (and clashes with a HIGH big-drop flag). Underlying value untouched.
+        odds_txt = f" P(hold) for this setup: {min(99.0, p_hold * 100):.0f}%." if p_hold is not None else ""
 
         # DIRECTION-HONEST (2026-06-15): 5m/15m direction is ~coin-flip, so the path outlook is framed
         # on the POSITION vs the line + the calibrated move SIZE — NOT a lean prediction. We never claim
@@ -880,7 +1063,8 @@ class PriceToBeatTracker:
                 f"band, not a direction call.{odds_txt}"}
 
     @staticmethod
-    def _advice(bet_dir: str, cur_pos: str, live_lean: str, secs_left: int, cur_move: float) -> dict:
+    def _advice(bet_dir: str, cur_pos: str, live_lean: str, secs_left: int, cur_move: float,
+                p_hold: float = None) -> dict:
         """Hold / exit guidance for a placed bet. bet_dir = the lean locked at window open."""
         if bet_dir not in ("UP", "DOWN"):
             return {"action": "NO BET", "tone": "muted",
@@ -896,6 +1080,17 @@ class PriceToBeatTracker:
             return {"action": "LOCK IN", "tone": "warn",
                     "text": f"Ahead {mv} but the model's lean faded to {live_lean or 'NEUTRAL'}. "
                             f"{'Little time left — ' if urgent else ''}consider selling to lock the gain."}
+        # BEHIND: a cross-back requires the currently-winning side to FAIL, i.e. reversal prob
+        # = 1 - P(hold of cur_pos). When P(hold) is high, "reversal possible / hold" contradicts
+        # the calibrated odds shown two boxes up (operator-caught 2026-06-29: a card read
+        # P(hold UP)=99% yet advised "reversal possible, hold" the losing DOWN bet). Make the
+        # advice agree with P(hold) instead of the coin-flip lean.
+        rev = (1.0 - p_hold) if p_hold is not None else None
+        if not winning and rev is not None and rev <= 0.15:
+            return {"action": "LIKELY LOST", "tone": "bad",
+                    "text": f"Behind {mv} — P(hold) puts a cross-back at only ~{rev * 100:.0f}%, so the "
+                            f"{bet_dir} bet is likely lost despite the lean. "
+                            f"{'Time is short; ' if urgent else ''}cut it to limit loss."}
         if not winning and lean_agrees:
             return {"action": "HOLD / WAIT", "tone": "warn",
                     "text": f"Behind {mv} but the model still leans {bet_dir} — reversal possible. "

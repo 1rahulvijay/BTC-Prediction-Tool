@@ -128,12 +128,9 @@ def make_labels(df):
     df['future_direction_5m'] = np.sign(df['ret_5m'])
     
     expected_move = df['close'] * 0.002 # 20 bps move
-    mfe_long = df['future_high_5m'] - df['close']
     mae_long = df['close'] - df['future_low_5m']
-    
-    mfe_short = df['close'] - df['future_low_5m']
     mae_short = df['future_high_5m'] - df['close']
-    
+
     is_big_long = (df['ret_5m'] > expected_move) & (mae_long < 0.4 * expected_move)
     is_big_short = (df['ret_5m'] < -expected_move) & (mae_short < 0.4 * expected_move)
     df['tradable_move_label'] = (is_big_long | is_big_short).astype(int)

@@ -36,7 +36,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 OUT_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
 
 SNAP_INTERVAL_MS = 15_000        # one snapshot per 15s per window (matches the live recorder)
-HORIZONS = (1, 3, 5, 7, 10, 15, 30)  # 5m/15m are the bettable ones; others are practice mirrors
+HORIZONS = (5, 15)  # pruned 2026-06-21: 5m/15m = markets, 1m = feedback; dropped 3/7/10/30
 
 
 def build_snapshots_for_day(ts: np.ndarray, price: np.ndarray, horizons=HORIZONS) -> list:

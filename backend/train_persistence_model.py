@@ -35,7 +35,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 IN_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
-HEAD_VERSION = "2026-06-15-keeper-dual"   # train_heads.py retrains when this changes
+HEAD_VERSION = "2026-06-21-keeper-dual-perhorizon-iso"   # train_heads.py retrains when this changes
 
 FEATURES = ["abs_distance_pct", "seconds_left", "vol_60s_pct", "horizon", "dist_vol_ratio"]
 # Volatility KEEPERS — validated to LIFT P(hold) (+0.0135 AUC overall, +0.027 on the late
@@ -51,6 +51,35 @@ def _add_features(df: pd.DataFrame) -> pd.DataFrame:
     # how many trailing-60s-vol units the price is ahead — the core persistence predictor
     df["dist_vol_ratio"] = df["abs_distance_pct"] / (df["vol_60s_pct"] + 1e-6)
     return df
+
+
+def _ece(p, y, bins=10):
+    """Expected Calibration Error (same binning as calibration_monitor.py) — lower is better."""
+    p = np.asarray(p, float); y = np.asarray(y, float)
+    edges = np.linspace(0.0, 1.0, bins + 1); e = 0.0
+    for i in range(bins):
+        m = (p >= edges[i]) & (p < edges[i + 1] if i < bins - 1 else p <= edges[i + 1])
+        if m.sum():
+            e += (m.sum() / len(p)) * abs(float(p[m].mean()) - float(y[m].mean()))
+    return e
+
+
+def _fit_iso_by_horizon(clf, ca: pd.DataFrame, feat_cols, min_rows=2000):
+    """Per-horizon isotonic on the (temporally-separate) CALIB slice. The global isotonic over-/under-
+    states some horizons (1m drifts, ECE 0.0545); a per-horizon mapping fixes that. Horizons with too
+    few calib rows are OMITTED -> the serve path falls back to the global isotonic for them. Leak-free:
+    ca is the held-out calibration window, never the train rows."""
+    raw = clf.predict_proba(ca[feat_cols].values)[:, 1]
+    yca = ca["label"].values; hca = ca["horizon"].values
+    out = {}
+    for h in np.unique(hca):
+        m = hca == h
+        if int(m.sum()) < min_rows or len(np.unique(yca[m])) < 2:
+            continue
+        iso_h = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+        iso_h.fit(raw[m], yca[m])
+        out[int(h)] = iso_h
+    return out
 
 
 def _join_keepers(df: pd.DataFrame) -> pd.DataFrame | None:
@@ -86,6 +115,7 @@ def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
     kclf.fit(tr[KF].values, tr["label"].values)
     kiso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     kiso.fit(kclf.predict_proba(ca[KF].values)[:, 1], ca["label"].values)
+    kiso_by_horizon = _fit_iso_by_horizon(kclf, ca, KF)
     yte = te["label"].values
     kp = kiso.predict(kclf.predict_proba(te[KF].values)[:, 1])
     kauc = roc_auc_score(yte, kp)
@@ -97,7 +127,8 @@ def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
     print(f"\n[keeper] joined={len(kdf):,}  test={len(te):,}")
     print(f"[keeper] AUC  base={bauc:.4f}  base+keepers={kauc:.4f}  lift={kauc-bauc:+.4f}")
     print(f"[keeper] T3 late (<=120s): base={bauc_l:.4f}  base+keepers={kauc_l:.4f}  lift={kauc_l-bauc_l:+.4f}")
-    return {"clf_keeper": kclf, "iso_keeper": kiso, "features_keeper": KF,
+    return {"clf_keeper": kclf, "iso_keeper": kiso, "iso_keeper_by_horizon": kiso_by_horizon,
+            "features_keeper": KF,
             "keeper_test_auc": float(kauc), "keeper_base_auc": float(bauc),
             "keeper_test_auc_late": float(kauc_l), "keeper_base_auc_late": float(bauc_l)}
 
@@ -128,6 +159,8 @@ def main():
     p_ca = clf.predict_proba(ca[FEATURES].values)[:, 1]
     iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
     iso.fit(p_ca, ca["label"].values)
+    # Per-horizon isotonic (fixes the 1m drift) — global iso stays as the fallback for thin horizons.
+    iso_by_horizon = _fit_iso_by_horizon(clf, ca, FEATURES)
 
     # ----- HONEST evaluation on the unseen TEST windows -----
     p_te = iso.predict(clf.predict_proba(te[FEATURES].values)[:, 1])
@@ -160,6 +193,18 @@ def main():
             print(f"  {int(h):>2}m: realized={ys[m].mean()*100:5.1f}%  n={m.sum():,} "
                   f"({m.mean()*100:.0f}% of {len(sub):,})")
 
+    # Per-horizon CALIBRATION — the headline of this change: global iso vs per-horizon iso on TEST.
+    print("\nPer-horizon calibration (TEST ECE: global iso -> per-horizon iso; lower=better):")
+    raw_te_all = clf.predict_proba(te[FEATURES].values)[:, 1]
+    yte_all = te["label"].values; hte = te["horizon"].values
+    for h in sorted(te["horizon"].unique()):
+        m = hte == h
+        eg = _ece(iso.predict(raw_te_all[m]), yte_all[m])
+        iso_h = iso_by_horizon.get(int(h))
+        ep = _ece(iso_h.predict(raw_te_all[m]), yte_all[m]) if iso_h is not None else eg
+        tag = "" if iso_h is not None else "  (too few calib rows -> uses global)"
+        print(f"  {int(h):>2}m: ECE {eg:.4f} -> {ep:.4f}  n={int(m.sum()):,}{tag}")
+
     # Baseline the naive heuristic for comparison (the old flat rule)
     naive = (te["seconds_left"] <= 60) & (te["distance"].abs() >= 10)
     if naive.sum():
@@ -170,9 +215,10 @@ def main():
     # Keeper model (additive; live serve keeps using the base model until keepers are plumbed).
     keeper_extra = _train_keeper_model(df, clf, iso)
 
-    bundle = {"clf": clf, "iso": iso, "features": FEATURES,
+    bundle = {"clf": clf, "iso": iso, "iso_by_horizon": iso_by_horizon, "features": FEATURES,
               "trained_rows": int(len(tr)), "test_auc": float(auc), "version": HEAD_VERSION,
-              "note": "P(hold|abs_distance_pct,seconds_left,vol_60s_pct,horizon,dist_vol_ratio)"}
+              "note": "P(hold|abs_distance_pct,seconds_left,vol_60s_pct,horizon,dist_vol_ratio); "
+                      "per-horizon isotonic (global iso fallback for thin horizons)"}
     bundle.update(keeper_extra)
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     joblib.dump(bundle, OUT_PATH)

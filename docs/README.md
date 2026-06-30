@@ -20,6 +20,69 @@
   guides: `public/guide.html` and `public/polymarket-betting.html`).
 
 ## latest additions
+- **[QUANT_RESEARCH_100_CEILING_BREAK_IDEAS_2026-06-30.md](active/QUANT_RESEARCH_100_CEILING_BREAK_IDEAS_2026-06-30.md)** -
+  evidence-ranked backlog of 100 non-duplicate experiments drawn from foundational quant research.
+  Covers event-time microstructure, cross-venue price discovery, path/volatility, options, on-chain,
+  macro, Polymarket pricing, labels, research controls, and execution, with free-data feasibility and
+  a falsification gate for every idea.
+- **[CODE_AND_LOGIC_VALIDATION_2026-06-30.md](active/CODE_AND_LOGIC_VALIDATION_2026-06-30.md)** -
+  latest full audit: restored live large-trade features, corrected exact-dollar path targets and stable
+  round plans, hardened model saves/preflight, fixed recorder anchor/volatility/token logic, repaired
+  seconds-to-milliseconds P(Hold joins, filtered corrupt anchor rounds, and recorded all validation results.
+- **[PATH_FORECASTER_TRADE_PLAN_HEAD_2026-06-30.md](active/PATH_FORECASTER_TRADE_PLAN_HEAD_2026-06-30.md)** -
+  canonical Layer-2 path-head design and exact-dollar 360-day results. Defines what the path plan predicts,
+  how it freezes at the round open, its hot-reload/retrain lifecycle, and why it cannot choose UP/DOWN.
+- **[CEILING_INVESTIGATION_AND_PATH_FINDING_2026-06-30.md](active/CEILING_INVESTIGATION_AND_PATH_FINDING_2026-06-30.md)** -
+  measured direction-ceiling investigation and constructive path/magnitude finding across model families,
+  volatility estimators, futures flow, conditional pockets, and early-exit research.
+- **[MICROSTRUCTURE_PARITY_BUG_AND_FIXES_2026-06-28.md](active/MICROSTRUCTURE_PARITY_BUG_AND_FIXES_2026-06-28.md)** -
+  train/serve parity investigation for CVD, VPIN, and large-trade flow, including the June 30 correction
+  that finally restores both selected large-trade features live.
+- **[FULL_360D_RETRAIN_IMPLEMENTATION_2026-06-22.md](active/FULL_360D_RETRAIN_IMPLEMENTATION_2026-06-22.md)** -
+  implementation record for the one-time 360-day retrain and freeze lifecycle: completion marker,
+  sequential fail-closed specialist heads, disk-backed 69-feature sequences, representative
+  direction-model sampling for a 16 GB laptop, evidence recorder startup, operator commands, and
+  post-training verification. It also states the resource compromise and what the retrain does not prove.
+- **[POST_TRAINING_EVALUATION_RUNBOOK_2026-06-21.md](active/POST_TRAINING_EVALUATION_RUNBOOK_2026-06-21.md)** -
+  locked post-retrain protocol covering completion verification, clean forward sample requirements,
+  horizon calibration, 5m/15m retained-call precision, regime/champion shadows, and the Polymarket
+  quote+official-settlement profit gate. No model changes are allowed during this measurement window.
+- **[PRESTART_VALIDATION_2026-06-21.md](active/PRESTART_VALIDATION_2026-06-21.md)** -
+  full no-start audit: compile/import/self-tests, 415 saved artifacts, DuckDB recovery, frontend build,
+  150-day matrix validation, the required three-horizon migration retrain, instant-launch protection,
+  pre-sequence feature pruning, and corrected 98% out-of-sample boundary accounting.
+- **[SETTLEMENT_INGESTION_2026-06-21.md](active/SETTLEMENT_INGESTION_2026-06-21.md)** -
+  restart-safe official Polymarket outcome ingestion, 364/364 backlog recovery, automatic recorder startup,
+  and corrected one-entry-per-round edge accounting. Settlement plumbing is complete; quote accrual is now
+  the Phase-0 bottleneck (4 joined rounds, need at least 500).
+- **[REGIME_GATE_SHADOW_2026-06-21.md](active/REGIME_GATE_SHADOW_2026-06-21.md)** —
+  read-only shadow monitor (`regime_gate_shadow.py`, no live wiring) replaying candidate regime-selection
+  gate policies over logged `price_to_beat` rounds. Full regime-era window shows prefer-RANGE/LOW_VOL at
+  Wilson-LB 53.5%, but the **recent-250 window dips below 50% (⚠️)** — edge not yet confirmed forward; do
+  not promote. Re-run to extend the drift series (`data/regime_gate_shadow_log.csv`).
+- **[DUCKDB_METRICS_ANALYSIS_2026-06-21.md](active/DUCKDB_METRICS_ANALYSIS_2026-06-21.md)** —
+  full live-log breakdown (`analyze_duckdb_metrics.py`) by day, model_version, and horizon (5m/15m):
+  ensemble + price-to-beat tracker + 8 individual models; accuracy, per-class precision, signals, regime,
+  confluence. Verdict: everything converges on coin-flip (tracker 50.2%/50.5%); the only faint levers are
+  regime-based abstention and a flagged confluence-grade inversion (B>A).
+- **[CEILING_BREAK_EXPERIMENTS_2026-06-20.md](active/CEILING_BREAK_EXPERIMENTS_2026-06-20.md)** —
+  results of the 5 ceiling-break experiments (`run_ceiling_break_experiments.py`, 30d, 70/30): triple-barrier
+  is net-**negative after a 2bps spread** at every horizon; the flow/cross-venue proxy gives no top-bucket
+  lift; Exp 3/4 blocked on recorder data; the meta-skip ranks well but mostly re-expresses P(Hold). Verdict:
+  the only untested ceiling-break levers are true L2 (record-forward) + Polymarket ask mispricing.
+- **[MASTER_STRATEGY_CEILING_BREAK_AND_RECOMMENDER_2026-06-18.md](active/MASTER_STRATEGY_CEILING_BREAK_AND_RECOMMENDER_2026-06-18.md)** —
+  **THE forward strategy.** Merges the Final Specialist-Head Plan + Current Truth + ceiling-break levers
+  (new data / new labels / new policy) + the Netflix-style Live Market Recommender into one disciplined,
+  prioritized, gated build plan. Read this for "how do we improve the app from here."
+- **[V10_CONSOLIDATED_MASTER_AND_PROPOSALS_2026-06-18.md](active/V10_CONSOLIDATED_MASTER_AND_PROPOSALS_2026-06-18.md)** —
+  **the big picture / where we are.** Consolidates every version (V3→v11), the current architecture,
+  and all proposals (built / deferred / gated / rejected) into one index, with the make-or-break gate.
+- **[OVERNIGHT_150D_RETRAIN_RESULTS_2026-06-18.md](active/OVERNIGHT_150D_RETRAIN_RESULTS_2026-06-18.md)** —
+  full 150d retrain evidence: single-knob + 98/2 split confirmed; heads' held-out 2% test; the
+  direction-unprofitable OOS backtest (profit factor < 1 every horizon) + confusion matrices.
+- **[CALIBRATION_MONITOR_2026-06-18.md](active/CALIBRATION_MONITOR_2026-06-18.md)** —
+  live P(hold) calibration drift report (`calibration_monitor.py`): found ~2-pt top-tier optimism on
+  13,972 resolved rounds; overall ECE 0.033, STABLE. Drives the opt-in recalibration overlay.
 - **[OVERNIGHT_180D_ALL_MODEL_TRAINING_2026-06-18.md](active/OVERNIGHT_180D_ALL_MODEL_TRAINING_2026-06-18.md)** -
   one-command overnight trigger for 180-day data rebuild, forced standalone-head retraining,
   forced main-ensemble retraining, matrix coverage checks, and expected 8-11 hour runtime.

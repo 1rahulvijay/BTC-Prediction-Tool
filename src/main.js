@@ -38,8 +38,8 @@ let macdData = [];
 
 let currentVerifyTab = 'all';
 let lastVerifyData = null;
-let currentAppTab = 'technical';
-let activePlainTF = 1;
+let currentAppTab = 'analysis';
+let activePlainTF = 5;   // pruned 2026-06-21: 1m removed, default to the 5m market
 let activePtbHorizon = 5;
 let lastPlainData = null;
 let replayPollTimer = null;
@@ -247,28 +247,31 @@ function init() {
       currentAppTab = tab.dataset.view;
       els.appTabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
+      // 5 tabs: Decision (analysis) · Markets (technical) · Bitcoin (binance) · Polymarket
+      // · Diagnostics (models-view + the Binance price-to-beat mirror).
+      const isDiag = currentAppTab === 'diagnostics';
       els.technicalView.classList.toggle('hidden', currentAppTab !== 'technical');
       els.analysisView.classList.toggle('hidden', currentAppTab !== 'analysis');
-      if (els.modelsView) els.modelsView.classList.toggle('hidden', currentAppTab !== 'models');
+      if (els.modelsView) els.modelsView.classList.toggle('hidden', !isDiag);
       const bv = document.getElementById('binance-view');
       const pv = document.getElementById('polymarket-view');
       const bpv = document.getElementById('binancepm-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
-      if (bpv) bpv.classList.toggle('hidden', currentAppTab !== 'binancepm');
+      if (bpv) bpv.classList.toggle('hidden', !isDiag);
       if (currentAppTab === 'technical' && chart) {
         setTimeout(() => chart.timeScale().fitContent(), 50);
       }
       if (currentAppTab === 'analysis' && lastPlainData) {
         renderPlainAnalysis(lastPlainData);
       }
-      if (currentAppTab === 'models') {
-        if (lastPlainData) renderModelsView(lastPlainData);
-        fetchActionLog();
-      }
       if (currentAppTab === 'binance' && lastPlainData) renderBinanceView(lastPlainData);
       if (currentAppTab === 'polymarket' && lastPlainData) renderPolymarketView(lastPlainData);
-      if (currentAppTab === 'binancepm' && lastPlainData) renderBinancePolymarketView(lastPlainData);
+      if (isDiag && lastPlainData) {
+        renderModelsView(lastPlainData);
+        fetchActionLog();
+        renderBinancePolymarketView(lastPlainData);
+      }
     });
   });
 
@@ -446,6 +449,20 @@ function connectWebSocket() {
       // Lightweight, high-frequency price refresh — decoupled from the heavy
       // prediction cycle so the displayed price stays responsive under load.
       updateLivePrice(msg.price);
+    } else if (msg.type === 'ptb_tick') {
+      // Fast price-to-beat refresh (~1s) — decoupled from the heavy ~3s `update`, so the
+      // Pyth-anchored panel (price, position, P(hold), champion) stays responsive. Merge only the
+      // live `latest` rounds into the cached payload (keep accuracy/recent from the last update).
+      if (lastPlainData) {
+        if (!lastPlainData.price_to_beat) lastPlainData.price_to_beat = {};
+        if (!lastPlainData.price_to_beat_binance) lastPlainData.price_to_beat_binance = {};
+        lastPlainData.price_to_beat.latest = msg.pyth;
+        lastPlainData.price_to_beat_binance.latest = msg.binance;
+        try {
+          renderPriceToBeatTabbed(lastPlainData);
+          renderPriceToBeatConfluence(lastPlainData);
+        } catch (err) { /* never wedge the socket handler on one bad tick */ }
+      }
     } else if (msg.type === 'update') {
       clearSplash();
       // Guard the render so one bad payload can't wedge the whole socket handler
@@ -525,7 +542,7 @@ async function triggerReplay() {
   els.replayRunButton.textContent = 'Queued...';
   if (els.replayStatus) els.replayStatus.textContent = 'Starting replay...';
   try {
-    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15,30&max_samples=1000`, { method: 'POST' });
+    const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15&max_samples=1000`, { method: 'POST' });
     const data = await res.json();
     if (!data.scheduled && data.status?.message && els.replayStatus) {
       els.replayStatus.textContent = data.status.message;
@@ -575,9 +592,10 @@ function renderDashboard(data) {
   renderScoreboard(data);
   renderExchanges(data);
   renderModelsView(data);
+  // Bitcoin & Polymarket are their own tabs again; the Binance price-to-beat mirror lives in Diagnostics.
   if (currentAppTab === 'binance') renderBinanceView(data);
   if (currentAppTab === 'polymarket') renderPolymarketView(data);
-  if (currentAppTab === 'binancepm') renderBinancePolymarketView(data);
+  if (currentAppTab === 'diagnostics') renderBinancePolymarketView(data);
 
   lastVerifyData = data.verification;
   renderVerification(data.verification);
@@ -1287,7 +1305,7 @@ function renderDecisionCockpit(data, best, activeAcc) {
     }
   }
   if (t3Edge) {
-    const pct = Math.round(t3Edge.p_hold * 100);
+    const pct = pHoldPct(t3Edge.p_hold);
     const side = t3Edge.live_lean || t3Edge.our_direction || '';
     els.decisionPrimaryAction.textContent = `⚡ P(HOLD) EDGE - ${pct}%`;
     els.decisionPrimaryAction.className = 'up';
@@ -2511,7 +2529,7 @@ function renderVerification(v) {
     
     // High-level Accuracy chips
     els.verifyAccRow.innerHTML = '';
-    [1, 3, 5, 7, 10, 15, 30].forEach(h => {
+    [5, 15].forEach(h => {   // pruned 2026-06-21
       const acc = v.accuracy?.[h];
       const chip = document.createElement('div');
       chip.className = 'verify-acc-chip';
@@ -2686,7 +2704,7 @@ function renderScoreboard(data) {
   const grid = document.getElementById('scoreboard-grid');
   if (!grid) return;
   const sb = data.scoreboard || {};
-  const horizons = [5, 15, 30];
+  const horizons = [5, 15];   // pruned 2026-06-21: dropped 30m
   const dirColor = (d) => d === 'UP' ? '#00e676' : d === 'DOWN' ? '#ff1744' : '#8892a6';
   const dirArrow = (d) => d === 'UP' ? '▲' : d === 'DOWN' ? '▼' : '●';
   const gradeColor = (g) => ({ 'A+': '#00e676', 'A': '#26c281', 'B': '#ffd700', 'C': '#ff9100', 'WATCH': '#8892a6' }[g] || '#8892a6');
@@ -2791,8 +2809,8 @@ const MODEL_LABELS = {
   xgb: 'XGBoost', lgb: 'LightGBM', cat: 'CatBoost', histgb: 'HistGradientBoosting',
   dl: 'TCN / Sequence (deep)', lr: 'Logistic Regression', rf: 'Random Forest',
 };
-const PTB_HORIZONS = [5, 15, 30];
-const ROSTER_HORIZONS = [1, 3, 5, 7, 10, 15, 30];
+const PTB_HORIZONS = [5, 15];   // pruned 2026-06-21: tradeable markets only (dropped 30m)
+const ROSTER_HORIZONS = [5, 15];   // pruned 2026-06-21: dropped 3/7/10/30
 
 // ══════════════════════════════════════════════
 //  BINANCE VIEW — 6-horizon model predictions (spot/perp, long/short entries)
@@ -2950,7 +2968,7 @@ function renderBinanceView(data) {
     });
     // Only committed directional leans grade as correct/incorrect.
     const dirRows = allRows.filter(r => r.raw_direction === 'UP' || r.raw_direction === 'DOWN');
-    const tfs = ['all', 1, 3, 5, 7, 10, 15, 30];
+    const tfs = ['all', 5, 15];   // pruned 2026-06-21: dropped 3/7/10/30
     const tabs = tfs.map(tf => {
       const cnt = tf === 'all' ? dirRows.length : dirRows.filter(r => r.horizon === tf).length;
       const on = String(binanceLogTF) === String(tf);
@@ -3039,9 +3057,8 @@ function renderPMCore(data, cfg) {
   const ptb = data[cfg.ptbKey] || {};
   const latest = ptb.latest || {};
   const acc = ptb.accuracy || {};
-  // Only 5m/15m are real Polymarket markets; 1m/3m/7m/10m are PRACTICE mirrors —
-  // same rule + grading, fast evidence, not bettable.
-  grid.innerHTML = [1,3,5,7,10,15,30].map(h => {
+  // Only the two real 5m/15m Polymarket horizons remain after the 2026-06-21 prune.
+  grid.innerHTML = [5,15].map(h => {
     const r = latest[h] || latest[String(h)];
     const a = acc[h] || acc[String(h)] || {};
     const accStr = a.total ? `model ${((a.model_accuracy||0)*100).toFixed(0)}% (${a.model_total||0}) · all ${((a.accuracy||0)*100).toFixed(0)}% (${a.total})` : 'no rounds yet';
@@ -3056,7 +3073,7 @@ function renderPMCore(data, cfg) {
     const srcBadge = r.lean_source==='fallback'
       ? '<span style="background:rgba(255,183,77,.15);color:#ffb74d;border-radius:4px;padding:0 .35rem;font-size:.7em">⚠ WEAK (fallback) — skip</span>'
       : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
-    const phPct = (r.p_hold!=null) ? Math.round(r.p_hold*100) : null;
+    const phPct = (r.p_hold!=null) ? pHoldPct(r.p_hold) : null;
     const lateChip = r.late_entry
       ? `<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge${phPct!=null?` · ${phPct}% hold`:''}</span>` : '';
     const practice = (h!==5&&h!==15) ? ' <span style="background:rgba(255,255,255,.08);color:var(--text-secondary);border-radius:4px;padding:0 .35rem;font-size:.6em;vertical-align:middle">PRACTICE — no real market</span>' : '';
@@ -3093,13 +3110,13 @@ function renderPMCore(data, cfg) {
         <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
         ${r.ref_captured_late_ms?`<span style="color:#ffb74d;font-size:.7em"> (late anchor capture +${(r.ref_captured_late_ms/1000).toFixed(1)}s)</span>`:''}</div>
       ${champHtml}
-      ${!resolved&&r.p_hold!=null?`<div style="margin-top:.3rem"><span style="background:${r.p_hold>=0.93?'rgba(0,230,118,.18)':r.p_hold>=0.85?'rgba(255,183,77,.18)':'rgba(255,82,82,.18)'};color:${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border:1px solid ${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border-radius:5px;padding:.12rem .5rem;font-size:.82em;font-weight:700">● CONFIDENCE: ${r.p_hold>=0.93?'HIGH':r.p_hold>=0.85?'MEDIUM':'LOW'}</span> <span style="font-size:.72em;color:var(--text-secondary)">from P(hold) ${Math.round(r.p_hold*100)}% — the real signal, NOT the direction lean</span></div>`:''}
+      ${!resolved&&r.p_hold!=null?`<div style="margin-top:.3rem"><span style="background:${r.p_hold>=0.93?'rgba(0,230,118,.18)':r.p_hold>=0.85?'rgba(255,183,77,.18)':'rgba(255,82,82,.18)'};color:${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border:1px solid ${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border-radius:5px;padding:.12rem .5rem;font-size:.82em;font-weight:700">● CONFIDENCE: ${r.p_hold>=0.93?'HIGH':r.p_hold>=0.85?'MEDIUM':'LOW'}</span> <span style="font-size:.72em;color:var(--text-secondary)">from P(hold) ${pHoldPct(r.p_hold)}% — the real signal, NOT the direction lean</span></div>`:''}
       <div style="margin-top:.2rem"><span style="font-size:1.25em;font-weight:700;color:${dirColor(dir)}">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN':dir}</span>${cfl.grade?`<span style="background:rgba(${cfl.grade[0]==='A'?'0,230,118':cfl.grade[0]==='B'?'255,183,77':cfl.grade[0]==='C'?'255,112,67':'136,146,166'},.16);border:1px solid ${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};border-radius:4px;padding:.05rem .4rem;margin-left:.4rem;font-size:.82em;font-weight:700;color:${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};vertical-align:middle">Grade ${cfl.grade}</span>`:''} ${srcBadge}${lateChip}<div style="font-size:.7em;color:#888;margin-top:.1rem">↑ direction lean — ≈coin-flip at 5m/15m, informational only (Grade ≠ confidence). NOT a trade signal — read the CONFIDENCE badge + P(hold) + band.</div></div>
       ${!resolved&&r.current_price!=null?`<div style="margin-top:.4rem;font-size:.9em">Now: <strong>$${Number(r.current_price).toLocaleString()}</strong>
         <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
-      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.3rem;font-size:1.15em;font-weight:700;color:${r.p_hold>=0.93?'#64b5f6':(r.p_hold>=0.85?'#ffb74d':'var(--text-secondary)')}">🎯 P(hold ${r.current_position}) = ${Math.round(r.p_hold*100)}%<div style="font-size:.6em;font-weight:400;color:var(--text-secondary);margin-top:.05rem">calibrated odds the ${r.current_position} side survives to close (A1/T3 persistence) · ⚡≥93% = high-confidence · updates live each second as price/time move — a live gauge, NOT a fixed forecast</div></div>`:''}
+      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.3rem;font-size:1.15em;font-weight:700;color:${r.p_hold>=0.93?'#64b5f6':(r.p_hold>=0.85?'#ffb74d':'var(--text-secondary)')}">🎯 P(hold ${r.current_position}) = ${pHoldPct(r.p_hold)}%<div style="font-size:.6em;font-weight:400;color:var(--text-secondary);margin-top:.05rem">calibrated odds the ${r.current_position} side survives to close (A1/T3 persistence) · ⚡≥93% = high-confidence · updates live each second as price/time move — a live gauge, NOT a fixed forecast</div></div>`:''}
       ${!resolved&&r.big_move_tier?`<div style="margin-top:.25rem;font-size:.85em">⚡ <strong style="color:${r.big_move_tier==='likely'?'#ff7043':r.big_move_tier==='elevated'?'#ffb74d':'var(--text-secondary)'}">Big move: ${r.big_move_tier.toUpperCase()}</strong> <span style="color:var(--text-secondary)">— ${r.big_move_tier==='likely'?'large move likely this round':r.big_move_tier==='quiet'?'quiet round expected':'moderate move expected'} (timing head, AUC 0.73)</span></div>`:''}
       ${!resolved&&r.big_drop_risk?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:${r.big_drop_risk==='HIGH'?'#ff5252':r.big_drop_risk==='ELEVATED'?'#ffb74d':'var(--text-secondary)'}">Big-drop risk: ${r.big_drop_risk}</strong> <span style="color:var(--text-secondary)">- ${r.big_drop_risk==='HIGH'?'hard downside flush plausible; avoid long unless a confirmed DOWN setup appears':r.big_drop_risk==='ELEVATED'?'some downside path risk; size down longs':'downside path looks contained'} (risk head, AUC 0.75; input, not a trade trigger)</span></div>`:''}
       ${!resolved&&(r.big_up_tier||r.big_down_tier)?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:var(--text-primary)">Directional heads:</strong> <span style="color:#00e676">UP ${(r.big_up_tier||'n/a')}</span> / <span style="color:#ff5252">DOWN ${(r.big_down_tier||'n/a')}</span> <span style="color:var(--text-secondary)">- confirmation only; used to explain conflicts, not to trade alone</span></div>`:''}
@@ -3113,6 +3130,14 @@ function renderPMCore(data, cfg) {
         ${_ensTgt!=null?`<div style="margin-top:.15rem;color:var(--text-secondary)">Ensemble lean target: <strong>$${Math.round(_ensTgt).toLocaleString()}</strong> <span style="color:#ffb74d">(~coin-flip — informational, NOT the call)</span></div>`:''}
         <div style="color:var(--text-secondary);font-size:.85em;margin-top:.2rem">Band ≈ 80% of outcomes; median move ≈ 0 (no reliable drift), so the projection carries the current position forward. The reliable read is the band + P(hold), not the lean target.</div></div>`:''}
       ${po.scenario?`<div style="margin-top:.5rem;padding:.4rem .6rem;border-radius:6px;background:rgba(100,181,246,.08);font-size:.85em">🧭 <strong>${po.scenario}</strong> — ${po.text||''}<div style="color:var(--text-secondary);font-size:.85em;margin-top:.15rem">Path scenario describes the position vs the line (no direction call) — the calibrated band + P(hold) above are the reliable reads.</div></div>`:''}
+      ${!resolved&&r.trade_plan?`<div style="margin-top:.5rem;padding:.45rem .65rem;border-radius:6px;background:rgba(124,196,255,.08);border:1px solid rgba(124,196,255,.3);font-size:.85em">
+        📈 <strong style="color:#7cc4ff">PATH PLAN</strong> <span style="font-size:.8em;color:var(--text-secondary)">(stable — set near window open)</span>
+        ${r.trade_plan.play?`<div style="margin-top:.2rem">▶ <strong style="color:${r.trade_plan.play==='FADE-SETUP'?'#ffb74d':r.trade_plan.play==='RIDE'?'#00e676':r.trade_plan.play==='SKIP'?'#8892a6':'#aab4c8'}">${r.trade_plan.play==='FADE-SETUP'?'FADE SETUP':r.trade_plan.play}</strong> <span style="color:var(--text-secondary);font-size:.85em">${r.trade_plan.play==='FADE-SETUP'?'active chop — fade the early extreme':r.trade_plan.play==='RIDE'?'trend — ride it':r.trade_plan.play==='SKIP'?'quiet — no room':'wait for the touch'}</span>${r.trade_plan.p_early!=null?` &nbsp;·&nbsp; early-touch <strong>${Math.round(r.trade_plan.p_early*100)}%</strong>`:''}</div>`:''}
+        <div style="margin-top:.25rem">▲ HIGH ~<strong style="color:#00e676">$${Number(r.trade_plan.pred_high).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.high_band[0]).toLocaleString()}–${Number(r.trade_plan.high_band[1]).toLocaleString()}]</span>
+        &nbsp; ▼ LOW ~<strong style="color:#ff5252">$${Number(r.trade_plan.pred_low).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.low_band[0]).toLocaleString()}–${Number(r.trade_plan.low_band[1]).toLocaleString()}]</span></div>
+        <div style="margin-top:.15rem">range ~$${Number(r.trade_plan.pred_range_usd).toLocaleString()} &nbsp;·&nbsp; P(moves≥$50) <strong>${Math.round(r.trade_plan.p_move_50*100)}%</strong> &nbsp; P(moves≥$100) <strong>${Math.round(r.trade_plan.p_move_100*100)}%</strong></div>
+        ${r.trade_plan.p_roundtrip!=null?`<div style="margin-top:.15rem">two-sided: ROUND-TRIP <strong>${Math.round(r.trade_plan.p_roundtrip*100)}%</strong> &nbsp;·&nbsp; expected close displacement ~$${Number(r.trade_plan.net_move_usd||0).toLocaleString()} &nbsp;→&nbsp; <strong style="color:${r.trade_plan.style==='two_sided'?'#ffb74d':r.trade_plan.style==='one_sided'?'#64b5f6':r.trade_plan.style==='quiet'?'#8892a6':'#aab4c8'}">${r.trade_plan.style==='two_sided'?'TWO-SIDED — both barriers more likely':r.trade_plan.style==='one_sided'?'ONE-SIDED — move more likely than round trip':r.trade_plan.style==='quiet'?'QUIET — large move less likely':'MIXED PATH'}</strong></div>`:''}
+        <div style="font-size:.8em;color:var(--text-secondary);margin-top:.15rem">Use this for range and exit planning only. It does not select UP/DOWN or prove that a market price is profitable. High/low bands have ~50% empirical coverage.</div></div>`:''}
       ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
       ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
     </div>`;
@@ -3122,7 +3147,7 @@ function renderPMCore(data, cfg) {
   const rec = ptb.recent || [];
   const accDiv = document.getElementById(P+'-accuracy');
   if (accDiv) {
-    accDiv.innerHTML = [1,3,5,7,10,15,30].map(h=>{
+    accDiv.innerHTML = [5,15].map(h=>{   // pruned 2026-06-21
       const a=acc[h]||acc[String(h)]||{};
       if(!a.total) return '';
       // "model 0% (0)" read as a recording failure — show "—" when the model has
@@ -3147,22 +3172,37 @@ function renderPMCore(data, cfg) {
       const w = rows.filter(r=>r.hit===true).length;
       return `<span style="margin-right:1.2rem">${label}: <strong style="color:${w/n>=0.5?'#00e676':'#ff5252'}">${(w/n*100).toFixed(0)}%</strong> (${w}/${n})</span>`;
     };
+    // The A/B/C setup grade does NOT reliably stratify DIRECTION — it is built from coin-flip
+    // order-flow agreement + an unconfirmed regime tier (rule #2 / backend/grade_scorecard.py), and
+    // direction is a coin-flip with no stratifying input. So it is DEMOTED to a dim, clearly-labeled
+    // EXPERIMENTAL sub-line and must not be read as a precision signal. The validated precision signal
+    // is the ⚡ T3 P(Hold) late-entry setup (n / hold% / Wilson-LB, shown on the detailed card).
+    // Model-vs-Fallback — the real bettable split — is promoted to the headline.
+    const gradeBucket = (label, rows) => {
+      const n = rows.length; if (!n) return '';
+      const w = rows.filter(r=>r.hit===true).length;
+      return `<span style="margin-right:1.1rem;opacity:.55" title="Experimental — the A/B/C grade is NOT a validated trust signal: it does not reliably stratify direction (rule #2 / grade_scorecard.py). Use the T3 P(Hold) setup for precision.">${label}: <strong>${(w/n*100).toFixed(0)}%</strong> (${w}/${n})</span>`;
+    };
     const html = [
-      bucket('Grade A', realRows.filter(r=>((r.confluence||{}).grade||'').startsWith('A'))),
-      bucket('Grade B', realRows.filter(r=>(r.confluence||{}).grade==='B')),
-      bucket('Grade C', realRows.filter(r=>(r.confluence||{}).grade==='C')),
       bucket('Model leans', realRows.filter(r=>r.lean_source!=='fallback')),
       bucket('Fallback leans', realRows.filter(r=>r.lean_source==='fallback')),
+    ].join('');
+    const gradeHtml = [
+      gradeBucket('Grade A', realRows.filter(r=>((r.confluence||{}).grade||'').startsWith('A'))),
+      gradeBucket('Grade B', realRows.filter(r=>(r.confluence||{}).grade==='B')),
+      gradeBucket('Grade C', realRows.filter(r=>(r.confluence||{}).grade==='C')),
     ].join('');
     const prac = pracRows.length
       ? `<div style="color:var(--text-secondary);font-size:.75em;margin-top:.15rem">practice mirrors (1m/3m/7m/10m, not bettable): ${bucket('model', pracRows.filter(r=>r.lean_source!=='fallback'))}${bucket('⚠ fallback', pracRows.filter(r=>r.lean_source==='fallback'))}</div>`
       : '';
-    gradeDiv.innerHTML = (html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${realRows.length} REAL rounds (5m/15m):</span>${html}` : '') + prac;
+    gradeDiv.innerHTML = (html ? `<span style="color:var(--text-secondary);font-size:.8em;margin-right:.8rem">Last ${realRows.length} REAL rounds (5m/15m):</span>${html}` : '')
+      + (gradeHtml ? `<div style="font-size:.75em;margin-top:.15rem"><span style="color:var(--text-secondary)">setup grade <em>(experimental — not a validated trust signal; precision = the ⚡ T3 P(Hold) setup):</em></span> ${gradeHtml}</div>` : '')
+      + prac;
   }
   const recDiv = document.getElementById(P+'-recent');
   if (recDiv) {
     const resolved = rec.filter(r=>r.hit!=null);
-    const tfs = ['all', 1, 3, 5, 7, 10, 15, 30];
+    const tfs = ['all', 5, 15];   // pruned 2026-06-21: dropped 3/7/10/30
     const tabs = tfs.map(tf => {
       const cnt = tf==='all' ? resolved.length : resolved.filter(r=>r.horizon===tf).length;
       const on = String(pmLogTF)===String(tf);
@@ -3208,8 +3248,8 @@ let pmLogTF = 'all';
 window.__pmLogTF = (tf) => {
   pmLogTF = (tf === 'all') ? 'all' : Number(tf);
   if (!lastPlainData) return;
-  if (currentAppTab === 'binancepm') renderBinancePolymarketView(lastPlainData);
-  else renderPolymarketView(lastPlainData);
+  renderPolymarketView(lastPlainData);
+  renderBinancePolymarketView(lastPlainData);
 };
 
 function renderModelsView(data) {
@@ -3368,7 +3408,7 @@ function renderBestLongShort(data) {
 function renderForecastScorecard(data) {
   if (!els.forecastScorecard) return;
   const ens = (data.verification && data.verification.accuracy) || {};
-  const horizons = [1, 3, 5, 7, 10, 15, 30];
+  const horizons = [5, 15];   // pruned 2026-06-21: dropped 3/7/10/30
   const pct = (v) => (v != null ? `${(v * 100).toFixed(0)}%` : '—');
   const usd = (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—');
 
@@ -3393,6 +3433,11 @@ function renderForecastScorecard(data) {
     `<div class="sc-note">Committed UP/DOWN calls graded by realized direction. UP/DOWN split is the bias watch. "Err" = average |forecast − actual| in USD.</div>`;
 }
 
+// P(hold) display: cap at 99% (no calibrated prob is truly 100% — it reads as broken and
+// clashes with a HIGH big-drop flag). Display only; the raw r.p_hold drives all logic/gates.
+function pHoldPct(p) {
+  return Math.min(99, Math.round(p * 100));
+}
 function dirColor(d) {
   return d === 'UP' ? '#00e676' : d === 'DOWN' ? '#ff1744' : '#8892a6';
 }
@@ -3557,7 +3602,7 @@ function renderPriceToBeatTabbed(data) {
           <div><span style="color:var(--text-secondary)">Exp. move</span><br><strong>${r.live_expected_move != null ? '$' + Math.round(Math.abs(r.live_expected_move)) : '--'}</strong></div>
         </div>
         ${r.p_hold != null && r.current_position ? `
-        <div style="margin-top:.55rem;font-size:.84em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold >= 0.93 ? '#64b5f6' : 'var(--text-primary)'}">P(hold ${r.current_position}) = ${Math.round(r.p_hold * 100)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 model; ⚡ late-entry fires at ≥93%)</div>` : ''}
+        <div style="margin-top:.55rem;font-size:.84em;color:var(--text-secondary)">🎯 Calibrated <strong style="color:${r.p_hold >= 0.93 ? '#64b5f6' : 'var(--text-primary)'}">P(hold ${r.current_position}) = ${pHoldPct(r.p_hold)}%</strong> — odds the ${r.current_position} side survives to close (A1/T3 model; ⚡ late-entry fires at ≥93%)</div>` : ''}
       </div>` : '';
 
     els.ptbGrid.innerHTML = `<div class="ptb-card ptb-card-wide" style="border-color:${dirColor(dir)}">

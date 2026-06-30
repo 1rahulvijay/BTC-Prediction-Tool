@@ -108,6 +108,8 @@ FORCE_MAIN_RETRAIN = (
     os.getenv("BTC_FORCE_MAIN_RETRAIN", "0") == "1"
     or os.getenv("BTC_OVERNIGHT_TRAIN_ALL", "0") == "1"
 )
+RETRAIN_COMPLETION_MARKER = os.getenv("BTC_RETRAIN_COMPLETION_MARKER", "").strip()
+HEAD_RETRAIN_COMPLETE = os.getenv("BTC_HEAD_RETRAIN_COMPLETE", "0") == "1"
 # Main prediction-loop tick interval (seconds). Inference is the heaviest per-tick work, but
 # predictions are only RECORDED every 60s+ (per-horizon) and the live price/charts/Polymarket
 # windows run on their own fast tickers (0.25s / 1s) — so the heavy loop can run slower with no
@@ -128,6 +130,36 @@ def _fresh_status() -> dict:
         "elapsed_seconds": 0.0,
         "error": None,
     }
+
+
+def _write_retrain_completion_marker(trained_model) -> bool:
+    """Atomically mark a requested full retrain complete only after heads and main saved."""
+    if not RETRAIN_COMPLETION_MARKER:
+        return False
+    if not HEAD_RETRAIN_COMPLETE:
+        logger.warning("[TRAIN] Full-retrain marker not written: one or more standalone heads failed.")
+        return False
+    try:
+        payload = {
+            "completed_at": time.time(),
+            "historical_days": HISTORICAL_DAYS,
+            "model_arch": MODEL_ARCH_VERSION,
+            "horizons": list(trained_model.horizons),
+            "model_features": int(trained_model.model_num_features),
+            "train_split_frac": float(trained_model.train_split_frac),
+            "heads_complete": True,
+            "model_trained": bool(trained_model.is_trained),
+        }
+        os.makedirs(os.path.dirname(RETRAIN_COMPLETION_MARKER), exist_ok=True)
+        tmp = RETRAIN_COMPLETION_MARKER + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, RETRAIN_COMPLETION_MARKER)
+        logger.info("[TRAIN] Full retrain completion marker written: %s", RETRAIN_COMPLETION_MARKER)
+        return True
+    except Exception as exc:
+        logger.error("[TRAIN] Could not write full-retrain marker: %s", exc)
+        return False
 
 
 @asynccontextmanager
@@ -261,17 +293,19 @@ cascade_monitor = CascadeMonitor()
 model.cascade_monitor = cascade_monitor
 backtester = Backtester()
 verifier = PredictionVerifier()
-model_verifier = PerModelVerifier(horizons=(1, 3, 5, 7, 10, 15, 30))
+model_verifier = PerModelVerifier(horizons=(5, 15))   # pruned 2026-06-21: dropped 3/7/10/30
 # 1m/3m/7m/10m are PRACTICE mirrors (Polymarket's real BTC windows are 5m/15m):
 # same rule, same grading — they accrue evidence fast and map every horizon's
 # betting behavior; only 5m/15m are real markets.
-price_to_beat_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30))
+price_to_beat_tracker = PriceToBeatTracker(horizons=(5, 15))   # pruned 2026-06-21: tradeable markets only
 # Binance-priced MIRROR of the same up/down game — anchored on the live Binance feed
-# (the model's native data) instead of Pyth. In-memory only (persist=False) so it cannot
-# collide with the Pyth tracker's rows in the shared `price_to_beat` table. Powers the
-# "Binance — Price to Beat" tab; rebuilds live after a restart (no rehydration).
-price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(1, 3, 5, 7, 10, 15, 30), persist=False)
-exchange_verifier = PerVenueVerifier(horizons=(5, 15, 30))
+# (the model's native data) instead of Pyth. Now PERSISTS with source="binance" (source-prefixed
+# ids, so it never collides with the Pyth rows in the shared `price_to_beat` table) — this lets the
+# timeframe / time-of-day analysis cover the Binance anchor too. Pyth-only auxiliary recorders
+# (persistence/champion snapshots) and the boot rehydration stay source-gated. The in-memory UI strip
+# still rebuilds live after a restart (we don't rehydrate the mirror); the DB accrues for analysis.
+price_to_beat_binance_tracker = PriceToBeatTracker(horizons=(5, 15), persist=True, source="binance")
+exchange_verifier = PerVenueVerifier(horizons=(5, 15))   # pruned 2026-06-21: dropped 30m
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
 regime_engine = MarketRegime()
@@ -411,7 +445,7 @@ async def pyth_price_poller():
                 data_state["pyth_price_ts"] = time.time()
         except Exception:
             pass
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.75)   # fresher anchor for the price-to-beat panel (was 1.5s)
 
 
 async def price_to_beat_ticker():
@@ -513,6 +547,17 @@ async def price_to_beat_ticker():
                     list(price_to_beat_binance_tracker.latest_round.values()), venue="binance")
             except Exception:
                 pass
+        except Exception:
+            pass
+        # Fast price-to-beat push (1s) so the Pyth-anchored panel doesn't wait for the heavy ~3s
+        # main payload. Lightweight: just the live latest rounds for both trackers (no accuracy/
+        # recent — those change slowly and ride the main payload). Crash-safe.
+        try:
+            await broadcast({
+                "type": "ptb_tick",
+                "pyth": price_to_beat_tracker.latest(),
+                "binance": price_to_beat_binance_tracker.latest(),
+            })
         except Exception:
             pass
         await asyncio.sleep(1.0)
@@ -817,7 +862,12 @@ def handle_trade(trade):
     order_flow.process_trade(trade)
     data_state["order_flow"] = order_flow.get_summary()
     data_state["order_flow"]["freshness_ms"] = trade["freshness_ms"]
-    data_state["order_flow_updated_ms"] = int(time.time() * 1000)  # wall-clock: DETECTS disconnects (§5bw)
+    _ms_now = int(time.time() * 1000)
+    data_state["order_flow_updated_ms"] = _ms_now  # wall-clock: DETECTS disconnects (§5bw)
+    # TRADE-specific freshness (2026-06-28): depth alone refreshes order_flow_updated_ms, which left
+    # cvd/vpin/large_trade dead-zero through a silent multi-day trade-feed outage. The feature-log +
+    # feed-health warning key off THIS, so a trade outage can't hide behind a live depth stream again.
+    data_state["last_trade_ms"] = _ms_now
 
     # Fire and forget parquet log
     import database
@@ -1008,7 +1058,7 @@ def build_scoreboard(predictions: list, verification: dict) -> dict:
     by_h = {p.get("horizon"): p for p in (predictions or [])}
     acc = _safe_dict(verification.get("accuracy")) if verification else {}
     board = {}
-    for h in (5, 15, 30):
+    for h in (5, 15):
         p = by_h.get(h) or {}
         a = _safe_dict(acc.get(h) or acc.get(str(h)))
         board[h] = {
@@ -1282,9 +1332,38 @@ async def train_model(target_model=None):
     # leaving 3m and 7m with no trained model). Pass true highs/lows so the
     # triple-barrier labels use real intrabar extremes.
     seq_t0 = time.time()
-    logger.info("[TRAIN] Building lookback sequences for horizons=%s...", target_model.horizons)
+    feature_row_count = len(features)
+    sequence_features = target_model._select_model_features(features)
+    sequence_rows = max(0, feature_row_count - max(target_model.horizons) - LOOKBACK)
+    sequence_bytes = sequence_rows * LOOKBACK * sequence_features.shape[1] * 4
+    memmap_threshold_mb = max(0, _env_int("BTC_SEQUENCE_MEMMAP_THRESHOLD_MB", 2048))
+    sequence_memmap_path = None
+    if memmap_threshold_mb and sequence_bytes >= memmap_threshold_mb * 1024 * 1024:
+        os.makedirs(HISTORICAL_CACHE_DIR, exist_ok=True)
+        for _old_name in os.listdir(HISTORICAL_CACHE_DIR):
+            if not (_old_name.startswith("training_sequences_") and _old_name.endswith(".mmap")):
+                continue
+            _old_path = os.path.join(HISTORICAL_CACHE_DIR, _old_name)
+            try:
+                if time.time() - os.path.getmtime(_old_path) > 3600:
+                    os.remove(_old_path)
+            except OSError:
+                pass
+        sequence_memmap_path = os.path.join(
+            HISTORICAL_CACHE_DIR, f"training_sequences_{os.getpid()}.mmap")
+    logger.info(
+        "[TRAIN] Building lookback sequences for horizons=%s using %s model features (raw=%s, storage=%s, estimated=%.2f GiB)...",
+        target_model.horizons,
+        sequence_features.shape[1],
+        features.shape[1],
+        "disk-memmap" if sequence_memmap_path else "RAM",
+        sequence_bytes / (1024 ** 3),
+    )
+    # The learners never consume retired raw columns. Prune before sequence expansion so a
+    # 150-day run allocates ~3.6 GB (69 columns), not ~7.0 GB (136 columns), with identical inputs.
+    del features
     X, Y, Ymag = build_sequences(
-        features,
+        sequence_features,
         closes,
         lookback=LOOKBACK,
         horizons=target_model.horizons,
@@ -1292,10 +1371,12 @@ async def train_model(target_model=None):
         highs=highs,
         lows=lows,
         return_magnitude=True,
+        memmap_path=sequence_memmap_path,
     )
+    del sequence_features
     # P4.3 regime alignment: label every training row with the SAME HMM that routes at
     # serving time, so the regime experts train on the partition they answer for. X rows
-    # correspond to build_sequences' loop range(LOOKBACK, len(features)-max_h) with decision
+    # correspond to build_sequences' loop range(LOOKBACK, feature_row_count-max_h) with decision
     # close index == i, so the label list aligns 1:1 with X. Defensive: any failure → None
     # → train() falls back to the legacy threshold clustering (no crash, no behaviour change).
     regime_labels = None
@@ -1304,7 +1385,7 @@ async def train_model(target_model=None):
         _reg_by_close = regime_engine.classify_series(closes, volumes)
         regime_labels = [
             _reg_by_close[i] if i < len(_reg_by_close) else "RANGE"
-            for i in range(LOOKBACK, len(features) - _max_h)
+            for i in range(LOOKBACK, feature_row_count - _max_h)
         ]
         if hasattr(X, "shape") and len(regime_labels) != X.shape[0]:
             logger.warning("[TRAIN] P4.3 label/X length mismatch (%s vs %s) — disabling alignment.",
@@ -1341,19 +1422,35 @@ async def train_model(target_model=None):
             await loop.run_in_executor(
                 None, functools.partial(target_model.train, X, Y, Ymag,
                                         regime_labels=regime_labels))
+        except Exception:
+            if isinstance(X, np.memmap):
+                try:
+                    X.flush()
+                    X._mmap.close()
+                except Exception:
+                    pass
+            if sequence_memmap_path:
+                try:
+                    os.remove(sequence_memmap_path)
+                except OSError:
+                    pass
+            raise
         finally:
             backend_state["is_training"] = False
         backend_state["last_train_time"] = time.time()
         # Record the TRAIN-SPLIT BOUNDARY so the backtest can evaluate strictly
-        # held-out candles. train() fits on the first 80% of samples; sample k's
+        # held-out candles. train() exposes the exact configured split; sample k's
         # decision candle is kl_snapshot[LOOKBACK + k], so the last in-sample
-        # decision candle is LOOKBACK + 0.8*n - 1. Without this, a latest-12000
-        # backtest right after training overlaps ~28% TRAINING rows — silently
-        # inflating every reported accuracy. Persisted so a restart that loads
+        # decision candle is LOOKBACK + split_idx - 1. Persisting the exact split
+        # prevents post-training validation from overlapping fitted rows. A restart that loads
         # models from disk (no retrain) keeps the same honest boundary.
         try:
             _n_samp = int(X.shape[0])
-            _b_idx = min(LOOKBACK + int(_n_samp * 0.8) - 1, len(kl_snapshot) - 1)
+            _split_idx = int(getattr(target_model, "train_split_idx", 0))
+            if not (0 < _split_idx <= _n_samp):
+                _split_frac = float(getattr(target_model, "train_split_frac", 0.8))
+                _split_idx = int(_n_samp * min(max(_split_frac, 0.5), 0.98))
+            _b_idx = min(LOOKBACK + _split_idx - 1, len(kl_snapshot) - 1)
             _b_ts = int(kl_snapshot[_b_idx]["time"])
             backend_state["train_boundary_ts"] = _b_ts
             with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
@@ -1363,17 +1460,20 @@ async def train_model(target_model=None):
         except Exception as _be:
             logger.warning(f"[TRAIN] Could not record train boundary: {_be}")
         logger.info("[TRAIN] Model training complete in %.1fs", time.time() - train_started)
-        # Release training intermediates back to the OS promptly. The sequence tensor alone
-        # is ~1.3GB (43k × 60 × 126 float32) and the OOF/stacker arrays add more; they are
-        # locals (freed at return) but CPython's allocator holds the pages without an
-        # explicit collect, leaving the process bloated for hours after training. The
-        # MODELS themselves stay resident on purpose — live inference needs them; the
-        # pickles in saved_models/ are the restart-time copy, not a swap-out.
+        # Release training intermediates and remove the long-window disk-backed tensor.
         try:
-            del X, Y, Ymag, features
+            if isinstance(X, np.memmap):
+                X.flush()
+                X._mmap.close()
+            del X, Y, Ymag
             import gc
             gc.collect()
-            logger.info("[TRAIN] Training intermediates released (gc.collect).")
+            if sequence_memmap_path:
+                try:
+                    os.remove(sequence_memmap_path)
+                except OSError as _rm_error:
+                    logger.warning("[TRAIN] Could not remove sequence memmap: %s", _rm_error)
+            logger.info("[TRAIN] Training intermediates released (gc.collect, memmap removed).")
         except Exception:
             pass
     else:
@@ -1956,7 +2056,7 @@ async def run_historical_replay_background(days: int = 7, horizons: list[int] = 
                                            stateful: bool = False):
     """Run saved-model replay inside the backend process to avoid DuckDB writer conflicts."""
     global replay_task
-    horizons = horizons or [5, 15, 30]
+    horizons = horizons or [5, 15]
     started = time.time()
 
     def _progress(evt: dict):
@@ -1993,7 +2093,7 @@ async def run_historical_replay_background(days: int = 7, horizons: list[int] = 
             days=max(1, min(int(days), 30)),
             start_ms=None,
             end_ms=None,
-            horizons=sorted(set(valid_horizons)) or [5, 15, 30],
+            horizons=sorted(set(valid_horizons)) or [5, 15],
             max_samples=max(1, min(int(max_samples), 5000)),
             step=max(1, int(step)),
             offset=LOOKBACK,
@@ -2133,7 +2233,7 @@ from collections import deque as _deque
 # *actual* confidence scale. A 3-class direction model rarely exceeds ~0.55, so a
 # fixed 0.64 bar makes everything NEUTRAL. The bar is clamped between recent
 # percentiles so a controlled fraction of the most-confident signals always pass.
-_recent_conf = {hh: _deque(maxlen=400) for hh in [1, 3, 5, 7, 10, 15, 30]}
+_recent_conf = {hh: _deque(maxlen=400) for hh in [5, 15]}   # pruned 2026-06-21
 
 # Stage 1+2 precision engine: isotonic calibration (auto-activates at >=150 resolved
 # leans/horizon) + shrunk empirical precision bins. Fitted off the event loop in the
@@ -2143,23 +2243,37 @@ precision_engine = PrecisionEngine()
 
 
 def _confluence(p: dict, of: dict) -> dict:
-    """Stage 3: per-prediction setup grade. Counts independent confirmations of the lean:
-    committed model lean (not the two-way fallback), regime quality (LOW_VOLATILITY was the
-    weakest cell in live evidence), and three order-flow agreements (CVD, large-trade flow,
-    book imbalance). Grade A ≈ the high-precision subset worth betting; C ≈ skip."""
+    """Stage 3 setup-quality LABEL (logged/displayed only — NOT a live gate; no bet/abstain/champion
+    decision reads this). Regime is the primary discriminator per live evidence
+    (DUCKDB_METRICS_ANALYSIS_2026-06-21 §F): RANGE/LOW_VOLATILITY are the only regimes above coin-flip
+    (RANGE 59%, Wilson-LB 52%); TRENDING_UP/HIGH_VOLATILITY are the weakest (~46%). Order-flow agreement
+    (CVD, large-trade flow, book imbalance) is a weak secondary confirmation. Grade A ≈ favorable regime
+    with majority flow confirmation; C ≈ adverse/unconfirmed.
+
+    NOTE: the regime edge is NOT yet confirmed forward (shadow recent-window LB < 50% — see
+    regime_gate_shadow.py), so this remains a measurement label that lets the setup_fingerprint recorder
+    validate it going forward. Promoting regime to a real decision gate needs the shadow LB to hold > 50%
+    AND explicit sign-off."""
     lean = p.get("rawDirection")
     if lean not in ("UP", "DOWN"):
         return {"score": 0, "grade": "C", "checks": {"model_lean": False}}
     sgn = 1.0 if lean == "UP" else -1.0
-    checks = {
-        "model_lean": True,
-        "regime_ok": p.get("regime") not in ("LOW_VOLATILITY", "UNKNOWN"),
+    regime = p.get("regime") or "UNKNOWN"
+    flow = {
         "cvd_agrees": sgn * float(of.get("cvd_1m", 0.0) or 0.0) > 0,
         "large_trades_agree": sgn * float(of.get("large_trade_delta", 0.0) or 0.0) > 0,
         "book_agrees": sgn * float(of.get("obi_5", 0.0) or 0.0) > 0,
     }
-    score = int(sum(checks.values()))
-    grade = "A" if score >= 4 else ("B" if score >= 3 else "C")
+    flow_score = int(sum(flow.values()))                      # 0..3
+    regime_tier = (2 if regime in ("RANGE", "LOW_VOLATILITY")  # favorable
+                   else 0 if regime in ("TRENDING_UP", "HIGH_VOLATILITY")  # adverse
+                   else 1)                                    # neutral: TRENDING_DOWN / UNKNOWN
+    score = regime_tier + flow_score                          # 0..5
+    grade = "A" if (regime_tier == 2 and flow_score >= 2) else ("B" if score >= 3 else "C")
+    # `regime_favorable` / `flow_agree` are the keys the scoreboard chips read (main.js); emit them so
+    # the UI reflects the new regime tier instead of always showing ✗.
+    checks = {"model_lean": True, "regime": regime, "regime_tier": regime_tier,
+              "regime_favorable": regime_tier == 2, "flow_agree": flow_score >= 2, **flow}
     return {"score": score, "grade": grade, "checks": checks}
 
 
@@ -2529,6 +2643,7 @@ async def main_loop():
             )
             try:
                 await train_model()
+                _write_retrain_completion_marker(model)
                 await broadcast({"type": "status", "step": "step-model", "msg": "Model trained"})
                 logger.info("[BOOT] Background startup training complete.")
                 _set_status(
@@ -2738,6 +2853,18 @@ async def main_loop():
             live_sig_hist = signal_buffer.get_aligned_series(
                 [k["time"] for k in recent_klines]
             )
+            # LIVE PARITY FIX (2026-06-28): get_aligned_series fills every UNCOVERED candle with a 0.0
+            # default, and build_features_from_klines.series() then uses that all-zero array INSTEAD of the
+            # live order_flow snapshot -> cvd_1m/cvd_5m/cvd_change/large_trade_* went DEAD-ZERO live (proven
+            # by [feat-diag]: of.cvd_1m=-1.63 but sighist[-1]=0 -> feature=0). Training masks this with the
+            # backfill overlay; live serving has none. Drop the keys the live order_flow already provides so
+            # series() broadcasts the LIVE value (the live equivalent of the train-time overlay). VPIN is
+            # included too (2026-06-28): features.py:1146 now passes of.get("vpin"), so popping it lets the
+            # live analyzer vpin land. NOTE vpin is a slow warmup -- 50 buckets x 15 BTC = 750 BTC of spot
+            # volume (~1h continuous) and the deque resets on restart -- so it reads 0 until warm (cold-start,
+            # not a bug).
+            for _msk in ("cvd_change", "cvd_1m", "cvd_5m", "large_trade_delta", "large_trade_imbalance", "vpin"):
+                live_sig_hist.pop(_msk, None)
             # Build features off the event loop. This is a heavy synchronous numpy job
             # (~0.3s/tick on the live window) and running it inline stalls WebSocket
             # pings — the stale-feed/ping-timeout disconnects seen in the UI. (#6)
@@ -2948,8 +3075,12 @@ async def main_loop():
                             # §5bw: only log when the order-flow feed is ALIVE. A disconnect makes
                             # the microstructure half of the vector dead-zero; logging those rows
                             # POISONS the retrain set (the overnight run logged 881 all-zero rows).
-                            _of_upd = data_state.get("order_flow_updated_ms", 0)
-                            if _of_upd and (now_ms - _of_upd) <= 5000:
+                            # TRADE freshness, not just "order-flow updated": depth alone refreshes
+                            # order_flow_updated_ms, so cvd/vpin/large_trade can be dead-zero while the
+                            # §5bw guard stays green — a silent multi-day outage hid exactly this
+                            # (2026-06-28). Log ONLY on fresh trades; warn LOUDLY (rate-limited) otherwise.
+                            _tr_upd = data_state.get("last_trade_ms", 0)
+                            if _tr_upd and (now_ms - _tr_upd) <= 5000:
                                 try:
                                     database.log_feature_vector(
                                         now_ms,
@@ -2959,6 +3090,14 @@ async def main_loop():
                                     )
                                 except Exception as _fe:
                                     logger.debug(f"B1 feature-vector log skipped: {_fe}")
+                            else:
+                                _lw = data_state.get("_trade_stale_warn_ms", 0)
+                                if now_ms - _lw > 60000:
+                                    data_state["_trade_stale_warn_ms"] = now_ms
+                                    _age = (now_ms - _tr_upd) / 1000.0 if _tr_upd else -1.0
+                                    logger.warning("[feed] TRADE stream stale (%.0fs) — cvd/vpin/large_trade "
+                                                   "dead-zero; predictions degraded + feature-log paused. "
+                                                   "Check the spot aggTrade feed.", _age)
                             # GEX recorder (start the clock on options positioning) —
                             # once per cycle, same guard. Crash-safe; never affects serving.
                             try:
@@ -2977,7 +3116,7 @@ async def main_loop():
                         # Durably log A/B variant predictions for this recorded id.
                         ab_runner.persist(pred_id, h, now_ms)
                         # Per-venue: snapshot exchange prices for this directional call.
-                        if h in (5, 15, 30) and p.get("direction") in ("UP", "DOWN"):
+                        if h in (5, 15) and p.get("direction") in ("UP", "DOWN"):
                             exchange_verifier.record(p["direction"], h, current_venue_prices(data_state), now_ms)
 
                         # Per-model live accuracy: record every base model's vote.
@@ -3196,7 +3335,7 @@ async def main_loop():
                 # NOT the `hit` column: on gated rows (the majority) hit=avoid_success,
                 # TRUE when the lean was WRONG, which would invert the cascade-on vs
                 # cascade-off accuracy comparison that auto-enables/disables the cascade.
-                if h in [3, 5]:
+                if h == 15:   # cascade TARGET (15m<-5m, cascade_map={15:5}); pruned 2026-06-21
                     raw_dir = v.get("raw_direction", v.get("direction"))
                     move = float(v.get("actual_move_usd") or 0.0)
                     if raw_dir in ("UP", "DOWN") and move != 0.0:
@@ -3523,14 +3662,14 @@ async def api_backtest():
 @app.post("/api/historical-replay/run")
 async def api_historical_replay_run(days: int = 7, max_samples: int = 1000,
                                     step: int = 1, stateful: bool = False,
-                                    horizons: str = "5,15,30"):
+                                    horizons: str = "5,15"):
     try:
         parsed_horizons = [
             int(x.strip()) for x in str(horizons).replace(";", ",").split(",")
             if x.strip()
         ]
     except Exception:
-        parsed_horizons = [5, 15, 30]
+        parsed_horizons = [5, 15]
     scheduled = schedule_historical_replay(days, parsed_horizons, max_samples, step, stateful)
     return {
         "scheduled": scheduled,
@@ -3620,7 +3759,7 @@ async def get_scorecard():
                "horizons": {}, "mirror": {}, "partial_candle_buckets": []}
         conn = database._connect()
         try:
-            for h in [1, 3, 5, 7, 10, 15, 30]:
+            for h in [5, 15]:   # pruned 2026-06-21: dropped 3/7/10/30
                 try:
                     r = conn.execute(f"""
                         SELECT COUNT(*),
@@ -3642,7 +3781,7 @@ async def get_scorecard():
                     }
                 except Exception as e:
                     out["horizons"][h] = {"error": str(e)}
-            for h in (1, 3, 5, 7, 10, 15, 30):
+            for h in (5, 15):   # pruned 2026-06-21: dropped 3/7/10/30
                 try:
                     rows = conn.execute(f"""
                         SELECT COALESCE(lean_source,'model'), COUNT(*),

@@ -24,7 +24,7 @@ MODELS = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"]  # sgd retired in v6
 
 
 class PerModelVerifier:
-    def __init__(self, horizons=(1, 3, 5, 7, 10, 15, 30), neutral_band=0.0008):  # match main verifier (cost floor)
+    def __init__(self, horizons=(5, 15), neutral_band=0.0008):  # pruned 2026-06-21; match main verifier (cost floor)
         self.horizons = list(horizons)
         self.neutral_band = neutral_band
         self.pending: list[dict] = []

@@ -67,6 +67,7 @@ def main():
     dir_ver = _import_version("backend", "train_directional_keeper")
     act_ver = _import_version("backend", "train_activity_keeper")
     champ_ver = _import_version("backend", "train_champion_meta")
+    path_forecaster_ver = _import_version("backend", "train_path_forecaster")
 
     heads = [
         # versioned heads — retrain on MISSING or version change
@@ -76,6 +77,9 @@ def main():
          "cmd": [PY, os.path.join("backend", "train_signed_quantiles.py")]},
         {"name": "persistence", "out": os.path.join(SM, "persistence_model.pkl"), "ver": pers_ver,
          "cmd": [PY, os.path.join("backend", "train_persistence_model.py")]},
+        {"name": "path_forecaster", "out": os.path.join(SM, "path_forecaster.pkl"),
+         "ver": path_forecaster_ver,
+         "cmd": [PY, os.path.join("backend", "train_path_forecaster.py")]},
         {"name": "bigmove", "out": os.path.join(SM, "bigmove_keeper_model.pkl"), "ver": bm_ver,
          "cmd": [PY, os.path.join("backend", "train_bigmove_keeper.py")]},
         {"name": "bigdrop", "out": os.path.join(SM, "bigdrop_keeper_model.pkl"), "ver": bd_ver,
@@ -97,7 +101,15 @@ def main():
          "cmd": [PY, os.path.join("backend", "build_fingerprints_historical.py"), "--days", DAYS]},
     ]
 
+    # These heads have NOISE / insufficient-data GATES: they legitimately exit 0 WITHOUT writing an
+    # artifact when the signal fails the gate (beat/magnitude/path) or data is too thin
+    # (champion_meta/fingerprints). For them a missing/stale artifact is a valid "no signal, not saved"
+    # outcome and must NOT be counted as a failure — otherwise the full-retrain completion marker never
+    # gets written and start.bat re-runs the entire (18-36h) cycle on every boot. Only a NONZERO EXIT
+    # (a real crash) fails an optional head. (Bug found 2026-06-22 during the pre-360d-run audit.)
+    OPTIONAL_HEADS = {"champion_meta", "beat", "magnitude", "path", "fingerprints"}
     print(f"[heads] version-aware head training (days={DAYS}, force={args.force})")
+    failures = []
     for h in heads:
         exists = os.path.exists(h["out"])
         if args.force:
@@ -118,12 +130,31 @@ def main():
         print(f"[heads] {'WOULD TRAIN' if args.dry_run else 'TRAIN'} {h['name']:16} ({why})")
         if args.dry_run:
             continue
+        before_mtime = os.path.getmtime(h["out"]) if os.path.exists(h["out"]) else None
+        optional = h["name"] in OPTIONAL_HEADS
         try:
-            subprocess.run(h["cmd"], cwd=ROOT, check=False)
+            result = subprocess.run(h["cmd"], cwd=ROOT, check=False)
+            after_mtime = os.path.getmtime(h["out"]) if os.path.exists(h["out"]) else None
+            if result.returncode != 0:
+                failures.append((h["name"], f"exit={result.returncode}"))
+            elif optional and (after_mtime is None or (before_mtime is not None and after_mtime <= before_mtime)):
+                # exit 0 but no fresh artifact: a noise-gated head that correctly declined to save.
+                print(f"[heads] OK    {h['name']:16} (exit 0; noise/data gate -> not saved, valid)")
+            elif after_mtime is None:
+                failures.append((h["name"], "expected output missing"))
+            elif args.force and before_mtime is not None and after_mtime <= before_mtime:
+                failures.append((h["name"], "forced run did not refresh output"))
         except Exception as e:
             print(f"[heads] {h['name']} training error (continuing): {e}")
-    print("[heads] done.")
+            failures.append((h["name"], str(e)))
+    if failures:
+        print(f"[heads] completed with {len(failures)} failure(s):")
+        for name, reason in failures:
+            print(f"[heads] FAIL  {name:16} ({reason})")
+        return 1
+    print("[heads] done: all requested heads completed successfully.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

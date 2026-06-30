@@ -26,7 +26,7 @@ from train_beat_classifier import ticks_to_ohlc, build_beat_features, FEATURE_NA
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "path_model.pkl")
-HORIZONS = (3, 5, 7, 10, 15, 30)
+HORIZONS = (5, 15)   # pruned 2026-06-21: only the tradeable markets (path labels have no 1m)
 CLASSES = ["CHOP", "UP_DIRECT", "UP_THEN_DOWN", "DOWN_DIRECT", "DOWN_THEN_UP"]
 _CIX = {c: i for i, c in enumerate(CLASSES)}
 

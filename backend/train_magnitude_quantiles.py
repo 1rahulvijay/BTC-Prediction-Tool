@@ -26,7 +26,7 @@ from train_beat_classifier import (ticks_to_ohlc, build_beat_features, FEATURE_N
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "magnitude_model.pkl")
-HORIZONS = (1, 3, 5, 7, 10, 15, 30)
+HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30
 QUANTILES = (0.1, 0.5, 0.9)
 MAX_SAMPLES = 40_000
 

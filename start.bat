@@ -6,6 +6,12 @@ REM All app-generated files (DuckDB, signal_history.pkl, saved_models, cache) li
 REM this project's data\ folder. IMPORTANT: keep OneDrive sync OFF for the Documents folder
 REM so its sync service / IDE indexers cannot lock these files mid-write.
 set "BTC_DATA_DIR=%PROJECT_ROOT%data"
+REM === 5m UP-TILT FIX (serving, no retrain) =============================
+REM Symmetric up-vs-down dead-zone applied to 5m ONLY (15m is already balanced: tilt -0.0pt).
+REM Neutralizes the measured +34pt 5m UP-lean skew by sending marginal coin-flip calls to
+REM NEUTRAL instead of the slightly-higher side. Set to 0 to revert. After a day, verify with:
+REM   python backend\probe_direction_tilt.py
+if not defined BTC_DIR_MARGIN_5 set "BTC_DIR_MARGIN_5=0.015"
 REM === TRAINING WINDOW (DAYS) ============================================
 REM Historical training window in DAYS. 40 = current (v5-classbal run, 2026-06-12):
 REM   +33%% samples vs 30, dilutes the one-sided -21%% month, no RAM risk on 16GB
@@ -20,12 +26,26 @@ REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore
 REM head. Set BTC_HISTORICAL_DAYS=180 (or 360) and big-move/up/down/drop/activity all retrain on
 REM that window. 180d is comfortable for the tiny heads; 360d works but the FIRST build downloads
 REM ~that many days of spot aggTrades (multi-GB, cached after) and the heads train ~1-2h.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=100"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=360"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
 REM set BTC_BACKFILL_DAYS=60  (or 90) here or in the environment — all scripts follow it.
 if not defined BTC_BACKFILL_DAYS set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
+REM One-shot full retrain: marker is written only after all heads and the main ensemble save.
+set "BTC_RETRAIN_COMPLETION_MARKER=%BTC_DATA_DIR%\saved_models\full_retrain_%BTC_HISTORICAL_DAYS%d_complete.json"
+if "%BTC_FORCE_360_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
+if exist "%BTC_RETRAIN_COMPLETION_MARKER%" (
+    set "BTC_FORCE_HEAD_RETRAIN=0"
+    set "BTC_FORCE_MAIN_RETRAIN=0"
+    set "BTC_OVERNIGHT_TRAIN_ALL=0"
+    echo [mode] Completed %BTC_HISTORICAL_DAYS%d bundle found. Models remain frozen.
+) else (
+    set "BTC_FORCE_HEAD_RETRAIN=1"
+    set "BTC_FORCE_MAIN_RETRAIN=1"
+    set "BTC_OVERNIGHT_TRAIN_ALL=1"
+    echo [mode] No completion marker. Forcing one full %BTC_HISTORICAL_DAYS%d retrain.
+)
 REM === TRAIN/HOLDOUT SPLIT ===============================================
 REM Fraction of data used to FIT the base models. The remaining tail is the HOLDOUT,
 REM used to (a) conformal-calibrate the magnitude bands and (b) score the OOS backtest.
@@ -36,17 +56,23 @@ REM in-sample, so it is intentionally not allowed.
 if not defined BTC_TRAIN_SPLIT_FRAC set "BTC_TRAIN_SPLIT_FRAC=0.98"
 REM =======================================================================
 REM Run a validation backtest automatically on startup (1 = on, 0 = off).
-REM It runs in the BACKGROUND after the app is ready, so it does not block live trading.
-if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=1"
+REM OFF by default (2026-06-19): the replay is CPU-bound (BTC_BACKTEST_MAX_ROWS candles x 7 horizons)
+REM and, in background threads, it starves the async event loop on this 16GB box for several minutes
+REM post-boot -> the live price freezes and predictions lag ~30s until it finishes. It is validation
+REM only (not needed for live serving). Run it on demand instead: POST /api/backtest when the box is
+REM idle, or set BTC_RUN_STARTUP_BACKTEST=1 here for a one-off validated boot.
+if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=0"
 REM Backtest window: recent N rows (faster) or 0 = full historical replay (heavy on a laptop).
 if not defined BTC_BACKTEST_MAX_ROWS set "BTC_BACKTEST_MAX_ROWS=12000"
-REM Specialist-head move buckets in dollars. Used by big-move, big-up, big-down,
-REM big-drop, and activity/range heads. Each horizon has:
-REM   meaningful | large | extreme
-REM The first value is the binary training event boundary; all three are saved
-REM for interpretation and future UI labels.
-REM Format: horizon_minutes:meaningful|large|extreme;...
-if not defined BTC_MOVE_BUCKETS_USD_BY_HORIZON set "BTC_MOVE_BUCKETS_USD_BY_HORIZON=1:10|20|40;3:20|35|70;5:30|60|100;7:40|80|140;10:50|100|180;15:60|120|300;30:100|200|600"
+REM Specialist-head move buckets in dollars (big-move/up/down/drop/activity). Each horizon has
+REM   meaningful | large | extreme  — the first value is the binary training boundary.
+REM AUTO-DERIVE (default, recommended): the trainers compute these from the ACTUAL move
+REM   distribution of the matrix on every retrain (p75 / p90 / p97 = top-quartile / top-10% /
+REM   top-3%), so "big move" stays a genuinely notable event at ANY BTC price level — absolute
+REM   dollar buckets otherwise go stale as price re-prices ($30/5m is top-quartile at $65k, noise
+REM   at $130k). Tune the percentiles with BTC_MOVE_BUCKET_PCTS (default 0.75,0.90,0.97).
+REM MANUAL OVERRIDE (optional): uncomment the next line to PIN fixed dollar buckets instead of auto.
+REM set "BTC_MOVE_BUCKETS_USD_BY_HORIZON=1:35|60|100;3:60|105|190;5:80|140|240;7:95|160|290;10:115|195|340;15:140|240|420;30:200|335|580"
 REM FREEZE MODE (set to 1 for this 16GB machine): 1 = no auto/scheduled retraining, so the
 REM model is STABLE and the live feed NEVER freezes (a background retrain pegs all cores for
 REM hours and this box has no headroom for that). 0 = auto-improve, but on 16GB the feed WILL
@@ -57,7 +83,7 @@ REM purged walk-forward showed ALL horizons at the information ceiling (1m 0.36 
 REM below_chance) — retraining cannot lift that, it only burns ~6h and freezes the feed. The
 REM saved v8 model's arch MATCHES the code, so boot LOADS it (no startup retrain). Set back to
 REM 0 only for a deliberate, operator-chosen retrain (e.g. new features / longer window).
-if not defined BTC_FREEZE_MODEL set "BTC_FREEZE_MODEL=1"
+set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
 set "BTC_MAIN_LOOP_SEC=3"
@@ -65,12 +91,16 @@ REM Booster thread cap: training uses this many cores, leaving the rest for the 
 REM 12 = overnight mode (browser/IDE closed): ~20-25%% faster train, feeds still get 4
 REM cores so the signal recorder keeps accruing coverage during the train. Drop to 10 if
 REM you want to actively use the dashboard while it trains.
-if not defined BTC_TRAIN_THREADS set "BTC_TRAIN_THREADS=12"
+if not defined BTC_TRAIN_THREADS set "BTC_TRAIN_THREADS=8"
 REM Cap the OTHER parallel libs (HistGradientBoosting/numpy/BLAS use OpenMP, NOT n_jobs) to
 REM the same budget — without this they'd still grab all 16 cores and freeze the feed.
-if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=12"
-if not defined OPENBLAS_NUM_THREADS set "OPENBLAS_NUM_THREADS=12"
-if not defined MKL_NUM_THREADS set "MKL_NUM_THREADS=12"
+if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=8"
+if not defined OPENBLAS_NUM_THREADS set "OPENBLAS_NUM_THREADS=8"
+if not defined MKL_NUM_THREADS set "MKL_NUM_THREADS=8"
+REM 360-day laptop safety. The full sequence tensor is disk-backed; each direction
+REM learner uses a representative sample spanning history plus a recent tail.
+if not defined BTC_SEQUENCE_MEMMAP_THRESHOLD_MB set "BTC_SEQUENCE_MEMMAP_THRESHOLD_MB=1024"
+if not defined BTC_DIRECTION_MAX_SAMPLES set "BTC_DIRECTION_MAX_SAMPLES=40000"
 REM Retrain at most ~once a day so each retrain learns from a meaningful chunk of NEW data
 REM (and the UI isn't freezing every few hours). 86400s = 24h.
 if not defined BTC_AUTO_RELEARN_COOLDOWN_SEC set "BTC_AUTO_RELEARN_COOLDOWN_SEC=86400"
@@ -90,7 +120,31 @@ REM set "BTC_STACKER_MAX_SAMPLES=4000"
 REM set "BTC_SGD_MAX_ITER=250"
 REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
 
+if "%BTC_VALIDATE_STARTUP%"=="1" (
+    echo [validate] days=%BTC_HISTORICAL_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
+    echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%
+    echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB%
+    echo [validate] marker=%BTC_RETRAIN_COMPLETION_MARKER%
+    exit /b 0
+)
+
 echo Starting BTC Quantum Trader...
+
+REM The profit-proof recorder is a lightweight standalone process. Start it before the
+REM heavy backfills so quotes and official settlements keep accruing during long training.
+REM Set BTC_SKIP_PM_RECORDER=1 only for offline work. DuckDB enforces a single writer.
+if "%BTC_SKIP_PM_RECORDER%"=="1" (
+    echo [recorder] Polymarket recorder skipped: BTC_SKIP_PM_RECORDER=1.
+) else (
+    echo [recorder] Starting Polymarket quote + official-settlement recorder...
+    start "BTC Polymarket Recorder" /min cmd /k call "%PROJECT_ROOT%start_recorder.bat"
+)
+if "%BTC_SKIP_MICROSTRUCTURE_RECORDER%"=="1" (
+    echo [recorder] Microstructure recorder skipped: BTC_SKIP_MICROSTRUCTURE_RECORDER=1.
+) else (
+    echo [recorder] Starting L2 and cross-exchange microstructure recorder...
+    start "BTC Microstructure Recorder" /min cmd /k call "%PROJECT_ROOT%start_microstructure_recorder.bat"
+)
 
 REM === TRADE-FEATURE BACKFILL (incremental) ==============================
 REM Updates data\trade_features_backfill.parquet BEFORE the app starts so the
@@ -120,8 +174,9 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
 )
 echo [0/3] c2. Rebuilding the 1m research matrix to the BTC_HISTORICAL_DAYS window. This is
 echo          the SINGLE knob that drives ALL specialist heads (big-move/up/down/drop/activity):
-echo          set BTC_HISTORICAL_DAYS=180 and every head trains on 180 days. Skips instantly
+echo          current window=%BTC_HISTORICAL_DAYS% days. Every requested head uses this source window.
 echo          only when the matrix coverage and source mtimes are already valid:
+set "BTC_HEAD_RETRAIN_COMPLETE=0"
 python backend\build_research_matrix.py --days %BTC_HISTORICAL_DAYS%
 if errorlevel 1 (
     echo [0/3c2] Research-matrix build failed or coverage is too low.
@@ -132,9 +187,14 @@ if errorlevel 1 (
     if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (
         python backend\train_heads.py --force
     ) else (
-    python backend\train_heads.py
+        python backend\train_heads.py
     )
-    if errorlevel 1 echo [0/3d] Head training had an issue - continuing.
+    if errorlevel 1 (
+        set "BTC_HEAD_RETRAIN_COMPLETE=0"
+        echo [0/3d] Head training had an issue. Completion marker will NOT be written.
+    ) else (
+        set "BTC_HEAD_RETRAIN_COMPLETE=1"
+    )
 )
 echo [0/3] e. Data-quality health check - last 3 days - report only:
 python backend\data_quality_audit.py --days 3

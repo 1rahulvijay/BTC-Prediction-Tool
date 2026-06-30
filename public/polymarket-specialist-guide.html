@@ -55,6 +55,34 @@
   <tr><td>Big-up / big-down</td><td>Specialist side confirmation.</td><td>Confirmation/conflict only. Never trade it alone.</td></tr>
   <tr><td>Activity quiet</td><td>Not enough range/fuel.</td><td>Downgrades weak calls to WAIT.</td></tr>
   <tr><td>Quantile band</td><td>Expected zone, not exact price.</td><td>Skip if reward room is thin or the band straddles the line.</td></tr>
+  <tr><td>Regime</td><td>Market state: calm <span class="good">RANGE</span>/<span class="good">LOW_VOLATILITY</span> vs <span class="bad">TRENDING</span>/<span class="bad">HIGH_VOLATILITY</span>.</td><td>Prefer RANGE/LOW_VOLATILITY (~59–63% in recent live evidence); be cautious in TRENDING_UP/HIGH_VOLATILITY (~46%).</td></tr>
+</table>
+</div>
+
+<h2>How To Take Action</h2>
+<div class="card">
+<p><b>Default is NO BET.</b> 5m/15m BTC direction is a coin-flip — live: <b>49.8% over 8,039 settled rounds</b>. <span class="bad">WAIT</span> and <span class="bad">AVOID</span> are correct outputs on most windows. You act only when the market <b>misprices</b> a calibrated edge — never just because a head leans.</p>
+<table>
+  <tr><th>Step</th><th>Check</th><th>Stop / skip if…</th></tr>
+  <tr><td>1</td><td>Market is real — 5m or 15m only</td><td>1/3/7/10m is a practice mirror → never fund</td></tr>
+  <tr><td>2</td><td>Champion label is SETUP or stronger, P(hold) high &amp; stable</td><td>WAIT / AVOID / flipping lean → sit out</td></tr>
+  <tr><td>3</td><td>Regime favorable — <span class="good">RANGE</span> or <span class="good">LOW_VOLATILITY</span></td><td><span class="bad">TRENDING_UP</span> / <span class="bad">HIGH_VOLATILITY</span> → be cautious / skip (~46% vs ~59–63%)</td></tr>
+  <tr><td>4</td><td>Big-drop not HIGH against your side; quantile band clears the line</td><td>Big-drop HIGH on a long, or band straddles the line → skip</td></tr>
+  <tr><td>5</td><td><b>THE GATE:</b> <code>fair_value − ask − costs − buffer &gt; required_edge</code></td><td>Ask too rich → <span class="warn">NO_EDGE</span>, no bet</td></tr>
+  <tr><td>6</td><td>Size small; manage live via P(hold) / advice (HOLD / LOCK IN / EXIT)</td><td>—</td></tr>
+</table>
+<p class="muted">The model is never the edge by itself — only the mispriced market price is. Regime preference is a recent-evidence tendency, still being confirmed forward.</p>
+</div>
+
+<h2>What Each Champion Action Means</h2>
+<div class="card">
+<table>
+  <tr><th>Action</th><th>Meaning</th><th>Do</th></tr>
+  <tr><td class="bad">AVOID / WAIT</td><td>Feed, regime, or edge not there</td><td>Sit out</td></tr>
+  <tr><td class="bad">AVOID_LONG</td><td>High big-drop risk — do not buy the UP side</td><td>Sit out (DOWN only if confirmed)</td></tr>
+  <tr><td class="warn">WATCH_UP / WATCH_DOWN · SETUP · LEAN</td><td>Probability is there, but no tradeable edge yet</td><td>Watch — do <b>not</b> bet</td></tr>
+  <tr><td class="warn">NO_EDGE</td><td>Right side, but the ask is too rich</td><td>Wait for a cheaper ask</td></tr>
+  <tr><td class="good">PAPER_BET</td><td>Gate cleared — fair value beats ask after buffer</td><td>The only take-action signal (paper-only until edge is proven)</td></tr>
 </table>
 </div>
 

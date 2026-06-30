@@ -109,18 +109,17 @@
       </header>
 
       <nav class="app-tabs" aria-label="Dashboard views">
-        <button class="app-tab active" data-view="technical">Technical + Live Feed</button>
-        <button class="app-tab" data-view="analysis">Decision Center</button>
-        <button class="app-tab" data-view="models">Models &amp; Signals</button>
-        <button class="app-tab" data-view="binance">📈 Binance</button>
+        <button class="app-tab active" data-view="analysis">🧭 Decision</button>
+        <button class="app-tab" data-view="technical">📈 Markets &amp; Live Feed</button>
+        <button class="app-tab" data-view="binance">₿ Bitcoin</button>
         <button class="app-tab" data-view="polymarket">🎯 Polymarket</button>
-        <button class="app-tab" data-view="binancepm">🟡 Binance · Price to Beat</button>
+        <button class="app-tab" data-view="diagnostics">🔬 Diagnostics</button>
         <a class="app-tab" href="/guide.html" target="_blank" rel="noopener"
            style="text-decoration:none" title="Plain-English guide: every metric, every signal, how to decide">📖 Guide</a>
       </nav>
 
       <!-- Dashboard Grid -->
-      <main class="dashboard-grid" id="technical-view">
+      <main class="dashboard-grid hidden" id="technical-view">
         <!-- ═══ LEFT COLUMN: Chart ═══ -->
         <section class="panel chart-panel" id="chart-panel">
           <div class="panel-header">
@@ -355,7 +354,7 @@
       </main>
 
       <!-- Plain-English Analysis Tab -->
-      <main class="analysis-view hidden" id="analysis-view">
+      <main class="analysis-view" id="analysis-view">
 
         <!-- Decision-first cockpit: the simplest top-level flow -->
         <section class="decision-cockpit" id="decision-cockpit">
@@ -368,13 +367,8 @@
             <div class="decision-time-box">
               <span>Choose decision timeframe</span>
               <div class="tf-subtabs" id="tf-subtabs">
-                <button class="tf-tab active" data-tf="1">1 Min</button>
-                <button class="tf-tab" data-tf="3">3 Min</button>
-                <button class="tf-tab" data-tf="5">5 Min</button>
-                <button class="tf-tab" data-tf="7">7 Min</button>
-                <button class="tf-tab" data-tf="10">10 Min</button>
+                <button class="tf-tab active" data-tf="5">5 Min</button>
                 <button class="tf-tab" data-tf="15">15 Min</button>
-                <button class="tf-tab" data-tf="30">30 Min</button>
               </div>
             </div>
           </div>
@@ -425,6 +419,8 @@
           </div>
         </section>
 
+        <details class="pa-group">
+          <summary>FSR-PPO strategy challenger (experimental)</summary>
         <section class="analysis-section fsr-ppo-section" id="fsr-ppo-section">
           <div class="analysis-section-header">
             <h2>FSR-PPO Strategy Challenger</h2>
@@ -433,7 +429,8 @@
           <div class="fsr-ppo-grid" id="fsr-ppo-grid"></div>
           <div class="fsr-ppo-recent" id="fsr-ppo-recent"></div>
         </section>
-        
+        </details>
+
         <!-- Persistent Global Overview Board -->
         <section class="global-overview-board">
           <div class="analysis-section-header">
@@ -516,7 +513,7 @@
           </div>
         </section>
 
-        <details class="pa-group" open>
+        <details class="pa-group">
           <summary>Performance &amp; accuracy — is this timeframe getting it right?</summary>
         <section class="analysis-section">
           <div class="analysis-section-header">
@@ -682,10 +679,12 @@
 
         </div> <!-- End tf-dynamic-content -->
         
-        <!-- BTC Direction Scoreboard (5m / 15m / 30m) — our model, conviction-gated -->
+        <details class="pa-group">
+          <summary>Direction scoreboard &amp; multi-exchange consensus (reference — direction is ~coin-flip)</summary>
+        <!-- BTC Direction Scoreboard (5m / 15m) — our model, conviction-gated -->
         <section class="analysis-section scoreboard-section" id="scoreboard-section">
           <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
-            <h2>BTC Direction Scoreboard — 5m, 15m &amp; 30m</h2>
+            <h2>BTC Direction Scoreboard — 5m &amp; 15m</h2>
             <p>Only <strong>high-conviction</strong> calls (our ensemble, order flow and regime all agreeing) are marked actionable. Trade fewer, win more.</p>
           </div>
           <div class="scoreboard-grid" id="scoreboard-grid">
@@ -703,6 +702,7 @@
             <!-- Populated by JS: per-venue price + deviation -->
           </div>
         </section>
+        </details>
 
       </main>
 
@@ -754,7 +754,7 @@
           </div>
         </section>
 
-        <!-- Price-to-Beat 5m, 15m & 30m -->
+        <!-- Price-to-Beat 5m & 15m -->
         <section class="analysis-section" id="ptb-section">
           <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
             <h2>Price to Beat — 5m, 15m &amp; 30m</h2>
@@ -763,7 +763,6 @@
           <div class="ptb-tabs" id="ptb-tabs">
             <button class="ptb-tab active" data-ptb="5">5 Min</button>
             <button class="ptb-tab" data-ptb="15">15 Min</button>
-            <button class="ptb-tab" data-ptb="30">30 Min</button>
           </div>
           <div class="ptb-grid" id="ptb-grid">
             <!-- Populated by JS: 5m and 15m round cards -->
