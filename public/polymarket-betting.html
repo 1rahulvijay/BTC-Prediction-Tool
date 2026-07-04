@@ -28,14 +28,6 @@
   .t-good{border-left-color:var(--blue);background:linear-gradient(90deg,rgba(100,181,246,.06),transparent)}
   .t-ok{border-left-color:var(--amber);background:linear-gradient(90deg,rgba(255,183,77,.06),transparent)}
   .t-skip{border-left-color:var(--red);background:linear-gradient(90deg,rgba(255,82,82,.06),transparent)}
-  .tier-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
-  .tier-rank{font-size:1.5em;font-weight:800}
-  .tier-name{font-size:1.15em;font-weight:700}
-  .tier-verdict{margin-left:auto;font-size:.85em;font-weight:700;padding:3px 10px;border-radius:20px}
-  .v-bet{background:rgba(0,230,118,.15);color:var(--green)}
-  .v-small{background:rgba(100,181,246,.15);color:var(--blue)}
-  .v-maybe{background:rgba(255,183,77,.15);color:var(--amber)}
-  .v-no{background:rgba(255,82,82,.15);color:var(--red)}
   table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.9em}
   th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
   th{color:var(--dim);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.4px}
@@ -58,23 +50,18 @@
 
 <header>
   <h1>🎯 Polymarket Betting Decision Guide</h1>
-  <div class="sub">How to turn the model's outputs into a bet — ranked best to worst, with every grade and indicator explained.</div>
+  <div class="sub">One frozen rule + operational discipline. Everything else was tested and killed —
+  this guide teaches only what survived. <b>Everything remains PAPER-ONLY.</b></div>
 </header>
 
 <div class="toc">
   <a href="#tldr">⚡ 30-second version</a>
-  <a href="#actionstrip">🎯 The ACTION strip (one-line verdict)</a>
-  <a href="#frozenrule">📜 The frozen paper rule + tile</a>
-  <a href="#panel">🟦 The Round State panel (current surface)</a>
-  <a href="#action">✅ How to take action</a>
-  <a href="#path-engine">🛤️ The path engine — how to trade the window</a>
-  <a href="#tiers">🏆 The decision tiers (best → worst)</a>
-  <a href="#lifecycle">🔄 In-window states (offside / flipped / lock-in)</a>
-  <a href="#flip">🌀 Why the lean flips — and why that's a SKIP</a>
-  <a href="#fields">🔢 Every field on the card</a>
-  <a href="#flow">🧭 The decision flowchart</a>
-  <a href="#magnitude">📐 Reading the magnitude forecast</a>
-  <a href="#mistakes">🚫 Bet-killers</a>
+  <a href="#rule">📜 THE RULE</a>
+  <a href="#whichside">👉 Which side, what price</a>
+  <a href="#evidence">🧪 Why so simple</a>
+  <a href="#app">🖥️ Reading the app</a>
+  <a href="#discipline">✅ The 9 checks</a>
+  <a href="#dead">💀 Never do these</a>
   <a href="#honest">🧠 Honest math</a>
 </div>
 
@@ -82,461 +69,156 @@
 <h2 id="tldr">⚡ The 30-second version</h2>
 <div class="card t-best tier">
 <ol>
-  <li><b>Only bet when source = <span class="chip c-blue">MODEL lean</span></b> (never <span class="chip c-amber">⚠ WEAK / fallback</span> — those are coin-flips, measured).</li>
-  <li><b>If the lean is FLIPPING (changing UP↔DOWN every minute) → SKIP.</b> A flip means the model is near-50/50; instability <i>is</i> the no-edge signal. Stable conviction = real signal. <a href="#flip" style="color:var(--blue)">why →</a></li>
-  <li><b>The magnitude must project PAST the line</b> — "expects drop of $40 → projects $30 below beat" is real; "$8 drop, $20 to the line" is not. (It's a <i>typical</i> move, not a guarantee.)</li>
-  <li><b>Skip CHOP / STRETCH outlooks, and skip <span class="chip c-red">Grade C</span>.</b></li>
-  <li><b>The bet only profits if your win-rate &gt; the share price you pay.</b> 60% wins at 65¢ loses money.</li>
+  <li><b>BTC direction is a coin-flip. Permanently.</b> No model, grade, or indicator in this app picks UP/DOWN better than ~50%. Anything that claims to is context, not a signal.</li>
+  <li><b>The one measured edge:</b> in the <b>final ~30 seconds</b> of a 5m round, the market slightly underprices whichever side is <b>already winning</b>. Buy that leader at its real ask, hold to settlement. That's the whole strategy.</li>
+  <li><b>It's a structural average, not round-picking:</b> nothing — not P(Hold), not BTC state, not a 1,500-feature model — can tell WHICH rounds are better. So the rule fires on <i>every</i> qualifying round, identically.</li>
+  <li><b>The app's job is discipline, not cleverness:</b> right market, right seconds, real fresh ask, sane price, one entry. The app does this automatically on paper and shows you the ledger.</li>
+  <li><b>Nothing is real-money approved.</b> The rule must survive ≥500 live settled rounds with positive fee-adjusted EV first. The 📜 tile tracks that gate live.</li>
 </ol>
-<p style="margin:.6rem 0 0;color:var(--amber)"><b>Reality check:</b> 5m BTC direction is ~coin-flip for almost everyone. The edge is <b>selectivity</b> — bet only the few stable, high-grade, magnitude-clears windows; sit out the rest (which is most of them). Fewer bets, higher win rate. That's the whole game.</p>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="actionstrip">🎯 The ACTION strip — one line that tells you what to do (2026-07-02)</h2>
+<h2 id="rule">📜 THE RULE — <code>LATE_LEADER_30S_V1</code> (frozen)</h2>
 <div class="card">
-<p>Every 5m/15m card now <b>opens with one big color-coded instruction</b> — the composed verdict of every
-validated head, in plain English. Everything below it on the card is just the evidence. The states:</p>
 <table>
-  <tr><th>Strip says</th><th>Meaning</th><th>Do</th></tr>
-  <tr><td><span class="chip c-dim">🧭 PLAN: …</span></td><td>Window just opened, shares ~50/50. A 50c share on a coin-flip is <b>exactly fairly priced — buying either side now is −EV after fees, every time</b>. The strip instead tells you what EVENT this round type is waiting for (a spike to fade in CHOP, a late leader in TREND).</td><td>Nothing yet — know the plan</td></tr>
-  <tr><td><span class="chip c-blue">▶ BUY UP if ask ≤ 87c</span></td><td>The proven late-hold entry: ahead + late window + P(hold)≥93%. The cap already includes fee + 3c buffer — the profit condition is IN the number.</td><td>Check the live ask vs the cap</td></tr>
-  <tr><td><span class="chip c-blue">▶ PAPER-BET UP — edge +7c · stake 10%</span></td><td>A fresh executable ask cleared fair − fee − buffer; stake is quarter-Kelly, capped 10%.</td><td>Record the paper trade</td></tr>
-  <tr><td><span class="chip c-amber">✎ PAPER: fade → buy DOWN (62%)</span></td><td>An early touch in chop the fade model grades ≥55% to revert to anchor.</td><td>Paper only until the recorder proves after-cost edge</td></tr>
-  <tr><td><span class="chip c-green">✔ HOLD UP to close</span></td><td>Ahead, too late to enter fresh — ride it out.</td><td>Hold</td></tr>
-  <tr><td><span class="chip c-red">✖ SIT OUT / SKIP</span></td><td>Risk veto, quiet round, or a touch the model rejects.</td><td>Nothing — this is a win, not a failure</td></tr>
+  <tr><th>Market</th><td><b>BTC 5m Up/Down only</b> (the 15m variant runs as a separate shadow, earning its own evidence)</td></tr>
+  <tr><th>When</th><td>Evaluated <b>once</b> per round at <b>20–32 seconds before settlement</b></td></tr>
+  <tr><th>Side</th><td>The <b>current market leader</b> — the side with the higher bid</td></tr>
+  <tr><th>Price</th><td>The real executable <b>ask</b>, no older than 5 seconds, exact-round match. <b>Skip ask &lt; 60¢</b> (coin-flip zone) and ≥ 97¢ (no room)</td></tr>
+  <tr><th>Exit</th><td><b>Hold to settlement.</b> Winner pays $1, loser pays $0. No profit-taking, no stop — every early-exit variant tested worse</td></tr>
+  <tr><th>Size</th><td>1 paper share per round, one entry per round, no exceptions</td></tr>
+  <tr><th>Evidence</th><td>14,226 historical rounds at executable asks: <b>EV +2.5¢/share, 95%-LB +1.6¢, PF 1.22, 8/8 weeks positive</b>; independently re-confirmed on a fresh 30-day slice (+3.05¢, LB +1.55¢)</td></tr>
+  <tr><th>Status</th><td><span class="chip c-amber">PAPER ONLY</span> Promotion needs <b>n≥500 live settled rounds</b> with EV ≥ 2¢, LB &gt; 0, PF ≥ 1.2 — all green on the 📜 RULE STATUS tile. The rule passes or dies <b>as written</b>; no re-tuning is permitted, ever</td></tr>
 </table>
-<p>Under the strip you may see <b>🧠 Markets like this</b> — the app's live memory: it looks up the current
-state (P(hold), time left, lead size, regime) in its <b>own graded history</b> and shows
-<i>"n=156 similar late setups → held 96.2% (Wilson-LB 91.9%)"</i>. Validated on a temporal holdout
-(beats the global stats, near-perfectly calibrated). <b>It is evidence, not a prediction</b> — high hold odds
-are usually already in the share price; profit still needs the ask below fair.</p>
+<div class="card warn" style="margin-top:10px">
+<b>Expect ugly stretches.</b> The rule wins ~84% of rounds with small gains (~+7–15¢) and loses big when a high-ask leader flips (−75 to −96¢). A losing day at n=35 means nothing — early live data already swung +93¢ → −61¢ and back. That volatility is priced into the n≥500 gate. <b>Judge the tile at the gate, not the day.</b></div>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="frozenrule">📜 The frozen paper rule — LATE_LEADER_30S_V1 and its live tile</h2>
-<div class="card t-best tier">
-<p>After testing every entry/exit geometry on <b>14,226 settled rounds of real executable asks</b>, exactly ONE
-rule survived (EV +2.5c/share, lower-bound +1.6c, PF 1.22, positive 8/8 weeks — and every added "smart" gate
-made it WORSE, because the market already prices them):</p>
-<p class="big" style="text-align:center"><b>Final ~30s of a 5m round → buy the CURRENT LEADER at its ask →
-skip asks under 60c → one entry per round → hold to settlement.</b></p>
-<p>The app now <b>runs this rule on paper automatically</b> — every 5m round it evaluates at ~30s, books the
-paper trade from the same live quote the champion sees, and settles it at resolution. The
-<b>📜 RULE STATUS tile</b> (top of this tab) shows the accumulating verdict against the pre-declared
-promotion thresholds: <code>n≥500 settled · EV&gt;+2c · LB&gt;0 · PF≥1.2 · weeks stable</code> — plus a
-<b>recorder liveness</b> light (red = the quote bridge is stale and no evidence is accruing).</p>
-<p style="color:var(--amber)"><b>The discipline:</b> the rule passes or dies AS WRITTEN — no re-tuning, no
-threshold nudging. All targets green at n≥500 → it earns a micro-live discussion. Anything less → it dies
-like the others. Until then it is paper, and the tile is the only scoreboard that matters.</p>
-</div>
-
-<!-- ============================================================ -->
-<h2 id="panel">🟦 The Round State panel — the current betting surface</h2>
-<div class="card">
-<p>The app now leads with a <b>Round State</b> panel (a 5m and a 15m card at the top of the Polymarket tab). It
-replaces the misleading "UP 54% / DOWN 46%" mental model with synchronized questions the historical data can
-actually answer. It is <b>SHADOW / information-only</b> — it <i>never</i> places an order and does <b>not</b>
-change the Champion. Read it top-down; the big <b>Decision</b> word is the summary, and <b>"Why …"</b> is the reason.</p>
-
-<h3>What each row means</h3>
-<table>
-  <tr><th>Row</th><th>What it tells you</th><th>Bettable-looking value</th></tr>
-  <tr><td><b>Leader … leads $X</b></td><td>Which side is currently ahead of the price-to-beat line, and by how many dollars.</td><td>A clear leader, ≥ <b>$10</b> from the line</td></tr>
-  <tr><td><b>Decision</b></td><td><span class="chip c-amber">WAIT</span> / <span class="chip c-red">AVOID</span> / <span class="chip c-blue">PAPER</span> — the one-word verdict (mapping below).</td><td><span class="chip c-blue">PAPER</span> is the only "act" word — and only on paper</td></tr>
-  <tr><td><b>Leader holds</b></td><td>Calibrated <b>P(Hold)</b>: chance the already-ahead side finishes ahead. The single most reliable number on the card.</td><td>≥ <b>93%</b> in the final 15–120s</td></tr>
-  <tr><td><b>Flip risk</b></td><td>Independent shadow head: chance the leader crosses back before expiry. Shows its held-out AUC when live; <i>outside</i> the final 30–120s it falls back to <code>1 − P(Hold)</code>, explicitly labeled a settlement-failure proxy (not an any-cross probability).</td><td><span class="chip c-green">LOW</span>, and from the real head (not the proxy)</td></tr>
-  <tr><td><b>Move before expiry</b></td><td>Calibrated chance BTC still travels ≥ <b>$20 / $50 / $100</b> before the round ends. Risk/timing, <i>not</i> direction. Only emitted in the validated final 30–120s.</td><td>Low $50/$100 when you're the leader = safer hold</td></tr>
-  <tr><td><b>Round type</b></td><td>QUIET / CHOP / TREND / ACTIVE from the frozen opening-path head.</td><td>Context only — no type is a bet by itself</td></tr>
-  <tr><td><b>Better setup soon</b></td><td>Chance a similar path opportunity appears within the next 3 same-length rounds — this supports WAIT discipline.</td><td>High → comfortable to sit out and wait</td></tr>
-  <tr><td><b>Execution check</b></td><td><span class="chip c-red">WAITING FOR LIVE BOOK</span> / <span class="chip c-amber">NO EDGE</span> / <span class="chip c-blue">PAPER EDGE</span> — whether a fresh exact-round Polymarket ask exists and clears costs.</td><td><span class="chip c-blue">PAPER EDGE</span> (requires the recorder running — see below)</td></tr>
-  <tr><td><b>Why {action}</b></td><td>The plain-English reason for the decision. Read it every time.</td><td>—</td></tr>
-</table>
-
-<h3>The Decision word — what to actually do</h3>
-<table>
-  <tr><th>Decision</th><th>Means</th><th>Do</th></tr>
-  <tr><td><span class="chip c-amber">WAIT</span></td><td>Evidence or an executable price edge is incomplete (the default — most rounds).</td><td>Sit out — the correct action on ~90%+ of rounds</td></tr>
-  <tr><td><span class="chip c-red">AVOID</span></td><td>Champion reports a risk conflict / stale feed, or the round's anchor was captured late (incomplete history → fails closed).</td><td>Do not act this round</td></tr>
-  <tr><td><span class="chip c-blue">PAPER</span></td><td>Champion found a positive <i>simulated</i> quote edge (a cheap ask that clears P(Hold) − fee − buffer).</td><td><b>Record a paper entry only</b> — never real money yet</td></tr>
-</table>
-<div class="card warn" style="margin-top:12px">
-<b>Why you may only ever see WAIT right now.</b> The <b>Execution check</b> stays <span class="chip c-red">WAITING FOR LIVE BOOK</span> — and therefore <span class="chip c-blue">PAPER</span> is impossible — until the <b>live recorder</b> is running and has caught a clean round. The recorder (started by <code>start.bat</code>, or skip with <code>BTC_SKIP_PM_RECORDER=1</code>) writes fresh asks to <code>data/pm_live_quotes.json</code>; the app only unlocks the edge gate on an <b>exact-round ask no more than 5 seconds old</b>. No recorder → no live ask → no PAPER, by design (it refuses to fabricate a price). The shadow heads (holds/flip/shocks) still fill in; only the execution edge is gated.</div>
-</div>
-
-<!-- ============================================================ -->
-<h2 id="action">✅ How to take action — the actual workflow</h2>
-<div class="card">
-<p><b>Default = NO BET.</b> On 5m/15m BTC, direction is a coin-flip — live: <b>49.8% over 8,039 settled rounds</b>. Sitting out is the <i>correct</i> action on ~90%+ of windows; <span class="chip c-green">WAIT</span>/<span class="chip c-red">AVOID</span> are wins, not failures. You are hunting the rare window where the <b>market misprices a calibrated edge</b> — not trying to call every move.</p>
-
-<h3 id="whichside">👉 Which side (UP or DOWN), and from what price?</h3>
+<h2 id="whichside">👉 Which side, and from what price?</h2>
 <div class="card t-good tier">
-<p><b>Side = the LEADER. Not a direction forecast.</b> The Round State card names it for you — <b>"Leader: UP leads $23"</b>:</p>
+<p><b>Side = the LEADER. Never a forecast.</b> Every card names it: <b>"▲ UP leads $23"</b>.</p>
 <ul>
-  <li>Live price is <b>above</b> the price-to-beat → <b>UP</b> is the leader → you buy the <b>UP</b> share.</li>
-  <li>Live price is <b>below</b> the price-to-beat → <b>DOWN</b> is the leader → you buy the <b>DOWN</b> share.</li>
+  <li>Live price <b>above</b> the price-to-beat → <b>UP</b> is the leader → the UP share is the candidate.</li>
+  <li>Live price <b>below</b> the price-to-beat → <b>DOWN</b> is the leader → the DOWN share is the candidate.</li>
 </ul>
-<p>You are betting <i>"the side already ahead stays ahead"</i> — which is exactly what <b>P(Hold)</b> measures. You do <b>NOT</b> use the ensemble UP/DOWN arrow (that's the coin-flip, shown only as context). The old "buy the losing side / fade" play is <b>retracted</b> — don't do it.</p>
-
-<p><b>From what price = the live ask on that leader share, and only when it's cheap enough.</b> The entry point is the <b>current ask in cents</b>, gated by:</p>
-<div class="flow">Buy the LEADER share only when ALL are true:
-  • 15–120 seconds left
-  • leader is ≥ $10 from the price-to-beat line
-  • P(Hold) ≥ 93%
-  • a FRESH live ask exists (≤ 5s old)         ← requires the recorder running
-  • the ask is cheap enough that:
-        min(P(Hold), 0.91) − ask − taker_fee − 0.03 buffer  >  required_edge
-  → the card then shows  Decision = PAPER  and  Execution = PAPER EDGE</div>
-
-<p><b>Worked example.</b> 5m round, 70s left, price is $23 <i>above</i> the line → <b>UP is the leader</b>. P(Hold)=94% (fair value capped at 91c). Live <b>UP ask = 84c</b>. Taker fee ≈ 0.07·0.84·0.16 ≈ 1c; buffer 3c → 91 − 84 − 1 − 3 = <b>+3c edge</b> → <span class="chip c-blue">PAPER</span>: record a paper <b>buy of the UP share at 84c</b>. Same setup but <b>UP ask = 89c</b> → 91 − 89 − 1 − 3 = <b>−2c</b> → <span class="chip c-amber">NO EDGE</span>: right side, <i>too expensive</i> → <b>no bet</b>. The side is decided by who leads; the <b>bet/no-bet is decided by the ask price</b>.</p>
-
-<p style="color:var(--dim)"><b>Exit:</b> hold to settlement (the leader share pays $1 if it holds, $0 if it flips), or cut earlier if the recorder's bid no longer covers your cost and Flip risk jumps. <b>Never enter without a fresh live ask</b> — a model target, midpoint, or stale quote is not a tradeable price.</p>
-</div>
-
-<h3>The 6 steps (stop at the first one that fails)</h3>
-<ol>
-  <li><b>Market is real.</b> Only <b>5m & 15m</b> are bettable. 1/3/7/10m are practice mirrors — never fund them.</li>
-  <li><b>Use the already-ahead side, not a fresh direction forecast.</b> The 5m/15m ensemble is currently below 50% on resolved live direction, so it is context only. A late P(Hold) setup asks whether the side already ahead will remain ahead.</li>
-  <li><b>P(Hold) clears the structural gate.</b> Require 15–120 seconds left, at least $10 from the line, and calibrated P(Hold) ≥ 0.93. Count only the first qualifying entry in each round.</li>
-  <li><b>Feed and market quote are fresh.</b> The exact round must have an executable ask no more than five seconds old. A midpoint, model target, stale quote, or missing order book is not a price you can trade.</li>
-  <li><b>THE GATE — the only reason to place money.</b> The champion flags a <span class="chip c-green">PAPER_BET</span> candidate <b>only when</b>:
-    <div class="flow" style="margin:8px 0">fair_value − ask − costs − buffer  &gt;  required_edge</div>
-    In plain terms: the live Polymarket share (<b>ask</b>) is <b>cheaper than the model's fair value by more than the safety buffer</b>. A perfect-looking setup with a <i>rich</i> ask reads <span class="chip c-amber">NO_EDGE</span> → <b>no bet</b>. The model is <i>never</i> the edge by itself; the mispriced market price is.</li>
-  <li><b>Paper-track until independently proven.</b> Record the actual ask, fill, fee, outcome, and return. No real-money sizing is justified by the current sample.</li>
-</ol>
-
-<h3>Reading the champion's action word</h3>
-<table>
-  <tr><th>Action</th><th>What it means</th><th>Do</th></tr>
-  <tr><td><span class="chip c-red">AVOID / WAIT</span></td><td>No play — feed/regime/edge not there</td><td>Sit out</td></tr>
-  <tr><td><span class="chip c-red">AVOID_LONG</span></td><td>High big-drop risk — don't buy the UP side</td><td>Sit out (or look DOWN only if confirmed)</td></tr>
-  <tr><td><span class="chip c-amber">WATCH_UP / WATCH_DOWN · SETUP · LEAN</span></td><td>Probability is there, but <b>no tradeable edge yet</b></td><td>Watch — do <b>not</b> bet</td></tr>
-  <tr><td><span class="chip c-amber">NO_EDGE</span></td><td>Right side, but the ask is too rich (HIGH PROBABILITY, NO EDGE)</td><td>Wait for a cheaper ask</td></tr>
-  <tr><td><span class="chip c-green">PAPER_BET</span></td><td>A fresh ask cleared fair value after taker fee and a 3c buffer</td><td><b>Record a simulated entry only</b></td></tr>
-</table>
-
-<div class="card warn" style="margin-top:12px">
-<b>Still paper-only.</b> The audited recorder has only about <b>29 independent, trustworthy joined trades</b>; results change sign across 1c–5c buffers. That is far below proof. Every <span class="chip c-green">PAPER_BET</span> remains simulated until a large independent sample has positive fee-adjusted expectancy and a positive lower confidence bound.</div>
+<p><b>Price = the live ask on that leader share</b>, shown on every card in the <b>LIVE POLYMARKET SHARES</b> block
+(Buy = ask you'd pay · Sell now = bid you'd get · size = shares offered). The card's numbers ARE the real order
+book — refreshed every second, discarded if stale (&gt;5s) or from the wrong round.</p>
+<p><b>Worked example.</b> 5m round, 27s left, price $23 above the line → UP leads. UP ask = <b>84¢</b>.
+Taker fee ≈ 0.07·0.84·0.16 ≈ 1¢. If UP holds: +100 − 84 − 1 = <b>+15¢ profit</b>. If it flips: −85¢.
+The rule takes this bet every time it appears — because on <i>average across hundreds of rounds</i>, the
+84¢ ask underprices the ~86% hold-rate. Same round with ask 55¢ → <b>SKIP</b> (below 60¢ the underpricing
+disappears into coin-flip noise).</p>
 </div>
 
 <!-- ============================================================ -->
-<!-- ============================================================ -->
-<h2 id="path-engine">🛤️ The path engine — how to trade the window (any direction)</h2>
-<div class="card warn" style="border-color:var(--red)">
-<b>⚠️ RETRACTED / PAPER ONLY (2026-07-01) — read before trusting anything below.</b> A causal audit found the fade's
-profitable-looking win rate was a <b>1-minute look-ahead leak</b>: <b>80.6%</b> of $30 touches resolve the revert-or-stop
-<i>inside the same candle</i>, so OHLC cannot tell which came first. On the corrected <b>causal</b> test the fade wins only
-<b>~42%</b> (Wilson LB 40%), <b>below the 50% breakeven</b>, and loses money even on the BTC proxy before Polymarket costs.
-<b>The fade is NOT a deployable edge.</b> Live serving now <b>rejects it and shows PAPER ONLY</b> until a causal v5 retrain
-proves it on a forward, untouched month. The strongest real instrument is conditional <b>P(Hold)</b>, and even that only
-profits when <code>conservative P(Hold) − ask − fee − slippage − buffer &gt; 0</code>. Treat the sections below as
-<b>research/paper only</b>. Authoritative: <code>PROFITABILITY_AND_BETTING_VALIDATION_2026-07-01</code>,
-<code>ANCHOR_ROUNDTRIP_180D_RESULTS_2026-07-01</code>.</div>
+<h2 id="evidence">🧪 Why so simple — the evidence that killed everything else</h2>
 <div class="card">
-<p><b>This is a research instrument, not a validated market edge.</b> Direction (which way it closes) is a coin-flip — so you never bet the side from this model alone.
-The <b>path engine</b> instead forecasts the <i>shape</i> of the window: will it move, will it CHOP or TREND, will
-it touch an extreme early. All of that is <b>measured predictable out-of-sample (AUC 0.75–0.91)</b>. Polymarket
-lets you bet either side and exit on share-price moves, so you trade the path: <b>fade extremes in chop, ride
-trends, skip quiet.</b></p>
-
-<div class="card t-best tier" style="margin:10px 0">
-<b>👀 Watch the card — the fade in 4 steps:</b>
-<ol style="margin:.4rem 0 0">
-  <li><b>🕐 reversal window</b> — is it <span class="chip c-green">STRONG</span>? (favorable time = more/better setups)</li>
-  <li><b>▶ PLAY</b> — is it <span class="chip c-amber">FADE-SETUP</span>? (active chop, extremes likely)</li>
-  <li><b>🎯 TOUCHED</b> fires → record a <b>paper fade candidate</b>; do not treat P(reach anchor) as binary-share fair value.</li>
-  <li>Capture the actual entry ask, future exit bid, fees, and stop value. Without those, a BTC return to the anchor does not prove a profitable share trade.</li>
-</ol>
-<p style="margin:.4rem 0 0;color:var(--dim)">Skip if 🕐 WEAK, PLAY = SKIP/RIDE, P(reach anchor) &lt; 45%, or the touch is LATE. And for real money: only when the share ask is mispriced (the gate). Everything is PAPER until the recorder proves it.</p>
-</div>
-
-<h3>Read the <span class="big">▶ PLAY</span> on the PATH PLAN card first</h3>
+<p>The strategy is one line because <b>four independent tests</b> all reached the same verdict:
+<b>the ask already contains everything knowable about the round.</b></p>
 <table>
-  <tr><th>▶ PLAY</th><th>What the window will do</th><th>The trade (bet either side)</th></tr>
-  <tr><td><span class="chip c-amber">FADE-SETUP</span></td><td>active <b>CHOP</b> + an early extreme likely (both ±$50 get visited)</td><td><b>Wait for the early touch</b> of one side → the <i>losing</i> side's share is now cheap → <b>buy it</b> (bet the reversal) → exit as price reverts toward the anchor.</td></tr>
-  <tr><td><span class="chip c-green">RIDE</span></td><td>one-sided <b>TREND</b> (won't round-trip)</td><td><b>Don't fade.</b> The moving side likely keeps going — hold the winning side or stay out; a fade here loses.</td></tr>
-  <tr><td><span class="chip c-dim">SKIP</span></td><td><b>QUIET</b> — a large move is unlikely</td><td><b>Sit out.</b> No $ range to capture, no fade room.</td></tr>
-  <tr><td><span class="chip c-blue">WATCH</span></td><td><b>MIXED</b> — unresolved</td><td>Watch for the touch; don't pre-commit.</td></tr>
+  <tr><th>Test</th><th>Question</th><th>Verdict</th></tr>
+  <tr><td>Champion-gate lift (shuffled-gate nulls)</td><td>Do BTC-state gates ($20-lead, TREND, 15m-agreement) improve EV?</td><td><span class="chip c-red">NO</span> — they raise win% but the ask rises faster (p 0.74–0.97)</td></tr>
+  <tr><td>Setup-quality filters</td><td>Do P(Hold)/grade filters find better rounds?</td><td><span class="chip c-red">NO</span> — they just select into pricier asks</td></tr>
+  <tr><td>Early-window strategies</td><td>Is there edge before the final minute?</td><td><span class="chip c-red">NO</span> — the book is efficient early; every early entry ≈ 0 or negative</td></tr>
+  <tr><td>Complexity wall (ridge/poly/1,500 random features)</td><td>Can a large model rank rounds?</td><td><span class="chip c-red">NO</span> — shuffled-label null trades at the SAME EV as the real model</td></tr>
 </table>
-
-<h3>The fields behind the play (all calibrated)</h3>
-<ul>
-  <li><b>P(moves ≥$30 / $50)</b> — will it move enough to matter (AUC 0.85 / 0.91). Low → SKIP, there's nothing to trade.</li>
-  <li><b>ROUND-TRIP % + style</b> — CHOP (visits both sides) vs TREND. Out-of-sample, CHOP round-trips <b>24% / 48%</b> vs quiet <b>0.5% / 1.7%</b> → this is the fade-vs-ride call.</li>
-  <li><b>HIGH / LOW band</b> — where the extremes land (~50% empirical coverage). Your fade entry + revert-target zone.</li>
-  <li><b>expected close displacement</b> — typical net move size (calibrated in aggregate, noisy per single window).</li>
-</ul>
-
-<h3>🎯 When price TOUCHES — paper research only</h3>
-<p>The window opens; price spikes <b>$30</b> off the anchor (the price-to-beat). That spike makes the <i>losing</i>
-side's share cheap. The 🎯 <b>TOUCHED</b> line then shows the honest grade — <b>P(reach anchor)</b> = the model's odds
-this spike reverts back to the anchor (your take-profit) before extending:</p>
-<table>
-  <tr><th>🎯 TOUCHED shows</th><th>Meaning</th><th>Do</th></tr>
-  <tr><td><span class="chip c-green">P(reach anchor) ≥ 55%</span> + EARLY</td><td>A causal retrain may rank this as a stronger BTC reversion candidate</td><td><b>Paper-track only.</b> Record entry ask, exit bid, fees, and outcome.</td></tr>
-  <tr><td><span class="chip c-dim">P(reach anchor) &lt; 45%</span> or LATE</td><td>unlikely to revert (or no time left in the window)</td><td><b>SKIP.</b> A late touch almost never reverts — the model grades it ~0.</td></tr>
-  <tr><td><span class="chip c-amber">↔ 2nd-leg FADE</span></td><td>price moved through both sides of the anchor</td><td>Log a second paper candidate; do not assume either leg filled or exited profitably.</td></tr>
-</table>
-<p style="color:var(--dim)"><b>Previous 68–75% / 63–74% fade claims are retracted.</b> They used the completed one-minute touch candle, which contains prices observed after entry, and most touch candles had unknowable target/stop ordering. The live fade model is disabled until the causal pre-touch version is retrained and independently validated.</p>
-
-<h3>🕐 "Is this a favorable time?" — yes, the reversal-window chip</h3>
-<p>The PATH PLAN card shows a <b>🕐 reversal window</b> chip telling you whether reversals historically cluster at this time:</p>
-<table>
-  <tr><th>🕐 chip</th><th>Meaning</th><th>Do</th></tr>
-  <tr><td><span class="chip c-green">STRONG</span> (≥1.1× avg)</td><td>Historically more labeled reversals in this Europe/Warsaw hour</td><td>Observe and collect evidence; this is not permission to bet.</td></tr>
-  <tr><td><span class="chip c-dim">OK</span></td><td>average time</td><td>Trade normally; gate on P(reach anchor).</td></tr>
-  <tr><td><span class="chip c-amber">WEAK</span> (≤0.9× avg)</td><td>below-average (quiet hours)</td><td>Be <b>extra selective</b> — fewer good setups.</td></tr>
-</table>
-<p style="color:var(--dim)"><b>Read it right:</b> STRONG means "more/better reversal <i>setups</i> are likely now," <b>not</b>
-"guaranteed profit." It's a soft prior on <i>when to look</i>, not a bet trigger — you still only fade when
-P(reach anchor) ≥ 55% and (for real money) the share is mispriced.</p>
-
-<h3>🌆 "Isn't the direction model better in the CEST evening?" — the honest answer</h3>
-<p>Measured (2026-06-21, 18 time-cells over live rounds): <b>evening 20:00–24:00 CEST on 15m</b> was the single
-best cell — <b>61.8% win, Wilson-LB 51.4%, positive 7/8 days</b> — the only cell whose lower bound cleared 50%.
-<b>But</b> on the more recent window its lower bound fell to <b>46.3%</b>, and it was partly selection-biased,
-so it was <b>never promoted</b> — it lives as a shadow observation, and the soft time prior you see is the
-🕐 chip above (reversal setups, not direction). The broader truth: direction by hour/day/weekday sits at
-45–53% <i>everywhere</i> with every lower bound &lt;50% — <b>there is no clock you can bet by itself</b>.
-If the evening-15m cell re-proves itself on fresh data, it earns a feature; until then, treat "evening is
-better" as a hypothesis the data currently declines to confirm.</p>
-
-<div class="card warn" style="margin-top:12px">
-<b>The honest gate (do NOT skip this):</b> the path engine gives you <b>window-selection + timing + the fade grade</b>.
-It does <b>not</b> pick which side <i>settles</i>, and it is <b>not profit by itself.</b> A fade only pays if, at the
-touch, the cheap (losing) share is <i>actually mispriced</i> versus the reach-anchor odds — i.e. it still has to clear
-<code>fair_value − ask − taker_fee − buffer &gt; required_edge</code>. A BTC-price barrier scenario is not Polymarket P&amp;L. <b>Path features identify events to study; only recorded executable quotes and realized share outcomes can establish expectancy.</b> Until the recorder proves that edge after
-costs, treat every fade as <b>PAPER</b>.</div>
+<p><b>The conclusion:</b> the edge is a <b>structural intercept</b> — a constant few-cent average underpricing of
+the late leader — not conditional alpha. You cannot pick the good rounds; you can only take all of them at sane
+prices and let the average work. That's why the rule is frozen and why the app shows <i>discipline checks</i>,
+not "this round is special" scores.</p>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="brain">🧠 The two probability instruments (the betting brain)</h2>
+<h2 id="app">🖥️ Reading the app — the four surfaces</h2>
+
 <div class="card">
-<p>Two probabilities answer different questions. They must not be blended into one confidence score:</p>
-<ul>
-  <li><b>🎯 P(Hold) — conditional late-state probability.</b> "Price is already $X past the line with S seconds left; will this same side remain ahead?" The current decision-level audit is roughly 93% held for first qualifying 5m/15m entries, but it is still not profit without the market price.</li>
-  <li><b>📊 Direction / P(beat) — research context only.</b> "Will the window close above its open?" Current resolved 5m/15m ensemble accuracy is below 50%, so it is not a trustworthy standalone fair-value engine or bet trigger.</li>
-</ul>
-<p style="margin:.5rem 0 0"><b>The value rule:</b> a paper entry exists only when conservative P(Hold) exceeds the executable ask plus the exact taker fee plus a 3c safety buffer. High win probability at a rich price can still lose money.</p>
-</div>
+<h3>1 · The 📜 RULE STATUS tile (top of the Polymarket tab) — the only scoreboard that matters</h3>
+<p>One line: <code>n=X/500 · EV · LB · PF · win% · weeks+ · total</code> against the frozen promotion targets,
+plus <b>recorder liveness</b>, the <b>boot/code stamp</b> (<span class="chip c-green">code current ✓</span> or
+<span class="chip c-red">⚠ restart to load</span>), and the <b>by-ask breakdown</b>
+(<code>60-70¢ · 70-80¢ · 80-90¢ · 90¢+</code> EV each) — so a drawdown is attributable at a glance.
+Historically the EV lived in mid-priced asks; 90¢+ added ≈ 0.</p>
 
-<!-- ============================================================ -->
-<h2 id="tiers">🏆 The decision tiers — best to worst</h2>
-<p>Read the card top-down and find the <i>lowest</i> tier it fails. That's your bet quality.</p>
-
-<div class="tier t-best">
-  <div class="tier-head"><span class="tier-rank">S</span><span class="tier-name">LATE-ENTRY persistence</span>
-    <span class="tier-verdict v-bet">BET — biggest size</span></div>
-  <p>The <span class="chip c-green">⚡ LATE-ENTRY edge</span> chip is showing: &lt;2 min left, price already <b>$10+ ahead on the leaned side</b>, and the model still agrees. The bet has become "no reversal in N seconds" — the most reliable structure that exists.</p>
-  <table>
-    <tr><th>Field</th><th>What you want</th></tr>
-    <tr><td>Source</td><td><span class="chip c-blue">MODEL lean</span></td></tr>
-    <tr><td>Current move</td><td>Already <b>+$10 or more</b> on the lean side</td></tr>
-    <tr><td>Seconds left</td><td>15–120s</td></tr>
-    <tr><td>Live lean</td><td>Still matches the original lean</td></tr>
-  </table>
-  <p><b>Caveat:</b> the share price is usually expensive here (market sees it too) — profit per bet is small. Size up, expect thin margins.</p>
-</div>
-
-<div class="card warn" style="margin:10px 0">
-<b>⚠ Grade letters are not yet validated.</b> Early live data showed grades stratifying
-<i>inconsistently</i> (sometimes C beat A). The grade counts flow <i>agreement</i>, and full
-agreement can cluster at move <i>exhaustion</i> (everyone already leans that way → reversal
-risk). Until the per-grade win rates prove out at real sample size, treat A/B/C as a
-<i>hint</i>, not gospel — and lean harder on the things that ARE proven: stable (non-flipping)
-model leans, magnitude clearing the line, and the late-entry structure.
-</div>
-
-<div class="tier t-best">
-  <div class="tier-head"><span class="tier-rank">A</span><span class="tier-name">Grade-A model lean, magnitude clears the line</span>
-    <span class="tier-verdict v-bet">BET — full size</span></div>
-  <table>
-    <tr><th>Field</th><th>What you want</th></tr>
-    <tr><td>Source</td><td><span class="chip c-blue">MODEL lean</span> (committed, not fallback)</td></tr>
-    <tr><td>Setup grade</td><td><span class="chip c-green">A</span> (4–5 confirmations)</td></tr>
-    <tr><td>Magnitude</td><td>📐 Projected close clears the beat <b>by more than the band's low</b></td></tr>
-    <tr><td>Path outlook</td><td>HOLD or BREAKOUT toward the lean</td></tr>
-    <tr><td>Regime</td><td><span class="chip c-green">RANGE</span> or <span class="chip c-green">LOW_VOLATILITY</span> (measured-best); avoid <span class="chip c-red">TRENDING_UP</span> / <span class="chip c-red">HIGH_VOLATILITY</span></td></tr>
-  </table>
-</div>
-
-<div class="tier t-good">
-  <div class="tier-head"><span class="tier-rank">B</span><span class="tier-name">Grade-B model lean, magnitude agrees</span>
-    <span class="tier-verdict v-small">BET — half size</span></div>
-  <p>Model lean, <span class="chip c-amber">Grade B</span> (3 confirmations), and the magnitude forecast still projects past the line. Decent volume play, lower conviction than A.</p>
-</div>
-
-<div class="tier t-ok">
-  <div class="tier-head"><span class="tier-rank">C</span><span class="tier-name">Model lean, but magnitude is marginal</span>
-    <span class="tier-verdict v-maybe">ONLY if cheap shares</span></div>
-  <p>The sign is a real model lean, but 📐 the projected close barely clears the beat (inside the band's uncertainty). The direction is right but the move may not be big enough. <b>Only bet if the share price is cheap enough to cover the coin-flip-ish magnitude</b> — i.e. the market is underpricing it.</p>
-</div>
-
-<div class="tier t-skip">
-  <div class="tier-head"><span class="tier-rank">D</span><span class="tier-name">Weak / fallback lean</span>
-    <span class="tier-verdict v-no">SKIP</span></div>
-  <p><span class="chip c-amber">⚠ WEAK (fallback)</span> means the model was near-neutral and the side is just a probability tilt. <b>Measured ≈ coin-flip.</b> No grade, no magnitude, no bet — regardless of how tempting the price looks.</p>
-</div>
-
-<div class="tier t-skip">
-  <div class="tier-head"><span class="tier-rank">F</span><span class="tier-name">NO LEAN / CHOP / training</span>
-    <span class="tier-verdict v-no">SIT OUT</span></div>
-  <ul>
-    <li><b>NO LEAN — no bet:</b> the model is genuinely neutral. There is no play.</li>
-    <li><b>🧭 CHOP outlook:</b> "price will wobble ±$5 around the line, closing side near coin-flip." The line is exactly where the noise lives.</li>
-    <li><b>Model is training:</b> during a retrain the model can't commit. Every window is NO LEAN. Wait for it to finish.</li>
-  </ul>
-</div>
-
-<!-- ============================================================ -->
-<h2 id="lifecycle">🔄 In-window states — opened vs live</h2>
-<div class="card info">
-<p>A bet <b>locks at window-open</b>, so the big header (direction · grade) is the <b>snapshot at open</b>
-and stays fixed. The card then tracks the live market in two places <i>below</i> the header — and those,
-not the header, tell you how the bet is doing:</p>
+<h3>2 · The round cards (5m / 15m) — live state, three-second read</h3>
 <table>
-  <tr><th>Where</th><th>What it tells you</th></tr>
-  <tr><td><b>"Now: $… (±$X → UP/DOWN side)"</b></td><td>Which side price is on <i>right now</i>, and by how much. If it's on the opposite side of your bet, you're currently losing.</td></tr>
-  <tr><td><b>"live lean now …"</b> (small, amber)</td><td>The model's <i>current</i> lean. If it differs from the header, the model has changed its mind since open.</td></tr>
-  <tr><td><b>The advice box</b> (bordered)</td><td>The lifecycle coach — see below.</td></tr>
+  <tr><th>Layer</th><th>What it tells you</th></tr>
+  <tr><td><b>Verdict box</b></td><td>⏳ WAIT for the late window · ✓ HOLD to close · ✖ SIT OUT — the one-word state of the round</td></tr>
+  <tr><td><b>▲ UP leads $23 · ● HOLD 94% · ⏱ 27s</b></td><td>Leader, calibrated survival odds, countdown (amber under 60s = rule window approaching)</td></tr>
+  <tr><td><b>now / beat / BOOK</b></td><td>Prices + whether a fresh executable quote exists (<code>BOOK: EDGE ✓ / NO EDGE / WAITING</code>)</td></tr>
+  <tr><td><b>LIVE POLYMARKET SHARES</b></td><td>Both sides' real Buy (ask) / Sell-now (bid) / size, with quote age — the actual tradeable prices</td></tr>
+  <tr><td><b>Path strip + head tiles</b></td><td>Projected range, flip risk, ≥$20/$50/$100 odds, round type, similar-setups memory — <b>context and risk framing only</b>; none of these gate the rule (the evidence above is why)</td></tr>
+  <tr><td><b>model lean line (small)</b></td><td>The direction model's guess — ≈coin-flip, kept only for honesty</td></tr>
 </table>
-<p>So a header that says <b>UP · Grade C</b> while the live note says <b>"live lean now DOWN"</b> is
-<b>not a contradiction</b> — it's "you opened UP, the model has since flipped DOWN." The header is the
-photo at open; the live note is now.</p>
-<p><b>The advice box is what to act on:</b>
-<span class="chip c-green">HOLD</span> (on-side, model agrees → let it ride) ·
-<span class="chip c-green">LOCK IN</span> (ahead but the lean faded → sell to bank the small win) ·
-<span class="chip c-red">EXIT</span> (losing / model flipped against you → cut it to limit loss) ·
-<span class="chip c-amber">HOLD/WAIT</span> (mixed → watch). Read the advice box, not the frozen header, once a bet is live.</p>
+
+<h3>3 · The 📒 Trades tab — every action with its money consequence</h3>
+<p>Header totals (cents ≈ % of stake) → per-strategy scoreboard → <b>ALL / 5m / 15m horizon tabs</b> →
+per-strategy filter chips → the full blotter: time, strategy, side, <b>Bought @ (real ask)</b>,
+<b>Sold/settled (net)</b>, <b>BTC @ buy/exit (Pyth)</b>, P/L, result. SKIP / NO_QUOTE / NO_FILL rows are
+kept so win rates have honest denominators. Auto-refreshes every 30s.</p>
+
+<h3>4 · The 💀 Strategy lab — the kills, kept alive</h3>
+<p>Every dead strategy (scalp, early profit-take, straddle) plus the model-gated and edge-candidate variants
+runs as a live paper shadow next to its historical verdict. If a "dead" strategy turns green at real n, the
+kill gets re-examined — that's the point. Until then their red EVs are the ongoing proof the rule's simplicity
+is correct.</p>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="flip">🌀 Why the lean flips — and why a flipping lean is a SKIP</h2>
+<h2 id="discipline">✅ The 9 checks — the app's actual job</h2>
 <div class="card">
-<p>You'll see a card open <b>UP</b> and minutes later read <b>"live lean now DOWN."</b> That is
-<b>not the model being broken or indecisive</b> — it's the model being honest about a coin-flip.</p>
-<h3>What's actually happening</h3>
-<ul>
-  <li>On a weak window the model's true answer is <b>NEUTRAL</b>. The market still needs a side, so the card shows whichever way the probability tilts <i>by a hair</i> — 50.4% UP one moment, 49.6% the next.</li>
-  <li>The model <b>re-predicts every few seconds</b> on fresh price/flow. When the signal sits right at 50%, any tiny move pushes the tilt across the line. The "flip" is a near-zero number changing sign — there was never real conviction to abandon.</li>
-  <li><b>High-conviction calls do NOT flip.</b> A Grade-A 65%-one-side lean is anchored far from 50% and holds steady. <b>Only the weak ones flip.</b></li>
-</ul>
-<div class="card t-best tier" style="margin-top:10px">
-<b>The rule:</b> a lean that flips is the model telling you <b>"I don't know."</b> That instability
-<i>is</i> the no-edge signal. <b>If it's flipping, skip it.</b> Stability is the fingerprint of a real
-signal — bet the calm, conviction leans; ignore the flippers (which is most 5m/15m windows).
-</div>
-</div>
-
-<!-- ============================================================ -->
-<h2 id="fields">🔢 Every field on the card, decoded</h2>
-<div class="card">
-<table>
-  <tr><th>Field</th><th>Meaning</th><th>Bet signal</th></tr>
-  <tr><td><b>Price to beat (Pyth)</b></td><td>The locked line. Resolves UP if close ≥ this, DOWN otherwise. From Pyth (the settlement proxy), not Binance.</td><td>—</td></tr>
-  <tr><td><b>Header (direction · grade)</b></td><td>The model's call at window-OPEN — fixed once the bet locks. For live status read the "Now" line, "live lean now", and the advice box (see <a href="#lifecycle" style="color:var(--blue)">lifecycle</a>).</td><td>Stable UP/DOWN, not flipping</td></tr>
-  <tr><td><b>"live lean now …"</b></td><td>The model's CURRENT lean. If it differs from the header, the model flipped since open. If it keeps flipping → skip.</td><td>Matches header & stable</td></tr>
-  <tr><td><b>Source badge</b></td><td><span class="chip c-blue">MODEL</span> = committed lean (~the bettable class). <span class="chip c-amber">⚠ WEAK</span> = two-way tilt (coin-flip).</td><td><span class="chip c-green">MODEL only</span></td></tr>
-  <tr><td><b>Setup grade</b></td><td>A/B/C — flow confirmations (regime, CVD, large trades, book). <b>Not yet validated</b> — treat as a hint.</td><td>Prefer A/B; never rely on the letter alone</td></tr>
-  <tr><td><b>📐 Typical move + band</b></td><td>The model's <i>typical</i> move size for these conditions (median, with a 50% band). <b>Not a path call or a probability.</b></td><td>Band low should still clear the line</td></tr>
-  <tr><td><b>PRACTICE badge</b> (1/3/7/10m)</td><td>Only 5m & 15m are real Polymarket markets. 1/3/7/10m are practice mirrors — same grading, faster evidence, not bettable.</td><td>Bet 5m/15m only</td></tr>
-  <tr><td><b>Projected close vs beat</b></td><td>Now-price + the signed expected move, compared to the line.</td><td>Want it clearly on your side</td></tr>
-  <tr><td><b>🧭 Path outlook</b></td><td>Plain-English journey: HOLD / BREAKOUT / CHOP / STRETCH.</td><td>HOLD or BREAKOUT good; CHOP/STRETCH skip</td></tr>
-  <tr><td><b>Now / current move</b></td><td>Live price and signed $ vs the line right now.</td><td>Ahead on lean side = stronger</td></tr>
-  <tr><td><b>Seconds left</b></td><td>Time to resolution. Powers the late-entry structure.</td><td>15–120s + ahead = late-entry</td></tr>
-  <tr><td><b>Win-rate strip</b></td><td>"model X% (n) · all Y% (n)". Judge by <b>model</b>, trust only at n≥100.</td><td>model &gt; 55% with real n</td></tr>
-</table>
+<p>Since no model picks rounds, everything that matters is operational. The app verifies these automatically
+for every paper entry; if you ever act manually, this is the entire checklist:</p>
+<div class="flow">1. Is it a 5m round?                       (15m = separate shadow, separate evidence)
+2. Is it the final 20–32 seconds?          (earlier = no edge, later = no fill)
+3. Who is the current leader?              (higher bid — not the model, not your opinion)
+4. Is the ask ≥ 60¢ and &lt; 97¢?            (below 60¢ = coin-flip zone, above = no room)
+5. Is the quote FRESH?                     (≤5s old, exact round — stale quote = no trade)
+6. Is there size at the ask?              (the card shows it)
+7. Is latency acceptable?                  (a human clicking is ~1–3s behind the logged quote)
+8. Is the settlement join working?         (recorder live on the tile)
+9. ONE entry per round.                    (no re-entries, no doubling)</div>
+<p style="color:var(--dim);margin:.5rem 0 0">Any check fails → no trade → that IS the system working.
+Most rounds produce no entry; the rule's denominator counts them honestly.</p>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="flow">🧭 The decision flowchart</h2>
-<div class="flow">START: a 5m / 15m window is open
-│
-├─ Is the model TRAINING?  ─────────────────► YES → SIT OUT (no commits during retrain)
-│        │ no
-├─ Source = MODEL lean?  ───────────────────► NO (weak/fallback/no-lean) → SKIP
-│        │ yes
-├─ Is the lean FLIPPING (UP↔DOWN)?  ────────► YES → SKIP (near-50/50, no edge)
-│        │ no (stable)
-├─ Path outlook = CHOP or STRETCH?  ────────► YES → SKIP (noise lives at the line)
-│        │ no
-├─ 📐 Does projected close clear the beat
-│   by MORE than the band's low edge?  ─────► NO → only bet if shares are cheap (Tier C)
-│        │ yes
-├─ Setup grade?
-│        ├─ C  → SKIP
-│        ├─ B  → BET HALF size
-│        └─ A  → continue
-│
-├─ ⚡ LATE-ENTRY chip showing?  ────────────► YES → BET BIGGEST (persistence edge)
-│        │ no
-└─ BET FULL size  ──────────────────────────► (Grade-A model lean, magnitude clears)
-
-ALWAYS LAST CHECK:  is your win-rate > the share price you pay?
-                    60% wins @ 65¢ = losing.  60% wins @ 50¢ = printing.</div>
-
-<!-- ============================================================ -->
-<h2 id="magnitude">📐 Reading the magnitude forecast</h2>
-<div class="card">
-<p>The model forecasts <b>how far</b> price typically travels, with a 50% band. The card shows:</p>
-<p style="font-family:var(--font-mono);background:var(--card2);padding:12px 16px;border-radius:8px;border:1px solid var(--border)">
-📐 Typical <span style="color:var(--red)">drop ≈ $40</span> (50% band $22–$61) → projects close <b>$62,296</b> <span style="color:var(--red)">(−$30 vs beat → DOWN resolves)</span></p>
-<h3>How to use it</h3>
-<ul>
-  <li><b>It's a TYPICAL move, not a path guarantee.</b> The label is the median for current conditions; a $100+ window lands outside the band ~50% of the time by design. Don't read it as "price will do exactly this."</li>
-  <li><b>Edge = projected-vs-beat distance.</b> The further the projection clears the line, the safer the directional bet.</li>
-  <li><b>The band is your risk.</b> If the band's <i>near</i> edge ($22 here) still clears the line, the move is reliably big enough. If the band <i>straddles</i> the line, the magnitude is a coin-flip even when the sign is right → drop to Tier C / skip.</li>
-  <li><b>Magnitude can disagree with "where it is now."</b> Price can be on the UP side this second while the model expects a $40 drop — a <i>fade</i>. Trust the projection over the current tick only when the lean is stable and high-grade.</li>
-</ul>
-<div class="card warn" style="margin-top:12px">
-<b>What this is NOT (yet):</b> there is no "fair value in cents" / probability on the card. An earlier
-version showed one, but it was built on this flat typical-move number and was misleadingly precise, so it
-was <b>removed</b>. A real <code>P(close ≥ beat)</code> only returns once the magnitude estimate itself
-becomes trustworthy (a future retrain) — and only if it then proves out. No fake precision in the meantime.
-</div>
-</div>
-
-<!-- ============================================================ -->
-<h2 id="mistakes">🚫 Bet-killers (instant skip, no matter what else looks good)</h2>
+<h2 id="dead">💀 Never do these — measured, not opinions</h2>
 <div class="card t-skip tier">
-<ul>
-  <li><b>Flipping lean.</b> If it changes UP↔DOWN every minute, the model is at 50/50. Instability = no edge. Skip.</li>
-  <li><b>Fallback lean.</b> ⚠ WEAK = coin-flip. The price can look like free money; it isn't.</li>
-  <li><b>CHOP / STRETCH outlook.</b> The model is telling you the closing side is random, or the move can't reach the line. Believe it.</li>
-  <li><b>TRENDING_UP / HIGH_VOLATILITY regime.</b> The weakest cells in live evidence (~46%) — trends run over mean-reversion leans. (Quiet <span class="chip c-green">RANGE</span> / <span class="chip c-green">LOW_VOLATILITY</span> regimes are where calls actually clear coin-flip, ~59–63%.)</li>
-  <li><b>Band straddles the line.</b> Right sign, wrong size — the magnitude is a coin-flip even when the direction isn't.</li>
-  <li><b>Tiny sample win-rate.</b> "model 100% (2)" means nothing. Wait for n≥100 before trusting the strip.</li>
-  <li><b>Paying above your edge.</b> The single most common way to lose while being "right" — win-rate must beat the share price.</li>
-</ul>
-<h3>💀 Three tempting strategies, measured dead (2026-07-02, ~10k real quoted rounds each)</h3>
 <table>
-  <tr><th>The instinct</th><th>Measured result</th><th>Why it dies</th></tr>
-  <tr><td><b>Mid-round scalp</b> — buy the leader early, TP +5c / SL −3c</td><td><b>−4.1c/share</b>, PF 0.28, 0/9 weeks positive</td><td>Win rate landed at 36.8% ≈ the coin-flip expectation (3/8) — the mid-window share path has NO drift; you just pay the spread + fees twice.</td></tr>
-  <tr><td><b>Take profit early</b> — buy early, exit at +20–50%, else settle</td><td><b>−1.8 to −4.4c/share</b>, 0/9 weeks (tighter TP = worse)</td><td>Every profit-take pays an exit fee AND caps a winner that would average ~$1 — while your losers still ride to $0. 78% of +20% TPs hit and it STILL lost.</td></tr>
-  <tr><td><b>Bet both ways</b> — buy UP + DOWN near 50/50, sell each leg on the swings</td><td><b>−9.5 to −10.7c/straddle</b>, PF ~0.5, 0/9 weeks</td><td>The both-ways swing DOES happen (52% of rounds!) and pays +18c — but the one-way trend costs −43c (you sold the eventual winner cheap, kept the loser to $0). The ~4.5c premium over the $1 settle floor prices the swing frequency exactly.</td></tr>
+  <tr><th>Temptation</th><th>Why it feels right</th><th>What it measured</th></tr>
+  <tr><td><b>Scalp mid-round</b> (TP +5¢/SL −3¢)</td><td>"grab quick moves"</td><td>−4.1¢/share, PF 0.28 — win rate = the coin-flip expectation; you pay spread+fees twice</td></tr>
+  <tr><td><b>Take profit early</b> (+20–50%, else settle)</td><td>"lock in gains"</td><td>−1.8 to −4.4¢ — 78% of TPs HIT and it still loses: each TP caps a winner headed to $1, losers still ride to $0</td></tr>
+  <tr><td><b>Straddle both sides</b> near 50/50</td><td>"profit either way"</td><td>−10.7¢/straddle — chop pays 1×, trend costs 4×; the premium prices the odds exactly</td></tr>
+  <tr><td><b>Bet the direction model</b></td><td>"the AI says UP"</td><td>~50% forever — every model family, every window, every retrain</td></tr>
+  <tr><td><b>Wait for a "better" round</b> (grades/setups)</td><td>"be selective"</td><td>Selectivity selects into pricier asks — EV falls, not rises</td></tr>
+  <tr><td><b>Buy cheap leaders early</b> (&lt;60¢)</td><td>"more upside"</td><td>The market is efficient early; cheapness = real flip risk, correctly priced</td></tr>
+  <tr><td><b>Bet the losing side to revert</b> (fade)</td><td>"it'll bounce back"</td><td>Retracted look-ahead leak; causal fade wins ~42% — below breakeven</td></tr>
 </table>
-<p style="color:var(--amber)"><b>The one law behind all three:</b> every extra spread crossing and every early
-profit-take is a transfer to the market maker. The only measured leak in this market is the <b>final ~30 seconds</b>
-— crossed once, held to settlement (the 📜 frozen rule above).</p>
+<p><b>The one law:</b> every extra spread crossing and every early exit is a transfer to the market maker.
+The only measured leak is the final ~30 seconds, crossed <b>once</b>, held to settlement.</p>
 </div>
 
 <!-- ============================================================ -->
 <h2 id="honest">🧠 Honest math</h2>
 <div class="card warn">
 <ul>
-  <li><b>5-minute BTC direction is mostly noise.</b> Every model family in the ensemble independently lands at ~51% out-of-sample — that's not a broken model, it's the honest ceiling of 5m direction on these inputs. Tuning or bigger models won't move it; only genuinely <i>new information</i> can.</li>
-  <li><b>The edge lives in the SELECTED slice, not every call.</b> Some cells are real (calm-market 3m/10m have shown ~54–56%). You don't need 55% everywhere — you need it on the few windows you act on: stable model leans + magnitude clearing the line + good regime, and skip the rest.</li>
-  <li><b>Win-rate is not profit.</b> Profit = win-rate vs share price. Cheaper entry beats more predictions. Always. 60% wins at 65¢ loses money.</li>
-  <li><b>Fewer bets = higher win-rate.</b> Nobody sustains 70% at 5m. You get a high win-rate by betting the best 5–10% of windows and sitting out the other 90%+. The app is a <i>filter</i>, not an oracle.</li>
-  <li><b>Until the strip shows model-leans clearing ~55% at n≥100, treat this as PAPER-TRACKING, not sized betting.</b> The model is mid-measurement.</li>
-  <li><b>Not financial advice.</b> Educational decision-support only. Never bet money you can't lose.</li>
+  <li><b>Cents ≈ percent of stake.</b> 1 paper share of a $1 market: +2.5¢ EV = +2.5% per trade. This is a <b>volume edge</b> — small, frequent, real only in aggregate.</li>
+  <li><b>Win rate is not profit.</b> The live ledger already demonstrated 82.9% wins with a <i>negative</i> total — a few high-ask losers outweigh many small winners. Read EV and PF, never win%.</li>
+  <li><b>n &lt; 100 per strategy = noise. The rule's own bar is n≥500.</b> Nothing before the gate is evidence; everything before the gate is weather.</li>
+  <li><b>BTC prices in the app are PYTH</b> (the settlement oracle), not Binance — they routinely differ by tens of dollars. Don't compare the blotter to TradingView.</li>
+  <li><b>Exits gap.</b> Stops and TPs sell into the visible bid, which can be pulled — a −3¢ stop can fill at −20¢. That's the market, honestly accounted, and one more reason the rule holds to settlement instead.</li>
+  <li><b>Paper fills assume 1 share at top-of-book with ~0 latency.</b> Real clicking is slower; real size slips. This gap is exactly what the live gate exists to measure before any real money.</li>
+  <li><b>Not financial advice.</b> Educational decision-support only. Never bet money you can't afford to lose.</li>
 </ul>
 </div>
 
 <footer>
-  BTC Quantum Trader · Polymarket betting decision guide · updated 2026-07-02
-  (added the ROUND STATE panel — the current SHADOW/info-only betting surface: leader/holds/flip/shocks/round-type/
-  opportunity/execution + the WAIT/AVOID/PAPER decision and the live-book recorder gate. The PATH ENGINE / fade
-  sections below are RETRACTED — kept only as a historical read; the round-state panel supersedes them in the UI.)<br>
+  BTC Quantum Trader · Polymarket betting decision guide · rewritten 2026-07-04<br>
+  This revision retires the S/A/B/C tier system, the magnitude flowchart, and the path-engine fade play —
+  all superseded by measured evidence (see <code>VIRTUE_COMPLEXITY_LATE_LEADER</code>,
+  <code>KAGGLE_SOURCES_AND_FROZEN_RULES</code>, <code>PAPER_STRATEGY_LAB</code> in docs/active).<br>
   Companion to <code>guide.html</code>. Open while the app runs: <code>http://localhost:3000/polymarket-betting.html</code>
 </footer>
 

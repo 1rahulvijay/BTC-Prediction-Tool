@@ -44,7 +44,7 @@ def polymarket_taker_fee_per_share(price: float, fee_rate: float = DEFAULT_CRYPT
     Maker orders have zero protocol fee and should pass an explicit cost of 0 instead.
     """
     p = max(0.0, min(1.0, float(price)))
-    return max(0.0, float(fee_rate)) * p * (1.0 - p)
+    return round(max(0.0, float(fee_rate)) * p * (1.0 - p), 5)
 
 
 def max_taker_ask(
@@ -429,13 +429,13 @@ def champion_decision(
                 f"The executable spread is {spread*100:.1f}c, above the 3c liquidity gate. {edge_line}.",
                 invalidate="Spread narrows to 3c or less while the structural and edge gates still hold.",
             )
-        if depth is not None and depth <= 0:
+        if depth is not None and depth < 1.0:
             return out(
                 "NO_EDGE",
-                "NO EDGE - no displayed ask depth",
+                "NO EDGE - insufficient displayed ask depth",
                 confidence,
-                "The quoted ask has no displayed top-level size. Treat it as non-executable.",
-                invalidate="Positive ask depth appears on a fresh exact-round quote.",
+                "The quoted ask has fewer than one displayed share. Treat a one-share paper entry as non-executable.",
+                invalidate="At least one share appears at the fresh exact-round best ask.",
             )
         if net_edge > required_edge and not (drop_risk == "HIGH" and position == "UP"):
             # Lever 2: PROPORTIONAL sizing. The bet decision is edge-based (fair - ask - costs), and

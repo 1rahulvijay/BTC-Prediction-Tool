@@ -15,13 +15,14 @@ not establish a profitable live edge.
 
 ### Training window
 
-`start.bat` had drifted from the approved 1,500 days to 2,200 and then 1,865 while the runbook,
-backup, disk estimate and archive checks still described 1,500. The launcher now consistently uses:
+The executable source-complete window is 1,265 days. The active manifest confirms 1,821,448 rows from
+2023-01-15 through 2026-07-04 with full trade-feature coverage and 99.918% cross-venue coverage. The
+launcher consistently uses:
 
-- `BTC_HISTORICAL_DAYS=1500`
-- `BTC_BACKFILL_DAYS=1500`
+- `BTC_HISTORICAL_DAYS=1265`
+- `BTC_BACKFILL_DAYS=1265`
 - 98% candidate fit and approximately 30 recent days held out
-- `full_retrain_1500d_complete.json`
+- `full_retrain_1265d_complete.json`
 
 ### Stable model identity
 
@@ -79,6 +80,36 @@ Individual straddle exits existed only in memory. A restart after one leg took p
 though both legs were still held. Leg bid and fee state is now persisted after every exit, restored
 for an open round and used by settlement. Legacy rows retain the conservative $1 total floor.
 
+The follow-up audit found that persisted leg state alone was insufficient: the tracker did not restore
+the still-live round that owned the resolver. Future open Pyth/Binance rounds are now rehydrated with the
+original anchor, pending settlement and paper state. Restored rounds manage exits and settlement but
+cannot open new mid-window entries. Rounds whose boundary passed while the app was down are marked
+`INVALID_RESTART_MISSED_SETTLEMENT` with NULL P/L until an official outcome can recover them.
+
+### Official Polymarket settlement reconciliation
+
+Immediate paper settlement uses Pyth as a low-latency proxy, but a near-line Pyth/market-oracle difference
+can flip the binary winner. The backend now consumes `pm_export_settlements.parquet` and idempotently
+reconciles every matching Pyth round to the official Polymarket winner. Held and staged legs are repriced;
+completed bid exits retain their executable P/L. Both `price_to_beat` and `rule_paper_trades` persist
+`settlement_source`, and in-memory accuracy/recent-round views refresh when an official correction lands.
+
+### Executable-size and horizon guards
+
+One-share paper entries now require at least one displayed share at the best ask. A quote with a price but
+insufficient size is not treated as executable. Early exits still lack bid-size information in the compact
+bridge and remain top-of-book assumptions pending L2 reconciliation.
+
+Path, fade and reversal-window predictions now fail closed when the requested horizon is absent. A missing
+15m head can no longer silently emit a 5m prediction with the wrong label window/calibration.
+
+### Structural-research leakage corrections
+
+The next-round drift signal now uses the observable leader at 30 seconds remaining, not the eventual winner.
+Book lags use elapsed timestamps rather than row offsets, and model operating thresholds are learned from a
+chronological calibration tail inside training instead of the test-score distribution. Complement and
+straddle tests require one-share displayed ask capacity and use protocol-rounded five-decimal taker fees.
+
 ### Honest path-threshold labels
 
 Path classifiers use basis-point labels derived at training time, but the UI always printed `$50` and
@@ -114,7 +145,9 @@ opportunity coverage is not a complete denominator.
 - Bundle metadata round trip: pass.
 - Paired A/B test: better challenger promoted; reversed challenger did not.
 - Isolated DuckDB accounting: pass for early exit, partial straddle restart and legacy fallback.
-- Launcher validation: 1,500 days, 98/2 split, full-refit flow enabled.
+- Permanent `test_paper_trading_integrity.py`: pass for staged cost, missing-leg settlement, open-round
+  restoration, official-outcome correction, early-exit preservation, depth rejection and horizon fail-close.
+- Launcher/manifest validation: 1,265 days, 98/2 split, full-refit flow enabled.
 - Port-guard safe mode: detected live PIDs on 3000/8000, aborted, and left both running.
 - `git diff --check`: pass apart from repository line-ending notices.
 
@@ -124,9 +157,13 @@ opportunity coverage is not a complete denominator.
 2. Legacy ledger rows cannot become independently auditable retroactively.
 3. Full-refit probability quality must be established live because all historical rows were fitted.
 4. Some strategy opportunity denominators remain entry-only.
-5. The 1,500-day run may take several days and can expose source outages absent in a short check.
+5. The 1,265-day run may take several days and can expose source outages absent in a short check.
 6. Endpoint direction remains weak; path, hold, touch, volatility and risk have stronger historical
    evidence but still require current live calibration.
+7. Early paper exits use the visible best bid but the compact quote bridge does not expose bid size. Treat
+   them as one-share top-of-book assumptions until exact L2 replay/reconciliation confirms fill capacity.
+8. The saved fade artifact is intentionally `research-only-gate-failed` with `live_supported=false`; fade
+   and sequential-reversal shadows remain dormant rather than pretending an unpromoted model is live-ready.
 
 ## Activation
 

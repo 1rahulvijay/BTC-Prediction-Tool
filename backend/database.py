@@ -316,6 +316,7 @@ def init_db():
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_fee DOUBLE")
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR")
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS state_json VARCHAR")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS settlement_source VARCHAR")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS analysis_snapshots (
             timestamp BIGINT PRIMARY KEY,
@@ -618,6 +619,7 @@ def init_db():
                  # price anchor: 'pyth' (Polymarket settlement) or 'binance' (the live mirror).
                  # Lets both trackers persist to one table; readers filter by source.
                  "ADD COLUMN source VARCHAR DEFAULT 'pyth'",
+                 "ADD COLUMN settlement_source VARCHAR DEFAULT ''",
                  # Path forecaster (Layer-2) plan, frozen once at open. SHADOW LOG ONLY — recorded
                  # alongside the outcome so the path head can be verified on LIVE rounds (not just the
                  # backtest matrix) and re-scored forward. Does NOT gate any live decision. The lift
@@ -856,7 +858,8 @@ def rule_paper_ledger(limit: int = 300):
         conn = _connect()
         rows = conn.execute("""
             SELECT rule, ts, horizon, side, ask, bid, fee, spread, action, outcome, pnl,
-                   settled_ts, round_id, btc_entry, btc_exit, exit_gross, exit_fee, exit_reason
+                   settled_ts, round_id, btc_entry, btc_exit, exit_gross, exit_fee, exit_reason,
+                   settlement_source
             FROM rule_paper_trades WHERE action = 'ENTER'
             ORDER BY COALESCE(settled_ts, ts) DESC LIMIT ?
         """, (int(limit),)).fetchall()
@@ -881,7 +884,8 @@ def rule_paper_ledger(limit: int = 300):
                            "entry_spread": round(float(r[7]), 4),
                            "exit_gross": round(exit_gross, 4) if exit_gross is not None else None,
                            "exit_fee": round(exit_fee, 4) if exit_gross is not None else None,
-                           "exit_net": exit_net, "exit_reason": r[17], "outcome": r[9],
+                           "exit_net": exit_net, "exit_reason": r[17],
+                           "settlement_source": r[18] or "", "outcome": r[9],
                            "pnl_c": round(pnl * 100, 2) if pnl is not None else None,
                            "accounting_verified": (
                                abs(pnl - expected_pnl) <= 1e-8 if expected_pnl is not None else None
@@ -932,7 +936,8 @@ def rule_paper_ledger(limit: int = 300):
 
 def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int,
                            outcome: str = "EARLY_EXIT", btc_exit=None,
-                           exit_gross=None, exit_fee: float = 0.0, state=None):
+                           exit_gross=None, exit_fee: float = 0.0, state=None,
+                           settlement_source: str | None = None):
     """Close an OPEN shadow-rule row mid-round (TP/SL/time-stop exit at the live bid). Only rows
     not yet settled are touched; the later round-resolve settle then skips them. Crash-safe."""
     conn = None
@@ -943,7 +948,8 @@ def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int
             SET pnl = CASE WHEN ? IS NOT NULL THEN ? - ? - ask - fee ELSE ? END,
                 outcome = ?, settled_ts = ?, btc_exit = COALESCE(?, btc_exit),
                 exit_gross = ?, exit_fee = ?, exit_reason = ?,
-                state_json = COALESCE(?, state_json)
+                state_json = COALESCE(?, state_json),
+                settlement_source = COALESCE(?, settlement_source)
             WHERE round_id = ? AND rule = ? AND settled_ts IS NULL
         """, (float(exit_gross) if exit_gross is not None else None,
               float(exit_gross) if exit_gross is not None else None,
@@ -953,6 +959,7 @@ def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int
               float(exit_fee or 0.0) if exit_gross is not None else None,
               outcome,
               json.dumps(state, separators=(",", ":")) if state is not None else None,
+              str(settlement_source) if settlement_source else None,
               str(round_id), rule))
     except Exception as e:
         print(f"DuckDB rule-paper-trade close error: {e}")
@@ -961,7 +968,36 @@ def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int
             conn.close()
 
 
-def settle_rule_paper_trades(round_id: str, outcome: str, settled_ts: int, btc_exit=None):
+def _paper_settlement_values(side: str, state_json, outcome: str) -> tuple[float, float]:
+    """Return (gross proceeds, exit fees) for purchased legs at settlement."""
+    state = None
+    try:
+        state = json.loads(state_json) if isinstance(state_json, str) and state_json else state_json
+    except Exception:
+        state = None
+    # Multi-leg/staged schema: value only legs that were actually purchased.
+    if isinstance(state, dict) and (state.get("up") or state.get("dn")):
+        gross = 0.0
+        fees = 0.0
+        for leg, leg_side in (("up", "UP"), ("dn", "DOWN")):
+            leg_state = state.get(leg) or {}
+            if not leg_state:
+                continue
+            if leg_state.get("exit_bid") is not None:
+                gross += float(leg_state["exit_bid"])
+                fees += float(leg_state.get("exit_fee") or 0.0)
+            else:
+                gross += 1.0 if outcome == leg_side else 0.0
+        return gross, fees
+    if side == "BOTH":
+        # Legacy simultaneous straddles always purchased both legs but did not
+        # persist leg state. Exactly one contract settles at $1.
+        return 1.0, 0.0
+    return (1.0 if side == outcome else 0.0), 0.0
+
+
+def settle_rule_paper_trades(round_id: str, outcome: str, settled_ts: int, btc_exit=None,
+                             settlement_source: str = "proxy"):
     """Settle every open paper trade for a resolved round: pnl = settle_value - ask - fee
     (winner pays 1/share, loser 0; entry fee already recorded; hold-to-settle = no exit fee).
     Only ENTER rows get a pnl; SKIP/NO_QUOTE rows just record the outcome. Crash-safe.
@@ -983,40 +1019,109 @@ def settle_rule_paper_trades(round_id: str, outcome: str, settled_ts: int, btc_e
             exit_fee = None
             pnl = None
             if action == "ENTER":
-                exit_gross = 1.0 if side == outcome else 0.0
-                exit_fee = 0.0
-                if side == "BOTH":
-                    # Persisted leg state makes partial straddle exits restart-safe. Legacy
-                    # rows without state retain the conservative $1 settlement floor.
-                    state = None
-                    try:
-                        state = json.loads(state_json) if state_json else None
-                    except Exception:
-                        state = None
-                    if isinstance(state, dict) and "up" in state and "dn" in state:
-                        exit_gross = 0.0
-                        exit_fee = 0.0
-                        for leg, leg_side in (("up", "UP"), ("dn", "DOWN")):
-                            leg_state = state.get(leg) or {}
-                            if leg_state.get("exit_bid") is not None:
-                                exit_gross += float(leg_state["exit_bid"])
-                                exit_fee += float(leg_state.get("exit_fee") or 0.0)
-                            else:
-                                exit_gross += 1.0 if outcome == leg_side else 0.0
-                    else:
-                        exit_gross = 1.0
-                        exit_fee = 0.0
+                exit_gross, exit_fee = _paper_settlement_values(side, state_json, outcome)
                 pnl = float(exit_gross) - float(exit_fee) - float(ask) - float(entry_fee)
             conn.execute("""
                 UPDATE rule_paper_trades
                 SET outcome = ?, settled_ts = ?, btc_exit = COALESCE(?, btc_exit),
-                    pnl = ?, exit_gross = ?, exit_fee = ?, exit_reason = 'SETTLED'
+                    pnl = ?, exit_gross = ?, exit_fee = ?, exit_reason = 'SETTLED',
+                    settlement_source = ?
                 WHERE round_id = ? AND rule = ? AND settled_ts IS NULL
             """, (outcome, int(settled_ts),
                   float(btc_exit) if btc_exit is not None else None,
-                  pnl, exit_gross, exit_fee, str(round_id), rule))
+                  pnl, exit_gross, exit_fee, str(settlement_source), str(round_id), rule))
     except Exception as e:
         print(f"DuckDB rule-paper-trade settle error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+_OFFICIAL_SETTLEMENT_MTIME = -1.0
+
+
+def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
+    """Regrade Pyth-proxy paper settlements from official Polymarket outcomes.
+
+    The recorder exports one row per resolved market. Early exits retain their
+    executable bid P/L; hold-to-settlement and multi-leg rows are recomputed using
+    the official winner. Reprocessing the same parquet is skipped by mtime.
+    """
+    global _OFFICIAL_SETTLEMENT_MTIME
+    if not parquet_path or not os.path.exists(parquet_path):
+        return {"status": "missing", "rounds": 0, "trades": 0}
+    mtime = os.path.getmtime(parquet_path)
+    if mtime == _OFFICIAL_SETTLEMENT_MTIME:
+        return {"status": "unchanged", "rounds": 0, "trades": 0}
+    conn = None
+    rounds = trades = 0
+    try:
+        conn = _connect()
+        settlements = conn.execute("""
+            SELECT horizon, anchor_ts, settled_side, expiry_btc,
+                   resolution_source, resolved_at
+            FROM read_parquet(?)
+            WHERE horizon IN (5, 15) AND settled_side IN (0, 1)
+        """, (str(parquet_path),)).fetchall()
+        for horizon, anchor_ts, settled_side, expiry_btc, resolution_source, resolved_at in settlements:
+            round_id = f"ptb_{int(horizon)}m_{int(anchor_ts) * 1000}"
+            outcome = "UP" if int(settled_side) == 1 else "DOWN"
+            source = f"official:{resolution_source or 'polymarket'}"
+            ptb = conn.execute("""
+                SELECT price_to_beat, our_direction, actual_direction, actual_price,
+                       settlement_source
+                FROM price_to_beat WHERE id = ?
+            """, (round_id,)).fetchone()
+            if not ptb:
+                continue
+            actual_price = float(expiry_btc) if expiry_btc is not None else None
+            move = actual_price - float(ptb[0]) if actual_price is not None else None
+            hit = (str(ptb[1]) == outcome) if str(ptb[1]) in ("UP", "DOWN") else None
+            already_official = (str(ptb[2] or "") == outcome
+                                and str(ptb[4] or "") == source
+                                and (actual_price is None or (ptb[3] is not None
+                                     and abs(float(ptb[3]) - actual_price) < 1e-9)))
+            if already_official:
+                continue
+            conn.execute("""
+                UPDATE price_to_beat
+                SET actual_price = COALESCE(?, actual_price), actual_direction = ?,
+                    hit = ?, move = COALESCE(?, move), resolved = TRUE,
+                    settlement_source = ?
+                WHERE id = ?
+            """, (actual_price, outcome, hit, move, source, round_id))
+            rounds += 1
+            paper_rows = conn.execute("""
+                SELECT rule, side, ask, fee, action, state_json, exit_reason
+                FROM rule_paper_trades WHERE round_id = ?
+            """, (round_id,)).fetchall()
+            settled_ms = int(float(resolved_at or time.time()) * 1000)
+            for rule, side, ask, entry_fee, action, state_json, exit_reason in paper_rows:
+                # A completed bid exit is independent of the final contract winner.
+                early_exit = str(exit_reason or "") in {"TP", "SL", "TIME", "EARLY_EXIT"}
+                if action == "ENTER" and not early_exit:
+                    gross, exit_fee = _paper_settlement_values(side, state_json, outcome)
+                    pnl = gross - exit_fee - float(ask) - float(entry_fee)
+                    conn.execute("""
+                        UPDATE rule_paper_trades
+                        SET outcome = ?, pnl = ?, settled_ts = COALESCE(settled_ts, ?),
+                            btc_exit = COALESCE(?, btc_exit), exit_gross = ?, exit_fee = ?,
+                            exit_reason = 'SETTLED', settlement_source = ?
+                        WHERE round_id = ? AND rule = ?
+                    """, (outcome, pnl, settled_ms, actual_price, gross, exit_fee,
+                          source, round_id, rule))
+                else:
+                    conn.execute("""
+                        UPDATE rule_paper_trades
+                        SET outcome = ?, settlement_source = ?
+                        WHERE round_id = ? AND rule = ?
+                    """, (outcome, source, round_id, rule))
+                trades += 1
+        _OFFICIAL_SETTLEMENT_MTIME = mtime
+        return {"status": "ok", "rounds": rounds, "trades": trades}
+    except Exception as exc:
+        print(f"DuckDB official settlement reconciliation error: {exc}")
+        return {"status": "error", "rounds": rounds, "trades": trades, "error": str(exc)}
     finally:
         if conn:
             conn.close()
@@ -1033,6 +1138,36 @@ def update_rule_paper_state(round_id: str, rule: str, state) -> None:
         """, (json.dumps(state, separators=(",", ":")), str(round_id), rule))
     except Exception as exc:
         print(f"DuckDB rule-paper state update error: {exc}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def add_rule_paper_leg(round_id: str, rule: str, ask: float, bid: float,
+                       fee: float, state) -> bool:
+    """Atomically add a second contract leg to an open staged paper position.
+
+    The ledger keeps one row per (round, rule), so cumulative entry cost and fee
+    must be updated when the opposite leg is bought later. Setting side=BOTH
+    activates the multi-leg settlement accounting. No row is created here: a
+    missing/settled first leg fails closed.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        row = conn.execute("""
+            UPDATE rule_paper_trades
+            SET side = 'BOTH', ask = ask + ?, bid = bid + ?, fee = fee + ?,
+                state_json = ?
+            WHERE round_id = ? AND rule = ? AND action = 'ENTER'
+              AND settled_ts IS NULL
+            RETURNING round_id
+        """, (float(ask), float(bid), float(fee),
+              json.dumps(state, separators=(",", ":")), str(round_id), rule)).fetchone()
+        return bool(row)
+    except Exception as exc:
+        print(f"DuckDB staged paper-leg update error: {exc}")
+        return False
     finally:
         if conn:
             conn.close()
@@ -1789,6 +1924,47 @@ def log_price_to_beat(entry: dict):
             conn.close()
 
 
+def fetch_open_price_to_beat(source: str = "pyth", now_ms: int | None = None) -> list:
+    """Return still-live unresolved rounds so their resolver survives a restart.
+
+    Only rounds whose settlement boundary is still in the future are restored.
+    Expired rows require an exact same-feed boundary price and remain the orphan
+    janitor's responsibility; using the current price would fabricate an outcome.
+    """
+    conn = None
+    try:
+        cutoff = int(now_ms if now_ms is not None else time.time() * 1000)
+        # The process holds a read-write anchor connection for DB lifetime.
+        # DuckDB rejects a second connection to the same file with a different
+        # read_only configuration, so use the shared normal mode for this SELECT.
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT id, timestamp, horizon, price_to_beat, our_direction, signal,
+                   conviction, actionable, kronos_direction, target_price, verify_at,
+                   lean_source, confluence_grade, regime, source
+            FROM price_to_beat
+            WHERE resolved = FALSE AND verify_at > ?
+              AND COALESCE(source, 'pyth') = ?
+            ORDER BY timestamp
+        """, (cutoff, str(source))).fetchall()
+        return [{
+            "id": r[0], "timestamp": int(r[1]), "horizon": int(r[2]),
+            "price_to_beat": float(r[3]), "our_direction": r[4] or "NEUTRAL",
+            "signal": r[5] or "NEUTRAL", "conviction": float(r[6] or 0.0),
+            "actionable": bool(r[7]), "kronos_direction": r[8] or "NONE",
+            "target_price": float(r[9]) if r[9] is not None else None,
+            "verify_at": int(r[10]), "lean_source": r[11] or "fallback",
+            "confluence_grade": r[12] or "", "regime": r[13] or "UNKNOWN",
+            "source": r[14] or "pyth",
+        } for r in rows]
+    except Exception as exc:
+        print(f"DuckDB open price-to-beat restore error: {exc}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
 def log_path_plan(round_id: str, plan: dict):
     """SHADOW LOG: persist the frozen Layer-2 path plan onto an existing price_to_beat row.
     Pure record-forward — written once when the plan freezes at window open, never gates a decision.
@@ -2069,17 +2245,33 @@ def fetch_price_to_beat_history(horizon: int, limit: int = 500) -> list:
 def cleanup_orphan_pending_rows() -> dict:
     """Boot-time janitor: delete pending rows that can never resolve.
 
-    price_to_beat / model_predictions / kronos_predictions keep their pending state
-    in MEMORY only — after a restart, any row still resolved=FALSE whose verify_at
-    has already passed is permanently dead (its resolver is gone). They don't poison
-    metrics (readers filter resolved=TRUE) but accumulate forever. predictions_*m is
-    deliberately NOT touched: the verifier rehydrates those pendings at boot.
+    Future price-to-beat rounds are rehydrated at boot. Rows whose boundary passed
+    while the app was down cannot be graded without a same-feed boundary price, so
+    their paper trades are explicitly invalidated (NULL P/L) rather than left open
+    forever or settled against the current price. predictions_*m is deliberately not
+    touched: the verifier rehydrates those pending predictions at boot.
     """
     out = {}
-    cutoff = int((time.time() - 600) * 1000)  # 10-min grace for clock skew
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - 600_000  # 10-min DB-row retention grace for diagnostics
     conn = None
     try:
         conn = _connect()
+        try:
+            invalid = conn.execute("""
+                UPDATE rule_paper_trades
+                SET outcome = 'INVALID_RESTART_MISSED_SETTLEMENT', settled_ts = ?,
+                    pnl = NULL, exit_gross = NULL, exit_fee = NULL,
+                    exit_reason = 'INVALID_RESTART_MISSED_SETTLEMENT'
+                WHERE settled_ts IS NULL AND round_id IN (
+                    SELECT id FROM price_to_beat
+                    WHERE resolved = FALSE AND verify_at > 0 AND verify_at <= ?
+                )
+                RETURNING round_id
+            """, (now_ms, now_ms)).fetchall()
+            out["rule_paper_invalidated"] = len(invalid)
+        except Exception:
+            out["rule_paper_invalidated"] = -1
         for tbl in ("price_to_beat", "model_predictions", "kronos_predictions"):
             try:
                 n = conn.execute(f"""

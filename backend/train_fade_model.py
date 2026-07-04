@@ -186,9 +186,10 @@ def predict_fade(bundle, horizon, keepers, touch_frac, side_up,
     anchor). Absent -> 0.0. Vector is built by bundle['features'] order so it stays correct across versions."""
     _bh = (bundle.get("barriers") or {}).get(float(L)) or {}
     hzmap = _bh.get("horizons") or bundle.get("horizons") or {}
-    hz = hzmap.get(horizon) or hzmap.get(5)
+    # A 5m fade model is not calibrated for a different settlement window.
+    hz = hzmap.get(horizon)
     if hz is None:
-        return 0.0
+        return None
     vals = {**{f: float(keepers[f]) for f in bundle["keepers"]},
             "touch_frac": float(touch_frac), "side_up": float(side_up),
             "overshoot_bps": float(overshoot_bps), "pre_opp_bps": float(pre_opp_bps),

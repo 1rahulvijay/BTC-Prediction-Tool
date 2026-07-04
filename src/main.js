@@ -3159,6 +3159,25 @@ let _tradesTimer = null;
 let _tradesFilter = 'ALL';        // strategy filter chip state (survives refreshes)
 let _tradesHorizon = 'ALL';       // horizon tab: 'ALL' | 5 | 15 — splits scoreboard + blotter
 let _lastLedger = null;           // cached payload so chip clicks re-render instantly
+// Paper stake per trade in USD (display conversion only — the ledger's honest unit stays
+// 1 share; shares = stake / entry price, assuming linear fill at top-of-book).
+let _paperStake = Number(localStorage.getItem('paperStakeUsd')) || 10;
+// Operator fee scenario for the $ columns (2026-07-04): X% of the buy amount at entry +
+// Y% of the PROFIT on winning trades. The cents P/L stays on the exact Polymarket
+// taker-fee accounting (that is what the frozen rule's evidence and gates are defined on);
+// the $ view answers "what would I keep under MY fees".
+let _feeBuyPct = localStorage.getItem('feeBuyPct') != null ? Number(localStorage.getItem('feeBuyPct')) : 3;
+let _feeProfitPct = localStorage.getItem('feeProfitPct') != null ? Number(localStorage.getItem('feeProfitPct')) : 2;
+// User-fee P/L in USD for one trade at the current stake. Uses GROSS exit proceeds
+// (exit_net + stored Polymarket exit fee) so the venue's fees are fully replaced by ours;
+// legacy rows without a stored exit fee approximate gross ≈ net (settlements are exact).
+function _userFeePnlUsd(t) {
+  if (t.pnl_c == null || !t.buy_at) return null;
+  const shares = _paperStake / t.buy_at;
+  const grossExitPs = (t.exit_net != null ? t.exit_net : 0) + (t.exit_fee || 0);
+  const pre = grossExitPs * shares - _paperStake - _paperStake * (_feeBuyPct / 100);
+  return pre > 0 ? pre * (1 - _feeProfitPct / 100) : pre;
+}
 async function fetchTradesBlotter() {
   const box = document.getElementById('trades-blotter');
   if (!box) return;
@@ -3176,6 +3195,21 @@ async function fetchTradesBlotter() {
 }
 window._setTradesFilter = rule => { _tradesFilter = rule; if (_lastLedger) renderTradesBlotter(_lastLedger); };
 window._setTradesHorizon = h => { _tradesHorizon = h; if (_lastLedger) renderTradesBlotter(_lastLedger); };
+window._setPaperStake = v => {
+  const s = Math.max(1, Math.min(10000, Number(v) || 10));
+  _paperStake = s; localStorage.setItem('paperStakeUsd', String(s));
+  if (_lastLedger) renderTradesBlotter(_lastLedger);
+};
+window._setFeeBuy = v => {
+  _feeBuyPct = Math.max(0, Math.min(20, Number(v) || 0));
+  localStorage.setItem('feeBuyPct', String(_feeBuyPct));
+  if (_lastLedger) renderTradesBlotter(_lastLedger);
+};
+window._setFeeProfit = v => {
+  _feeProfitPct = Math.max(0, Math.min(50, Number(v) || 0));
+  localStorage.setItem('feeProfitPct', String(_feeProfitPct));
+  if (_lastLedger) renderTradesBlotter(_lastLedger);
+};
 
 function renderTradesBlotter(d) {
   const box = document.getElementById('trades-blotter');
@@ -3186,7 +3220,7 @@ function renderTradesBlotter(d) {
       Every entry (buy at ask), every exit (sell at bid / settlement), fees, and P/L will appear here automatically.</div>`;
     return;
   }
-  const ruleName = r => ({MID_SCALP_LIVE_V1:'Mid-round scalp',TP_OR_SETTLE_LIVE_V1:'Early profit-take',STRADDLE_LIVE_V1:'Straddle (blind)',MODEL_FADE_LIVE_V1:'🧠 Model fade',MODEL_STRADDLE_LIVE_V1:'🧠 Model straddle',MODEL_RIDE_LIVE_V1:'🧠 Model ride',LATE_LEADER_30S_V1:'📜 LATE_LEADER_30S (frozen rule)',LATE_LEADER_15M_SHADOW_V1:'📜 Late-leader 15m (shadow)',LATE_LEADER_15S_V1:'⏱ Late-leader @15s',LATE_LEADER_60S_V1:'⏱ Late-leader @60s',LATE_LEADER_MAKER_V1:'🪑 Maker (rest at bid)',CHEAP_SAFE_EARLY_V1:'💰 Cheap-SAFE early',SHOCK_SNIPER_LIVE_V1:'⚡ Shock sniper'}[r]||r);
+  const ruleName = r => ({MID_SCALP_LIVE_V1:'Mid-round scalp',TP_OR_SETTLE_LIVE_V1:'Early profit-take',STRADDLE_LIVE_V1:'Straddle (blind)',MODEL_FADE_LIVE_V1:'🧠 Model fade',MODEL_STRADDLE_LIVE_V1:'🧠 Model straddle',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠 Sequential reversal',MODEL_RIDE_LIVE_V1:'🧠 Model ride',LATE_LEADER_30S_V1:'📜 LATE_LEADER_30S (frozen rule)',LATE_LEADER_15M_SHADOW_V1:'📜 Late-leader 15m (shadow)',LATE_LEADER_15S_V1:'⏱ Late-leader @15s',LATE_LEADER_60S_V1:'⏱ Late-leader @60s',LATE_LEADER_MAKER_V1:'🪑 Maker (rest at bid)',CHEAP_SAFE_EARLY_V1:'💰 Cheap-SAFE early',SHOCK_SNIPER_LIVE_V1:'⚡ Shock sniper'}[r]||r);
   const pl = v => v==null ? '<span style="color:#ffb74d">open</span>'
     : `<span style="color:${v>=0?'#00e676':'#ff5252'};font-weight:700">${v>=0?'+':''}${v}c</span>`;
   const o = d.overall;
@@ -3197,6 +3231,9 @@ function renderTradesBlotter(d) {
       <span>trades: <strong>${o.n_entered}</strong> (settled ${o.n_settled})</span>
       <span>win rate: <strong>${o.win_rate!=null?o.win_rate+'%':'--'}</strong></span>
       <span style="font-size:1.15em">overall P/L: <strong style="color:${oc}">${(o.total_c>=0?'+':'')}${o.total_c}c</strong> <span style="color:var(--text-secondary);font-size:.8em">(1 paper share/trade · $1 shares → cents ≈ % of stake)</span></span>
+      <span>stake/trade: $<input type="number" min="1" max="10000" step="1" value="${_paperStake}" onchange="window._setPaperStake(this.value)" title="Display conversion only: shares = stake ÷ entry price. The ledger's honest unit stays 1 share." style="width:64px;background:#0e131f;color:#e6ebf5;border:1px solid #3a4561;border-radius:6px;padding:.12rem .3rem;font-weight:700"></span>
+      <span style="white-space:nowrap">your fees: <input type="number" min="0" max="20" step="0.5" value="${_feeBuyPct}" onchange="window._setFeeBuy(this.value)" title="% of the buy amount charged at entry" style="width:44px;background:#0e131f;color:#e6ebf5;border:1px solid #3a4561;border-radius:6px;padding:.12rem .3rem;font-weight:700">% buy + <input type="number" min="0" max="50" step="0.5" value="${_feeProfitPct}" onchange="window._setFeeProfit(this.value)" title="% of the PROFIT charged on winning trades" style="width:44px;background:#0e131f;color:#e6ebf5;border:1px solid #3a4561;border-radius:6px;padding:.12rem .3rem;font-weight:700">% of profit</span>
+      ${(()=>{const u=d.trades.reduce((s,t)=>{const x=_userFeePnlUsd(t);return s+(x||0);},0);return `<span style="font-size:1.1em">≈ <strong style="color:${u>=0?'#00e676':'#ff5252'}">${u>=0?'+':''}$${u.toFixed(2)}</strong> <span style="color:var(--text-secondary);font-size:.75em">at $${_paperStake}/trade under YOUR fees (last ${d.trades.length} trades)</span></span>`;})()}
       <span style="color:var(--text-secondary);font-size:.8em">paper only — no real money · auto-refreshes 30s</span>
     </div>`;
   // Horizon tabs: ALL / 5m / 15m — split BOTH the scoreboard and the blotter. per_rule rows
@@ -3242,15 +3279,23 @@ function renderTradesBlotter(d) {
       total_c: Math.round(m.total_c * 10) / 10 }));
     prRows.sort((a, b) => b.total_c - a.total_c);
   }
+  // USD conversion per rule at the current stake + operator fee scenario (visible trades; horizon-aware).
+  const usdForRule = (rule) => {
+    const hz = _tradesHorizon === 'ALL' ? null : _tradesHorizon;
+    const u = d.trades.filter(t => t.rule === rule && (hz == null || t.horizon === hz))
+      .reduce((s, t) => { const x = _userFeePnlUsd(t); return s + (x || 0); }, 0);
+    return `<span style="color:${u>=0?'#00e676':'#ff5252'};font-weight:700">${u>=0?'+':''}$${u.toFixed(2)}</span>`;
+  };
   const perRule = `
     <table style="width:100%;border-collapse:collapse;margin-bottom:.7rem;font-size:.85em">
-      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Strategy${_tradesHorizon!=='ALL'?(_prHasHorizon?` (${_tradesHorizon}m only)`:` (${_tradesHorizon}m — from the last ${d.trades.length} trades)`):''}</th><th>entered</th><th>settled</th><th>wins</th><th>win rate</th><th>avg P/L</th><th>total P/L</th></tr>
+      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Strategy${_tradesHorizon!=='ALL'?(_prHasHorizon?` (${_tradesHorizon}m only)`:` (${_tradesHorizon}m — from the last ${d.trades.length} trades)`):''}</th><th>entered</th><th>settled</th><th>wins</th><th>win rate</th><th>avg P/L</th><th>total P/L</th><th title="At $${_paperStake}/trade with YOUR fees: ${_feeBuyPct}% of buy + ${_feeProfitPct}% of profit">≈ $ your fees</th></tr>
       ${prRows.length ? prRows.map(p=>`<tr style="border-top:1px solid #ffffff14">
         <td style="padding:.3rem .5rem"><strong>${ruleName(p.rule)}</strong></td>
         <td>${p.n_entered}</td><td>${p.n_settled}</td><td>${p.wins}</td>
         <td>${p.win_rate!=null?p.win_rate+'%':'--'}</td>
-        <td>${p.avg_c!=null?pl(p.avg_c):'--'}</td><td>${pl(p.total_c)}</td></tr>`).join('')
-        : `<tr><td colspan="7" style="padding:.5rem;color:var(--text-secondary)">No ${_tradesHorizon!=='ALL'?_tradesHorizon+'m ':''}entries yet — strategies log from their first qualifying round.</td></tr>`}
+        <td>${p.avg_c!=null?pl(p.avg_c):'--'}</td><td>${pl(p.total_c)}</td>
+        <td>${usdForRule(p.rule)}</td></tr>`).join('')
+        : `<tr><td colspan="8" style="padding:.5rem;color:var(--text-secondary)">No ${_tradesHorizon!=='ALL'?_tradesHorizon+'m ':''}entries yet — strategies log from their first qualifying round.</td></tr>`}
     </table>`;
   // Strategy filter chips: ALL + one per strategy present in the current horizon view —
   // click to see only that strategy's trades. State survives the 30s refresh.
@@ -3290,15 +3335,17 @@ function renderTradesBlotter(d) {
       <td style="white-space:nowrap">${t.btc_entry!=null?'$'+Number(t.btc_entry).toLocaleString():'—'}</td>
       <td style="white-space:nowrap">${t.btc_exit!=null?'$'+Number(t.btc_exit).toLocaleString()+btcMove(t):'—'}</td>
       <td>${pl(t.pnl_c)}</td>
+      ${(()=>{const sh=_paperStake/(t.buy_at||1);const u=_userFeePnlUsd(t);
+        return `<td style="white-space:nowrap" title="${sh.toFixed(1)} shares for $${_paperStake} at ${(t.buy_at*100).toFixed(1)}c each · your fees: ${_feeBuyPct}% of buy ($${(_paperStake*_feeBuyPct/100).toFixed(2)}) + ${_feeProfitPct}% of any profit">${u!=null?`<span style="color:${u>=0?'#00e676':'#ff5252'};font-weight:700">${u>=0?'+':''}$${u.toFixed(2)}</span>`:'<span style="color:#ffb74d">open</span>'} <span style="color:#5a6478;font-size:.85em">(${sh.toFixed(1)}sh)</span></td>`;})()}
       <td style="color:var(--text-secondary)">${t.exit_reason||t.outcome||(t.settled?'':'open')}</td>
       <td>${audit}</td></tr>`;
   }).join('');
   box.innerHTML = head + hTabs + perRule + chips + `
     <table style="width:100%;border-collapse:collapse;font-size:.82em">
-      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Time</th><th>Strategy</th><th>H</th><th>Side</th><th>Bought @</th><th>Sold/settled (net)</th><th>Fees in + out</th><th>BTC @ buy (Pyth)</th><th>BTC @ exit (Pyth)</th><th>P/L</th><th>Result</th><th>Audit</th></tr>
+      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Time</th><th>Strategy</th><th>H</th><th>Side</th><th>Bought @</th><th>Sold/settled (net)</th><th>Fees in + out</th><th>BTC @ buy (Pyth)</th><th>BTC @ exit (Pyth)</th><th>P/L</th><th title="At $${_paperStake}/trade with YOUR fees: ${_feeBuyPct}% of buy + ${_feeProfitPct}% of profit">≈ $ your fees</th><th>Result</th><th>Audit</th></tr>
       ${rows}
     </table>
-    <div style="margin-top:.5rem;color:var(--text-secondary);font-size:.78em">Bought @ = executable ask at entry (1 paper share). Sold/settled (net) = stored gross bid/settlement proceeds minus the stored exit fee. <strong>✓ exact</strong> means P/L was independently recomputed as gross exit − exit fee − entry ask − entry fee; older rows are marked legacy because their raw exit components were not stored. BTC @ buy/exit uses the app's Pyth reference feed and can differ from Binance. Stops/TPs sell into the visible bid, so an exit may gap past its trigger. "holding" = still open.</div>`;
+    <div style="margin-top:.5rem;color:var(--text-secondary);font-size:.78em"><strong>Two fee models on this page.</strong> The cents columns (P/L, avg, total) use the EXACT Polymarket taker-fee accounting — that is the authoritative ledger the promotion gates are judged on. The <strong>≈ $ your fees</strong> columns replace those venue fees with YOUR editable scenario (${_feeBuyPct}% of the buy amount at entry + ${_feeProfitPct}% of the profit on winners, applied to gross exit proceeds), scaled to $${_paperStake}/trade with shares = stake ÷ entry price — a linear conversion that assumes the full stake fills at the top-of-book ask (the displayed ask SIZE is the fill-reality check). Sold/settled (net) = stored gross bid/settlement proceeds minus the stored exit fee. <strong>✓ exact</strong> means P/L was independently recomputed from stored components; older rows are marked legacy. BTC @ buy/exit uses the app's Pyth reference feed and can differ from Binance. Stops/TPs sell into the visible bid, so an exit may gap past its trigger. "holding" = still open.</div>`;
 }
 
 function renderDeadStrategiesPanel(ruleStatus) {
@@ -3319,6 +3366,7 @@ function renderDeadStrategiesPanel(ruleStatus) {
     ['Bet both ways (straddle)', 'buy UP+DOWN near 50/50, sell legs on swings', 'both legs TP 52%', '−10.7c/straddle · PF 0.48 · 0/9 weeks', 'STRADDLE_LIVE_V1', 'The swing IS real (52% of rounds, +18c when it works) — but the one-way trend costs −43c (you sold the eventual winner cheap). The ~4.5c premium prices the swing odds exactly.'],
     ['🧠 Model fade', 'path head says CHOP + touch + fade model ≥55% → buy cheap side, TP +20% or settle', 'model-gated', 'no offline baseline — the honest test IS this live one', 'MODEL_FADE_LIVE_V1', 'Entries only when the models fire. Tests whether the fade heads add value at live executable prices.'],
     ['🧠 Model straddle', 'both ways ONLY when path head predicts two-sided (round-trip ≥35%)', 'model-gated', 'vs blind straddle above', 'MODEL_STRADDLE_LIVE_V1', 'Same mechanics as the blind straddle — the model picks the rounds. The gap between the two rows IS the model\'s value.'],
+    ['🧠 Sequential reversal', 'model-approved first fade; buy the opposite side only after a separately graded return touch', 'model-gated staged entry', 'new forward paper test', 'MODEL_SEQUENTIAL_REVERSAL_V1', 'Unlike the simultaneous straddle, this pays for leg two only if the opposite extreme actually arrives and its fade grade is at least 55%. Each leg exits at +20% bid or settles; all asks and fees are accumulated.'],
     ['🧠 Model ride', 'path head says TREND + big-move elevated → buy leader mid-window, hold to settle', 'model-gated', 'no offline baseline', 'MODEL_RIDE_LIVE_V1', 'The trend-following counterpart: one spread crossing, model-selected rounds only.'],
     ['📜 Late-leader 15m', 'frozen-rule mechanics on 15m rounds, evaluated at 20–32s left', 'no offline 15m data existed', 'the 15m answer', 'LATE_LEADER_15M_SHADOW_V1', 'Separate shadow, NOT the frozen rule — no archive had 15m quotes, so the 15m question is answered live.'],
     ['⏱ Late-leader @60s', 'frozen-rule gates, evaluated at 50–65s left (5m)', 'offline +0.5c LB', 'gradient test', 'LATE_LEADER_60S_V1', 'The EV-vs-expiry ladder, live: offline calibration showed 120s ≈ 0 → 60s +0.5 → 30s +2.1c LB.'],
@@ -3328,7 +3376,7 @@ function renderDeadStrategiesPanel(ruleStatus) {
     ['⚡ Shock sniper', 'BTC jumps ≥$20 in ~3–8s and the target ask did NOT move → buy the stale ask', '1s approximation', 'true test = offline L2 replay (queued)', 'SHOCK_SNIPER_LIVE_V1', 'The 1s bridge understates the sub-second opportunity — a positive here is strong; a zero is NOT conclusive.'],
   ];
   const recent = (ruleStatus && ruleStatus.recent) || [];
-  const shortName = r => ({MID_SCALP_LIVE_V1:'SCALP',TP_OR_SETTLE_LIVE_V1:'TP-SET',STRADDLE_LIVE_V1:'STRAD',MODEL_FADE_LIVE_V1:'🧠FADE',MODEL_STRADDLE_LIVE_V1:'🧠STRAD',MODEL_RIDE_LIVE_V1:'🧠RIDE',LATE_LEADER_30S_V1:'📜LL30',LATE_LEADER_15M_SHADOW_V1:'📜LL15m',LATE_LEADER_15S_V1:'⏱LL15s',LATE_LEADER_60S_V1:'⏱LL60s',LATE_LEADER_MAKER_V1:'🪑MAKER',CHEAP_SAFE_EARLY_V1:'💰CHEAP',SHOCK_SNIPER_LIVE_V1:'⚡SNIPE'}[r]||r);
+  const shortName = r => ({MID_SCALP_LIVE_V1:'SCALP',TP_OR_SETTLE_LIVE_V1:'TP-SET',STRADDLE_LIVE_V1:'STRAD',MODEL_FADE_LIVE_V1:'🧠FADE',MODEL_STRADDLE_LIVE_V1:'🧠STRAD',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠SEQ',MODEL_RIDE_LIVE_V1:'🧠RIDE',LATE_LEADER_30S_V1:'📜LL30',LATE_LEADER_15M_SHADOW_V1:'📜LL15m',LATE_LEADER_15S_V1:'⏱LL15s',LATE_LEADER_60S_V1:'⏱LL60s',LATE_LEADER_MAKER_V1:'🪑MAKER',CHEAP_SAFE_EARLY_V1:'💰CHEAP',SHOCK_SNIPER_LIVE_V1:'⚡SNIPE'}[r]||r);
   const feed = recent.length ? `
       <div style="margin-top:.45rem;color:var(--text-secondary);font-size:.9em"><strong>Live action feed</strong> (every shadow entry/exit, newest first):</div>
       <table style="width:100%;border-collapse:collapse;margin-top:.15rem">

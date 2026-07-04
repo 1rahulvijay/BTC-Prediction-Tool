@@ -24,11 +24,11 @@ REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samp
 REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
 REM head (big-move/up/down/drop/activity, path forecaster, FADE model). Set the window here and every
-REM model retrains on it. Long windows are resumable through the daily-file cache, but 1500d is a
-REM multi-day first build. Do not expect the old 360/400d 18-36h estimate to apply.
-REM 1500d (operator-approved, 2026-07-03): multi-regime window back to ~2022-05-25, including the
-REM 2022 bear and the 2024-26 cycles (archive availability verified for spot AND perp at the boundary
-REM date). Made safer by the bps-label upgrade (labels remain comparable across price levels) and the
+REM model retrains on it. Long windows are resumable through the daily-file cache; the current
+REM 1265d source-complete window is still a multi-day first build.
+REM 1265d current executable window (2026-07-04): manifest-backed coverage starts 2023-01-15.
+REM Do not describe this artifact as a 1500d/2022-bear model. Made safer by the bps-label upgrade
+REM (labels remain comparable across price levels) and the
 REM VALIDATED-REFIT flow (each head measures on its untouched recent tail,
 REM then -- gate permitting -- refits production on all rows with rotated calibration; candidate test
 REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~30 recent days
@@ -259,7 +259,7 @@ if errorlevel 1 (
     )
 )
 if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not "%BTC_HEAD_RETRAIN_COMPLETE%"=="1" (
-    echo [0/3] ERROR: the 1500d matrix or a required specialist head failed.
+    echo [0/3] ERROR: the %BTC_HISTORICAL_DAYS%d matrix or a required specialist head failed.
     echo       Main-ensemble training will NOT start against incomplete inputs.
     echo       Fix the logged failure and run start.bat again; cached daily files are reused.
     exit /b 1

@@ -257,6 +257,13 @@ async def lifespan(app: FastAPI):
             price_to_beat_tracker.recent_rounds.append(_r)  # newest-first preserved
         if _recent:
             logger.info(f"Restored {len(_recent)} resolved price-to-beat rounds for the UI")
+        _open_ptb = price_to_beat_tracker.restore_pending(
+            database.fetch_open_price_to_beat("pyth"))
+        _open_binance = price_to_beat_binance_tracker.restore_pending(
+            database.fetch_open_price_to_beat("binance"))
+        if _open_ptb or _open_binance:
+            logger.info("Restored %s Pyth and %s Binance open price-to-beat rounds",
+                        _open_ptb, _open_binance)
     except Exception as _pe:
         logger.debug(f"PTB history rehydrate skipped: {_pe}")
     # Data hygiene: purge pending rows orphaned by the previous shutdown (their
@@ -957,9 +964,21 @@ def _paper_rule_status_cached():
     _PAPER_RULE_CACHE["ts"] = now
     try:
         import database
-        s = database.rule_paper_summary("LATE_LEADER_30S_V1")
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        settlement_reconcile = database.reconcile_official_polymarket_settlements(
+            os.path.join(data_dir, "pm_export_settlements.parquet"))
+        if int(settlement_reconcile.get("rounds") or 0) > 0:
+            # Official outcomes supersede the Pyth proxy. Refresh the in-memory
+            # accuracy and recent-round views immediately so UI and DuckDB agree.
+            for _h in price_to_beat_tracker.horizons:
+                price_to_beat_tracker.history[_h].clear()
+                price_to_beat_tracker.history[_h].extend(
+                    database.fetch_price_to_beat_history(_h, 500))
+            price_to_beat_tracker.recent_rounds.clear()
+            for _r in database.fetch_price_to_beat_recent(200):
+                price_to_beat_tracker.recent_rounds.append(_r)
+        s = database.rule_paper_summary("LATE_LEADER_30S_V1")
         qpath = os.path.join(data_dir, "pm_live_quotes.json")
         quote_age = round(now - os.path.getmtime(qpath), 1) if os.path.exists(qpath) else None
         # Boot/code stamp (2026-07-04): compare core source content with the boot hash. Two
@@ -973,6 +992,7 @@ def _paper_rule_status_cached():
         _disk_code_hash = _backend_code_hash()
         _hash_stale = _disk_code_hash != BACKEND_BOOT_CODE_HASH
         val = {"summary": s, "quote_bridge_age_s": quote_age,
+               "official_settlement_reconcile": settlement_reconcile,
                "backend": {"started_ts": _started, "code_mtime": _code_mtime,
                            "boot_code_hash": BACKEND_BOOT_CODE_HASH,
                            "disk_code_hash": _disk_code_hash,
@@ -984,6 +1004,7 @@ def _paper_rule_status_cached():
                "shadows": {r: database.rule_paper_summary(r) for r in
                            ("MID_SCALP_LIVE_V1", "TP_OR_SETTLE_LIVE_V1", "STRADDLE_LIVE_V1",
                             "MODEL_FADE_LIVE_V1", "MODEL_STRADDLE_LIVE_V1", "MODEL_RIDE_LIVE_V1",
+                            "MODEL_SEQUENTIAL_REVERSAL_V1",
                             "LATE_LEADER_15M_SHADOW_V1", "LATE_LEADER_15S_V1",
                             "LATE_LEADER_60S_V1", "LATE_LEADER_MAKER_V1",
                             "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1")},

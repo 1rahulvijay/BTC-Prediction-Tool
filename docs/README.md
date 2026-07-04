@@ -1,6 +1,10 @@
 # Documentation Index
 
 ## Latest completed strategy test
+- **[POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md](active/POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md)** -
+  fee-aware complement-arbitrage and next-round drift tests, five-model OOS straddle selectors, and the
+  restart-safe sequential opposite-side paper strategy. The full replay is queued behind the active
+  1,500-day retrain so both jobs do not compete for the laptop's 16 GB RAM.
 - **[VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md](active/VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md)** -
   the Kelly/Malamud/Zhou "virtue of complexity" recipe applied to late-leader fair value (30 days of
   kachoio executable asks, ridge/poly/RFF up to 1,500 features, purged walk-forward, mandatory nulls).
@@ -10,7 +14,7 @@
   the sufficient statistic. Operator ruling recorded: no complexity head; the frozen rule stays small and
   dumb; complexity is reserved for recorder-gated execution targets; next proof = live replication at n≥500.
 - **[PAPER_STRATEGY_LAB_2026-07-04.md](active/PAPER_STRATEGY_LAB_2026-07-04.md)** -
-  the single reference for ALL 13 auto-trading paper strategies: the frozen LATE_LEADER_30S_V1 rule (+its
+  the single reference for ALL 14 auto-trading paper strategies: the frozen LATE_LEADER_30S_V1 rule (+its
   promotion gate), the edge-candidate ladder (15s/60s/15m/MAKER-at-bid), the 3 dead-strategy replications,
   the model-gated variants (fade/straddle/ride/cheap-SAFE/shock-sniper), frozen specs, honest accounting
   (real asks/bids, fees every leg, BTC-at-entry/exit in PYTH, explicit denominator caveats), and the 📒 Trades

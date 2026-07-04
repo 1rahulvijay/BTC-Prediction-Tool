@@ -21,6 +21,7 @@ Persists to DuckDB (`price_to_beat`); surfaced as
 """
 
 import logging
+import time
 from collections import deque
 
 import numpy as np
@@ -339,7 +340,7 @@ def _window_quality(horizon, window_start_ms):
     fav = _load_window_favorability()
     if not fav or not window_start_ms:
         return None
-    hz = fav.get("horizons", {}).get(str(int(horizon))) or fav.get("horizons", {}).get("5")
+    hz = fav.get("horizons", {}).get(str(int(horizon)))
     if not hz:
         return None
     try:
@@ -439,7 +440,7 @@ def _leader_quote(round_data, now_ms):
         if not (0.0 <= bid <= ask < 1.0) or ask <= 0.0:
             return None
         fee_rate = float(quote.get("fee_rate") or 0.07)
-        fee = fee_rate * ask * (1.0 - ask) if quote.get("fees_enabled") is not False else 0.0
+        fee = round(fee_rate * ask * (1.0 - ask), 5) if quote.get("fees_enabled") is not False else 0.0
         return {"side": side, "ask": ask, "bid": bid, "fee": fee,
                 "spread": round(ask - bid, 4),
                 "depth": float(quote.get(f"{pfx}_top_ask_size") or 0.0)}
@@ -507,9 +508,10 @@ def _side_quote(round_data, now_ms, side):
         rate = float(quote.get("fee_rate") or 0.07)
         fees_on = quote.get("fees_enabled") is not False
         return {"ask": ask, "bid": bid,
-                "fee_in": rate * ask * (1 - ask) if fees_on else 0.0,
-                "fee_out": rate * bid * (1 - bid) if fees_on else 0.0,
-                "spread": ask - bid}
+                "fee_in": round(rate * ask * (1 - ask), 5) if fees_on else 0.0,
+                "fee_out": round(rate * bid * (1 - bid), 5) if fees_on else 0.0,
+                "spread": ask - bid,
+                "ask_size": float(quote.get(f"{pfx}_top_ask_size") or 0.0)}
     except Exception:
         return None
 
@@ -517,7 +519,9 @@ def _side_quote(round_data, now_ms, side):
 def _predict_path_plan(bundle, horizon, keepers, price):
     """STABLE intra-window trade plan from live keepers: ENSEMBLE high/low band + touch / round-trip
     odds + net-drift + chop/trend style. Pure numpy; crash-safe at the call site. Once per window."""
-    hz = (bundle.get("horizons") or {}).get(horizon) or (bundle.get("horizons") or {}).get(5)
+    # A missing horizon is not interchangeable with 5m. Falling back silently gives
+    # a valid-looking forecast with the wrong label window and calibration.
+    hz = (bundle.get("horizons") or {}).get(horizon)
     if not hz or bundle.get("threshold_units") != "usd":
         return None
     values = [float(keepers[f]) for f in bundle["features"]]
@@ -1022,6 +1026,43 @@ class PriceToBeatTracker:
         # feature the A1 P(hold) model needs. update() fires ~1/s, so 180 covers ~3 min.
         self._px_buf = deque(maxlen=180)
         self._last_keepers = None                     # live vol keepers (set per update tick)
+
+    def restore_pending(self, rows: list[dict], now_ms: int | None = None) -> int:
+        """Rehydrate still-open rounds without fabricating a mid-window anchor.
+
+        Restored rounds resolve and manage persisted exits, but paper entries are
+        disabled until the next clean boundary because the process did not observe
+        the earlier part of the window.
+        """
+        now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        restored = 0
+        known = {str(p.get("id")) for p in self.pending}
+        for row in rows or []:
+            try:
+                horizon = int(row.get("horizon") or 0)
+                start = int(row.get("timestamp") or 0)
+                verify_at = int(row.get("verify_at") or 0)
+                round_id = str(row.get("id") or "")
+                if (not round_id or round_id in known or horizon not in self.horizons
+                        or verify_at <= now_ms or start <= 0
+                        or str(row.get("source") or "pyth") != self.source):
+                    continue
+                grade = str(row.get("confluence_grade") or "")
+                state = {
+                    **row, "status": "pending", "window_start": start,
+                    "window_end": verify_at, "window_label": f"{_hms(start)}-{_hms(verify_at)}",
+                    "our_action": row.get("signal") or "NEUTRAL",
+                    "confluence": {"grade": grade} if grade else None,
+                    "_restored_mid_round": True, "_paper_entries_disabled": True,
+                }
+                self.pending.append(state)
+                self.latest_round[horizon] = state
+                self.current_window[horizon] = start
+                known.add(round_id)
+                restored += 1
+            except Exception:
+                continue
+        return restored
 
     @staticmethod
     def _bet_lean(p: dict) -> str:
@@ -1705,12 +1746,13 @@ class PriceToBeatTracker:
                     database.log_round_state_snapshot(rnd, int(now_ms))
                 except Exception as _rse2:
                     logger.debug(f"Round-state snapshot skipped: {_rse2}")
+            _paper_entries_allowed = not bool(rnd.get("_paper_entries_disabled"))
             # ── FORWARD PAPER LEDGER for the frozen rule LATE_LEADER_30S_V1 (2026-07-02): at ~30s
             # left in a 5m round, buy the MARKET's leader at its executable ask, skip ask<0.60,
             # one entry per round, hold to settlement. Evaluated ONCE per round from the same
             # fresh bridge quote the champion sees; SKIP/NO_QUOTE rows keep denominators honest.
             # This ledger IS the live validation of the rule -- no thresholds may be re-tuned.
-            if (int(rnd.get("horizon", 0) or 0) == 5 and 20 <= secs_left <= 32
+            if (_paper_entries_allowed and int(rnd.get("horizon", 0) or 0) == 5 and 20 <= secs_left <= 32
                     and not rnd.get("_ll30_eval") and rnd.get("id")):
                 rnd["_ll30_eval"] = True
                 try:
@@ -1719,7 +1761,8 @@ class PriceToBeatTracker:
                         database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_30S_V1", int(now_ms),
                                                       5, "", 0.0, 0.0, 0.0, 0.0, 0.0, "NO_QUOTE")
                     else:
-                        _act = ("ENTER" if 0.60 <= _lq["ask"] < 0.97
+                        _act = ("NO_DEPTH" if _lq["depth"] < 1.0 else
+                                "ENTER" if 0.60 <= _lq["ask"] < 0.97
                                 else "SKIP_LOW_ASK" if _lq["ask"] < 0.60 else "SKIP_HIGH_ASK")
                         database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_30S_V1", int(now_ms),
                                                       5, _lq["side"], _lq["ask"], _lq["bid"],
@@ -1731,7 +1774,7 @@ class PriceToBeatTracker:
             # rounds, its own name + evidence. NOT the frozen rule — the Kaggle validation was
             # 5m-only (no 15m quote history existed in any archive), so the 15m question gets
             # answered here on live quotes instead of assumed.
-            if (int(rnd.get("horizon", 0) or 0) == 15 and 20 <= secs_left <= 32
+            if (_paper_entries_allowed and int(rnd.get("horizon", 0) or 0) == 15 and 20 <= secs_left <= 32
                     and not rnd.get("_ll15_eval") and rnd.get("id")):
                 rnd["_ll15_eval"] = True
                 try:
@@ -1741,7 +1784,8 @@ class PriceToBeatTracker:
                                                       int(now_ms), 15, "", 0.0, 0.0, 0.0, 0.0,
                                                       0.0, "NO_QUOTE")
                     else:
-                        _act = ("ENTER" if 0.60 <= _lq["ask"] < 0.97
+                        _act = ("NO_DEPTH" if _lq["depth"] < 1.0 else
+                                "ENTER" if 0.60 <= _lq["ask"] < 0.97
                                 else "SKIP_LOW_ASK" if _lq["ask"] < 0.60 else "SKIP_HIGH_ASK")
                         database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_15M_SHADOW_V1",
                                                       int(now_ms), 15, _lq["side"], _lq["ask"],
@@ -1767,6 +1811,7 @@ class PriceToBeatTracker:
                         "STRADDLE_LIVE_V1": "strad",
                         "MODEL_FADE_LIVE_V1": "mfade",
                         "MODEL_STRADDLE_LIVE_V1": "mstrad",
+                        "MODEL_SEQUENTIAL_REVERSAL_V1": "mseq",
                     }
                     for _rule, _state in database.fetch_open_rule_paper_states(rnd["id"]).items():
                         _key = _state_keys.get(_rule)
@@ -1774,7 +1819,8 @@ class PriceToBeatTracker:
                             _sh[_key] = _state
                 _nowq = _leader_quote(rnd, now_ms)
                 # entries (each once per round, first qualifying tick in its window)
-                if _nowq and "scalp" not in _sh and _dur * 0.2 < secs_left <= _dur * 0.6:
+                if (_paper_entries_allowed and _nowq and _nowq["depth"] >= 1.0 and "scalp" not in _sh
+                        and _dur * 0.2 < secs_left <= _dur * 0.6):
                     if 0.50 <= _nowq["ask"] <= 0.70 and _nowq["spread"] <= 0.02:
                         _sh["scalp"] = {"side": _nowq["side"], "entry": _nowq["ask"],
                                         "fee_in": _nowq["fee"], "t0": secs_left, "open": True}
@@ -1784,7 +1830,8 @@ class PriceToBeatTracker:
                                                       _nowq["spread"], _nowq["depth"], "ENTER",
                                                       btc_entry=rnd.get("current_price"),
                                                       state=_sh["scalp"])
-                if _nowq and "tps" not in _sh and _dur * 0.6 < secs_left <= _dur * 0.8:
+                if (_paper_entries_allowed and _nowq and _nowq["depth"] >= 1.0 and "tps" not in _sh
+                        and _dur * 0.6 < secs_left <= _dur * 0.8):
                     if 0.50 <= _nowq["ask"] <= 0.70 and _nowq["spread"] <= 0.02:
                         _sh["tps"] = {"side": _nowq["side"], "entry": _nowq["ask"],
                                       "fee_in": _nowq["fee"], "open": True}
@@ -1794,11 +1841,13 @@ class PriceToBeatTracker:
                                                       _nowq["spread"], _nowq["depth"], "ENTER",
                                                       btc_entry=rnd.get("current_price"),
                                                       state=_sh["tps"])
-                if "strad" not in _sh and _dur * 0.6 < secs_left <= _dur * 0.9:
+                if (_paper_entries_allowed and "strad" not in _sh
+                        and _dur * 0.6 < secs_left <= _dur * 0.9):
                     _qu = _side_quote(rnd, now_ms, "UP")
                     _qd = _side_quote(rnd, now_ms, "DOWN")
                     if (_qu and _qd and max(_qu["bid"], _qd["bid"]) <= 0.55
-                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02):
+                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02
+                            and _qu["ask_size"] >= 1.0 and _qd["ask_size"] >= 1.0):
                         _sh["strad"] = {
                             "up": {"entry": _qu["ask"], "fee_in": _qu["fee_in"],
                                    "exit_bid": None, "exit_fee": 0.0},
@@ -1826,7 +1875,8 @@ class PriceToBeatTracker:
                                                             _pnl, int(now_ms), _hit,
                                                             btc_exit=rnd.get("current_price"),
                                                             exit_gross=_q["bid"],
-                                                            exit_fee=_q["fee_out"], state=_sc)
+                                                            exit_fee=_q["fee_out"], state=_sc,
+                                                            settlement_source="live_bid")
                 _tp = _sh.get("tps")
                 if _tp and _tp.get("open"):
                     _q = _side_quote(rnd, now_ms, _tp["side"])
@@ -1837,18 +1887,23 @@ class PriceToBeatTracker:
                                                         _pnl, int(now_ms), "TP",
                                                         btc_exit=rnd.get("current_price"),
                                                         exit_gross=_q["bid"],
-                                                        exit_fee=_q["fee_out"], state=_tp)
-                for _stkey in ("strad", "mstrad"):
+                                                        exit_fee=_q["fee_out"], state=_tp,
+                                                        settlement_source="live_bid")
+                for _stkey in ("strad", "mstrad", "mseq"):
                     _st = _sh.get(_stkey)
                     if _st:
                         for _leg, _sd in (("up", "UP"), ("dn", "DOWN")):
-                            if _st[_leg].get("exit_bid") is None:
+                            _leg_state = _st.get(_leg)
+                            if _leg_state and _leg_state.get("exit_bid") is None:
                                 _q = _side_quote(rnd, now_ms, _sd)
-                                if _q and _q["bid"] >= _st[_leg]["entry"] * 1.20:
-                                    _st[_leg]["exit_bid"] = _q["bid"]
-                                    _st[_leg]["exit_fee"] = _q["fee_out"]
-                                    _strule = ("STRADDLE_LIVE_V1" if _stkey == "strad"
-                                                else "MODEL_STRADDLE_LIVE_V1")
+                                if _q and _q["bid"] >= _leg_state["entry"] * 1.20:
+                                    _leg_state["exit_bid"] = _q["bid"]
+                                    _leg_state["exit_fee"] = _q["fee_out"]
+                                    _strule = {
+                                        "strad": "STRADDLE_LIVE_V1",
+                                        "mstrad": "MODEL_STRADDLE_LIVE_V1",
+                                        "mseq": "MODEL_SEQUENTIAL_REVERSAL_V1",
+                                    }[_stkey]
                                     database.update_rule_paper_state(rnd["id"], _strule, _st)
                 # ── MODEL-GATED shadow rules (operator request 2026-07-04): the SAME mechanics, but
                 # every entry is DECIDED BY THE MODELS -- the head predictions are the trigger, so
@@ -1857,12 +1912,12 @@ class PriceToBeatTracker:
                 _tsx = _plx.get("touch_state") or {}
                 # 1. MODEL FADE: path head said FADE-SETUP, a barrier touch happened, and the fade
                 #    model grades the revert >=55% -> buy the CHEAP side; TP +20% or settle.
-                if ("mfade" not in _sh and _plx.get("play") == "FADE-SETUP"
+                if (_paper_entries_allowed and "mfade" not in _sh and _plx.get("play") == "FADE-SETUP"
                         and _tsx.get("side") in ("HIGH", "LOW")
                         and (_tsx.get("p_fade") or 0) >= 0.55 and secs_left > 20):
                     _cheap = "DOWN" if _tsx.get("side") == "HIGH" else "UP"
                     _q = _side_quote(rnd, now_ms, _cheap)
-                    if _q and 0.03 <= _q["ask"] <= 0.90:
+                    if _q and 0.03 <= _q["ask"] <= 0.90 and _q["ask_size"] >= 1.0:
                         _sh["mfade"] = {"side": _cheap, "entry": _q["ask"],
                                         "fee_in": _q["fee_in"], "open": True}
                         database.log_rule_paper_trade(rnd["id"], "MODEL_FADE_LIVE_V1", int(now_ms),
@@ -1881,16 +1936,68 @@ class PriceToBeatTracker:
                                                         int(now_ms), "TP",
                                                         btc_exit=rnd.get("current_price"),
                                                         exit_gross=_q["bid"],
-                                                        exit_fee=_q["fee_out"], state=_mf)
+                                                        exit_fee=_q["fee_out"], state=_mf,
+                                                        settlement_source="live_bid")
+                # 1b. MODEL SEQUENTIAL REVERSAL: buy the cheap side after the first model-approved
+                # extreme, then add the opposite cheap side only after a separately graded return
+                # extreme. This is the operator's "one side, then the other side" strategy. It is
+                # intentionally separate from MODEL_FADE (one leg) and MODEL_STRADDLE (both at once).
+                # Each leg can TP +20%; all costs/exits remain in one crash-safe paper-ledger row.
+                if (_paper_entries_allowed and "mseq" not in _sh and _plx.get("play") == "FADE-SETUP"
+                        and _tsx.get("side") in ("HIGH", "LOW")
+                        and (_tsx.get("p_fade") or 0) >= 0.55 and secs_left > 20):
+                    _first_side = "DOWN" if _tsx.get("side") == "HIGH" else "UP"
+                    _q = _side_quote(rnd, now_ms, _first_side)
+                    if (_q and 0.03 <= _q["ask"] <= 0.90 and _q["spread"] <= 0.03
+                            and _q["ask_size"] >= 1.0):
+                        _first_key = "up" if _first_side == "UP" else "dn"
+                        _sh["mseq"] = {
+                            "up": None, "dn": None, "first_side": _first_side,
+                            "second_added": False,
+                            "first_p_fade": float(_tsx.get("p_fade") or 0.0),
+                        }
+                        _sh["mseq"][_first_key] = {
+                            "entry": _q["ask"], "fee_in": _q["fee_in"],
+                            "exit_bid": None, "exit_fee": 0.0,
+                        }
+                        database.log_rule_paper_trade(
+                            rnd["id"], "MODEL_SEQUENTIAL_REVERSAL_V1", int(now_ms),
+                            int(rnd.get("horizon") or 5), _first_side,
+                            _q["ask"], _q["bid"], _q["fee_in"], _q["spread"], 0.0, "ENTER",
+                            btc_entry=rnd.get("current_price"), state=_sh["mseq"])
+                _ms = _sh.get("mseq")
+                _leg2 = _tsx.get("leg2") or {}
+                if (_paper_entries_allowed and _ms and not _ms.get("second_added")
+                        and _leg2.get("fade") in ("UP", "DOWN")
+                        and _leg2.get("fade") != _ms.get("first_side")
+                        and (_leg2.get("p_fade") or 0) >= 0.55 and secs_left > 20):
+                    _second_side = _leg2["fade"]
+                    _q = _side_quote(rnd, now_ms, _second_side)
+                    if (_q and 0.03 <= _q["ask"] <= 0.90 and _q["spread"] <= 0.03
+                            and _q["ask_size"] >= 1.0):
+                        _second_key = "up" if _second_side == "UP" else "dn"
+                        _next_state = dict(_ms)
+                        _next_state[_second_key] = {
+                            "entry": _q["ask"], "fee_in": _q["fee_in"],
+                            "exit_bid": None, "exit_fee": 0.0,
+                        }
+                        _next_state["second_added"] = True
+                        _next_state["second_side"] = _second_side
+                        _next_state["second_p_fade"] = float(_leg2.get("p_fade") or 0.0)
+                        if database.add_rule_paper_leg(
+                            rnd["id"], "MODEL_SEQUENTIAL_REVERSAL_V1",
+                            _q["ask"], _q["bid"], _q["fee_in"], _next_state):
+                            _sh["mseq"] = _next_state
                 # 2. MODEL STRADDLE: only when the path head PREDICTS chop (two_sided, round-trip
                 #    >=35%) -- vs the blind straddle above which fires on price shape alone.
-                if ("mstrad" not in _sh and _plx.get("style") == "two_sided"
+                if (_paper_entries_allowed and "mstrad" not in _sh and _plx.get("style") == "two_sided"
                         and (_plx.get("p_roundtrip") or 0) >= 0.35
                         and _dur * 0.6 < secs_left <= _dur * 0.9):
                     _qu = _side_quote(rnd, now_ms, "UP")
                     _qd = _side_quote(rnd, now_ms, "DOWN")
                     if (_qu and _qd and max(_qu["bid"], _qd["bid"]) <= 0.55
-                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02):
+                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02
+                            and _qu["ask_size"] >= 1.0 and _qd["ask_size"] >= 1.0):
                         _sh["mstrad"] = {
                             "up": {"entry": _qu["ask"], "fee_in": _qu["fee_in"],
                                    "exit_bid": None, "exit_fee": 0.0},
@@ -1905,11 +2012,12 @@ class PriceToBeatTracker:
                                                       state=_sh["mstrad"])
                 # 3. MODEL RIDE: path head says TREND (one_sided RIDE) and the big-move timing head
                 #    is elevated+ -> buy the leader mid-window, HOLD to settlement (trend thesis).
-                if ("mride" not in _sh and _plx.get("play") == "RIDE"
+                if (_paper_entries_allowed and "mride" not in _sh and _plx.get("play") == "RIDE"
                         and str(rnd.get("big_move_tier") or "") in ("elevated", "likely")
                         and _dur * 0.2 < secs_left <= _dur * 0.6):
                     _q = _leader_quote(rnd, now_ms)
-                    if _q and 0.55 <= _q["ask"] <= 0.80 and _q["spread"] <= 0.02:
+                    if (_q and 0.55 <= _q["ask"] <= 0.80 and _q["spread"] <= 0.02
+                            and _q["depth"] >= 1.0):
                         _sh["mride"] = True
                         database.log_rule_paper_trade(rnd["id"], "MODEL_RIDE_LIVE_V1", int(now_ms),
                                                       int(rnd.get("horizon") or 5), _q["side"],
@@ -1920,7 +2028,7 @@ class PriceToBeatTracker:
                 # 1+2. LATE_LEADER ladder: 60s and 15s checkpoints (5m, same gates as the frozen
                 # 30s rule). Measures the EV-vs-expiry gradient LIVE: calibration showed
                 # 120s −0.1c → 60s +0.5c → 30s +2.1c LB; 15s was never measurable offline.
-                if int(rnd.get("horizon") or 5) == 5:
+                if _paper_entries_allowed and int(rnd.get("horizon") or 5) == 5:
                     for _lkey, _lrule, _lo, _hi in (("ll60", "LATE_LEADER_60S_V1", 50, 65),
                                                     ("ll15s", "LATE_LEADER_15S_V1", 10, 17)):
                         if _lkey not in _sh and _lo <= secs_left <= _hi:
@@ -1931,7 +2039,8 @@ class PriceToBeatTracker:
                                                               "", 0.0, 0.0, 0.0, 0.0, 0.0,
                                                               "NO_QUOTE")
                             else:
-                                _act2 = ("ENTER" if 0.60 <= _lq2["ask"] < 0.97
+                                _act2 = ("NO_DEPTH" if _lq2["depth"] < 1.0 else
+                                         "ENTER" if 0.60 <= _lq2["ask"] < 0.97
                                          else "SKIP_LOW_ASK" if _lq2["ask"] < 0.60
                                          else "SKIP_HIGH_ASK")
                                 database.log_rule_paper_trade(rnd["id"], _lrule, int(now_ms), 5,
@@ -1946,7 +2055,7 @@ class PriceToBeatTracker:
                     # the biggest cost lever: the spread is ~half the whole taker edge.
                     if "maker" not in _sh and 20 <= secs_left <= 32:
                         _mq = _leader_quote(rnd, now_ms)
-                        if _mq and 0.55 <= _mq["bid"] < 0.97:
+                        if _mq and _mq["depth"] >= 1.0 and 0.55 <= _mq["bid"] < 0.97:
                             _sh["maker"] = {"side": _mq["side"], "price": _mq["bid"], "done": False}
                         else:
                             _sh["maker"] = {"done": True}
@@ -1973,11 +2082,13 @@ class PriceToBeatTracker:
                 # 0.42–0.58 + SAFE lead (dist/vol ratio ≥ 1.5) in the early-mid window, hold to
                 # settle. The shuffled-gate nulls say BTC-state gates are priced in → expectation
                 # LOW; running it to close the question on live asks. Both horizons.
-                if "csafe" not in _sh and _dur * 0.4 < secs_left <= _dur * 0.8:
+                if (_paper_entries_allowed and "csafe" not in _sh
+                        and _dur * 0.4 < secs_left <= _dur * 0.8):
                     _cq = _leader_quote(rnd, now_ms)
                     _vol = float(rnd.get("vol_60s_pct") or 0.0)
                     _pxn = float(rnd.get("current_price") or 0.0)
-                    if _cq and _pxn > 0 and _vol > 0 and 0.42 <= _cq["ask"] <= 0.58:
+                    if (_cq and _cq["depth"] >= 1.0 and _pxn > 0 and _vol > 0
+                            and 0.42 <= _cq["ask"] <= 0.58):
                         if (abs(float(cur_move)) / _pxn * 100.0) / (_vol + 1e-6) >= 1.5:
                             _sh["csafe"] = True
                             database.log_rule_paper_trade(rnd["id"], "CHEAP_SAFE_EARLY_V1",
@@ -1998,7 +2109,8 @@ class PriceToBeatTracker:
                     _hist.append((int(now_ms), float(rnd["current_price"]),
                                   _qU["ask"], _qD["ask"]))
                     del _hist[:-8]
-                if "snipe" not in _sh and len(_hist) >= 3 and secs_left > 20 and _qU and _qD:
+                if (_paper_entries_allowed and "snipe" not in _sh and len(_hist) >= 3
+                        and secs_left > 20 and _qU and _qD):
                     _then = next((s for s in _hist if now_ms - s[0] >= 2500), None)
                     if _then is not None:
                         _dpx = float(rnd["current_price"]) - _then[1]
@@ -2006,7 +2118,8 @@ class PriceToBeatTracker:
                             _tgt = "UP" if _dpx > 0 else "DOWN"
                             _qn = _qU if _tgt == "UP" else _qD
                             _athen = _then[2] if _tgt == "UP" else _then[3]
-                            if abs(_qn["ask"] - _athen) < 0.005 and _qn["ask"] <= 0.90:
+                            if (abs(_qn["ask"] - _athen) < 0.005 and _qn["ask"] <= 0.90
+                                    and _qn["ask_size"] >= 1.0):
                                 _sh["snipe"] = True
                                 database.log_rule_paper_trade(rnd["id"], "SHOCK_SNIPER_LIVE_V1",
                                                               int(now_ms),
@@ -2177,14 +2290,43 @@ class PriceToBeatTracker:
                                 p["id"], _strule,
                                 _gross - _exit_fees - _cost, int(now_ms), "SETTLED",
                                 btc_exit=end_price, exit_gross=_gross,
-                                exit_fee=_exit_fees, state=_st)
+                                exit_fee=_exit_fees, state=_st,
+                                settlement_source="pyth_proxy")
                     except Exception as _ste:
                         logger.debug(f"Straddle shadow settle skipped: {_ste}")
+                    # Sequential strategy may contain one or two bought legs. Unlike a simultaneous
+                    # straddle, an absent second leg has no cost and no settlement value. Close it
+                    # explicitly so the generic BOTH fallback cannot invent an unbought winner.
+                    try:
+                        _sq = (p.get("_shadow") or {}).get("mseq")
+                        if _sq:
+                            _gross = 0.0
+                            _exit_fees = 0.0
+                            _cost = 0.0
+                            for _leg, _sd in (("up", "UP"), ("dn", "DOWN")):
+                                _ls = _sq.get(_leg)
+                                if not _ls:
+                                    continue
+                                _cost += float(_ls["entry"]) + float(_ls.get("fee_in") or 0.0)
+                                if _ls.get("exit_bid") is not None:
+                                    _gross += float(_ls["exit_bid"])
+                                    _exit_fees += float(_ls.get("exit_fee") or 0.0)
+                                else:
+                                    _gross += 1.0 if actual_dir == _sd else 0.0
+                            database.close_rule_paper_trade(
+                                p["id"], "MODEL_SEQUENTIAL_REVERSAL_V1",
+                                _gross - _exit_fees - _cost, int(now_ms), "SETTLED",
+                                btc_exit=end_price, exit_gross=_gross,
+                                exit_fee=_exit_fees, state=_sq,
+                                settlement_source="pyth_proxy")
+                    except Exception as _seqe:
+                        logger.debug(f"Sequential reversal settle skipped: {_seqe}")
                     # Settle any frozen-rule paper trades on this round (LATE_LEADER_30S_V1 ledger
                     # + still-open shadow rows): pnl = settle_value - ask - fee, hold-to-settle.
                     try:
-                        database.settle_rule_paper_trades(p["id"], actual_dir, int(now_ms),
-                                                          btc_exit=end_price)
+                        database.settle_rule_paper_trades(
+                            p["id"], actual_dir, int(now_ms), btc_exit=end_price,
+                            settlement_source="pyth_proxy")
                     except Exception as _pse:
                         logger.debug(f"Rule paper settle skipped: {_pse}")
             else:

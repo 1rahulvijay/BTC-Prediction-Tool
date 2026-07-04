@@ -1,5 +1,9 @@
 # Full 1,500-Day Retrain Runbook
 
+> **Current executable window (2026-07-04): 1,265 days, not 1,500.** The committed launcher and
+> active matrix manifest use 1,265 source-complete days (2023-01-15 onward). The filename is retained
+> for historical links. Do not claim that the current artifact includes the 2022 bear market.
+
 Date: 2026-07-03
 
 ## Objective

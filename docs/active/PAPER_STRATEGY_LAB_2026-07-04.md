@@ -44,6 +44,7 @@ passes or dies as written. Variants are new names, never edits.
 |---|---|
 | `MODEL_FADE_LIVE_V1` | path head FADE-SETUP + touch + fade grade ≥55% → buy cheap side, TP +20% or settle |
 | `MODEL_STRADDLE_LIVE_V1` | straddle ONLY when path head predicts two_sided (round-trip ≥35%) — the gap vs the blind straddle IS the model's value |
+| `MODEL_SEQUENTIAL_REVERSAL_V1` | first model-approved fade buys one cheap side; add the opposite side only after a separately graded return touch; each bought leg TP +20% or settles |
 | `MODEL_RIDE_LIVE_V1` | path RIDE + big-move elevated → buy leader 0.55–0.80 mid-window, hold |
 | `CHEAP_SAFE_EARLY_V1` | leader ask 0.42–0.58 + dist/vol ratio ≥1.5 (the HF SAFE gate), early-mid window, hold. **Expectation LOW** — the shuffled-gate nulls say BTC state is priced in; this closes the question on live asks. |
 | `SHOCK_SNIPER_LIVE_V1` | BTC moved ≥$20 within ~3–8s AND the target side's ask did **not** move (±0.5c) → buy the stale ask ≤0.90, hold. ⚠️ **1s approximation** — the bridge cadence understates the sub-second opportunity: a positive result is strong, a zero is NOT conclusive. The exact test is the **offline L2 replay** on `polymarket_l2.duckdb` (queued; run while recorders are stopped). |
@@ -53,7 +54,11 @@ passes or dies as written. Variants are new names, never edits.
 ## Accounting (identical for every strategy)
 
 - **Entry** = real executable ask (or resting bid for MAKER) · **1 paper share** · entry taker fee `0.07·p·(1−p)` (maker = 0).
-- **Exit** = bid − exit fee (early exits) or settlement $1/$0 (holds). Straddles settle both legs (one always pays $1; DB-level floor guards restart orphans).
+- **Exit** = bid − exit fee (early exits) or settlement $1/$0 (holds). Straddles settle only purchased
+  legs. Immediate results use the Pyth proxy and are then idempotently reconciled to the recorder's official
+  Polymarket settlement; early bid exits keep their realized P/L.
+- **Capacity** = taker entries require at least one displayed share at the best ask. Early exits are still
+  one-share top-bid assumptions because the compact bridge does not expose bid size; exact L2 is the final gate.
 - **BTC @ entry / BTC @ exit** recorded on every trade (from 2026-07-04 rows onward).
 - SKIP / NO_QUOTE / NO_FILL rows are kept for rules with a fixed evaluation checkpoint. Several
   conditional model/dead-strategy shadows log entries only, so entered-trade P/L is valid but their
