@@ -868,6 +868,34 @@ beat** (current price), records our ensemble call + action + conviction + Kronos
 resolves UP/DOWN vs the price to beat once the horizon elapses. Mirrors the Kronos verifier;
 persists to DuckDB `price_to_beat`; surfaced as `payload.price_to_beat = {latest, accuracy, recent}`.
 
+**Path-plan shadow log (added 2026-06-30, record-forward only).** When the Layer-2 path forecaster
+freezes its plan at window open (`_compute_specialist_heads`), the plan is persisted onto that round's
+`price_to_beat` row via `database.log_path_plan(round_id, plan)` — additive columns `path_play`,
+`path_style`, `path_p_move_50/100`, `path_p_roundtrip`, `path_p_early`, `path_p_touch_asym`,
+`path_pred_high/low`, `path_net_move`. **This does NOT gate any decision** — it is a pure shadow log so
+the path head can be graded on *live* rounds (not just the backtest matrix) and so `PATH_CHAMPION_LIFT`
+gets a real out-of-sample holdout. Migration is additive (`ALTER TABLE … ADD COLUMN`), applied on boot;
+written once per round (guarded by `rnd["_plan_logged"]`). Rationale + the WATCH lift result:
+`docs/active/PATH_CHAMPION_LIFT_2026-06-30.md`.
+
+**Two-sided round-trip fade research (corrected 2026-07-01).** `_refresh_live` tracks first and opposite-side
+touches around the anchor, but fade events are **paper telemetry only**. The former v4 model used the completed
+one-minute touch candle, leaking post-entry high/low information; most touch candles also contained an
+unordered TP/stop event. Serving therefore rejects v4 and requires causal v5, which uses completed pre-touch
+bars, exact zero-overshoot barrier entry, and excludes ambiguous touch candles. `_trade_signal` emits
+`PAPER ONLY`, never an executable fade instruction. The old AUC/top-bucket/proxy-profit claims are retracted.
+
+The only candidate entry path is now the late P(Hold) champion gate. It requires the already-ahead side,
+P(Hold)>=0.93, at least $10 distance, 15-120 seconds left, an exact-round quote no more than five seconds old,
+spread<=3c, displayed ask depth, and:
+
+`min(P(Hold), 0.91) - executable_ask - crypto_taker_fee - 0.03 > 0`
+
+The 91c cap is the rounded 95% lower bound from one-first-entry-per-round calibration. It avoids pricing
+snapshot-level overconfidence as certainty. `PAPER_BET` remains simulation only until at least 500 independent
+officially settled entries prove positive after-cost expectancy. Details:
+`docs/active/PROFITABILITY_AND_BETTING_VALIDATION_2026-07-01.md`.
+
 ### 21.3 Per-model live accuracy (`backend/model_verifier.py`)
 Each recorded prediction already carries every base model's argmax vote (`p["modelDirs"]`).
 `PerModelVerifier` records one row per model per prediction and resolves each vs the realized
@@ -892,6 +920,21 @@ reorganized top-down with the dense sections moved into three collapsible groups
 
 ### 21.8 New DuckDB tables (additive, `CREATE TABLE IF NOT EXISTS`)
 `model_predictions`, `price_to_beat`. No destructive migrations; saved models unaffected.
+
+### Polymarket Execution Research Layer
+
+The standalone `backend/polymarket/l2_recorder.py` maintains full public books for active BTC 5m/15m
+outcome tokens and writes to `data/polymarket_l2.duckdb`. `l2_book.py` calculates exact taker VWAP at
+requested size and bounded maker queue scenarios. This layer is not part of the direction ensemble and
+does not place orders. It can veto opportunities whose apparent edge disappears after depth, fee and
+latency assumptions. See `docs/active/POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md`.
+
+### Canonical Model Inventory
+
+The authoritative model-by-model map, including activation status, targets, algorithms, features,
+stale artifacts and research-only families, is
+`docs/active/ALL_MODELS_PREDICTIONS_AND_FEATURES_2026-07-02.md`. Use it instead of older four-model,
+38/61/86-feature or seven-live-horizon descriptions.
 
 ---
 

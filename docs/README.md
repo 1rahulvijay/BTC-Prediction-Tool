@@ -1,5 +1,143 @@
 # Documentation Index
 
+## Latest completed strategy test
+- **[VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md](active/VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md)** -
+  the Kelly/Malamud/Zhou "virtue of complexity" recipe applied to late-leader fair value (30 days of
+  kachoio executable asks, ridge/poly/RFF up to 1,500 features, purged walk-forward, mandatory nulls).
+  **Result: the shuffled-label null trades at the SAME EV as the real models (+3.41c vs +3.43c) and the
+  no-model baseline (+3.05c, LB +1.55c) beats most models — the late-leader edge is a STRUCTURAL INTERCEPT
+  (constant average underpricing), not conditional alpha.** Fourth independent confirmation that the ask is
+  the sufficient statistic. Operator ruling recorded: no complexity head; the frozen rule stays small and
+  dumb; complexity is reserved for recorder-gated execution targets; next proof = live replication at n≥500.
+- **[PAPER_STRATEGY_LAB_2026-07-04.md](active/PAPER_STRATEGY_LAB_2026-07-04.md)** -
+  the single reference for ALL 13 auto-trading paper strategies: the frozen LATE_LEADER_30S_V1 rule (+its
+  promotion gate), the edge-candidate ladder (15s/60s/15m/MAKER-at-bid), the 3 dead-strategy replications,
+  the model-gated variants (fade/straddle/ride/cheap-SAFE/shock-sniper), frozen specs, honest accounting
+  (real asks/bids, fees every leg, BTC-at-entry/exit in PYTH, explicit denominator caveats), and the 📒 Trades
+  tab (5m/15m horizon tabs + per-strategy filter chips). The 07-04 **addendum** records the row-by-row
+  accounting validation (Pyth≠Binance; stops gap through the visible bid — correct, not a bug), the first
+  live-day snapshot (frozen rule swung −60.8c at n=35 — why the n≥500 gate exists), five defects found+fixed
+  (TDZ blank-UI, relative-URL fetch, straddle orphan floor, false "no entries", missing lab row), and the
+  stale-backend verification recipe (port-owner start time vs file mtime).
+- **[FULL_1500D_RETRAIN_RUNBOOK_2026-07-03.md](active/FULL_1500D_RETRAIN_RUNBOOK_2026-07-03.md)** -
+  current 1,500-day training contract, 16GB-laptop safeguards, disk/time expectations, incumbent-to-candidate
+  atomic swap behavior, operator steps, completion evidence and mandatory post-training evaluation.
+- **[CODEBASE_INTEGRITY_AUDIT_2026-07-04.md](active/CODEBASE_INTEGRITY_AUDIT_2026-07-04.md)** -
+  latest launch, promotion, backtest and paper-ledger integrity fixes plus remaining risks.
+- **[CODEBASE_AUDIT_2026-07-02.md](active/CODEBASE_AUDIT_2026-07-02.md)** -
+  repository-wide compile, build, contract, persistence, feed-sync, UI and documentation audit. Records
+  the late-Pyth/cross-feed correctness fixes, restored per-base-model analytics, lightweight model
+  compatibility contract and verification evidence. Its former 400-day next-start warning is marked
+  superseded by the current 1,500-day retrain runbook.
+- **[PREDICTION_HEADS_DATA_SPLIT_AND_TEST_LEDGER_2026-07-02.md](active/PREDICTION_HEADS_DATA_SPLIT_AND_TEST_LEDGER_2026-07-02.md)** -
+  classifies every proposed prediction head as **Category A (existing data)** vs **Category B (forward/live
+  recorder)** vs **Composition**, with my one-line opinion on each of the 30 latest heads (~8 A / ~19 B / ~3 C).
+  Includes the **complete Test Ledger** — every test we ran (26 entries), its method, result, and evidence doc —
+  and my seven on-the-record opinions (direction is dead; the leader anomaly is likely a latency race; ~75% of
+  remaining ideas are forward-gated; killing false findings was the real win). Answers "what can be tested now vs
+  needs forward data" definitively.
+- **[APP_ENHANCEMENTS_AND_TESTS_CATALOG_2026-07-02.md](active/APP_ENHANCEMENTS_AND_TESTS_CATALOG_2026-07-02.md)** -
+  master catalog of **every** recommendation, enhancement head/feature idea (~60, merged from both operator
+  lists + mine), and testing idea for the app — each tagged DONE / TESTABLE-NOW / RECORDER-GATED / COMPOSITION /
+  DEAD. Includes the current honest state, the 12-point dataset audit checklist, the target decision-tree app
+  design, the prioritized build order, and the guardrails (P(Hold) leader-only, look-ahead leaks, round-level
+  nulls, trade-price≠ask). Start here for the roadmap of what to build/test next and why.
+- **[ROUND_STATE_DECISION_PANEL_2026-07-02.md](active/ROUND_STATE_DECISION_PANEL_2026-07-02.md)** -
+  implemented 5m/15m SHADOW decision support for future anchor-cross risk, remaining
+  $20/$50/$100 shocks, next-three-round opportunity, path type and executable quote status.
+  Includes every purged held-out metric, serving gate, UI/API behavior and recorder boundary.
+- **[HF_EDGE_ROBUSTNESS_2026-07-02.md](active/HF_EDGE_ROBUSTNESS_2026-07-02.md)** -
+  null + stability tests that **corrected** the HF trade-edge headline. The "+27% P(Hold) edge" is **NOT a P(Hold)
+  edge**: a shuffle-null (P(Hold) permuted) still returns +25.7% ≈ real, so P(Hold) adds ~nothing. The real,
+  P(Hold)-independent signal is structural — **buying every leader wins 65.6% at 0.574 → +14.3% ROI (leaders
+  underpriced in the trade data)**; pipeline consistent (invert loses −24.9%). Executed-trade only, March-only,
+  suspicious vs the barbell book — validate on live /book, not a P(Hold) result.
+- **[HF_TRADE_EDGE_PIPELINE_2026-07-02.md](active/HF_TRADE_EDGE_PIPELINE_2026-07-02.md)** -
+  the 4-script HF trades pipeline (token map → snapshots → P(Hold) backfill → edge). Headline +27% is corrected by
+  the robustness doc above (P(Hold)-independent; leaders-underpriced; fillability unproven). Companions:
+  `HF_TRADE_EDGE_ANALYSIS`, `HF_TRADES_TOKEN_MAPPING`, `HF_POLYMARKET_DATASET_AUDIT` (orderbook KILL).
+- **[VWAP_BOLLINGER_PATH_RESEARCH_2026-07-02.md](active/VWAP_BOLLINGER_PATH_RESEARCH_2026-07-02.md)** -
+  360-day causal 5m/15m test of rolling VWAP, Bollinger state, mechanical support/resistance,
+  and combined FADE/RIDE contexts. VWAP alone is flat, Bollinger adds small touch-timing lift,
+  ORB owns the line-cross lift, and every proposed P(Hold) veto is rejected. No live promotion.
+- **[ROUND_ORB_AND_SYSTEMIC_ABSORPTION_RESULTS_2026-07-02.md](active/ROUND_ORB_AND_SYSTEMIC_ABSORPTION_RESULTS_2026-07-02.md)** -
+  360-day causal round-ORB and 180-day cross-asset PCA absorption tests. ORB adds a narrow 15m
+  line-cross lift but fails as a P(Hold veto; systemic absorption worsens every move/drop model and
+  retained-call metric. Both remain outside production.
+- **[ALL_MODELS_PREDICTIONS_AND_FEATURES_2026-07-02.md](active/ALL_MODELS_PREDICTIONS_AND_FEATURES_2026-07-02.md)** -
+  canonical code-derived inventory of active, filtered, shadow, gated, disabled and research-only
+  models; targets, algorithms, feature sets, artifacts and user-facing output ownership. Includes the
+  active 69-feature mask, excluded 67 features and corrections to stale model claims.
+- **[FREE_DATA_SOURCING_AND_RECORDER_STATE_2026-07-02.md](active/FREE_DATA_SOURCING_AND_RECORDER_STATE_2026-07-02.md)** -
+  live tests of the free data sources (Binance bookDepth = 30s aggregate, not L2; Polymarket CLOB /book works but is
+  live-only; /prices-history too sparse for 5m). Confirms the full-book+P(Hold)+depth+settlement recorder is ALREADY
+  built (live_btc_updown_recorder + Codex l2_recorder) — the gap is operational (run them), not code.
+- **[BOOKDEPTH_LIQUIDITY_PROBE_2026-07-02.md](active/BOOKDEPTH_LIQUIDITY_PROBE_2026-07-02.md)** -
+  causal probe of free Binance bookDepth liquidity features vs an rv baseline. NEGATIVE: no lift on big-move
+  (0.747→0.747) or big-drop (0.707→0.706); 30s aggregate depth is redundant with realized vol. Do not wire.
+- **[BOOKDEPTH_VETO_PROBE_2026-07-02.md](active/BOOKDEPTH_VETO_PROBE_2026-07-02.md)** -
+  bookDepth's "second chance" as a shadow VETO/regime layer on 12k real P(Hold)≥0.93 snapshots. Also NEGATIVE:
+  held% flat across liquidity regimes; vetoing VACUUM removes 90 bad vs 2,078 good. Dead 3 ways — drop entirely.
+- **[POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md](active/POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md)** -
+  public full-L2 recorder, deterministic book reconstruction, exact size-specific taker VWAP,
+  conservative/base/optimistic maker queue replay, reconnect boundaries, DuckDB schema, runners and
+  promotion gates. Live protocol smoke test passed; queue rank remains an estimate until calibrated.
+- **[TP50_SL10_WALKFORWARD_AUDIT_2026-07-01.md](active/TP50_SL10_WALKFORWARD_AUDIT_2026-07-01.md)** -
+  five-era expanding walk-forward and policy-overfitting audit. Fixed TP50/SL10 remains positive in every
+  5m/15m era at the $2 BTC-proxy cost and is more stable than validation-selected switching. Promotes the
+  rule only to frozen PAPER/quote replay because it is not Polymarket share PnL.
+- **[POLYMARKET_SHOCK_SHARE_REPLAY_RESULTS_2026-07-01.md](active/POLYMARKET_SHOCK_SHARE_REPLAY_RESULTS_2026-07-01.md)** -
+  causal real-share quote replay after first $10/$20/$30 BTC shocks. Compares MOMENTUM and FADE using
+  recorded ask entries, bid exits, fees, 0s/2s latency and settlement. Short round trips are negative;
+  no configuration survives confidence and multiple-test gates.
+- **[POLYMARKET_MARKET_RESPONSE_TEST_2026-07-01.md](active/POLYMARKET_MARKET_RESPONSE_TEST_2026-07-01.md)** -
+  read-only test of BTC-shock quote response, edge duration, first profitable exit, UP+DOWN complement
+  parity, checkpoint calibration and recorded depth. Finds no reliable underreaction/arbitrage edge and
+  keeps model-edge results inconclusive because only 29 trustworthy settled rounds span two days.
+- **[MODEL_RESULTS_INTERPRETATION_AND_NEXT_PREDICTIONS_2026-07-01.md](active/MODEL_RESULTS_INTERPRETATION_AND_NEXT_PREDICTIONS_2026-07-01.md)** -
+  canonical plain-language map of what every specialist head means, how to interpret metrics after many
+  model tests, what is usable/rejected/blocked, which predictions to build next, and which public data
+  sources offer genuinely new information. Includes the recommended small-ensemble decision flow and
+  staged accuracy/profit improvement plan.
+- **[ROUND_STATE_AND_STOPPING_RESULTS_2026-07-01.md](active/ROUND_STATE_AND_STOPPING_RESULTS_2026-07-01.md)** -
+  causal 180-day test of in-round side-flip risk, touch-to-settlement conversion, late shocks,
+  opportunity drought, path-state timing, and validation-selected TP/SL exits. Retains several risk
+  heads for shadowing and finds a promising BTC-path TP50/SL10 policy, but explicitly blocks promotion
+  until executable Polymarket quote, fill, fee and settlement replay confirms net expectancy.
+- **[EXISTING_DATA_PATH_DYNAMICS_RESULTS_2026-07-01.md](active/EXISTING_DATA_PATH_DYNAMICS_RESULTS_2026-07-01.md)** -
+  existing-history-only test of competing first-touch side/time, continuation, retracement depth,
+  next-round opportunity arrival, flow bursts and controlled spot/perpetual propagation. Retains 5m
+  first-touch, round-trip timing and flow-heat shadows; rejects continuation and venue-lead claims.
+- **[DECISION_HEAD_RESEARCH_RESULTS_2026-07-01.md](active/DECISION_HEAD_RESEARCH_RESULTS_2026-07-01.md)** -
+  causal 180-day evaluation of time-to-touch, first-barrier order, reversal timing, excursion quantiles,
+  regime transition, cascade proxy, model-failure filtering, and recorder-backed EV/fair-price/exit/fill.
+  Retains touch timing and 5m volatility-risk heads; rejects fade/failure heads; quote economics remain blocked.
+- **[ANCHOR_ROUNDTRIP_180D_RESULTS_2026-07-01.md](active/ANCHOR_ROUNDTRIP_180D_RESULTS_2026-07-01.md)** -
+  causal 180-day test of the 5m/15m anchor, reversal, hold, path and timing strategy. The requested fade
+  trade is rejected at 41.97% first-entry wins; activity, range and P(Hold) remain quote-gated shadow
+  candidates. Includes all models, features, labels, metrics, limitations and promotion requirements.
+
+## ⭐ master reference (read this first)
+- **[PROFITABILITY_AND_BETTING_VALIDATION_2026-07-01.md](active/PROFITABILITY_AND_BETTING_VALIDATION_2026-07-01.md)** —
+  latest profitability audit and current source of truth. Retracts the leaked fade scores, separates snapshot
+  calibration from independent entries, adds exact taker-fee/quote requirements, and defines the PAPER-only
+  promotion gate. This overrides conflicting same-day claims below.
+- **[PROJECT_MASTER_REFERENCE_2026-06-30.md](active/PROJECT_MASTER_REFERENCE_2026-06-30.md)** — the single
+  canonical reference: every model in the app, every experiment (worked + failed, with *why*), how the
+  system works end-to-end, and all forward plans. Ties the scattered docs together; start here.
+- **[FADE_ROUNDTRIP_ENGINE_2026-07-01.md](active/FADE_ROUNDTRIP_ENGINE_2026-07-01.md)** — historical v4 fade
+  implementation record. Its performance table is retracted by the July 1 profitability audit; v5 is causal
+  and fail-closed pending retraining.
+- **[REVERSAL_STRATEGY_BACKTEST_2026-07-01.md](active/REVERSAL_STRATEGY_BACKTEST_2026-07-01.md)** — historical
+  v4 research output. The touch-context scores and proxy-profit wording are retracted; rerun only with the
+  corrected causal/ambiguous-bar logic.
+- **[PATH_CHAMPION_LIFT_2026-06-30.md](active/PATH_CHAMPION_LIFT_2026-06-30.md)** — does the path play
+  improve champion decisions? **WATCH** — a real P(Hold)-independent risk signal (matched +4.2pp, p=0.000)
+  but not a binary filter; now shadow-logged to earn a forward holdout.
+- **[IMPACT_REVERSION_PROBE_2026-06-30.md](active/IMPACT_REVERSION_PROBE_2026-06-30.md)** — does market
+  impact/absorption predict reversal/big-drop? **NEGATIVE** even after a corrected (fitted-scale, conditional)
+  rebuild — the effect lives sub-second; gated on the L2 recorder.
+
 ## active/ — the living documents (read these)
 - **[V5.md](active/V5.md)** — the current improvement plan: class-balanced loss (shipped
   with the 2026-06-12 retrain), new-feature roadmap, speed levers, the 90-day experiment,

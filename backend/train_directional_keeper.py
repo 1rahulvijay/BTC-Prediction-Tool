@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 
 from keeper_head_training import (
-    BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, buckets_for_training,
-    fit_binary_head, future_close_delta, model_summary,
+    BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, derive_buckets_bps,
+    fit_binary_head, future_close_delta, model_summary, rel_bps,
 )
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -22,7 +22,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 )
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
 OUT = os.path.join(DATA_DIR, "saved_models", "directional_keeper_model.pkl")
-HEAD_VERSION = f"2026-06-18-directional-keeper4-horizons-buckets-iso-split-{TRAIN_DAYS_TAG}-{BUCKET_TAG}"
+HEAD_VERSION = f"2026-07-03-directional-keeper5-bpslabels-horizons-iso-split-{TRAIN_DAYS_TAG}-{BUCKET_TAG}"
 
 
 def _ensemble():
@@ -39,17 +39,18 @@ def main():
     df = df.dropna(subset=FEATURES + ["close"]).copy()
     close = df["close"].to_numpy(dtype=float)
     X_all = df[FEATURES].values
-    buckets = buckets_for_training(close)   # auto-derived p75/p90/p97 from THIS matrix; env-overridable
+    buckets = derive_buckets_bps(close)      # BPS labels (2026-07-03): price-level-proof for long windows
+    px_now = float(close[-1])
 
     models = {}
     for h in HORIZONS:
         if h not in buckets:
             continue
-        threshold = buckets[h][0]
-        delta = future_close_delta(close, h)
-        mask = ~np.isnan(delta)
-        up = fit_binary_head(X_all[mask], (delta[mask] >= threshold).astype(int))
-        down = fit_binary_head(X_all[mask], (delta[mask] <= -threshold).astype(int))
+        threshold = buckets[h][0]            # bps
+        delta_rel = rel_bps(future_close_delta(close, h), close)   # signed bps of the row's own price
+        mask = np.isfinite(delta_rel)
+        up = fit_binary_head(X_all[mask], (delta_rel[mask] >= threshold).astype(int))
+        down = fit_binary_head(X_all[mask], (delta_rel[mask] <= -threshold).astype(int))
         row = {}
         if up:
             row["big_up"] = up
@@ -57,20 +58,29 @@ def main():
             row["big_down"] = down
         if row:
             models[int(h)] = row
-        print(f"big_up_{h}m >= +${threshold:.0f}: {model_summary(up)}")
-        print(f"big_down_{h}m <= -${threshold:.0f}: {model_summary(down)}")
+        print(f"big_up_{h}m >= +{threshold:.1f}bps (~+${threshold*px_now/1e4:.0f} now): {model_summary(up)}")
+        print(f"big_down_{h}m <= -{threshold:.1f}bps (~-${threshold*px_now/1e4:.0f} now): {model_summary(down)}")
 
     bundle = {
         "models": models,
         "features": FEATURES,
         "horizons": sorted(models),
-        "move_threshold_usd_by_horizon": {h: v[0] for h, v in buckets.items()},
-        "move_buckets_usd_by_horizon": buckets,
+        "label_units": "bps",
+        "move_threshold_bps_by_horizon": {h: v[0] for h, v in buckets.items()},
+        "move_buckets_bps_by_horizon": buckets,
+        "move_threshold_usd_by_horizon": {h: round(v[0] * px_now / 1e4) for h, v in buckets.items()},
+        "move_buckets_usd_by_horizon": {h: tuple(round(x * px_now / 1e4) for x in v) for h, v in buckets.items()},
         "version": HEAD_VERSION,
         "note": "Directional big-up/down confirmation heads by horizon; not direct trade triggers.",
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    joblib.dump(bundle, OUT)
+    _tmp = f"{OUT}.tmp.{os.getpid()}"
+    try:
+        joblib.dump(bundle, _tmp)
+        os.replace(_tmp, OUT)
+    finally:
+        if os.path.exists(_tmp):
+            os.remove(_tmp)
     print(f"Saved {OUT}")
 
 

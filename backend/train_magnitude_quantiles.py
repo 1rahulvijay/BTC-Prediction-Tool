@@ -72,7 +72,8 @@ def main():
         Xv, yv = Xs[m], ys[m]
         if len(yv) < 400:
             print(f"{h:>3} {len(yv):>7}  (insufficient)"); continue
-        a = int(len(yv) * 0.8)
+        _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
+        a = int(len(yv) * _sf)                      # 98/2: fit = sf (98%); conformal-cal = recent 1-sf (2%)
         Xtr, ytr, Xte, yte = Xv[:a], yv[:a], Xv[a:], yv[a:]    # temporal
         if len(Xtr) > MAX_SAMPLES:
             sel = np.linspace(0, len(Xtr) - 1, MAX_SAMPLES).astype(int)

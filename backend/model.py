@@ -8,7 +8,7 @@ Includes direction locking, hysteresis, prediction cooldown, and persistence.
 
 import time
 import os
-import hashlib
+import copy
 import logging
 import numpy as np
 import warnings
@@ -20,6 +20,15 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
 from typing import Optional, Dict
 from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES, FEATURE_NAMES
+from model_contract import (
+    DL_ARCH,
+    MODEL_ARCH_VERSION,
+    MODEL_FEATURE_INDICES,
+    MODEL_FEATURE_NAMES,
+    MODEL_FEATURE_PRUNING,
+    MODEL_FEATURE_SCHEMA_HASH,
+    MODEL_NUM_FEATURES,
+)
 
 warnings.filterwarnings("ignore", message=".*Falling back to prediction using DMatrix due to mismatched devices.*")
 
@@ -50,7 +59,6 @@ DIRECTION_MAX_SAMPLES = _env_int("BTC_DIRECTION_MAX_SAMPLES", 0)
 # leave headroom for the asyncio event loop (live price + charts + WebSocket feeds) so the
 # UI doesn't freeze mid-train. Default: all cores minus 4 (min 2). Env: BTC_TRAIN_THREADS.
 TRAIN_THREADS = max(2, _env_int("BTC_TRAIN_THREADS", max(2, (os.cpu_count() or 4) - 4)))
-DL_ARCH = os.getenv("BTC_DL_ARCH", "TCN").upper()
 
 
 def _representative_training_indices(indices: np.ndarray, max_samples: int) -> np.ndarray:
@@ -81,50 +89,6 @@ def _atomic_joblib_dump(value, path: str) -> None:
             except OSError:
                 pass
 
-
-def _resolve_model_feature_schema() -> tuple[list[int], list[str], str]:
-    """
-    Main-ensemble feature pruning.
-
-    The app still builds the full feature vector because UI, diagnostics, signal
-    explanations, live-only analytics, and historical replay depend on it. The
-    learnable direction/move models consume a narrower mask so training and live
-    inference use the same pruned schema without breaking the rest of the system.
-    """
-    mode = os.getenv("BTC_MODEL_FEATURE_PRUNING", "SAFE").strip().upper()
-    if mode in {"0", "OFF", "FALSE", "NONE", "FULL"}:
-        return list(range(NUM_FEATURES)), list(FEATURE_NAMES), "off"
-
-    allowed = {
-        a.strip().upper()
-        for a in os.getenv("BTC_MODEL_FEATURE_ACTIONS", "KEEP,PARITY-FIX").split(",")
-        if a.strip()
-    }
-    try:
-        from dead_feature_classifier import classify
-
-        cls = classify()
-        indices = [
-            i for i, name in enumerate(FEATURE_NAMES)
-            if (cls.get(name, ("", "", ""))[1] or "").upper() in allowed
-        ]
-        names = [FEATURE_NAMES[i] for i in indices]
-        if len(indices) < 20:
-            raise ValueError(f"pruned feature set too small: {len(indices)}")
-        return indices, names, ",".join(sorted(allowed))
-    except Exception as exc:
-        logger.warning(
-            "Feature pruning disabled; falling back to full feature schema: %s",
-            exc,
-        )
-        return list(range(NUM_FEATURES)), list(FEATURE_NAMES), "fallback-full"
-
-
-MODEL_FEATURE_INDICES, MODEL_FEATURE_NAMES, MODEL_FEATURE_PRUNING = _resolve_model_feature_schema()
-MODEL_NUM_FEATURES = len(MODEL_FEATURE_INDICES)
-MODEL_FEATURE_SCHEMA_HASH = hashlib.sha1(
-    "\n".join(MODEL_FEATURE_NAMES).encode("utf-8")
-).hexdigest()[:12]
 
 # Optional LightGBM
 try:
@@ -345,11 +309,6 @@ MODEL_DIR = os.path.join(
 # OOF in live-relevant buckets), TCN promoted to a full stacker seat with a real
 # epoch budget, XGBoost/CatBoost GPU probes. "classbal" MUST stay in this string —
 # the inference-time prior-division retirement is keyed on it.
-MODEL_ARCH_VERSION = (
-    f"2026-06-15-v11-pruned{MODEL_NUM_FEATURES}-{MODEL_FEATURE_SCHEMA_HASH}-"
-    f"2horizon-5-15-rf-persist-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
-)
-
 CASCADE_MIN_ACCURACY = 0.62
 CASCADE_MIN_PREDICTIONS = 30
 
@@ -456,15 +415,17 @@ class MultiModelEnsemble:
       - Regime-specific experts and live quality filters
     """
 
-    def __init__(self, horizons=None, config=None):
+    def __init__(self, horizons=None, config=None, model_dir=None):
         if horizons is None:
             self.horizons = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
         else:
             self.horizons = horizons
             
         self.config = config or {}
+        self.model_dir = os.path.abspath(model_dir or MODEL_DIR)
         self.enforce_quantile_skip = self.config.get("enforce_quantile_skip", False)
         self.model_bundle_id = self.config.get("model_bundle_id", f"bundle_{int(time.time())}")
+        self.full_refit = False
 
         # Per-horizon lock durations (each prediction changes at its own cadence)
         self.horizon_lock_seconds = {
@@ -508,6 +469,7 @@ class MultiModelEnsemble:
         self.model_accuracies = {}
         self.move_size_stats = {reg: {} for reg in self.regimes}  # cheap regime/horizon target-size prior
         self.feature_reference = {}  # training feature distribution for PSI drift detection
+        self.calibration_provenance = {}
 
         # Base weights (adjusted dynamically based on backtest accuracy)
         self.base_weights = self.config.get("base_weights", {
@@ -588,7 +550,8 @@ class MultiModelEnsemble:
         return arr
 
     def train(self, X: np.ndarray, Y: dict[int, np.ndarray], Ymag: dict = None,
-              regime_labels: list = None):
+              regime_labels: list = None, full_refit: bool = False,
+              calibration_source=None):
         """
         Train all models for each horizon, split by market regime.
 
@@ -623,15 +586,16 @@ class MultiModelEnsemble:
         # bands uncalibrated (systematically too narrow) and the backtest in-sample. 0.9–0.95
         # is the way to "use almost all the data" while keeping the bands honest.
         try:
-            _split_frac = float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.8"))
+            _split_frac = float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98"))
         except ValueError:
-            _split_frac = 0.8
+            _split_frac = 0.98
         _split_frac = min(max(_split_frac, 0.5), 0.98)
-        split_idx = int(n_samples * _split_frac)
-        self.train_split_frac = _split_frac
+        split_idx = n_samples if full_refit else int(n_samples * _split_frac)
+        self.full_refit = bool(full_refit)
+        self.train_split_frac = 1.0 if full_refit else _split_frac
         self.train_split_idx = split_idx
-        logger.info("[TRAIN] split_frac=%.3f (holdout=%s rows for conformal+backtest)",
-                    _split_frac, n_samples - split_idx)
+        logger.info("[TRAIN] split_frac=%.3f (holdout=%s rows, full_refit=%s)",
+                    self.train_split_frac, n_samples - split_idx, full_refit)
         logger.info(
             "[TRAIN] Starting ensemble training: samples=%s, train_samples=%s, lookback=%s, model_features=%s/%s, pruning=%s, horizons=%s",
             n_samples,
@@ -1257,6 +1221,24 @@ class MultiModelEnsemble:
                     log_component_done(h, reg, "OOFStacker", _t0)
                 except Exception as e:
                     logger.error(f"Stacker training failed for h={h} reg={reg}: {e}")
+
+        # The production refit learns from every row. Keep calibration/conformal objects from
+        # the leak-free evaluated candidate rather than replacing them with in-sample residuals.
+        if full_refit and calibration_source is not None:
+            self.conformal_residuals = copy.deepcopy(
+                getattr(calibration_source, "conformal_residuals", {}) or {}
+            )
+            self.calibration_provenance = {
+                "source_bundle_id": getattr(calibration_source, "model_bundle_id", ""),
+                "source_split_frac": float(getattr(calibration_source, "train_split_frac", 0.98)),
+                "method": "evaluated-holdout-plus-purged-oof-stacker",
+            }
+        else:
+            self.calibration_provenance = {
+                "source_bundle_id": self.model_bundle_id,
+                "source_split_frac": float(self.train_split_frac),
+                "method": "native-training-split",
+            }
 
         self._build_feature_reference(X_model)
         self.is_trained = True
@@ -2509,15 +2491,16 @@ class MultiModelEnsemble:
             "lightgbm_device": LGB_DEVICE if HAS_LGBM else "n/a",
         }
 
-    def _save_models(self):
+    def _save_models(self, model_dir=None):
         """Persist trained models atomically. Return True only after the version commits."""
         if not HAS_JOBLIB:
             return False
+        target_dir = os.path.abspath(model_dir or self.model_dir)
         try:
-            os.makedirs(MODEL_DIR, exist_ok=True)
+            os.makedirs(target_dir, exist_ok=True)
             saved_count = 0
             for reg in self.regimes:
-                reg_dir = os.path.join(MODEL_DIR, reg)
+                reg_dir = os.path.join(target_dir, reg)
                 os.makedirs(reg_dir, exist_ok=True)
                 for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                     store = self.models_by_regime[reg][name]
@@ -2525,10 +2508,10 @@ class MultiModelEnsemble:
                         if h in store:
                             _atomic_joblib_dump(store[h], os.path.join(reg_dir, f"{name}_{h}.pkl"))
                             saved_count += 1
-            _atomic_joblib_dump(self.model_accuracies, os.path.join(MODEL_DIR, "accuracies.pkl"))
-            _atomic_joblib_dump(self.conformal_residuals, os.path.join(MODEL_DIR, "conformal_residuals.pkl"))
-            _atomic_joblib_dump(self.feature_reference, os.path.join(MODEL_DIR, "feature_reference.pkl"))
-            _atomic_joblib_dump(self.feature_reference_names, os.path.join(MODEL_DIR, "feature_reference_names.pkl"))
+            _atomic_joblib_dump(self.model_accuracies, os.path.join(target_dir, "accuracies.pkl"))
+            _atomic_joblib_dump(self.conformal_residuals, os.path.join(target_dir, "conformal_residuals.pkl"))
+            _atomic_joblib_dump(self.feature_reference, os.path.join(target_dir, "feature_reference.pkl"))
+            _atomic_joblib_dump(self.feature_reference_names, os.path.join(target_dir, "feature_reference_names.pkl"))
             _atomic_joblib_dump(
                 {
                     "mode": self.model_feature_pruning,
@@ -2537,15 +2520,28 @@ class MultiModelEnsemble:
                     "hash": self.model_feature_schema_hash,
                     "names": self.model_feature_names,
                 },
-                os.path.join(MODEL_DIR, "model_feature_schema.pkl"),
+                os.path.join(target_dir, "model_feature_schema.pkl"),
             )
-            _atomic_joblib_dump(self.move_size_stats, os.path.join(MODEL_DIR, "move_size_stats.pkl"))
-            _atomic_joblib_dump(self.class_priors, os.path.join(MODEL_DIR, "class_priors.pkl"))
-            _atomic_joblib_dump(self.stackers_by_regime, os.path.join(MODEL_DIR, "stackers.pkl"))
+            _atomic_joblib_dump(self.move_size_stats, os.path.join(target_dir, "move_size_stats.pkl"))
+            _atomic_joblib_dump(self.class_priors, os.path.join(target_dir, "class_priors.pkl"))
+            _atomic_joblib_dump(self.stackers_by_regime, os.path.join(target_dir, "stackers.pkl"))
+            _atomic_joblib_dump(getattr(self, "calibration_provenance", {}),
+                                os.path.join(target_dir, "calibration_provenance.pkl"))
+            _atomic_joblib_dump(
+                {
+                    "model_bundle_id": self.model_bundle_id,
+                    "train_split_frac": float(self.train_split_frac),
+                    "train_split_idx": int(self.train_split_idx),
+                    "full_refit": bool(self.full_refit),
+                    "horizons": [int(h) for h in self.horizons],
+                    "saved_at": time.time(),
+                },
+                os.path.join(target_dir, "bundle_metadata.pkl"),
+            )
             # Commit the architecture marker last. Launch preflight never sees the new
             # version before every component and metadata artifact has been replaced.
-            _atomic_joblib_dump(MODEL_ARCH_VERSION, os.path.join(MODEL_DIR, "architecture_version.pkl"))
-            logger.info("[MODEL SAVE] Saved %s model components to %s", saved_count, MODEL_DIR)
+            _atomic_joblib_dump(MODEL_ARCH_VERSION, os.path.join(target_dir, "architecture_version.pkl"))
+            logger.info("[MODEL SAVE] Saved %s model components to %s", saved_count, target_dir)
             return True
         except Exception as e:
             logger.error(f"Failed to save models: {e}")
@@ -2553,13 +2549,14 @@ class MultiModelEnsemble:
 
     def load_models(self) -> bool:
         """Load persisted models from disk. Returns True if successful."""
-        if not HAS_JOBLIB or not os.path.exists(MODEL_DIR):
+        model_dir = self.model_dir
+        if not HAS_JOBLIB or not os.path.exists(model_dir):
             return False
         try:
             loaded_any = False
             loaded_count = 0
             for reg in self.regimes:
-                reg_dir = os.path.join(MODEL_DIR, reg)
+                reg_dir = os.path.join(model_dir, reg)
                 if not os.path.exists(reg_dir):
                     continue
                 for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
@@ -2570,25 +2567,25 @@ class MultiModelEnsemble:
                             loaded_any = True
                             loaded_count += 1
 
-            acc_path = os.path.join(MODEL_DIR, "accuracies.pkl")
+            acc_path = os.path.join(model_dir, "accuracies.pkl")
             if os.path.exists(acc_path):
                 self.model_accuracies = joblib.load(acc_path)
             
-            res_path = os.path.join(MODEL_DIR, "conformal_residuals.pkl")
+            res_path = os.path.join(model_dir, "conformal_residuals.pkl")
             if os.path.exists(res_path):
                 try:
                     self.conformal_residuals = joblib.load(res_path)
                 except Exception:
                     self.conformal_residuals = {reg: {} for reg in self.regimes}
 
-            ref_path = os.path.join(MODEL_DIR, "feature_reference.pkl")
+            ref_path = os.path.join(model_dir, "feature_reference.pkl")
             if os.path.exists(ref_path):
                 try:
                     self.feature_reference = joblib.load(ref_path)
                 except Exception:
                     self.feature_reference = {}
 
-            ref_names_path = os.path.join(MODEL_DIR, "feature_reference_names.pkl")
+            ref_names_path = os.path.join(model_dir, "feature_reference_names.pkl")
             if os.path.exists(ref_names_path):
                 try:
                     loaded_names = joblib.load(ref_names_path)
@@ -2597,21 +2594,21 @@ class MultiModelEnsemble:
                 except Exception:
                     self.feature_reference_names = list(self.model_feature_names)
 
-            priors_path = os.path.join(MODEL_DIR, "class_priors.pkl")
+            priors_path = os.path.join(model_dir, "class_priors.pkl")
             if os.path.exists(priors_path):
                 try:
                     self.class_priors = joblib.load(priors_path)
                 except Exception:
                     self.class_priors = {}
 
-            stats_path = os.path.join(MODEL_DIR, "move_size_stats.pkl")
+            stats_path = os.path.join(model_dir, "move_size_stats.pkl")
             if os.path.exists(stats_path):
                 try:
                     self.move_size_stats = joblib.load(stats_path)
                 except Exception:
                     self.move_size_stats = {reg: {} for reg in self.regimes}
 
-            stackers_path = os.path.join(MODEL_DIR, "stackers.pkl")
+            stackers_path = os.path.join(model_dir, "stackers.pkl")
             if os.path.exists(stackers_path):
                 try:
                     loaded_stackers = joblib.load(stackers_path)
@@ -2632,8 +2629,35 @@ class MultiModelEnsemble:
                     logger.warning("[MODEL LOAD] Stacker load skipped: %s", e)
                     self.stackers_by_regime = {reg: {} for reg in self.regimes}
 
+            provenance_path = os.path.join(model_dir, "calibration_provenance.pkl")
+            if os.path.exists(provenance_path):
+                try:
+                    loaded_provenance = joblib.load(provenance_path)
+                    if isinstance(loaded_provenance, dict):
+                        self.calibration_provenance = loaded_provenance
+                except Exception:
+                    self.calibration_provenance = {}
+
+            metadata_path = os.path.join(model_dir, "bundle_metadata.pkl")
+            if os.path.exists(metadata_path):
+                try:
+                    metadata = joblib.load(metadata_path)
+                    if isinstance(metadata, dict):
+                        self.model_bundle_id = str(
+                            metadata.get("model_bundle_id") or self.model_bundle_id
+                        )
+                        self.train_split_frac = float(
+                            metadata.get("train_split_frac", self.train_split_frac)
+                        )
+                        self.train_split_idx = int(
+                            metadata.get("train_split_idx", self.train_split_idx)
+                        )
+                        self.full_refit = bool(metadata.get("full_refit", False))
+                except Exception as exc:
+                    logger.warning("[MODEL LOAD] Bundle metadata load skipped: %s", exc)
+
             if loaded_any:
-                version_path = os.path.join(MODEL_DIR, "architecture_version.pkl")
+                version_path = os.path.join(model_dir, "architecture_version.pkl")
                 saved_version = None
                 if os.path.exists(version_path):
                     try:
@@ -2675,7 +2699,7 @@ class MultiModelEnsemble:
                 logger.info(
                     "[MODEL LOAD] Loaded and validated %s model components from %s",
                     loaded_count,
-                    MODEL_DIR,
+                    model_dir,
                 )
 
             return loaded_any

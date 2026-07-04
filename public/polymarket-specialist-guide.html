@@ -68,8 +68,8 @@
   <tr><td>2</td><td>Champion label is SETUP or stronger, P(hold) high &amp; stable</td><td>WAIT / AVOID / flipping lean → sit out</td></tr>
   <tr><td>3</td><td>Regime favorable — <span class="good">RANGE</span> or <span class="good">LOW_VOLATILITY</span></td><td><span class="bad">TRENDING_UP</span> / <span class="bad">HIGH_VOLATILITY</span> → be cautious / skip (~46% vs ~59–63%)</td></tr>
   <tr><td>4</td><td>Big-drop not HIGH against your side; quantile band clears the line</td><td>Big-drop HIGH on a long, or band straddles the line → skip</td></tr>
-  <tr><td>5</td><td><b>THE GATE:</b> <code>fair_value − ask − costs − buffer &gt; required_edge</code></td><td>Ask too rich → <span class="warn">NO_EDGE</span>, no bet</td></tr>
-  <tr><td>6</td><td>Size small; manage live via P(hold) / advice (HOLD / LOCK IN / EXIT)</td><td>—</td></tr>
+  <tr><td>5</td><td><b>THE PAPER GATE:</b> <code>min(P(Hold), 0.91) − ask − taker_fee − 0.03 &gt; 0</code></td><td>Ask too rich → <span class="warn">NO_EDGE</span></td></tr>
+  <tr><td>6</td><td>Record one simulated first entry per round; no real-money sizing is approved</td><td>Paper only</td></tr>
 </table>
 <p class="muted">The model is never the edge by itself — only the mispriced market price is. Regime preference is a recent-evidence tendency, still being confirmed forward.</p>
 </div>
@@ -82,7 +82,7 @@
   <tr><td class="bad">AVOID_LONG</td><td>High big-drop risk — do not buy the UP side</td><td>Sit out (DOWN only if confirmed)</td></tr>
   <tr><td class="warn">WATCH_UP / WATCH_DOWN · SETUP · LEAN</td><td>Probability is there, but no tradeable edge yet</td><td>Watch — do <b>not</b> bet</td></tr>
   <tr><td class="warn">NO_EDGE</td><td>Right side, but the ask is too rich</td><td>Wait for a cheaper ask</td></tr>
-  <tr><td class="good">PAPER_BET</td><td>Gate cleared — fair value beats ask after buffer</td><td>The only take-action signal (paper-only until edge is proven)</td></tr>
+  <tr><td class="good">PAPER_BET</td><td>Fresh ask cleared the 91c fair cap after taker fee and 3c buffer</td><td>Record a simulated entry only</td></tr>
 </table>
 </div>
 
@@ -96,8 +96,8 @@
 7. Big-up/down conflicts with current side and P(hold) below 93%? -> WAIT
 8. Model lean disagrees with the live side and P(hold) below 93%? -> WAIT
 9. Side is UP, model confirms UP, big-up HIGH, room ok, P(hold) 85-93%? -> POSSIBLE UP (WATCH_UP)
-10. P(hold) above 93%? -> SETUP, then check market price
-11. Live ask is cheaper than fair value after buffer? -> PAPER_BET candidate
+10. P(hold)>=93%, $10+ ahead, and 15-120 seconds left? -> SETUP, then check market price
+11. Exact-round ask is fresh and below the 91c fair cap after fee + 3c? -> PAPER_BET candidate
 12. No edge after price/spread/costs? -> NO_EDGE / WAIT
 13. (If trained) learned meta Champion below its gate? -> downgrade to WAIT</div>
 

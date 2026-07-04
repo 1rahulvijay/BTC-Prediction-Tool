@@ -38,7 +38,7 @@ let macdData = [];
 
 let currentVerifyTab = 'all';
 let lastVerifyData = null;
-let currentAppTab = 'analysis';
+let currentAppTab = 'polymarket'; // 2026-07-03: two-tab UI — Polymarket is the landing view
 let activePlainTF = 5;   // pruned 2026-06-21: 1m removed, default to the 5m market
 let activePtbHorizon = 5;
 let lastPlainData = null;
@@ -146,7 +146,6 @@ const els = {
   analysisConfidence: document.getElementById('analysis-confidence'),
   analysisAccuracy: document.getElementById('analysis-accuracy'),
   analysisMissRate: document.getElementById('analysis-miss-rate'),
-  analysisPriceMatch: document.getElementById('analysis-price-match'),
   analysisAvgError: document.getElementById('analysis-avg-error'),
   analysisUpError: document.getElementById('analysis-up-error'),
   analysisDownError: document.getElementById('analysis-down-error'),
@@ -256,9 +255,14 @@ function init() {
       const bv = document.getElementById('binance-view');
       const pv = document.getElementById('polymarket-view');
       const bpv = document.getElementById('binancepm-view');
+      const tav = document.getElementById('tanalysis-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
       if (bpv) bpv.classList.toggle('hidden', !isDiag);
+      if (tav) tav.classList.toggle('hidden', currentAppTab !== 'tanalysis');
+      const trv = document.getElementById('trades-view');
+      if (trv) trv.classList.toggle('hidden', currentAppTab !== 'trades');
+      if (currentAppTab === 'trades') fetchTradesBlotter();
       if (currentAppTab === 'technical' && chart) {
         setTimeout(() => chart.timeScale().fitContent(), 50);
       }
@@ -267,6 +271,7 @@ function init() {
       }
       if (currentAppTab === 'binance' && lastPlainData) renderBinanceView(lastPlainData);
       if (currentAppTab === 'polymarket' && lastPlainData) renderPolymarketView(lastPlainData);
+      if (currentAppTab === 'tanalysis' && lastPlainData) renderTAView(lastPlainData);
       if (isDiag && lastPlainData) {
         renderModelsView(lastPlainData);
         fetchActionLog();
@@ -595,6 +600,7 @@ function renderDashboard(data) {
   // Bitcoin & Polymarket are their own tabs again; the Binance price-to-beat mirror lives in Diagnostics.
   if (currentAppTab === 'binance') renderBinanceView(data);
   if (currentAppTab === 'polymarket') renderPolymarketView(data);
+  if (currentAppTab === 'tanalysis') renderTAView(data);
   if (currentAppTab === 'diagnostics') renderBinancePolymarketView(data);
 
   lastVerifyData = data.verification;
@@ -3035,6 +3041,331 @@ const PM_CFG = {
 };
 function renderPolymarketView(data){ renderPMCore(data, PM_CFG.pyth); }
 function renderBinancePolymarketView(data){ renderPMCore(data, PM_CFG.binance); }
+
+function renderTAView(data) {
+  // 📊 Analysis tab (2026-07-03): every Binance TA indicator as ONE tile — value + a clear
+  // SIGNAL WORD, color-coded, tooltip for meaning. Plus a consensus banner. Context only.
+  const grid = document.getElementById('ta-indicators');
+  if (!grid) return;
+  const i = data.indicators || {};
+  const px = Number(data.price || 0);
+  const B = '#00e676', S = '#ff5252', N = '#8892a6', W = '#ffb74d';
+  const sig = [];
+  const add = (label, value, word, col, tip) => sig.push({ label, value, word, col: col || N, tip: tip || '' });
+  if (i.rsi != null) add('RSI 14', i.rsi.toFixed(0), i.rsi > 70 ? 'OVERBOUGHT' : i.rsi < 30 ? 'OVERSOLD' : 'NEUTRAL', i.rsi > 70 ? S : i.rsi < 30 ? B : N, 'Momentum. >70 overbought (pullback risk), <30 oversold (bounce risk).');
+  if (i.stoch_rsi != null) add('Stoch RSI', i.stoch_rsi.toFixed(0), i.stoch_rsi > 80 ? 'OVERBOUGHT' : i.stoch_rsi < 20 ? 'OVERSOLD' : 'NEUTRAL', i.stoch_rsi > 80 ? S : i.stoch_rsi < 20 ? B : N, 'Faster RSI-of-RSI. >80 overbought, <20 oversold.');
+  if (i.mfi != null) add('MFI', i.mfi.toFixed(0), i.mfi > 80 ? 'OVERBOUGHT' : i.mfi < 20 ? 'OVERSOLD' : 'NEUTRAL', i.mfi > 80 ? S : i.mfi < 20 ? B : N, 'Volume-weighted RSI. >80 overbought, <20 oversold.');
+  if (i.cci != null) add('CCI', i.cci.toFixed(0), i.cci > 100 ? 'OVERBOUGHT' : i.cci < -100 ? 'OVERSOLD' : 'NEUTRAL', i.cci > 100 ? S : i.cci < -100 ? B : N, 'Deviation from typical price. >+100 stretched up, <−100 stretched down.');
+  if (i.williams_r != null) add('Williams %R', i.williams_r.toFixed(0), i.williams_r > -20 ? 'OVERBOUGHT' : i.williams_r < -80 ? 'OVERSOLD' : 'NEUTRAL', i.williams_r > -20 ? S : i.williams_r < -80 ? B : N, 'Range position. >−20 overbought, <−80 oversold.');
+  if (i.macd_hist != null) add('MACD hist', i.macd_hist.toFixed(1), i.macd_hist > 0 ? 'BULLISH' : i.macd_hist < 0 ? 'BEARISH' : 'FLAT', i.macd_hist > 0 ? B : i.macd_hist < 0 ? S : N, 'Trend momentum. Histogram >0 bullish, <0 bearish.');
+  if (i.ema9 != null && i.ema21 != null) add('EMA 9/21', px ? `$${Math.round(i.ema21).toLocaleString()}` : '', i.ema9 > i.ema21 ? 'BULLISH' : 'BEARISH', i.ema9 > i.ema21 ? B : S, 'Fast EMA above slow = short-term uptrend; below = downtrend.');
+  if (i.supertrend != null && px) add('SuperTrend', `$${Math.round(i.supertrend).toLocaleString()}`, px > i.supertrend ? 'UPTREND' : 'DOWNTREND', px > i.supertrend ? B : S, 'Trailing trend line. Price above = uptrend, below = downtrend.');
+  if (i.adx != null) add('ADX', i.adx.toFixed(0), i.adx > 25 ? 'TRENDING' : 'RANGING', i.adx > 25 ? W : N, 'Trend STRENGTH only (no direction). >25 = trending market, <25 = range/chop.');
+  if (i.bb_position != null) add('Bollinger', `${(i.bb_position * 100).toFixed(0)}%`, i.bb_position > 0.95 ? 'AT UPPER' : i.bb_position < 0.05 ? 'AT LOWER' : 'INSIDE', i.bb_position > 0.95 ? S : i.bb_position < 0.05 ? B : N, 'Position inside the bands. At upper = stretched up; at lower = stretched down.');
+  if (i.atr != null) add('ATR 1m', `$${i.atr.toFixed(0)}`, i.atr >= 30 ? 'VOLATILE' : i.atr >= 12 ? 'NORMAL' : 'QUIET', i.atr >= 30 ? W : N, 'Average 1m bar range — how much BTC moves per minute right now.');
+  const tile = s => `<div title="${String(s.tip).replaceAll('"', '&quot;')}" style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.45rem .6rem;text-align:center;min-width:0">
+    <div style="font-size:.62em;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">${s.label}</div>
+    <div style="font-size:1em;font-weight:800">${s.value || '&nbsp;'}</div>
+    <div style="font-size:.72em;font-weight:800;color:${s.col};letter-spacing:.3px">${s.word}</div></div>`;
+  grid.innerHTML = sig.length ? sig.map(tile).join('') : '<div class="fh-empty">Waiting for indicator data…</div>';
+  // Consensus banner: count directional signals only (ADX/ATR are strength, not direction).
+  const bulls = sig.filter(s => s.col === B).length, bears = sig.filter(s => s.col === S).length;
+  const lean = bulls >= bears + 2 ? 'BULLISH' : bears >= bulls + 2 ? 'BEARISH' : 'MIXED';
+  const leanCol = lean === 'BULLISH' ? B : lean === 'BEARISH' ? S : W;
+  const rg = (data.regime || {}).regime || '—';
+  const cEl = document.getElementById('ta-consensus');
+  if (cEl) cEl.innerHTML = `<div style="padding:.55rem .8rem;border-radius:9px;border:2px solid ${leanCol};background:${leanCol}18;display:flex;gap:1rem;align-items:baseline;flex-wrap:wrap">
+    <span style="font-size:1.2em;font-weight:800;color:${leanCol}">TA CONSENSUS: ${lean}</span>
+    <span style="font-size:.85em;color:var(--text-secondary)"><strong style="color:${B}">${bulls}▲</strong> · <strong style="color:${S}">${bears}▼</strong> of ${sig.length} signals · regime <strong>${rg}</strong></span>
+    <span style="margin-left:auto;font-size:.72em;color:var(--text-secondary)">context only — not a bet trigger</span></div>`;
+  // Order-flow tiles (same per-candle values the model trains on).
+  const flow = document.getElementById('ta-flow');
+  if (flow) {
+    const ts = data.training_signals || {};
+    const f = [];
+    const fAdd = (
+      label, key, tip, signed = true,
+      positiveWord = 'BUY SIDE', negativeWord = 'SELL SIDE',
+      neutralEpsilon = 0, directional = true,
+    ) => {
+      const raw = ts[key]; if (raw == null) return;
+      const v = Number(raw);
+      if (!Number.isFinite(v)) return;
+      const flat = Math.abs(v) <= neutralEpsilon;
+      const col = !signed || flat ? N : directional ? (v > 0 ? B : S) : W;
+      const shown = Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e4 ? Math.round(v).toLocaleString() : v.toFixed(Math.abs(v) < 1 ? 3 : 2);
+      f.push({ label, value: (signed && v > 0 ? '+' : '') + shown, word: !signed ? '' : flat ? 'FLAT' : v > 0 ? positiveWord : negativeWord, col, tip });
+    };
+    fAdd('CVD 1m', 'cvd_1m', 'Cumulative volume delta 1m — net aggressive buying (+) vs selling (−).');
+    fAdd('CVD 5m', 'cvd_5m', 'Cumulative volume delta 5m.');
+    fAdd('Book imbalance', 'imbalance', 'Bid vs ask depth imbalance. + = more bids (support), − = more asks.', true, 'BID SUPPORT', 'ASK PRESSURE', 0.02);
+    fAdd('Large trades', 'large_trade_delta', 'Net large-trade (whale) flow direction.');
+    fAdd('VPIN', 'vpin', 'Flow toxicity 0–1: high = informed/one-sided flow, be careful.', false);
+    fAdd('Funding', 'funding_rate', 'Perp funding rate. + = longs pay (crowded long), − = shorts pay. This is positioning, not a direction call.', true, 'LONGS PAY', 'SHORTS PAY', 0.000001, false);
+    fAdd('OI change %', 'oi_change', 'Open-interest change — new positions entering (+) or closing (−). It does not identify whether those positions are long or short.', true, 'POSITIONS OPEN', 'POSITIONS CLOSE', 0.01, false);
+    fAdd('CB premium $', 'coinbase_premium', 'Coinbase vs Binance premium — US spot demand (+) or discount (−).', true, 'US DEMAND', 'US DISCOUNT', 1);
+    flow.innerHTML = f.length ? f.map(tile).join('') : '<div class="fh-empty">Waiting for live flow data…</div>';
+  }
+}
+
+function renderRuleStatusTile(rs) {
+  // RULE STATUS: the frozen LATE_LEADER_30S_V1 paper ledger vs its pre-declared promotion
+  // thresholds + recorder liveness. Pure display of the app's own forward evidence.
+  if (!rs) return '';
+  const s = rs.summary, t = rs.targets || {};
+  const qa = rs.quote_bridge_age_s;
+  let rec = qa == null ? '<span style="color:#ff5252">quote bridge MISSING</span>'
+    : qa > 30 ? `<span style="color:#ff5252">recorder STALE (${Math.round(qa)}s)</span>`
+    : `<span style="color:#00e676">recorder live (${qa.toFixed(0)}s)</span>`;
+  // Boot/code stamp: the backend compares its boot content hash with current core files —
+  // the "am I looking at stale code?" question answered at a glance.
+  const be = rs.backend || {};
+  if (be.started_ts) {
+    const boot = new Date(be.started_ts * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    const bootHash = be.boot_code_hash ? ` · build <strong>${be.boot_code_hash}</strong>` : '';
+    rec += be.stale_code
+      ? ` · up since ${boot}${bootHash} · <span style="color:#ff5252;font-weight:800">⚠ CODE CHANGED AFTER BOOT${be.disk_code_hash?` (${be.disk_code_hash} on disk)`:''} — restart to load it</span>`
+      : ` · up since ${boot}${bootHash} · <span style="color:#00e676">code current ✓</span>`;
+  }
+  if (!s || !s.n_evaluated) {
+    return `<div style="margin:.4rem 0;padding:.5rem .8rem;border-radius:8px;border:1px dashed #3a4561;font-size:.85em">
+      📜 <strong>LATE_LEADER_30S_V1</strong> (frozen paper rule) — collecting: no rounds evaluated yet · ${rec}
+      <span style="color:var(--text-secondary)">· needs n≥${t.n||500} settled entries to rule promote/kill</span></div>`;
+  }
+  const ok = v => v ? '#00e676' : '#ffb74d';
+  const evOk = s.ev_c != null && s.ev_c >= (t.ev_c ?? 2);
+  const lbOk = s.ev_lb_c != null && s.ev_lb_c > (t.lb_c ?? 0);
+  const pfOk = s.pf != null && s.pf >= (t.pf ?? 1.2);
+  const prog = Math.min(100, Math.round(100 * (s.n_settled || 0) / (t.n || 500)));
+  return `<div style="margin:.4rem 0;padding:.5rem .8rem;border-radius:8px;border:1px solid #64b5f6;background:rgba(100,181,246,.07);font-size:.85em">
+    📜 <strong style="color:#64b5f6">LATE_LEADER_30S_V1</strong> <span style="color:var(--text-secondary)">(frozen paper rule — live validation)</span>
+    &nbsp; n=<strong>${s.n_settled||0}</strong>/${t.n||500} <span style="color:var(--text-secondary)">(${prog}%)</span>
+    &nbsp; EV <strong style="color:${ok(evOk)}">${s.ev_c!=null?(s.ev_c>=0?'+':'')+s.ev_c+'c':'--'}</strong>
+    &nbsp; LB <strong style="color:${ok(lbOk)}">${s.ev_lb_c!=null?(s.ev_lb_c>=0?'+':'')+s.ev_lb_c+'c':'--'}</strong>
+    &nbsp; PF <strong style="color:${ok(pfOk)}">${s.pf??'--'}</strong>
+    &nbsp; win <strong>${s.win_rate??'--'}%</strong>
+    &nbsp; weeks+ <strong>${s.weeks_positive}/${s.weeks_total}</strong>
+    &nbsp; total <strong style="color:${(s.total_pnl_c||0)>=0?'#00e676':'#ff5252'}">${s.total_pnl_c!=null?(s.total_pnl_c>=0?'+':'')+s.total_pnl_c+'c':'--'}</strong>
+    &nbsp;·&nbsp; ${rec}
+    ${(s.ask_buckets&&s.ask_buckets.length)?`<div style="margin-top:.2rem;font-size:.85em;color:var(--text-secondary)">by ask: ${s.ask_buckets.map(b=>`<span style="margin-right:.8rem">${b.bucket} <strong style="color:${(b.ev_c||0)>=0?'#00e676':'#ff5252'}">${b.ev_c>=0?'+':''}${b.ev_c}c</strong>×${b.n}</span>`).join('')} <span style="color:#8892a6">— offline the EV lived in mid asks; 90c+ added ≈0. Diagnostic only, not a tuning input.</span></div>`:''}
+    <div style="color:var(--text-secondary);font-size:.88em;margin-top:.15rem">Buy the leader at its ask in the final ~30s (skip ask&lt;60c), hold to settle, 1 share paper. Promotion needs ALL targets green at n≥${t.n||500} — the rule passes or dies as written; no re-tuning. Skips: ${s.n_evaluated-(s.n_entered||0)} of ${s.n_evaluated} evaluated (incl. ${s.n_noquote} no-quote).</div>
+  </div>`;
+}
+
+// ── 📒 TRADES tab: full paper-trade blotter (all rules + shadows) ─────────────────────────────
+// Every buy, every exit, per-trade P/L, per-rule and overall win rates + totals. Auto-refreshes
+// every 30s while the tab is visible. All trades are 1 paper share; nothing here is real money.
+let _tradesTimer = null;
+let _tradesFilter = 'ALL';        // strategy filter chip state (survives refreshes)
+let _tradesHorizon = 'ALL';       // horizon tab: 'ALL' | 5 | 15 — splits scoreboard + blotter
+let _lastLedger = null;           // cached payload so chip clicks re-render instantly
+async function fetchTradesBlotter() {
+  const box = document.getElementById('trades-blotter');
+  if (!box) return;
+  try {
+    const resp = await fetch(`${HTTP_API_BASE}/api/paper-ledger`);
+    _lastLedger = await resp.json();
+    renderTradesBlotter(_lastLedger);
+  } catch (e) {
+    box.innerHTML = `<div style="color:#ffb74d;padding:1rem">Ledger unavailable (backend starting or DB busy): ${e}</div>`;
+  }
+  clearTimeout(_tradesTimer);
+  _tradesTimer = setTimeout(() => {
+    if (currentAppTab === 'trades') fetchTradesBlotter();
+  }, 30000);
+}
+window._setTradesFilter = rule => { _tradesFilter = rule; if (_lastLedger) renderTradesBlotter(_lastLedger); };
+window._setTradesHorizon = h => { _tradesHorizon = h; if (_lastLedger) renderTradesBlotter(_lastLedger); };
+
+function renderTradesBlotter(d) {
+  const box = document.getElementById('trades-blotter');
+  if (!box) return;
+  if (!d || !d.overall || !d.overall.n_entered) {
+    box.innerHTML = `<div style="padding:1.2rem;border:1px dashed #3a4561;border-radius:10px;color:var(--text-secondary)">
+      No paper trades recorded yet — the rules and shadows start logging from the first round after the app boots.
+      Every entry (buy at ask), every exit (sell at bid / settlement), fees, and P/L will appear here automatically.</div>`;
+    return;
+  }
+  const ruleName = r => ({MID_SCALP_LIVE_V1:'Mid-round scalp',TP_OR_SETTLE_LIVE_V1:'Early profit-take',STRADDLE_LIVE_V1:'Straddle (blind)',MODEL_FADE_LIVE_V1:'🧠 Model fade',MODEL_STRADDLE_LIVE_V1:'🧠 Model straddle',MODEL_RIDE_LIVE_V1:'🧠 Model ride',LATE_LEADER_30S_V1:'📜 LATE_LEADER_30S (frozen rule)',LATE_LEADER_15M_SHADOW_V1:'📜 Late-leader 15m (shadow)',LATE_LEADER_15S_V1:'⏱ Late-leader @15s',LATE_LEADER_60S_V1:'⏱ Late-leader @60s',LATE_LEADER_MAKER_V1:'🪑 Maker (rest at bid)',CHEAP_SAFE_EARLY_V1:'💰 Cheap-SAFE early',SHOCK_SNIPER_LIVE_V1:'⚡ Shock sniper'}[r]||r);
+  const pl = v => v==null ? '<span style="color:#ffb74d">open</span>'
+    : `<span style="color:${v>=0?'#00e676':'#ff5252'};font-weight:700">${v>=0?'+':''}${v}c</span>`;
+  const o = d.overall;
+  const oc = (o.total_c||0) >= 0 ? '#00e676' : '#ff5252';
+  const head = `
+    <div style="display:flex;gap:1.2rem;flex-wrap:wrap;align-items:baseline;padding:.7rem .9rem;border:1px solid #64b5f655;border-radius:10px;background:rgba(100,181,246,.06);margin-bottom:.6rem">
+      <span style="font-size:1.2em;font-weight:800">📒 Paper trade ledger</span>
+      <span>trades: <strong>${o.n_entered}</strong> (settled ${o.n_settled})</span>
+      <span>win rate: <strong>${o.win_rate!=null?o.win_rate+'%':'--'}</strong></span>
+      <span style="font-size:1.15em">overall P/L: <strong style="color:${oc}">${(o.total_c>=0?'+':'')}${o.total_c}c</strong> <span style="color:var(--text-secondary);font-size:.8em">(1 paper share/trade · $1 shares → cents ≈ % of stake)</span></span>
+      <span style="color:var(--text-secondary);font-size:.8em">paper only — no real money · auto-refreshes 30s</span>
+    </div>`;
+  // Horizon tabs: ALL / 5m / 15m — split BOTH the scoreboard and the blotter. per_rule rows
+  // arrive per (rule, horizon); the ALL view merges them per rule client-side.
+  const hTab = (key, label) => {
+    const on = _tradesHorizon === key;
+    return `<button onclick="window._setTradesHorizon(${typeof key==='string'?`'${key}'`:key})" style="cursor:pointer;margin:0 .35rem .45rem 0;padding:.3rem .9rem;border-radius:8px;font-size:.85em;font-weight:800;border:1px solid ${on?'#00e676':'#3a4561'};background:${on?'rgba(0,230,118,.14)':'transparent'};color:${on?'#00e676':'var(--text-secondary)'}">${label}</button>`;
+  };
+  const hCount = h => d.trades.filter(t => t.horizon === h).length;
+  const hTabs = `<div>${hTab('ALL', `ALL (${d.trades.length})`)}${hTab(5, `5m rounds (${hCount(5)})`)}${hTab(15, `15m rounds (${hCount(15)})`)}</div>`;
+  const hFilteredEarly = _tradesHorizon === 'ALL' ? d.trades : d.trades.filter(t => t.horizon === _tradesHorizon);
+  // Client-side per-rule aggregation from the trade rows themselves (each row carries its
+  // horizon) — used whenever the backend's per_rule aggregate predates the horizon split,
+  // so the 5m/15m scoreboard works WITHOUT waiting for a backend restart. Caveat: computed
+  // from the visible trades (last 300), so it matches exactly until history exceeds that.
+  const aggFromTrades = list => {
+    const m = {};
+    list.forEach(t => {
+      const a = m[t.rule] || (m[t.rule] = { rule: t.rule, n_entered: 0, n_settled: 0, wins: 0, total_c: 0 });
+      a.n_entered++;
+      if (t.pnl_c != null) { a.n_settled++; if (t.pnl_c > 0) a.wins++; a.total_c += t.pnl_c; }
+    });
+    return Object.values(m).map(a => ({ ...a,
+      win_rate: a.n_settled ? Math.round(a.wins / a.n_settled * 1000) / 10 : null,
+      avg_c: a.n_settled ? Math.round(a.total_c / a.n_settled * 100) / 100 : null,
+      total_c: Math.round(a.total_c * 10) / 10 })).sort((x, y) => y.total_c - x.total_c);
+  };
+  let prRows = d.per_rule || [];
+  const _prHasHorizon = prRows.some(p => p.horizon != null);
+  if (_tradesHorizon !== 'ALL' && _prHasHorizon) {
+    prRows = prRows.filter(p => p.horizon === _tradesHorizon);
+  } else if (_tradesHorizon !== 'ALL' && !_prHasHorizon) {
+    prRows = aggFromTrades(hFilteredEarly);
+  } else {
+    const merged = {};
+    prRows.forEach(p => {
+      const m = merged[p.rule] || (merged[p.rule] = { rule: p.rule, n_entered: 0, n_settled: 0, wins: 0, total_c: 0 });
+      m.n_entered += p.n_entered; m.n_settled += p.n_settled; m.wins += p.wins; m.total_c += (p.total_c || 0);
+    });
+    prRows = Object.values(merged).map(m => ({ ...m,
+      win_rate: m.n_settled ? Math.round(m.wins / m.n_settled * 1000) / 10 : null,
+      avg_c: m.n_settled ? Math.round(m.total_c / m.n_settled * 100) / 100 : null,
+      total_c: Math.round(m.total_c * 10) / 10 }));
+    prRows.sort((a, b) => b.total_c - a.total_c);
+  }
+  const perRule = `
+    <table style="width:100%;border-collapse:collapse;margin-bottom:.7rem;font-size:.85em">
+      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Strategy${_tradesHorizon!=='ALL'?(_prHasHorizon?` (${_tradesHorizon}m only)`:` (${_tradesHorizon}m — from the last ${d.trades.length} trades)`):''}</th><th>entered</th><th>settled</th><th>wins</th><th>win rate</th><th>avg P/L</th><th>total P/L</th></tr>
+      ${prRows.length ? prRows.map(p=>`<tr style="border-top:1px solid #ffffff14">
+        <td style="padding:.3rem .5rem"><strong>${ruleName(p.rule)}</strong></td>
+        <td>${p.n_entered}</td><td>${p.n_settled}</td><td>${p.wins}</td>
+        <td>${p.win_rate!=null?p.win_rate+'%':'--'}</td>
+        <td>${p.avg_c!=null?pl(p.avg_c):'--'}</td><td>${pl(p.total_c)}</td></tr>`).join('')
+        : `<tr><td colspan="7" style="padding:.5rem;color:var(--text-secondary)">No ${_tradesHorizon!=='ALL'?_tradesHorizon+'m ':''}entries yet — strategies log from their first qualifying round.</td></tr>`}
+    </table>`;
+  // Strategy filter chips: ALL + one per strategy present in the current horizon view —
+  // click to see only that strategy's trades. State survives the 30s refresh.
+  const hFiltered = _tradesHorizon === 'ALL' ? d.trades : d.trades.filter(t => t.horizon === _tradesHorizon);
+  const rulesPresent = [...new Set(hFiltered.map(t => t.rule))];
+  if (_tradesFilter !== 'ALL' && !rulesPresent.includes(_tradesFilter)) _tradesFilter = 'ALL';
+  const chip = (key, label) => {
+    const on = _tradesFilter === key;
+    return `<button onclick="window._setTradesFilter('${key}')" style="cursor:pointer;margin:0 .3rem .3rem 0;padding:.25rem .7rem;border-radius:16px;font-size:.8em;font-weight:700;border:1px solid ${on?'#64b5f6':'#3a4561'};background:${on?'rgba(100,181,246,.18)':'transparent'};color:${on?'#64b5f6':'var(--text-secondary)'}">${label}</button>`;
+  };
+  const chips = `<div style="margin:.1rem 0 .5rem">${chip('ALL', `ALL (${hFiltered.length})`)}${rulesPresent.map(r => chip(r, `${ruleName(r)} (${hFiltered.filter(t=>t.rule===r).length})`)).join('')}</div>`;
+  const shown = _tradesFilter === 'ALL' ? hFiltered : hFiltered.filter(t => t.rule === _tradesFilter);
+  const btcMove = t => {
+    if (t.btc_entry == null || t.btc_exit == null) return '';
+    const dv = t.btc_exit - t.btc_entry;
+    return ` <span style="color:${dv>=0?'#00e676':'#ff5252'};font-size:.9em">(${dv>=0?'+':''}$${Math.round(dv)})</span>`;
+  };
+  const rows = shown.map(t=>{
+    const dt = new Date(t.ts);
+    const when = `${dt.toLocaleDateString([], {month:'short',day:'numeric'})} ${dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+    const audit = t.accounting_verified === true
+      ? '<span style="color:#00e676" title="P/L reconciles from stored gross exit, exit fee, entry ask and entry fee">✓ exact</span>'
+      : t.accounting_verified === false
+        ? '<span style="color:#ff5252" title="Stored P/L does not reconcile">⚠ mismatch</span>'
+        : '<span style="color:var(--text-secondary)" title="Legacy row: raw exit components were not stored">legacy</span>';
+    const fees = t.exit_fee != null
+      ? `${((t.fee || 0) * 100).toFixed(2)}c + ${(t.exit_fee * 100).toFixed(2)}c`
+      : `${((t.fee || 0) * 100).toFixed(2)}c`;
+    return `<tr style="border-top:1px solid #ffffff0d">
+      <td style="padding:.25rem .5rem;color:var(--text-secondary);white-space:nowrap">${when}</td>
+      <td style="white-space:nowrap"><strong>${ruleName(t.rule)}</strong></td>
+      <td>${t.horizon}m</td>
+      <td style="font-weight:700;color:${t.side==='UP'?'#00e676':t.side==='DOWN'?'#ff5252':'#ffb74d'}">${t.side}</td>
+      <td>${(t.buy_at*100).toFixed(1)}c</td>
+      <td>${t.exit_net!=null?(t.exit_net*100).toFixed(1)+'c':'<span style="color:#ffb74d">holding</span>'}</td>
+      <td style="white-space:nowrap" title="entry fee + exit fee">${fees}</td>
+      <td style="white-space:nowrap">${t.btc_entry!=null?'$'+Number(t.btc_entry).toLocaleString():'—'}</td>
+      <td style="white-space:nowrap">${t.btc_exit!=null?'$'+Number(t.btc_exit).toLocaleString()+btcMove(t):'—'}</td>
+      <td>${pl(t.pnl_c)}</td>
+      <td style="color:var(--text-secondary)">${t.exit_reason||t.outcome||(t.settled?'':'open')}</td>
+      <td>${audit}</td></tr>`;
+  }).join('');
+  box.innerHTML = head + hTabs + perRule + chips + `
+    <table style="width:100%;border-collapse:collapse;font-size:.82em">
+      <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.25rem .5rem">Time</th><th>Strategy</th><th>H</th><th>Side</th><th>Bought @</th><th>Sold/settled (net)</th><th>Fees in + out</th><th>BTC @ buy (Pyth)</th><th>BTC @ exit (Pyth)</th><th>P/L</th><th>Result</th><th>Audit</th></tr>
+      ${rows}
+    </table>
+    <div style="margin-top:.5rem;color:var(--text-secondary);font-size:.78em">Bought @ = executable ask at entry (1 paper share). Sold/settled (net) = stored gross bid/settlement proceeds minus the stored exit fee. <strong>✓ exact</strong> means P/L was independently recomputed as gross exit − exit fee − entry ask − entry fee; older rows are marked legacy because their raw exit components were not stored. BTC @ buy/exit uses the app's Pyth reference feed and can differ from Binance. Stops/TPs sell into the visible bid, so an exit may gap past its trigger. "holding" = still open.</div>`;
+}
+
+function renderDeadStrategiesPanel(ruleStatus) {
+  // Static, MEASURED guardrail (2026-07-02, ~10k real quoted rounds each) + LIVE SHADOW column
+  // (2026-07-04): each dead strategy also runs as a paper shadow on real executable quotes every
+  // round (both horizons — including the 15m variants no archive could test). The live EV lands
+  // right next to the historical verdict, so the kills stay continuously falsifiable.
+  const shadows = (ruleStatus && ruleStatus.shadows) || {};
+  const live = rule => {
+    const s = shadows[rule];
+    if (!s || !s.n_settled) return '<span style="color:var(--text-secondary)">collecting…</span>';
+    const c = (s.ev_c||0) >= 0 ? '#00e676' : '#ff5252';
+    return `n=${s.n_settled} · EV <strong style="color:${c}">${s.ev_c>=0?'+':''}${s.ev_c}c</strong>${s.pf!=null?` · PF ${s.pf}`:''}`;
+  };
+  const rows = [
+    ['Mid-round scalp', 'buy leader early, TP +5c / SL −3c', 'win 36.8%', '−4.1c/share · PF 0.28 · 0/9 weeks', 'MID_SCALP_LIVE_V1', 'The win rate IS the coin-flip expectation (3/8). No drift mid-window — you just pay the spread + fees twice.'],
+    ['Early profit-taking', 'buy early, exit at +20–50%, else settle', 'TP hits 78%', '−1.8 to −4.4c/share · 0/9 weeks', 'TP_OR_SETTLE_LIVE_V1', 'Feels like winning: 78% of profit-targets HIT and it still loses. Each TP pays a fee AND caps a winner headed to $1; losers still ride to $0.'],
+    ['Bet both ways (straddle)', 'buy UP+DOWN near 50/50, sell legs on swings', 'both legs TP 52%', '−10.7c/straddle · PF 0.48 · 0/9 weeks', 'STRADDLE_LIVE_V1', 'The swing IS real (52% of rounds, +18c when it works) — but the one-way trend costs −43c (you sold the eventual winner cheap). The ~4.5c premium prices the swing odds exactly.'],
+    ['🧠 Model fade', 'path head says CHOP + touch + fade model ≥55% → buy cheap side, TP +20% or settle', 'model-gated', 'no offline baseline — the honest test IS this live one', 'MODEL_FADE_LIVE_V1', 'Entries only when the models fire. Tests whether the fade heads add value at live executable prices.'],
+    ['🧠 Model straddle', 'both ways ONLY when path head predicts two-sided (round-trip ≥35%)', 'model-gated', 'vs blind straddle above', 'MODEL_STRADDLE_LIVE_V1', 'Same mechanics as the blind straddle — the model picks the rounds. The gap between the two rows IS the model\'s value.'],
+    ['🧠 Model ride', 'path head says TREND + big-move elevated → buy leader mid-window, hold to settle', 'model-gated', 'no offline baseline', 'MODEL_RIDE_LIVE_V1', 'The trend-following counterpart: one spread crossing, model-selected rounds only.'],
+    ['📜 Late-leader 15m', 'frozen-rule mechanics on 15m rounds, evaluated at 20–32s left', 'no offline 15m data existed', 'the 15m answer', 'LATE_LEADER_15M_SHADOW_V1', 'Separate shadow, NOT the frozen rule — no archive had 15m quotes, so the 15m question is answered live.'],
+    ['⏱ Late-leader @60s', 'frozen-rule gates, evaluated at 50–65s left (5m)', 'offline +0.5c LB', 'gradient test', 'LATE_LEADER_60S_V1', 'The EV-vs-expiry ladder, live: offline calibration showed 120s ≈ 0 → 60s +0.5 → 30s +2.1c LB.'],
+    ['⏱ Late-leader @15s', 'frozen-rule gates, evaluated at 10–17s left (5m)', 'never measured', 'gradient test', 'LATE_LEADER_15S_V1', 'The unmeasured end of the ladder — offline data lost late quotes; live quotes don\'t.'],
+    ['🪑 Maker (rest at bid)', 'at ~30s REST at leader bid; filled only if the ask trades down to it; maker fee 0', 'untested Lever 3', 'spread saved ≈ half the edge', 'LATE_LEADER_MAKER_V1', 'Conservative fill model (ask must cross our price). NO_FILL rows keep the denominator honest — fill RATE is the question.'],
+    ['💰 Cheap-SAFE early', 'leader ask 0.42–0.58 + dist/vol ≥1.5, early-mid window, hold to settle', 'nulls: gates priced in', 'expectation LOW', 'CHEAP_SAFE_EARLY_V1', 'Closes the cheap-leader question on live asks. The shuffled-gate nulls predict ≈0 — if it confirms, the book is efficient early, full stop.'],
+    ['⚡ Shock sniper', 'BTC jumps ≥$20 in ~3–8s and the target ask did NOT move → buy the stale ask', '1s approximation', 'true test = offline L2 replay (queued)', 'SHOCK_SNIPER_LIVE_V1', 'The 1s bridge understates the sub-second opportunity — a positive here is strong; a zero is NOT conclusive.'],
+  ];
+  const recent = (ruleStatus && ruleStatus.recent) || [];
+  const shortName = r => ({MID_SCALP_LIVE_V1:'SCALP',TP_OR_SETTLE_LIVE_V1:'TP-SET',STRADDLE_LIVE_V1:'STRAD',MODEL_FADE_LIVE_V1:'🧠FADE',MODEL_STRADDLE_LIVE_V1:'🧠STRAD',MODEL_RIDE_LIVE_V1:'🧠RIDE',LATE_LEADER_30S_V1:'📜LL30',LATE_LEADER_15M_SHADOW_V1:'📜LL15m',LATE_LEADER_15S_V1:'⏱LL15s',LATE_LEADER_60S_V1:'⏱LL60s',LATE_LEADER_MAKER_V1:'🪑MAKER',CHEAP_SAFE_EARLY_V1:'💰CHEAP',SHOCK_SNIPER_LIVE_V1:'⚡SNIPE'}[r]||r);
+  const feed = recent.length ? `
+      <div style="margin-top:.45rem;color:var(--text-secondary);font-size:.9em"><strong>Live action feed</strong> (every shadow entry/exit, newest first):</div>
+      <table style="width:100%;border-collapse:collapse;margin-top:.15rem">
+        ${recent.map(a=>{
+          const t = new Date(a.ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+          const st = a.pnl_c!=null ? `<span style="color:${a.pnl_c>=0?'#00e676':'#ff5252'};font-weight:700">${a.pnl_c>=0?'+':''}${a.pnl_c}c</span> <span style="color:var(--text-secondary)">${a.outcome||''}</span>`
+                                   : `<span style="color:#ffb74d">OPEN${a.outcome?' · '+a.outcome:''}</span>`;
+          return `<tr style="border-top:1px solid #ffffff0d"><td style="padding:.15rem .4rem;color:var(--text-secondary);white-space:nowrap">${t}</td><td style="padding:.15rem .4rem;white-space:nowrap"><strong>${shortName(a.rule)}</strong> ${a.horizon}m</td><td style="padding:.15rem .4rem">${a.side} @ ${a.ask!=null?(a.ask*100).toFixed(0)+'c':'--'}</td><td style="padding:.15rem .4rem">${st}</td></tr>`;
+        }).join('')}
+      </table>` : '';
+  return `<details style="margin:.35rem 0 .5rem" ${window._deadOpen?'open':''}>
+    <summary onclick="window._deadOpen=!window._deadOpen" style="cursor:pointer;padding:.4rem .7rem;border:1px dashed #ff525266;border-radius:8px;font-size:.85em;color:#ff8a80">💀 <strong>Strategy lab</strong> — 3 dead strategies + 3 🧠 model-gated variants, shadow-trading LIVE (tap)</summary>
+    <div style="padding:.5rem .7rem;border:1px solid #ff525233;border-top:none;border-radius:0 0 8px 8px;font-size:.8em">
+      <table style="width:100%;border-collapse:collapse">
+        <tr style="color:var(--text-secondary);text-align:left"><th style="padding:.2rem .4rem">Strategy</th><th style="padding:.2rem .4rem">Trigger</th><th style="padding:.2rem .4rem">Historical (offline)</th><th style="padding:.2rem .4rem">LIVE shadow (paper, 5m+15m)</th><th style="padding:.2rem .4rem">Notes</th></tr>
+        ${rows.map(r=>`<tr style="border-top:1px solid #ffffff14"><td style="padding:.3rem .4rem"><strong>${r[0]}</strong><div style="color:var(--text-secondary)">${r[1]}</div></td><td style="padding:.3rem .4rem;color:#00e676;white-space:nowrap">${r[2]}</td><td style="padding:.3rem .4rem;color:#ff5252">${r[3]}</td><td style="padding:.3rem .4rem;white-space:nowrap">${live(r[4])}</td><td style="padding:.3rem .4rem;color:var(--text-secondary)">${r[5]}</td></tr>`).join('')}
+      </table>
+      ${feed}
+      <div style="margin-top:.35rem;color:#ffb74d"><strong>The one law:</strong> every extra spread crossing and every early profit-take is a transfer to the market maker. The only measured leak is the <strong>final ~30s, crossed once, held to settlement</strong> — the 📜 rule above. All six shadows are paper-only and keep every verdict falsifiable: a green live EV with real n earns a re-audit.</div>
+    </div>
+  </details>`;
+}
+
+function renderRoundStateBoard(latest, modelStatus, ruleStatus) {
+  // 2026-07-04: the per-horizon round-state cards were MERGED into the round cards below
+  // (the risk-tile row) — one card per horizon, no duplicated leader/hold/decision panels.
+  // This board now carries only the frozen-rule ledger, the dead-strategies guardrail, and
+  // the shadow-bundle status line.
+  const board = document.getElementById('pm-round-state');
+  if (!board) return;
+  const status = modelStatus || {};
+  const modelLine = status.loaded
+    ? `Shadow bundle ${status.version} loaded — risk tiles are on each round card below. Info only; Champion unchanged; no order can be placed from this app.`
+    : `Shadow bundle unavailable: ${status.error || 'waiting for artifact'} — the risk tiles fail closed.`;
+  board.innerHTML = `${renderRuleStatusTile(ruleStatus)}${renderDeadStrategiesPanel(ruleStatus)}<div style="font-size:.75em;color:var(--text-secondary);margin:.2rem 0 .4rem">${modelLine}</div>`;
+}
+
 function renderPMCore(data, cfg) {
   const P = cfg.p;
   const grid = document.getElementById(P+'-grid');
@@ -3057,6 +3388,10 @@ function renderPMCore(data, cfg) {
   const ptb = data[cfg.ptbKey] || {};
   const latest = ptb.latest || {};
   const acc = ptb.accuracy || {};
+  if (cfg.p === 'pm') renderRoundStateBoard(latest, ptb.round_state_status, ptb.paper_rule_status);
+  // Preserve <details> open-state across WS re-renders (innerHTML wipes it otherwise — the
+  // "details auto-collapses" bug). Keyed by data-dkey; captured before, restored after.
+  const _openKeys = new Set(Array.from(grid.querySelectorAll('details[data-dkey]')).filter(d => d.open).map(d => d.dataset.dkey));
   // Only the two real 5m/15m Polymarket horizons remain after the 2026-06-21 prune.
   grid.innerHTML = [5,15].map(h => {
     const r = latest[h] || latest[String(h)];
@@ -3075,7 +3410,7 @@ function renderPMCore(data, cfg) {
       : dir!=='NEUTRAL' ? '<span style="background:rgba(0,230,118,.12);color:#00e676;border-radius:4px;padding:0 .35rem;font-size:.7em">MODEL lean</span>' : '';
     const phPct = (r.p_hold!=null) ? pHoldPct(r.p_hold) : null;
     const lateChip = r.late_entry
-      ? `<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY edge${phPct!=null?` · ${phPct}% hold`:''}</span>` : '';
+      ? `<span style="background:rgba(100,181,246,.15);color:#64b5f6;border-radius:4px;padding:0 .35rem;font-size:.7em;margin-left:.4rem">⚡ LATE-ENTRY setup${phPct!=null?` · ${phPct}% hold`:''}</span>` : '';
     const practice = (h!==5&&h!==15) ? ' <span style="background:rgba(255,255,255,.08);color:var(--text-secondary);border-radius:4px;padding:0 .35rem;font-size:.6em;vertical-align:middle">PRACTICE — no real market</span>' : '';
     // Expected PRICE to reach (band as absolute prices, anchored from current) + the ensemble's
     // directional target (shown informational only — direction is ~coin-flip).
@@ -3085,11 +3420,35 @@ function renderPMCore(data, cfg) {
     const _reachHi = _emr2.high!=null ? _cp + Number(_emr2.high) : null; // up-reach price
     const _ensTgt = (r.live_expected_move!=null && dir!=='NEUTRAL')
       ? _cp + (dir==='UP'?1:-1)*Math.abs(Number(r.live_expected_move)) : null;
+    // ── ONE-LINE ACTION strip (the "just tell me what to do" answer). Pure display composition of
+    // the already-validated signals — no new prediction. Priority: champion risk-veto > composed
+    // trade_signal (late-hold / fade / hold / skip) > default WAIT. The evidence blocks below justify it.
+    const actionHtml = (()=>{
+      if (resolved) return '';
+      const mk = (col, icon, head, sub) =>
+        `<div style="margin:.55rem 0 .3rem;padding:.6rem .8rem;border-radius:9px;background:${col}22;border:2px solid ${col}">
+          <div style="font-size:1.25em;font-weight:800;color:${col};letter-spacing:.3px">${icon} ${head}</div>
+          ${sub?`<div style="font-size:.78em;color:var(--text-secondary);margin-top:.2rem">${sub}</div>`:''}</div>`;
+      const champ = r.champion;
+      if (champ && (champ.action==='AVOID'||champ.action==='AVOID_LONG'))
+        return mk('#ff5252','✖','SIT OUT', champ.reason||'Risk conflict — the validator vetoed this round.');
+      // Lever 2: a live-quote paper bet with proportional sizing outranks the generic signal —
+      // it is the only state where fair value, executable ask, fees, and stake are ALL known.
+      if (champ && champ.action==='PAPER_BET')
+        return mk('#64b5f6','▶', `${champ.label||'PAPER BET'}${champ.stake_frac?` · stake ${(champ.stake_frac*100).toFixed(1)}%`:''}`, champ.reason||'');
+      const sig = r.trade_plan && r.trade_plan.trade_signal;
+      if (sig && sig.short) {
+        const col = sig.tone==='good'?'#00e676':sig.tone==='warn'?'#ffb74d':'#8892a6';
+        const icon = sig.do==='HOLD'?'✔':sig.do==='CHECK EDGE'?'▶':sig.do==='PAPER ONLY'?'✎':(sig.do==='SKIP')?'✖':sig.do==='PLAN'?'🧭':'⏳';
+        return mk(col, icon, sig.short, sig.text||'');
+      }
+      return mk('#8892a6','⏳','WAIT — no setup yet','This app bets rarely on purpose: most rounds have no proven edge. It will tell you when one appears.');
+    })();
     // Champion validator strip: synthesized verdict from the specialist heads.
     const champHtml = (()=>{
       const c = r.champion; if (resolved || !c) return '';
       const A = c.action;
-      const col2 = (A==='PAPER_BET'||A==='SETUP')?'#00e676'
+      const col2 = A==='PAPER_BET'?'#64b5f6':A==='SETUP'?'#ffb74d'
         : (A==='AVOID'||A==='AVOID_LONG')?'#ff5252'
         : (A==='WAIT')?'#ffb74d'
         : (A==='NO_EDGE'||A==='WATCH_DOWN'||A==='WATCH_UP'||A==='LEAN')?'#64b5f6':'#8892a6';
@@ -3100,23 +3459,114 @@ function renderPMCore(data, cfg) {
         ${c.meta_hold_probability!=null?`<div style="font-size:.77em;color:${c.meta_hold_probability>=0.55?'#00e676':'#ffb74d'};margin-top:.2rem">Meta champion: ${Math.round(c.meta_hold_probability*100)}% chance current side holds</div>`:''}
         ${c.zone?`<div style="font-size:.76em;color:var(--text-secondary);margin-top:.15rem">80% band: $${Number(c.zone.low).toLocaleString()} - $${Number(c.zone.high).toLocaleString()}</div>`:''}
         ${c.invalidate?`<div style="font-size:.74em;color:var(--text-secondary);margin-top:.15rem;font-style:italic">invalidated by: ${c.invalidate}</div>`:''}
-        <div style="font-size:.67em;color:#888;margin-top:.2rem">Champion validator: one call from all heads. ${c.bet_candidate?'Paper-bet candidate (recorder/paper only - NOT live).':'Probability/risk read only. A bet needs the Polymarket edge gate: fair - ask - buffer > 0.'}</div>
+        <div style="font-size:.67em;color:#888;margin-top:.2rem">Champion validator: one call from all heads. ${c.bet_candidate?'Simulated entry candidate only - NOT approved for real money.':'Probability/risk read only. Paper entry needs: min(P(Hold),91c) - ask - taker fee - 3c > 0.'}</div>
       </div>`;
     })();
-    return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:1rem 1.2rem;background:rgba(255,255,255,.02)">
-      <div style="display:flex;justify-content:space-between"><strong style="font-size:1.15em">${h}m · ${r.window_label||''}${practice}</strong>
-        <span style="font-size:.8em;color:var(--text-secondary)">${accStr}</span></div>
+    // ── 2026-07-03 merged signal card: ONE verdict box (the old second advice box contradicted
+    // it on screen), leader + risk tiles + path strip always visible, model lean demoted to a
+    // labeled context line, and every explanatory sentence inside the keyed <details>
+    // (open-state survives WS re-renders via data-dkey capture/restore around innerHTML).
+    const rs = (!resolved && r.round_state) ? r.round_state : null;
+    const secsLeft = r.seconds_left!=null ? Math.max(0,Math.round(r.seconds_left)) : null;
+    // Live-book status (must be declared BEFORE leaderHtml, which renders it inline).
+    const exec = rs ? (rs.execution || {}) : {};
+    const exOk = exec.status === 'PAPER_EDGE';
+    const exTxt = rs ? (exOk ? 'BOOK: EDGE ✓' : String(exec.status || '').startsWith('WAITING') ? 'BOOK: WAITING' : 'BOOK: NO EDGE') : null;
+    const leadUp = (r.current_move||0) >= 0;
+    const holdCol = r.p_hold>=0.93?'#64b5f6':r.p_hold>=0.85?'#ffb74d':'#ff5252';
+    const leaderHtml = (!resolved && r.current_price!=null) ? `
+      <div style="display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap;margin-top:.5rem">
+        <span style="font-size:1.55em;font-weight:800;color:${leadUp?'#00e676':'#ff5252'}">${leadUp?'▲ UP':'▼ DOWN'} leads $${Math.abs(Math.round(r.current_move||0))}</span>
+        ${r.p_hold!=null?`<span style="font-size:1.25em;font-weight:800;color:${holdCol}" title="P(Hold): calibrated odds the side already ahead stays ahead">● HOLD ${pHoldPct(r.p_hold)}%</span>`:''}
+      </div>
+      <div style="font-size:1.05em;margin-top:.2rem;color:var(--text-secondary)">now <strong style="color:var(--text-primary);font-size:1.1em">$${Number(r.current_price).toLocaleString()}</strong> · beat <strong style="color:#ffb74d;font-size:1.1em">$${Number(r.price_to_beat||0).toLocaleString()}</strong>${exTxt?` · <span title="${String(exec.text||'Waiting for live ask and depth.').replaceAll('"','&quot;')}" style="color:${exOk?'#64b5f6':'#8892a6'};font-weight:700">${exTxt}</span>`:''}</div>` : '';
+    const sharePricesHtml = (() => {
+      if (resolved || !r.share_prices) return '';
+      const q = r.share_prices;
+      const cents = value => `${(Number(value || 0) * 100).toFixed(1)}¢`;
+      const share = (side, quote, color) => `<div style="flex:1;min-width:190px;padding:.38rem .55rem;border-left:3px solid ${color};background:${color}0d">
+        <strong style="color:${color}">${side} SHARE</strong>
+        <span style="margin-left:.55rem">Buy <strong>${cents(quote.ask)}</strong></span>
+        <span style="margin-left:.55rem;color:var(--text-secondary)">Sell now <strong>${cents(quote.bid)}</strong></span>
+        <span title="Shares offered at the best ask" style="margin-left:.55rem;color:#8892a6;font-size:.78em">size ${Number(quote.ask_size||0).toLocaleString()}</span>
+      </div>`;
+      return `<div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.45rem;padding:.35rem;border:1px solid rgba(100,181,246,.25);border-radius:7px;background:rgba(100,181,246,.05)">
+        <div style="width:100%;display:flex;justify-content:space-between;gap:.5rem;font-size:.72em;color:var(--text-secondary)"><strong style="color:#7cc4ff">LIVE POLYMARKET SHARES</strong><span>updated ${Number(q.age_seconds||0).toFixed(1)}s ago</span></div>
+        ${share('UP', q.up, '#00e676')}${share('DOWN', q.down, '#ff5252')}
+        <div style="width:100%;font-size:.68em;color:#8892a6">Buy = current ask you would pay. Sell now = current bid available to exit. Prices exclude the displayed strategy's separate fee calculation.</div>
+      </div>`;
+    })();
+    // HEADS GRID (2026-07-04, operator request): every model head as one small tile —
+    // label + value + color, tooltip for meaning, tile hidden when the head has no data.
+    const headsGrid = (()=>{
+      if (resolved) return '';
+      const t = [];
+      const tile = (lbl, val, tcol, tip) => t.push(`<div title="${String(tip||'').replaceAll('"','&quot;')}" style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:7px;padding:.32rem .45rem;text-align:center;min-width:0"><div style="font-size:.7em;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${lbl}</div><div style="font-size:1.05em;font-weight:800;color:${tcol||'var(--text-primary)'};white-space:nowrap">${val}</div></div>`);
+      const pctv = v => `${Math.round(Number(v)*100)}%`;
+      if (rs) {
+        const flip = rs.flip_risk||{}, sh = rs.late_shock||{}, nx = rs.next_three_rounds||{};
+        const shp = b => (sh[String(b)]||{}).probability;
+        if (flip.probability!=null) tile('Flip', pctv(flip.probability), flip.level==='HIGH'?'#ff5252':flip.level==='MEDIUM'?'#ffb74d':'#00e676', 'Chance the leader crosses back before expiry (shadow head; 1−P(Hold) proxy outside the final 30–120s).');
+        if (shp(20)!=null) tile('≥$20', pctv(shp(20)), null, 'Chance BTC still moves ≥$20 before expiry (validated final 30–120s).');
+        if (shp(50)!=null) tile('≥$50', pctv(shp(50)), null, 'Chance BTC still moves ≥$50 before expiry.');
+        if (shp(100)!=null) tile('≥$100', pctv(shp(100)), null, 'Chance BTC still moves ≥$100 before expiry.');
+        if (rs.round_type && rs.round_type!=='WAITING') tile('Round', rs.round_type, rs.round_type==='TREND'?'#64b5f6':rs.round_type==='CHOP'?'#ffb74d':'#8892a6', 'Opening path model: QUIET / CHOP / TREND / ACTIVE.');
+        if (nx.probability!=null) tile('Setup soon', pctv(nx.probability), null, 'Chance of a path opportunity within the next 3 same-length rounds — supports waiting.');
+      }
+      if (r.big_move_tier) tile('Move', String(r.big_move_tier).toUpperCase(), r.big_move_tier==='likely'?'#ff7043':r.big_move_tier==='elevated'?'#ffb74d':'#8892a6', 'Big-move timing head (AUC 0.73): will this round move enough to matter?');
+      if (r.big_drop_risk) tile('Drop', r.big_drop_risk, r.big_drop_risk==='HIGH'?'#ff5252':r.big_drop_risk==='ELEVATED'?'#ffb74d':'#8892a6', 'Downside flush risk head (AUC 0.75) — risk input, not a trade trigger.');
+      if (r.big_up_tier) tile('Up head', String(r.big_up_tier).toUpperCase(), '#00e676', 'Directional big-up confirmation head — explains conflicts, never trades alone.');
+      if (r.big_down_tier) tile('Down head', String(r.big_down_tier).toUpperCase(), '#ff5252', 'Directional big-down confirmation head — explains conflicts, never trades alone.');
+      if (r.activity_tier) tile('Range', String(r.activity_tier).toUpperCase(), r.activity_tier==='likely'?'#ff7043':r.activity_tier==='elevated'?'#ffb74d':'#8892a6', 'Activity/range head: does this window have enough movement for a useful decision?');
+      if (r.similar_setups) tile('Similar', `${r.similar_setups.n}→${r.similar_setups.held_pct}%`, r.similar_setups.wilson_lb>=90?'#00e676':r.similar_setups.wilson_lb>=80?'#ffb74d':'#aab4c8', `Live memory: ${r.similar_setups.n} similar graded late setups held ${r.similar_setups.held_pct}% (Wilson-LB ${r.similar_setups.wilson_lb}%). Evidence, not a prediction.`);
+      if (r.tier) tile('Tier', r.tier + (tProof&&tProof.n?` ${tProof.hold_pct}%`:''), '#64b5f6', tProof&&tProof.n?`${r.tier} precision setup: ${tProof.n} similar late entries held ${tProof.hold_pct}% (Wilson-LB ${tProof.wilson_lb}%).`:'P(Hold) precision tier — proof pending.');
+      if (r.late_entry) tile('Late entry', '✓', '#64b5f6', 'Validated late-entry persistence zone: <2min left, $10+ ahead, model agrees.');
+      return t.length?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:.3rem;margin-top:.45rem">${t.join('')}</div>`:'';
+    })();
+    // Path plan strip — the projected path, always visible (full bands/evidence in Full detail).
+    const pathStrip = (()=>{
+      if (resolved || !r.trade_plan) return '';
+      const tp = r.trade_plan;
+      const move50 = Math.round(tp.move_50_threshold_usd ?? 50);
+      const playCol = tp.play==='FADE-SETUP'?'#ffb74d':tp.play==='RIDE'?'#00e676':tp.play==='SKIP'?'#8892a6':'#aab4c8';
+      const touched = tp.touch_state ? ` · 🎯 touched ${tp.touch_state.side}${tp.touch_state.p_fade!=null?` (revert ${Math.round(tp.touch_state.p_fade*100)}%)`:''}` : '';
+      return `<div style="margin-top:.45rem;padding:.4rem .65rem;border-radius:6px;background:rgba(124,196,255,.07);border:1px solid rgba(124,196,255,.25);font-size:.95em" title="Projected path this window — range/exit planning only, not an UP/DOWN pick. Full bands + evidence in Full detail.">
+        📈 <strong style="color:${playCol}">${tp.play==='FADE-SETUP'?'FADE SETUP':(tp.play||'PATH')}</strong>
+        · ▼ ~$${Number(tp.pred_low).toLocaleString()} — ▲ ~$${Number(tp.pred_high).toLocaleString()}
+        · moves ≥$${move50} <strong>${Math.round((tp.p_move_50||0)*100)}%</strong>${tp.p_roundtrip!=null?` · round-trip <strong>${Math.round(tp.p_roundtrip*100)}%</strong>`:''}${touched}
+      </div>`;
+    })();
+    // The model's own lean is CONTEXT (≈coin-flip) — one small labeled line, never a second
+    // verdict box: the old red advice box read as a contradiction next to the leader verdict.
+    const leanLine = (!resolved && (dir!=='NEUTRAL' || adv.action)) ? `
+      <div style="margin-top:.4rem;font-size:.78em;color:var(--text-secondary)">model lean (context, ≈coin-flip): <strong style="color:${dirColor(dir)}">${dir==='NEUTRAL'?'NONE':dir}</strong>${cfl.grade?` (${cfl.grade})`:''}${r.live_lean&&r.live_lean!==dir?` → now ${r.live_lean}`:''}${adv.action?` · <span style="color:${tone}">${adv.action}${adv.text?` — ${adv.text}`:''}</span>`:''}</div>` : '';
+    return `<div style="border:1px solid ${col}44;border-left:4px solid ${col};border-radius:10px;padding:.85rem 1rem;background:rgba(255,255,255,.02);min-width:0">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:.6rem">
+        <strong style="font-size:1.05em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h}m · ${r.window_label||''}${practice}</strong>
+        ${!resolved&&secsLeft!=null?`<span style="font-size:1.2em;font-weight:800;white-space:nowrap;color:${secsLeft<=60?'#ffb74d':'#aab4c8'}">⏱ ${secsLeft}s</span>`:`<span style="font-size:.75em;color:var(--text-secondary);white-space:nowrap">${accStr}</span>`}
+      </div>
+      ${actionHtml}
+      ${leaderHtml}
+      ${sharePricesHtml}
+      ${pathStrip}
+      ${headsGrid}
+      ${resolved?`<div style="margin-top:.5rem;font-size:1.1em;font-weight:800;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
+      <details style="margin-top:.55rem" data-dkey="${P}${h}">
+      <summary style="cursor:pointer;color:var(--text-secondary);font-size:.8em">Full detail — model lean, bands, path evidence</summary>
+      ${!resolved?`<div style="margin:.45rem 0 0;font-size:.72em;color:var(--text-secondary)">win rate: ${accStr}</div>`:''}
+      ${leanLine}
       <div style="margin:.5rem 0"><span style="color:var(--text-secondary)">Price to beat (${cfg.beatLabel}):</span>
         <strong style="font-size:1.15em"> $${Number(r.price_to_beat||0).toLocaleString()}</strong>
         ${r.ref_captured_late_ms?`<span style="color:#ffb74d;font-size:.7em"> (late anchor capture +${(r.ref_captured_late_ms/1000).toFixed(1)}s)</span>`:''}</div>
+      ${!resolved&&r.similar_setups?`<div style="margin:.2rem 0 .3rem;padding:.35rem .6rem;border-radius:6px;background:rgba(186,104,200,.10);border:1px solid rgba(186,104,200,.35);font-size:.84em">🧠 <strong style="color:#ba68c8">Markets like this</strong> (this app's own graded rounds): <strong>${r.similar_setups.n}</strong> similar late setups → held <strong style="color:${r.similar_setups.wilson_lb>=90?'#00e676':r.similar_setups.wilson_lb>=80?'#ffb74d':'#aab4c8'}">${r.similar_setups.held_pct}%</strong> <span style="color:var(--text-secondary)">(Wilson-LB ${r.similar_setups.wilson_lb}%${r.similar_setups.relaxed?` · widened ×${r.similar_setups.relaxed}`:''})</span> <span style="color:var(--text-secondary);font-size:.9em">— live memory, evidence not prediction; profit still needs the ask below fair.</span></div>`:''}
       ${champHtml}
-      ${!resolved&&r.p_hold!=null?`<div style="margin-top:.3rem"><span style="background:${r.p_hold>=0.93?'rgba(0,230,118,.18)':r.p_hold>=0.85?'rgba(255,183,77,.18)':'rgba(255,82,82,.18)'};color:${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border:1px solid ${r.p_hold>=0.93?'#00e676':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border-radius:5px;padding:.12rem .5rem;font-size:.82em;font-weight:700">● CONFIDENCE: ${r.p_hold>=0.93?'HIGH':r.p_hold>=0.85?'MEDIUM':'LOW'}</span> <span style="font-size:.72em;color:var(--text-secondary)">from P(hold) ${pHoldPct(r.p_hold)}% — the real signal, NOT the direction lean</span></div>`:''}
+      ${!resolved&&r.p_hold!=null?`<div style="margin-top:.3rem"><span style="background:${r.p_hold>=0.93?'rgba(100,181,246,.18)':r.p_hold>=0.85?'rgba(255,183,77,.18)':'rgba(255,82,82,.18)'};color:${r.p_hold>=0.93?'#64b5f6':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border:1px solid ${r.p_hold>=0.93?'#64b5f6':r.p_hold>=0.85?'#ffb74d':'#ff5252'};border-radius:5px;padding:.12rem .5rem;font-size:.82em;font-weight:700">● HOLD ODDS: ${r.p_hold>=0.93?'HIGH':r.p_hold>=0.85?'MEDIUM':'LOW'}</span> <span style="font-size:.72em;color:var(--text-secondary)">P(Hold) ${pHoldPct(r.p_hold)}% · entry fair value is capped at 91c · not a direction call</span></div>`:''}
       <div style="margin-top:.2rem"><span style="font-size:1.25em;font-weight:700;color:${dirColor(dir)}">${dirArrow(dir)} ${dir==='NEUTRAL'?'NO LEAN':dir}</span>${cfl.grade?`<span style="background:rgba(${cfl.grade[0]==='A'?'0,230,118':cfl.grade[0]==='B'?'255,183,77':cfl.grade[0]==='C'?'255,112,67':'136,146,166'},.16);border:1px solid ${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};border-radius:4px;padding:.05rem .4rem;margin-left:.4rem;font-size:.82em;font-weight:700;color:${cfl.grade[0]==='A'?'#00e676':cfl.grade[0]==='B'?'#ffb74d':cfl.grade[0]==='C'?'#ff7043':'#8892a6'};vertical-align:middle">Grade ${cfl.grade}</span>`:''} ${srcBadge}${lateChip}<div style="font-size:.7em;color:#888;margin-top:.1rem">↑ direction lean — ≈coin-flip at 5m/15m, informational only (Grade ≠ confidence). NOT a trade signal — read the CONFIDENCE badge + P(hold) + band.</div></div>
       ${!resolved&&r.current_price!=null?`<div style="margin-top:.4rem;font-size:.9em">Now: <strong>$${Number(r.current_price).toLocaleString()}</strong>
         <span style="color:${(r.current_move||0)>=0?'#00e676':'#ff5252'}"> (${(r.current_move||0)>=0?'+':''}$${Math.round(r.current_move||0)} → ${r.current_position||''} side)</span>
         · <strong>${r.seconds_left!=null?Math.max(0,Math.round(r.seconds_left))+'s left':''}</strong>
         ${r.live_lean&&r.live_lean!==dir?`<span style="color:#ffb74d"> · live lean now ${r.live_lean}</span>`:''}</div>`:''}
-      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.3rem;font-size:1.15em;font-weight:700;color:${r.p_hold>=0.93?'#64b5f6':(r.p_hold>=0.85?'#ffb74d':'var(--text-secondary)')}">🎯 P(hold ${r.current_position}) = ${pHoldPct(r.p_hold)}%<div style="font-size:.6em;font-weight:400;color:var(--text-secondary);margin-top:.05rem">calibrated odds the ${r.current_position} side survives to close (A1/T3 persistence) · ⚡≥93% = high-confidence · updates live each second as price/time move — a live gauge, NOT a fixed forecast</div></div>`:''}
+      ${!resolved&&r.p_hold!=null&&r.current_position?`<div style="margin-top:.3rem;font-size:1.15em;font-weight:700;color:${r.p_hold>=0.93?'#64b5f6':(r.p_hold>=0.85?'#ffb74d':'var(--text-secondary)')}">🎯 P(hold ${r.current_position}) = ${pHoldPct(r.p_hold)}%<div style="font-size:.6em;font-weight:400;color:var(--text-secondary);margin-top:.05rem">conditional odds the already-ahead ${r.current_position} side survives to close · first-entry outcomes are less calibrated than repeated snapshots, so the market fair-value gate uses at most 91c</div></div>`:''}
       ${!resolved&&r.big_move_tier?`<div style="margin-top:.25rem;font-size:.85em">⚡ <strong style="color:${r.big_move_tier==='likely'?'#ff7043':r.big_move_tier==='elevated'?'#ffb74d':'var(--text-secondary)'}">Big move: ${r.big_move_tier.toUpperCase()}</strong> <span style="color:var(--text-secondary)">— ${r.big_move_tier==='likely'?'large move likely this round':r.big_move_tier==='quiet'?'quiet round expected':'moderate move expected'} (timing head, AUC 0.73)</span></div>`:''}
       ${!resolved&&r.big_drop_risk?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:${r.big_drop_risk==='HIGH'?'#ff5252':r.big_drop_risk==='ELEVATED'?'#ffb74d':'var(--text-secondary)'}">Big-drop risk: ${r.big_drop_risk}</strong> <span style="color:var(--text-secondary)">- ${r.big_drop_risk==='HIGH'?'hard downside flush plausible; avoid long unless a confirmed DOWN setup appears':r.big_drop_risk==='ELEVATED'?'some downside path risk; size down longs':'downside path looks contained'} (risk head, AUC 0.75; input, not a trade trigger)</span></div>`:''}
       ${!resolved&&(r.big_up_tier||r.big_down_tier)?`<div style="margin-top:.25rem;font-size:.85em"><strong style="color:var(--text-primary)">Directional heads:</strong> <span style="color:#00e676">UP ${(r.big_up_tier||'n/a')}</span> / <span style="color:#ff5252">DOWN ${(r.big_down_tier||'n/a')}</span> <span style="color:var(--text-secondary)">- confirmation only; used to explain conflicts, not to trade alone</span></div>`:''}
@@ -3133,15 +3583,17 @@ function renderPMCore(data, cfg) {
       ${!resolved&&r.trade_plan?`<div style="margin-top:.5rem;padding:.45rem .65rem;border-radius:6px;background:rgba(124,196,255,.08);border:1px solid rgba(124,196,255,.3);font-size:.85em">
         📈 <strong style="color:#7cc4ff">PATH PLAN</strong> <span style="font-size:.8em;color:var(--text-secondary)">(stable — set near window open)</span>
         ${r.trade_plan.play?`<div style="margin-top:.2rem">▶ <strong style="color:${r.trade_plan.play==='FADE-SETUP'?'#ffb74d':r.trade_plan.play==='RIDE'?'#00e676':r.trade_plan.play==='SKIP'?'#8892a6':'#aab4c8'}">${r.trade_plan.play==='FADE-SETUP'?'FADE SETUP':r.trade_plan.play}</strong> <span style="color:var(--text-secondary);font-size:.85em">${r.trade_plan.play==='FADE-SETUP'?'active chop — fade the early extreme':r.trade_plan.play==='RIDE'?'trend — ride it':r.trade_plan.play==='SKIP'?'quiet — no room':'wait for the touch'}</span>${r.trade_plan.p_early!=null?` &nbsp;·&nbsp; early-touch <strong>${Math.round(r.trade_plan.p_early*100)}%</strong>`:''}</div>`:''}
-        <div style="margin-top:.25rem">▲ HIGH ~<strong style="color:#00e676">$${Number(r.trade_plan.pred_high).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.high_band[0]).toLocaleString()}–${Number(r.trade_plan.high_band[1]).toLocaleString()}]</span>
-        &nbsp; ▼ LOW ~<strong style="color:#ff5252">$${Number(r.trade_plan.pred_low).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.low_band[0]).toLocaleString()}–${Number(r.trade_plan.low_band[1]).toLocaleString()}]</span></div>
-        <div style="margin-top:.15rem">range ~$${Number(r.trade_plan.pred_range_usd).toLocaleString()} &nbsp;·&nbsp; P(moves≥$50) <strong>${Math.round(r.trade_plan.p_move_50*100)}%</strong> &nbsp; P(moves≥$100) <strong>${Math.round(r.trade_plan.p_move_100*100)}%</strong></div>
+        <div style="margin-top:.25rem">▲ HIGH <span style="font-size:.8em;color:var(--text-secondary)">if ↑</span> ~<strong style="color:#00e676">$${Number(r.trade_plan.pred_high).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.high_band[0]).toLocaleString()}–${Number(r.trade_plan.high_band[1]).toLocaleString()}]</span>
+        &nbsp; ▼ LOW <span style="font-size:.8em;color:var(--text-secondary)">if ↓</span> ~<strong style="color:#ff5252">$${Number(r.trade_plan.pred_low).toLocaleString()}</strong> <span style="color:var(--text-secondary);font-size:.85em">[${Number(r.trade_plan.low_band[0]).toLocaleString()}–${Number(r.trade_plan.low_band[1]).toLocaleString()}]</span></div>
+        ${r.trade_plan.window_quality?`<div style="margin-top:.15rem;font-size:.85em">🕐 reversal window <strong style="color:${r.trade_plan.window_quality.label==='STRONG'?'#00e676':r.trade_plan.window_quality.label==='WEAK'?'#8892a6':'#aab4c8'}">${r.trade_plan.window_quality.label}</strong> <span style="color:var(--text-secondary)">${r.trade_plan.window_quality.score}× avg · ${r.trade_plan.window_quality.note}</span></div>`:''}
+        <div style="margin-top:.15rem">typical travel ~$${Number(r.trade_plan.pred_range_usd).toLocaleString()} (one-sided) &nbsp;·&nbsp; P(moves≥$${Math.round(r.trade_plan.move_50_threshold_usd ?? 50)}) <strong>${Math.round(r.trade_plan.p_move_50*100)}%</strong> &nbsp; P(moves≥$${Math.round(r.trade_plan.move_100_threshold_usd ?? 100)}) <strong>${Math.round(r.trade_plan.p_move_100*100)}%</strong></div>
         ${r.trade_plan.p_roundtrip!=null?`<div style="margin-top:.15rem">two-sided: ROUND-TRIP <strong>${Math.round(r.trade_plan.p_roundtrip*100)}%</strong> &nbsp;·&nbsp; expected close displacement ~$${Number(r.trade_plan.net_move_usd||0).toLocaleString()} &nbsp;→&nbsp; <strong style="color:${r.trade_plan.style==='two_sided'?'#ffb74d':r.trade_plan.style==='one_sided'?'#64b5f6':r.trade_plan.style==='quiet'?'#8892a6':'#aab4c8'}">${r.trade_plan.style==='two_sided'?'TWO-SIDED — both barriers more likely':r.trade_plan.style==='one_sided'?'ONE-SIDED — move more likely than round trip':r.trade_plan.style==='quiet'?'QUIET — large move less likely':'MIXED PATH'}</strong></div>`:''}
-        <div style="font-size:.8em;color:var(--text-secondary);margin-top:.15rem">Use this for range and exit planning only. It does not select UP/DOWN or prove that a market price is profitable. High/low bands have ~50% empirical coverage.</div></div>`:''}
-      ${!resolved&&adv.action?`<div style="margin-top:.5rem;padding:.4rem .6rem;border:1px solid ${tone};border-radius:6px;font-size:.85em"><strong style="color:${tone}">${adv.action}</strong> — ${adv.text||''}</div>`:''}
-      ${resolved?`<div style="margin-top:.5rem;font-weight:700;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}
+        ${r.trade_plan.touch_state?`<div style="margin-top:.2rem;padding:.25rem .5rem;border-radius:5px;background:rgba(124,196,255,.12)">🎯 TOUCHED <strong>${r.trade_plan.touch_state.side}</strong> (${r.trade_plan.touch_state.phase})${r.trade_plan.touch_state.bias?` → <strong style="color:${r.trade_plan.touch_state.bias==='UP'?'#00e676':'#ff5252'}">${r.trade_plan.touch_state.bias==='UP'?'↑ reversion lean':'↓ reversion lean'}</strong>`:''}${r.trade_plan.touch_state.p_fade!=null?` <span style="font-size:.85em">· paper P(reach anchor) <strong style="color:${r.trade_plan.touch_state.p_fade>=0.55?'#00e676':r.trade_plan.touch_state.p_fade<0.45?'#8892a6':'#ffb74d'}">${Math.round(r.trade_plan.touch_state.p_fade*100)}%</strong></span>`:''}${r.trade_plan.touch_state.leg2?` <span style="font-size:.85em">· ↔ paper 2nd leg <strong>${r.trade_plan.touch_state.leg2.fade}</strong>${r.trade_plan.touch_state.leg2.p_fade!=null?` P(anchor) <strong style="color:${r.trade_plan.touch_state.leg2.p_fade>=0.55?'#00e676':r.trade_plan.touch_state.leg2.p_fade<0.45?'#8892a6':'#ffb74d'}">${Math.round(r.trade_plan.touch_state.leg2.p_fade*100)}%</strong>`:''}</span>`:''} <span style="color:var(--text-secondary);font-size:.85em">${r.trade_plan.touch_state.call}</span></div>`:''}
+        <div style="font-size:.8em;color:var(--text-secondary);margin-top:.15rem">Use this for range and exit planning only. It does not select UP/DOWN or prove that a market price is profitable. High/low bands have ~50% empirical coverage. Touch read is a conditional reversal LEAN, not a guarantee.</div></div>`:''}
+      </details>
     </div>`;
   }).join('');
+  _openKeys.forEach(k => { const d = grid.querySelector(`details[data-dkey="${k}"]`); if (d) d.open = true; });
 
   // win-rate strips: per-horizon model/all split + win rate by setup grade & source
   const rec = ptb.recent || [];
@@ -3803,7 +4255,7 @@ async function fetchActionLog() {
     // Abort a hung request so a brief DB lock-race can't stall the poll forever.
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch('/api/action-log?limit=120', { signal: ctrl.signal });
+    const res = await fetch(`${HTTP_API_BASE}/api/action-log?limit=120`, { signal: ctrl.signal });
     clearTimeout(t);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();

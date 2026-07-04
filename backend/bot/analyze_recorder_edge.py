@@ -6,7 +6,7 @@ holds the write lock) and answers the one question the whole project comes down 
 
     Does fair_value beat the Polymarket ask after costs, on real recorded rounds?
         fair_value = min(analytic_barrier, keeper_P(Hold))      # conservative, per master spec
-        net_edge   = fair_value − current_side_ask − buffer
+        net_edge   = fair_value − current_side_ask − taker_fee − buffer
 
 It simulates ONE taker entry per round (the first snapshot that passes the gate), settles it against
 the recorded round outcome, and aggregates AT THE ROUND LEVEL (no snapshot over-counting). Buffers
@@ -43,6 +43,9 @@ EXP_SNAP = os.path.join(DATA, "pm_export_snapshots.parquet")
 EXP_SETT = os.path.join(DATA, "pm_export_settlements.parquet")
 OUT_CSV = os.path.join(DATA, "research", "recorder_edge_report.csv")
 BUFFERS = (0.01, 0.02, 0.03, 0.05)
+CRYPTO_TAKER_FEE_RATE = 0.07
+ENTRY_FAIR_CAP = 0.91
+MAX_ANCHOR_SKEW_SECONDS = 5.0
 
 
 def _phi(x):
@@ -55,6 +58,21 @@ def _wilson_lb(k, n, z=1.96):
     p = k / n
     d = 1 + z * z / n
     return (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / d
+
+
+def _taker_fee(price):
+    p = np.clip(np.asarray(price, dtype=float), 0.0, 1.0)
+    return CRYPTO_TAKER_FEE_RATE * p * (1.0 - p)
+
+
+def _filter_trustworthy_rounds(snap):
+    """Require the first recorder row to be within five seconds of the true round anchor."""
+    if snap.empty:
+        return snap, 0
+    first = snap.sort_values("ts").groupby("slug", as_index=False).first()
+    skew = (first["ts"].astype(float) - first["anchor_ts"].astype(float)).abs()
+    bad = set(first.loc[skew > MAX_ANCHOR_SKEW_SECONDS, "slug"].astype(str))
+    return snap[~snap["slug"].astype(str).isin(bad)].copy(), len(bad)
 
 
 def _load():
@@ -83,12 +101,16 @@ def _derive(snap):
     sig_t = s["vol_60s_pct"] * np.sqrt(np.maximum(s["seconds_left"], 1) / 60.0)
     dz = np.abs(s["distance_pct"]) / np.maximum(sig_t, 1e-9)
     s["barrier"] = _phi(np.clip(dz, -8, 8))
-    s["fair"] = np.minimum(s["barrier"], s["p_hold_cur"].fillna(s["barrier"]))
+    s["fair"] = np.minimum(np.minimum(s["barrier"], s["p_hold_cur"].fillna(s["barrier"])),
+                           ENTRY_FAIR_CAP)
     up = s["current_side"] == 1
     s["cur_ask"] = np.where(up, s["up_ask"], s["down_ask"])
     s["cur_spread"] = np.where(up, s["up_spread"], s["down_spread"])
+    s["cur_top_ask_size"] = np.where(up, s["up_top_ask_size"], s["down_top_ask_size"])
     s["cur_depth2"] = np.where(up, s["up_d2"], s["down_d2"])
-    s["raw_edge"] = s["fair"] - s["cur_ask"]
+    s["current_move_usd"] = (s["btc_price"] - s["anchor_price"]).abs()
+    s["taker_fee"] = _taker_fee(s["cur_ask"])
+    s["raw_edge"] = s["fair"] - s["cur_ask"] - s["taker_fee"]
     return s
 
 
@@ -115,6 +137,7 @@ def _entries(rounds_snap, sett, gate):
             else:
                 break
         out.append({"slug": slug, "horizon": int(e["horizon"]), "side": side, "ask": float(e["cur_ask"]),
+                    "fee": float(e["taker_fee"]),
                     "fair": float(e["fair"]), "win": won, "edge_dur": dur})
     return pd.DataFrame(out)
 
@@ -124,9 +147,12 @@ def main():
     ap.add_argument("--min-rounds", type=int, default=30)
     a = ap.parse_args()
     snap, sett, src = _load()
+    snap, removed = _filter_trustworthy_rounds(snap)
     nrounds = snap["slug"].nunique() if len(snap) else 0
-    nsettled = len(sett) if len(sett) else 0
-    print(f"[edge] source={src}  snapshots={len(snap):,}  rounds={nrounds}  settled={nsettled}")
+    settled_slugs = set(sett["slug"].astype(str)) if len(sett) else set()
+    nsettled = len(set(snap["slug"].astype(str)) & settled_slugs) if len(snap) else 0
+    print(f"[edge] source={src}  trustworthy_snapshots={len(snap):,}  rounds={nrounds}  "
+          f"joined_settled={nsettled}  off-open_removed={removed}")
     if nsettled < a.min_rounds:
         print(f"[edge] INSUFFICIENT DATA — need ≥{a.min_rounds} resolved rounds, have {nsettled}.")
         print("[edge] Keep the recorder running through live windows (start_recorder.bat); rerun later.")
@@ -135,11 +161,15 @@ def main():
     s = _derive(snap)
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     rows = []
-    print("\n=== MAKE-OR-BREAK TABLE (one taker entry/round; gate = P(Hold)≥0.93, seconds_left≤180, net_edge>0) ===")
+    print("\n=== MAKE-OR-BREAK TABLE (one first entry/round; same structural/liquidity gate as champion) ===")
     print(f"{'Hz':>4}{'buf':>5}{'signals':>9}{'avg_fair':>10}{'avg_ask':>9}{'win%':>7}{'wilsonLB':>10}{'ROI%':>8}{'net/ct':>9}{'med_dur_s':>11}")
     for hz in sorted(s["horizon"].unique()):
         for buf in BUFFERS:
-            gate = (lambda b: (lambda g: (g["p_hold_cur"] >= 0.93) & (g["seconds_left"] <= 180)
+            gate = (lambda b: (lambda g: (g["p_hold_cur"] >= 0.93) & (g["seconds_left"] > 15)
+                               & (g["seconds_left"] <= 120)
+                               & (g["current_move_usd"] >= 10.0)
+                               & (g["cur_spread"] <= 0.03)
+                               & (g["cur_top_ask_size"] > 0)
                                & (g["raw_edge"] >= b) & g["cur_ask"].notna()))(buf)
             e = _entries(s[s["horizon"] == hz], sett, gate)
             if e.empty:
@@ -147,8 +177,10 @@ def main():
                 rows.append([hz, f"{int(buf*100)}c", 0, "", "", "", "", "", "", ""]); continue
             n = len(e); k = int(e["win"].sum())
             winr = k / n; lb = _wilson_lb(k, n)
-            net = float((e["win"] - e["ask"]).mean())              # $ per 1-contract stake
-            roi = net / float(e["ask"].mean()) * 100.0
+            cost = e["ask"] + e["fee"]
+            pnl = e["win"] - cost
+            net = float(pnl.mean())
+            roi = float((pnl / cost).mean()) * 100.0
             mdur = float(e["edge_dur"].median())
             print(f"{hz:>4}{int(buf*100):>4}c{n:>9}{e['fair'].mean():>10.3f}{e['ask'].mean():>9.3f}"
                   f"{winr*100:>7.1f}{lb*100:>10.1f}{roi:>8.1f}{net:>9.3f}{mdur:>11.1f}")
@@ -157,12 +189,15 @@ def main():
 
     # filter-stack scorecard at 2c
     print("\n=== FILTER-STACK SCORECARD (buffer 2c — which filter actually helps) ===")
-    base = lambda g: (g["seconds_left"] <= 180) & g["cur_ask"].notna()
+    base = lambda g: ((g["seconds_left"] > 15) & (g["seconds_left"] <= 120)
+                      & (g["current_move_usd"] >= 10.0) & g["cur_ask"].notna())
     stacks = [
         ("P(Hold)≥0.93", lambda g: base(g) & (g["p_hold_cur"] >= 0.93)),
         ("+ net_edge>0", lambda g: base(g) & (g["p_hold_cur"] >= 0.93) & (g["raw_edge"] >= 0.02)),
         ("+ not near line", lambda g: base(g) & (g["p_hold_cur"] >= 0.93) & (g["raw_edge"] >= 0.02) & (g["distance_pct"].abs() >= 0.02)),
-        ("+ spread≤3c", lambda g: base(g) & (g["p_hold_cur"] >= 0.93) & (g["raw_edge"] >= 0.02) & (g["distance_pct"].abs() >= 0.02) & (g["cur_spread"] <= 0.03)),
+        ("+ spread/depth", lambda g: base(g) & (g["p_hold_cur"] >= 0.93) & (g["raw_edge"] >= 0.02)
+         & (g["distance_pct"].abs() >= 0.02) & (g["cur_spread"] <= 0.03)
+         & (g["cur_top_ask_size"] > 0)),
     ]
     print(f"{'filter':22}{'signals':>9}{'win%':>7}{'wilsonLB':>10}{'ROI%':>8}{'med_dur_s':>11}")
     for name, gate in stacks:
@@ -170,7 +205,9 @@ def main():
         if e.empty:
             print(f"{name:22}{0:>9}{'—':>7}{'—':>10}{'—':>8}{'—':>11}"); continue
         n = len(e); k = int(e["win"].sum())
-        net = float((e["win"] - e["ask"]).mean()); roi = net / float(e["ask"].mean()) * 100.0
+        cost = e["ask"] + e["fee"]
+        pnl = e["win"] - cost
+        net = float(pnl.mean()); roi = float((pnl / cost).mean()) * 100.0
         print(f"{name:22}{n:>9}{k/n*100:>7.1f}{_wilson_lb(k,n)*100:>10.1f}{roi:>8.1f}{e['edge_dur'].median():>11.1f}")
 
     # market calibration — is the ask already efficient?

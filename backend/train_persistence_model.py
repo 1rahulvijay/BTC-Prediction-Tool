@@ -35,7 +35,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 IN_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
-HEAD_VERSION = "2026-06-21-keeper-dual-perhorizon-iso"   # train_heads.py retrains when this changes
+HEAD_VERSION = "2026-07-03-keeper-dual-perhorizon-iso-prodrefit"   # train_heads.py retrains when this changes
 
 FEATURES = ["abs_distance_pct", "seconds_left", "vol_60s_pct", "horizon", "dist_vol_ratio"]
 # Volatility KEEPERS — validated to LIFT P(hold) (+0.0135 AUC overall, +0.027 on the late
@@ -104,7 +104,8 @@ def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
         return {}
     wins = np.sort(kdf["window_start_ms"].unique())
     n = len(wins)
-    tr_cut, ca_cut = wins[int(n * 0.70)], wins[int(n * 0.85)]
+    _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)  # 98/2: fit+cal=sf, test=1-sf
+    tr_cut, ca_cut = wins[int(n * (2 * _sf - 1))], wins[int(n * _sf)]
     tr = kdf[kdf["window_start_ms"] < tr_cut]
     ca = kdf[(kdf["window_start_ms"] >= tr_cut) & (kdf["window_start_ms"] < ca_cut)]
     te = kdf[kdf["window_start_ms"] >= ca_cut]
@@ -143,7 +144,8 @@ def main():
     # TEMPORAL, leak-free split BY WINDOW (snapshots in a window share the outcome).
     wins = np.sort(df["window_start_ms"].unique())
     n = len(wins)
-    tr_cut, ca_cut = wins[int(n * 0.70)], wins[int(n * 0.85)]
+    _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)  # 98/2: fit+cal=sf, test=1-sf
+    tr_cut, ca_cut = wins[int(n * (2 * _sf - 1))], wins[int(n * _sf)]
     tr = df[df["window_start_ms"] < tr_cut]
     ca = df[(df["window_start_ms"] >= tr_cut) & (df["window_start_ms"] < ca_cut)]
     te = df[df["window_start_ms"] >= ca_cut]
@@ -215,14 +217,58 @@ def main():
     # Keeper model (additive; live serve keeps using the base model until keepers are plumbed).
     keeper_extra = _train_keeper_model(df, clf, iso)
 
+    # ── VALIDATED PRODUCTION REFIT (rotation, 2026-07-03) ────────────────────────────────────
+    # The candidate above (fit = first 96% of windows, cal 96-98%, TEST 98-100%) supplies the honest
+    # report printed/persisted above. If it clears the predeclared gate, the SERVED model rotates
+    # forward: clf refit on the first 98% of windows (so live P(hold) has also learned the old test
+    # span) and the isotonics recalibrated on the FRESHEST 2% -- which the refit clf never saw
+    # (a final calibration tail is structurally required for honest isotonic; it is not waste).
+    # Gate miss -> serve the measured candidate unchanged. Disable with BTC_HEAD_REFIT_ALL=0.
+    refit_on_all = bool(auc >= 0.70 and os.environ.get("BTC_HEAD_REFIT_ALL", "1") != "0")
+    if refit_on_all:
+        fit_p = df[df["window_start_ms"] < ca_cut]
+        cal_p = df[df["window_start_ms"] >= ca_cut]
+        clf = HistGradientBoostingClassifier(
+            max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
+            l2_regularization=0.1, random_state=42, validation_fraction=0.1)
+        clf.fit(fit_p[FEATURES].values, fit_p["label"].values)
+        iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+        iso.fit(clf.predict_proba(cal_p[FEATURES].values)[:, 1], cal_p["label"].values)
+        iso_by_horizon = _fit_iso_by_horizon(clf, cal_p, FEATURES)
+        print(f"\n[refit] production rotation: fit={len(fit_p):,} rows (incl. old cal span), "
+              f"iso on freshest {len(cal_p):,} rows; candidate TEST metrics above are the record.")
+        if keeper_extra:
+            kdf = _join_keepers(df)
+            if kdf is not None and len(kdf) >= 50_000:
+                KF = keeper_extra["features_keeper"]
+                kfit = kdf[kdf["window_start_ms"] < ca_cut]
+                kcal = kdf[kdf["window_start_ms"] >= ca_cut]
+                kclf = HistGradientBoostingClassifier(
+                    max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
+                    l2_regularization=0.1, random_state=42, validation_fraction=0.1)
+                kclf.fit(kfit[KF].values, kfit["label"].values)
+                kiso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+                kiso.fit(kclf.predict_proba(kcal[KF].values)[:, 1], kcal["label"].values)
+                keeper_extra.update({"clf_keeper": kclf, "iso_keeper": kiso,
+                                     "iso_keeper_by_horizon": _fit_iso_by_horizon(kclf, kcal, KF)})
+                print("[refit] keeper twin rotated on the same fit/cal windows.")
+
     bundle = {"clf": clf, "iso": iso, "iso_by_horizon": iso_by_horizon, "features": FEATURES,
               "trained_rows": int(len(tr)), "test_auc": float(auc), "version": HEAD_VERSION,
+              "refit_on_all": refit_on_all,
               "note": "P(hold|abs_distance_pct,seconds_left,vol_60s_pct,horizon,dist_vol_ratio); "
                       "per-horizon isotonic (global iso fallback for thin horizons)"}
     bundle.update(keeper_extra)
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    joblib.dump(bundle, OUT_PATH)
-    print(f"\nSaved -> {OUT_PATH}  (keeper model: {'yes' if keeper_extra else 'no'})")
+    _tmp = f"{OUT_PATH}.tmp.{os.getpid()}"
+    try:
+        joblib.dump(bundle, _tmp)
+        os.replace(_tmp, OUT_PATH)
+    finally:
+        if os.path.exists(_tmp):
+            os.remove(_tmp)
+    print(f"\nSaved -> {OUT_PATH}  (keeper model: {'yes' if keeper_extra else 'no'}; "
+          f"production refit: {'yes' if refit_on_all else 'NO -- candidate served'})")
 
 
 if __name__ == "__main__":

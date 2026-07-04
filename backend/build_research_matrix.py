@@ -14,6 +14,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 )
 DAYS_SIDECAR = os.path.join(DATA_DIR, "research_matrix_1m.days.txt")
 MANIFEST_PATH = os.path.join(DATA_DIR, "research_matrix_1m.manifest.json")
+MIN_SOURCE_COVERAGE = 0.98
 
 
 def _path_mtime(path: str) -> float:
@@ -59,6 +60,12 @@ def _coverage_ok(summary: dict | None, days: int) -> bool:
     min_span = max(1.0, float(days) * 0.90)
     min_rows = int(float(days) * 1440.0 * 0.80)
     return summary.get("span_days", 0.0) >= min_span and summary.get("rows", 0) >= min_rows
+
+
+def _source_coverage_ok(manifest: dict) -> bool:
+    coverage = manifest.get("source_coverage") or {}
+    return all(float(coverage.get(name, 0.0)) >= MIN_SOURCE_COVERAGE
+               for name in ("trade_features", "crossvenue"))
 
 
 def _load_manifest() -> dict:
@@ -161,6 +168,7 @@ def main(days=None, force=False):
         if (
             (manifest_days == days or legacy_days == days)
             and _coverage_ok(summary, days)
+            and _source_coverage_ok(manifest)
             and sources_older
         ):
             print(
@@ -202,6 +210,8 @@ def main(days=None, force=False):
         trade_df = pd.read_parquet(trade_path)
         if 'candle_ts' in trade_df.columns:
             trade_df.rename(columns={"candle_ts": "ts_ms"}, inplace=True)
+        trade_df = trade_df.sort_values("ts_ms").drop_duplicates("ts_ms", keep="last")
+        trade_df["_trade_source_present"] = 1
     else:
         print(f"Missing {trade_path}")
         trade_df = pd.DataFrame(columns=["ts_ms"])
@@ -210,6 +220,8 @@ def main(days=None, force=False):
     cross_path = os.path.join(DATA_DIR, "crossvenue_flow.parquet")
     if os.path.exists(cross_path):
         cross_df = pd.read_parquet(cross_path)
+        cross_df = cross_df.sort_values("ts_ms").drop_duplicates("ts_ms", keep="last")
+        cross_df["_cross_source_present"] = 1
     else:
         print(f"Missing {cross_path}")
         cross_df = pd.DataFrame(columns=["ts_ms"])
@@ -221,6 +233,21 @@ def main(days=None, force=False):
     
     merged = pd.merge(base_df, trade_df, on="ts_ms", how="left")
     merged = pd.merge(merged, cross_df, on="ts_ms", how="left")
+
+    source_coverage = {
+        "trade_features": float(merged.get("_trade_source_present", pd.Series(0, index=merged.index)).notna().mean()),
+        "crossvenue": float(merged.get("_cross_source_present", pd.Series(0, index=merged.index)).notna().mean()),
+    }
+    print("Joined source coverage: " + ", ".join(
+        f"{name}={value * 100:.2f}%" for name, value in source_coverage.items()))
+    if any(value < MIN_SOURCE_COVERAGE for value in source_coverage.values()):
+        print(
+            f"\nERROR: source coverage is below the required {MIN_SOURCE_COVERAGE * 100:.0f}%. "
+            "The previous research matrix is preserved; fix/retry the backfill."
+        )
+        raise SystemExit(2)
+    merged.drop(columns=["_trade_source_present", "_cross_source_present"],
+                errors="ignore", inplace=True)
     
     # Sort
     merged.sort_values("ts_ms", inplace=True)
@@ -229,29 +256,35 @@ def main(days=None, force=False):
     merged = make_labels(merged)
     
     # Cleanup and Save
-    merged.to_parquet(out_path, index=False)
-    summary = _matrix_summary(out_path)
+    tmp_path = f"{out_path}.tmp.{os.getpid()}"
+    try:
+        merged.to_parquet(tmp_path, index=False)
+        summary = _matrix_summary(tmp_path)
+        if not _coverage_ok(summary, days):
+            print("\nERROR: Research matrix coverage is too low for the requested window.")
+            if summary:
+                print(
+                    f"Requested: {days}d | Actual rows: {summary['rows']:,} | "
+                    f"Actual span: {summary['span_days']:.1f}d"
+                )
+            print("The previous matrix is preserved and the days sidecar is unchanged.")
+            raise SystemExit(2)
+        os.replace(tmp_path, out_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     sources = _source_mtimes()
     ok = _coverage_ok(summary, days)
     manifest = {
         "requested_days": int(days),
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "coverage_ok": bool(ok),
+        "source_coverage": source_coverage,
         "summary": summary or {},
         "source_mtimes": sources,
     }
     with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
-
-    if not ok:
-        print("\nERROR: Research matrix coverage is too low for the requested window.")
-        if summary:
-            print(
-                f"Requested: {days}d | Actual rows: {summary['rows']:,} | "
-                f"Actual span: {summary['span_days']:.1f}d"
-            )
-        print("Not writing the days sidecar. Refusing to mark this matrix as complete.")
-        raise SystemExit(2)
 
     try:
         with open(DAYS_SIDECAR, "w") as f:

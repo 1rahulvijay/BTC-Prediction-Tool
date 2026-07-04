@@ -165,6 +165,39 @@ def derive_buckets(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[float
     return out
 
 
+def derive_buckets_bps(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[float, float, float]]:
+    """PRICE-LEVEL-PROOF buckets: quantiles of the RELATIVE move |close[t+h]-close[t]| / close[t]
+    in BASIS POINTS. Rationale (2026-07-03 audit): a single DOLLAR quantile over a long window mixes
+    price regimes -- $-label base rates already swing ~2x per quarter at 400d, and a 1200-1500d
+    window spans BTC $15.5k..$115k (7.5x), where a fixed $100 means anything from noise to a crash.
+    Labeling each row against a bps threshold keeps 'big move' equally notable at every price level.
+    Returns {h: (meaningful, large, extreme)} in bps; {} if the series is too short."""
+    close = np.asarray(close, dtype=float)
+    pcts = pcts or move_bucket_pcts()
+    out = {}
+    for h in horizons:
+        h = int(h)
+        if h >= len(close):
+            continue
+        base = close[:-h]
+        d = np.abs(close[h:] - base) / np.where(base > 0, base, np.nan) * 1e4
+        d = d[np.isfinite(d)]
+        if len(d) < 100:
+            continue
+        a, b, c = sorted(float(np.quantile(d, p)) for p in pcts)
+        b = max(b, a + 0.1)
+        c = max(c, b + 0.1)
+        out[h] = (round(a, 2), round(b, 2), round(c, 2))
+    return out
+
+
+def rel_bps(values_usd: np.ndarray, close: np.ndarray) -> np.ndarray:
+    """Convert a per-row dollar quantity into bps of that ROW's own price (label-side twin of
+    derive_buckets_bps; keeps every label price-level-relative)."""
+    close = np.asarray(close, dtype=float)
+    return np.asarray(values_usd, dtype=float) / np.where(close > 0, close, np.nan) * 1e4
+
+
 def buckets_for_training(close=None) -> dict[int, tuple[float, float, float]]:
     """Buckets to train on: an explicit env override (BTC_MOVE_BUCKETS_USD_BY_HORIZON) wins; else
     AUTO-DERIVE from `close` (the self-calibrating default); else the static defaults. Serving reads
@@ -298,6 +331,36 @@ def fit_binary_head(X, y, split_frac=None):
         test_auc = float(roc_auc_score(y_te, score_te))
         test_top5 = top_n_precision(y_te, score_te, 0.05)
 
+    # ── VALIDATED PRODUCTION REFIT ON ALL ROWS (2026-07-03) ─────────────────────────────────
+    # The 98% candidate above supplies the honest OOS report (test_auc/test_top5, preserved
+    # verbatim below). If it clears the predeclared sanity gate, the SERVED model is refit on
+    # ALL rows -- so live inference has also learned the most recent tail -- with a fresh
+    # purged TimeSeriesSplit-OOF isotonic over the full span and tiers from the full-span score
+    # distribution. A failed gate serves the measured candidate unchanged (fail-safe). Disable
+    # with BTC_HEAD_REFIT_ALL=0. Post-refit honesty comes from the permanent live shadow layer
+    # (scorecards / calibration monitor), since a full-data fit has no untouched test by design.
+    REFIT_GATE_AUC = 0.55
+    refit_on_all = bool(holdout and test_auc is not None and test_auc >= REFIT_GATE_AUC
+                        and os.environ.get("BTC_HEAD_REFIT_ALL", "1") != "0")
+    if refit_on_all:
+        oof_f = np.zeros(len(y))
+        seen_f = np.zeros(len(y), dtype=bool)
+        for tr, te in TimeSeriesSplit(n_splits=5).split(X):
+            clf = ensemble()
+            clf.fit(X[tr], y[tr])
+            oof_f[te] = clf.predict_proba(X[te])[:, 1]
+            seen_f[te] = True
+        iso = IsotonicRegression(out_of_bounds="clip")
+        iso.fit(oof_f[seen_f], y[seen_f])
+        pipe = ensemble()
+        pipe.fit(X, y)
+        score = iso.predict(pipe.predict_proba(X)[:, 1])
+        tiers = {
+            "t1": float(np.quantile(score, 0.60)),
+            "t2": float(np.quantile(score, 0.80)),
+            "t3": float(np.quantile(score, 0.90)),
+        }
+
     return {
         "pipe": pipe,
         "iso": iso,
@@ -309,9 +372,10 @@ def fit_binary_head(X, y, split_frac=None):
         "test_top5_prec": test_top5,
         "base_rate": float(y.mean()),
         "tiers": tiers,
-        "n_train": int(len(y_tr)),
+        "n_train": int(len(y) if refit_on_all else len(y_tr)),
         "n_test": int(len(y_te)) if holdout else 0,
         "split_frac": float(split_frac),
+        "refit_on_all": refit_on_all,
         "train_days_tag": TRAIN_DAYS_TAG,
     }
 

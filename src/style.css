@@ -1046,6 +1046,13 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
    RESPONSIVE
    ============================================================ */
 @media (max-width: 1200px) {
+  .top-bar { flex-wrap: wrap; }
+  .top-bar-right {
+    flex: 1 1 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
   .dashboard-grid { grid-template-columns: 1fr 280px; }
   .right-column { display: none; }
   .decision-cockpit-head,
@@ -1138,6 +1145,53 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* Round-state decision support: information hierarchy before detailed model cards. */
+.round-state-board { margin: 0 0 1rem; }
+.round-state-title { display: flex; align-items: end; justify-content: space-between; gap: 1rem; padding: 0 0 0.65rem; border-bottom: 1px solid var(--border-primary); }
+.round-state-title > div { display: flex; flex-direction: column; gap: 2px; }
+.round-state-title span { color: var(--cyan); font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0; }
+.round-state-title strong { color: var(--text-primary); font-size: 0.95rem; }
+.round-state-title small { color: var(--text-muted); font-size: 0.7rem; max-width: 520px; text-align: right; line-height: 1.35; }
+.round-state-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+.round-state-card { min-width: 0; border: 1px solid var(--border-primary); border-left: 4px solid var(--gold); border-radius: 8px; background: rgba(255,255,255,0.018); padding: 0.85rem; }
+.round-state-card.is-paper { border-left-color: var(--cyan); }
+.round-state-card.is-avoid { border-left-color: var(--red); }
+.round-state-card-head { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
+.round-state-card-head > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.round-state-card-head span { color: var(--text-tertiary); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0; }
+.round-state-leader { font-size: 1.1rem; overflow-wrap: anywhere; }
+.round-state-leader.up { color: var(--green); }
+.round-state-leader.down { color: var(--red); }
+.round-state-leader.neutral { color: var(--text-secondary); }
+.round-state-action { align-items: end; flex-shrink: 0; }
+.round-state-action strong { color: var(--gold); font-family: var(--font-mono); font-size: 1.15rem; }
+.round-state-card.is-paper .round-state-action strong { color: var(--cyan); }
+.round-state-card.is-avoid .round-state-action strong { color: var(--red); }
+.round-state-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 0.75rem; border-top: 1px solid var(--border-primary); border-left: 1px solid var(--border-primary); }
+.round-state-metrics > div { min-width: 0; min-height: 108px; display: flex; flex-direction: column; gap: 4px; padding: 0.65rem; border-right: 1px solid var(--border-primary); border-bottom: 1px solid var(--border-primary); }
+.round-state-metrics span { color: var(--text-tertiary); font-size: 0.67rem; text-transform: uppercase; letter-spacing: 0; }
+.round-state-metrics strong { color: var(--text-primary); font-size: 0.92rem; overflow-wrap: anywhere; }
+.round-state-metrics small { color: var(--text-muted); font-size: 0.67rem; line-height: 1.35; }
+.round-state-metrics .risk-high { color: var(--red); }
+.round-state-metrics .risk-medium { color: var(--gold); }
+.round-state-metrics .risk-low { color: var(--green); }
+.round-touch-list { display: flex; flex-direction: column; gap: 2px; }
+.round-touch-list span { display: flex; justify-content: space-between; color: var(--text-primary); font-family: var(--font-mono); font-size: 0.75rem; }
+.round-touch-list b { color: var(--text-secondary); }
+.round-state-reason { margin-top: 0.65rem; color: var(--text-secondary); font-size: 0.77rem; line-height: 1.4; }
+.round-state-reason strong { color: var(--text-primary); }
+.round-state-foot { margin-top: 0.45rem; color: var(--text-muted); font-size: 0.66rem; }
+.round-state-empty { color: var(--text-muted); padding: 0.75rem 0; }
+
+@media (max-width: 1100px) {
+  .round-state-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .round-state-title { align-items: start; flex-direction: column; }
+  .round-state-title small { text-align: left; }
+  .round-state-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Price-to-beat cards */

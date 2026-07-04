@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > This file is a historical chronological log of passes and enhancements.
-> For the canonical source of truth and current system capabilities, read the **[System Architecture](system_architecture.md)**.
+> For the canonical source of truth and current system capabilities, read the **[System Architecture](../reference/system_architecture.md)**.
 
 ## Chronological Pass Log
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 import time
 from collections import deque
 
@@ -47,6 +48,9 @@ PYTH_BTC_ID = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "btc-polymarket-shadow-recorder/2.0"})
 ANCHOR_CAPTURE_MAX_LATE_SEC = 5.0
+CRYPTO_TAKER_FEE_RATE = 0.07
+ENTRY_FAIR_CAP = 0.91
+LIVE_QUOTES_PATH = os.path.join(DATA_DIR, "pm_live_quotes.json")
 
 
 # --------------------------------------------------------------------------- sources
@@ -159,6 +163,25 @@ def _winner_from_tokens(tokens):
     if outcome == "down":
         return 0
     return None
+
+
+def _taker_fee_per_share(price, fee_rate=CRYPTO_TAKER_FEE_RATE):
+    p = max(0.0, min(1.0, float(price)))
+    return max(0.0, float(fee_rate)) * p * (1.0 - p)
+
+
+def _write_live_quotes(now, markets):
+    """Publish current executable quotes without sharing the recorder's DuckDB writer lock."""
+    payload = {"version": 1, "generated_at": float(now), "markets": markets}
+    os.makedirs(os.path.dirname(LIVE_QUOTES_PATH), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="pm_live_quotes_", suffix=".json", dir=os.path.dirname(LIVE_QUOTES_PATH))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, separators=(",", ":"))
+        os.replace(tmp, LIVE_QUOTES_PATH)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def get_winner(slug, condition_id=None):
@@ -326,7 +349,8 @@ def vol60(buf, reference_price=None):
 
 # --------------------------------------------------------------------------- run
 def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
-    con = init_db()
+    # A smoke run must never write synthetic/future-round snapshots into the production evidence DB.
+    con = init_db(":memory:" if smoke else None)
     model = load_phold()
     mver = (model or {}).get("version", "unknown") if isinstance(model, dict) else "unknown"
     buf = deque(maxlen=200)
@@ -352,9 +376,11 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                 print(f"[settlement] attempted={settlement['attempted']} resolved={settlement['resolved']} "
                       f"remaining={settlement['remaining']}")
             last_disc = now
-            _export(con)
+            if not smoke:
+                _export(con)
 
         n = 0
+        live_quotes = {}
         smoke_v = 0.02
         for slug, r in list(rounds.items()):
             elapsed = now - r["anchor_ts"]
@@ -378,8 +404,12 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                 tier, reason = decide(pc, dist, sl)
                 ub, dbk = get_book(r["up"]), get_book(r["down"])
                 if ub and dbk:
-                    eu = [(pu - ub["ask"] - c if pu is not None else None) for c in (.01, .02, .03)]
-                    ed = [(pd - dbk["ask"] - c if pd is not None else None) for c in (.01, .02, .03)]
+                    fair_up = min(pu, ENTRY_FAIR_CAP) if pu is not None else None
+                    fair_down = min(pd, ENTRY_FAIR_CAP) if pd is not None else None
+                    fee_up = _taker_fee_per_share(ub["ask"])
+                    fee_down = _taker_fee_per_share(dbk["ask"])
+                    eu = [(fair_up - ub["ask"] - fee_up - c if fair_up is not None else None) for c in (.01, .02, .03)]
+                    ed = [(fair_down - dbk["ask"] - fee_down - c if fair_down is not None else None) for c in (.01, .02, .03)]
                     lab = ("BUY_UP_SHADOW" if (eu[2] or -1) > 0 else
                            "BUY_DOWN_SHADOW" if (ed[2] or -1) > 0 else "NO_EDGE")
                     row = [now, slug, r["condition_id"], r["horizon"], r["anchor_ts"], sl, max(elapsed, 0), ap,
@@ -389,6 +419,15 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                            eu[0], eu[1], eu[2], ed[0], ed[1], ed[2], lab, price_source]
                     con.execute("INSERT INTO pm_round_snapshots (" + ",".join(COLS) + ") VALUES (" +
                                 ",".join("?" * len(COLS)) + ")", row)
+                    live_quotes[str(int(r["horizon"]))] = {
+                        "ts": float(now), "slug": slug, "condition_id": r["condition_id"],
+                        "horizon": int(r["horizon"]), "anchor_ts": int(r["anchor_ts"]),
+                        "seconds_left": float(sl), "up_bid": ub["bid"], "up_ask": ub["ask"],
+                        "up_spread": ub["spread"], "up_top_ask_size": ub["top_ask_size"],
+                        "down_bid": dbk["bid"], "down_ask": dbk["ask"],
+                        "down_spread": dbk["spread"], "down_top_ask_size": dbk["top_ask_size"],
+                        "fees_enabled": True, "fee_rate": CRYPTO_TAKER_FEE_RATE,
+                    }
                     n += 1
             if elapsed > r["dur"] + 3600:
                 rounds.pop(slug, None)
@@ -400,6 +439,10 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                   f"price_source={price_source} vol60={smoke_v:.4f}")
             print(f"[recorder] pm_round_snapshots rows={g[0]} avg_p_hold={g[1]} avg_up_ask={g[2]} shadow_signals={g[3]}")
             con.close(); return
+        try:
+            _write_live_quotes(now, live_quotes)
+        except Exception as exc:
+            print(f"[recorder] live quote export skipped: {exc}")
         time.sleep(poll)
 
 

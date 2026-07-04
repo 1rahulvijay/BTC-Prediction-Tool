@@ -11,6 +11,8 @@ import json
 import time
 import logging
 import os
+import uuid
+import hashlib
 from types import SimpleNamespace
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,9 +44,11 @@ from features import (
 )
 from model_verifier import PerModelVerifier
 from price_to_beat import PriceToBeatTracker, persistence_model_status
+import round_state_panel
 import model_metrics_logger        # separate DuckDB; logs every model's live output (crash-safe)
 from exchange_verifier import PerVenueVerifier
-from model import MultiModelEnsemble, CascadeMonitor, MODEL_ARCH_VERSION
+from model import MultiModelEnsemble, CascadeMonitor, MODEL_ARCH_VERSION, MODEL_DIR
+import model_promotion
 from backtester import Backtester
 from prediction_verifier import PredictionVerifier
 from regime import MarketRegime
@@ -91,6 +95,33 @@ MAX_KLINES = HISTORICAL_DAYS * 24 * 60 + 1500
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+_BACKEND_CODE_FILES = (
+    "server.py",
+    "price_to_beat.py",
+    "database.py",
+    "decision_champion.py",
+    "round_state_panel.py",
+)
+
+
+def _backend_code_hash() -> str:
+    """Hash the core decision/ledger source currently present on disk."""
+    digest = hashlib.sha256()
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in _BACKEND_CODE_FILES:
+        path = os.path.join(backend_dir, name)
+        digest.update(name.encode("utf-8"))
+        try:
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()[:12]
+
+
+BACKEND_BOOT_CODE_HASH = _backend_code_hash()
 SIGNAL_HISTORY_PATH = os.path.join(DATA_DIR, "signal_history.pkl")
 HISTORICAL_CACHE_DIR = os.path.join(DATA_DIR, "cache")
 MODEL_BOOT_BACKTEST = os.getenv("BTC_RUN_STARTUP_BACKTEST", "1") != "0"
@@ -110,6 +141,10 @@ FORCE_MAIN_RETRAIN = (
 )
 RETRAIN_COMPLETION_MARKER = os.getenv("BTC_RETRAIN_COMPLETION_MARKER", "").strip()
 HEAD_RETRAIN_COMPLETE = os.getenv("BTC_HEAD_RETRAIN_COMPLETE", "0") == "1"
+FULL_REFIT_AFTER_GATE = os.getenv("BTC_FULL_REFIT_AFTER_GATE", "0") == "1"
+MODEL_CHALLENGER_DIR = os.path.join(DATA_DIR, "saved_models", "challengers")
+MODEL_PROMOTION_REPORT_DIR = os.path.join(DATA_DIR, "saved_models", "promotion_reports")
+FULL_REFIT_SHADOW_MANIFEST = os.path.join(DATA_DIR, "saved_models", "full_refit_shadow.json")
 # Main prediction-loop tick interval (seconds). Inference is the heaviest per-tick work, but
 # predictions are only RECORDED every 60s+ (per-horizon) and the live price/charts/Polymarket
 # windows run on their own fast tickers (0.25s / 1s) — so the heavy loop can run slower with no
@@ -132,7 +167,8 @@ def _fresh_status() -> dict:
     }
 
 
-def _write_retrain_completion_marker(trained_model) -> bool:
+def _write_retrain_completion_marker(trained_model, deployment_state: str = "active",
+                                     gate_report_path: str | None = None) -> bool:
     """Atomically mark a requested full retrain complete only after heads and main saved."""
     if not RETRAIN_COMPLETION_MARKER:
         return False
@@ -147,6 +183,11 @@ def _write_retrain_completion_marker(trained_model) -> bool:
             "horizons": list(trained_model.horizons),
             "model_features": int(trained_model.model_num_features),
             "train_split_frac": float(trained_model.train_split_frac),
+            "model_bundle_id": str(getattr(trained_model, "model_bundle_id", "")),
+            "model_dir": str(getattr(trained_model, "model_dir", "")),
+            "full_refit": bool(getattr(trained_model, "full_refit", False)),
+            "deployment_state": deployment_state,
+            "gate_report_path": gate_report_path,
             "heads_complete": True,
             "model_trained": bool(trained_model.is_trained),
         }
@@ -160,6 +201,25 @@ def _write_retrain_completion_marker(trained_model) -> bool:
     except Exception as exc:
         logger.error("[TRAIN] Could not write full-retrain marker: %s", exc)
         return False
+
+
+def _write_active_train_boundary(train_boundary_ts=None, *, full_refit: bool = False,
+                                 gate_report_path: str | None = None) -> None:
+    """Persist the active bundle's honest historical-validation boundary.
+
+    A 100% refit has no untouched historical tail. Writing a null boundary prevents the
+    backtest path from inheriting an incumbent boundary and reporting fitted rows as OOS.
+    """
+    payload = {
+        "train_boundary_ts": int(train_boundary_ts) if train_boundary_ts else None,
+        "full_refit": bool(full_refit),
+        "gate_report_path": gate_report_path,
+        "updated_at": time.time(),
+    }
+    model_promotion.atomic_json(
+        os.path.join(DATA_DIR, "saved_models", "train_boundary.json"), payload
+    )
+    backend_state["train_boundary_ts"] = payload["train_boundary_ts"]
 
 
 @asynccontextmanager
@@ -221,11 +281,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting background tasks...")
     logger.info("Discovering Polymarket Markets...")
-    polymarket_client.discover_markets()
+    # Gamma discovery uses requests. Keep that blocking HTTP call off the event
+    # loop so startup WebSocket/price tasks are not delayed by a slow response.
+    await asyncio.to_thread(polymarket_client.discover_markets)
     asyncio.create_task(main_loop())
     asyncio.create_task(fast_price_broadcaster())
-    asyncio.create_task(pyth_price_poller())       # price-to-beat anchor feed (Pyth)
-    asyncio.create_task(price_to_beat_ticker())
+    asyncio.create_task(_supervised(pyth_price_poller, "pyth_price_poller"))   # anchor feed, auto-restart
+    asyncio.create_task(_supervised(price_to_beat_ticker, "price_to_beat_ticker"))
     asyncio.create_task(ws_client.connect())
     asyncio.create_task(coinbase_client.connect())
     asyncio.create_task(futures_ws_client.connect())
@@ -336,6 +398,45 @@ ab_runner = ABTestRunner(
     challenger=ModelVariant("challenger_cat_v1", challenger_model),
 )
 
+
+def restore_full_refit_shadow() -> bool:
+    """Reload a completed 100%-data challenger without changing the decision primary."""
+    try:
+        if not os.path.exists(FULL_REFIT_SHADOW_MANIFEST):
+            return False
+        with open(FULL_REFIT_SHADOW_MANIFEST, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if payload.get("status") != "shadow" or not payload.get("model_dir"):
+            return False
+        config = dict(getattr(model, "config", {}) or {})
+        config["model_bundle_id"] = payload.get("bundle_id") or "full_refit_shadow"
+        shadow = MultiModelEnsemble(
+            horizons=model.horizons,
+            config=config,
+            model_dir=payload["model_dir"],
+        )
+        shadow.cascade_monitor = cascade_monitor
+        if not shadow.load_models():
+            logger.warning("[PROMOTION] Persisted full-refit shadow failed model validation.")
+            return False
+        ab_runner.primary = ModelVariant(f"incumbent_{model.model_bundle_id}", model)
+        ab_runner.challenger = ModelVariant(
+            f"full_refit_shadow_{shadow.model_bundle_id}",
+            shadow,
+            started_at=float(payload.get("created_at") or time.time()),
+        )
+        ab_runner.enabled = True
+        restored = ab_runner.restore_from_db()
+        logger.info(
+            "[PROMOTION] Restored full-refit live shadow %s (%s resolved outcomes).",
+            shadow.model_bundle_id,
+            restored,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[PROMOTION] Could not restore full-refit shadow: %s", exc)
+        return False
+
 # Polymarket Value Engine
 pm_model = PolymarketModel()
 pm_simulator = PolymarketSimulator()
@@ -425,26 +526,77 @@ async def fast_price_broadcaster():
 PYTH_BTC_ID = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 
 
-async def pyth_price_poller():
-    """Poll Pyth BTC/USD ~every 1.5s for the price-to-beat anchor. Runs the blocking HTTP
-    call in a worker thread so it never stalls the event loop. Stores price + timestamp;
-    the ticker falls back to Binance if this goes stale, so the panel never freezes."""
-    loop = asyncio.get_event_loop()
-
-    def _fetch():
-        r = requests.get("https://hermes.pyth.network/v2/updates/price/latest",
-                         params={"ids[]": PYTH_BTC_ID}, timeout=8)
-        p = r.json()["parsed"][0]["price"]
-        return float(p["price"]) * (10 ** int(p["expo"]))
-
+async def _supervised(coro_fn, name: str):
+    """Run a forever-task under a supervisor: if it EXITS or CRASHES for any reason
+    (including BaseException escapes that `except Exception` inside the task cannot see),
+    log loudly and restart it after 5s. Cancellation still propagates (clean shutdown).
+    Added 2026-07-03 after the Pyth poller died silently mid-session and froze the
+    price-to-beat panel for 15+ minutes with no log line."""
     while True:
         try:
-            price = await loop.run_in_executor(None, _fetch)
+            await coro_fn()
+            logger.error("[supervisor] %s returned unexpectedly; restarting in 5s", name)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:                # noqa: BLE001 -- supervisor must survive anything
+            logger.error("[supervisor] %s crashed (%r); restarting in 5s", name, exc)
+        await asyncio.sleep(5.0)
+
+
+# Dedicated single thread for the Pyth fetch: run_in_executor(None, ...) uses the SHARED default
+# pool, so any other blocking work clogging it silently parks the poller forever (observed
+# 2026-07-03: pyth_price stopped updating while Hermes itself was healthy). One private worker
+# means the anchor poll can never be starved by unrelated blocking calls.
+from concurrent.futures import ThreadPoolExecutor as _TPE
+_PYTH_FETCH_POOL = _TPE(max_workers=1, thread_name_prefix="pyth-poll")
+
+
+async def pyth_price_poller():
+    """Poll Pyth BTC/USD ~every 1.5s for the price-to-beat anchor. Runs the blocking HTTP
+    call in a PRIVATE worker thread so it can neither stall the event loop nor be starved
+    by the shared pool. Stores price + timestamp; the ticker falls back to Binance if this
+    goes stale, so the panel never freezes. Runs under _supervised() -- auto-restarts."""
+    loop = asyncio.get_event_loop()
+
+    # PERSISTENT session (2026-07-03): a bare requests.get opens DNS+TCP+TLS EVERY poll; from this
+    # network that costs 6-11s per call, so every 5m boundary anchor arrived seconds late and the
+    # fail-closed tracker skipped ~half the rounds. Keep-alive makes each poll a single ~RTT hop.
+    session = requests.Session()
+    session.headers["Connection"] = "keep-alive"
+
+    def _fetch():
+        t0 = time.time()
+        r = session.get("https://hermes.pyth.network/v2/updates/price/latest",
+                        params={"ids[]": PYTH_BTC_ID}, timeout=(4, 6))
+        p = r.json()["parsed"][0]["price"]
+        dt = time.time() - t0
+        if dt > 3.0:
+            logger.warning("Pyth poll slow: %.1fs (connection reuse may have been dropped)", dt)
+        return float(p["price"]) * (10 ** int(p["expo"]))
+
+    last_error_log = 0.0
+    last_stale_log = 0.0
+    while True:
+        try:
+            # wait_for guards the await itself: even if the worker thread wedged, the poller
+            # keeps cycling and logging instead of parking forever on a dead future.
+            price = await asyncio.wait_for(
+                loop.run_in_executor(_PYTH_FETCH_POOL, _fetch), timeout=15.0)
             if price and price > 0:
                 data_state["pyth_price"] = price
                 data_state["pyth_price_ts"] = time.time()
-        except Exception:
-            pass
+        except Exception as exc:
+            now = time.time()
+            if now - last_error_log >= 30.0:
+                logger.warning("Pyth price poll failed; retrying: %s", exc)
+                last_error_log = now
+        # loud staleness watchdog: if the anchor is >60s old, say so every 60s -- a silent
+        # freeze must never be silent again.
+        now = time.time()
+        age = now - float(data_state.get("pyth_price_ts") or 0)
+        if age > 60.0 and now - last_stale_log >= 60.0:
+            logger.error("Pyth anchor STALE for %.0fs (poller alive, feed not updating)", age)
+            last_stale_log = now
         await asyncio.sleep(0.75)   # fresher anchor for the price-to-beat panel (was 1.5s)
 
 
@@ -463,6 +615,8 @@ async def price_to_beat_ticker():
     _pyth_offset = None  # EWMA of (pyth - binance) while both feeds are fresh
     _last_binance = None         # freshness tracking for the Binance-priced mirror
     _last_binance_t = time.time()
+    _last_error_log = 0.0
+    _last_no_pyth_log = 0.0
     while True:
         try:
             pyth = data_state.get("pyth_price")
@@ -489,7 +643,17 @@ async def price_to_beat_ticker():
                     ref = float(ref) + _pyth_offset
                     kl = None
                 else:
-                    kl = data_state.get("klines")
+                    # Without one Pyth observation there is no measured venue offset.
+                    # Raw Binance must not open a round that may later resolve on Pyth.
+                    ref = None
+                    kl = None
+                    now = time.time()
+                    if now - _last_no_pyth_log >= 30.0:
+                        logger.warning(
+                            "Pyth is unavailable and no Pyth/Binance offset is known; "
+                            "settlement-feed rounds remain paused."
+                        )
+                        _last_no_pyth_log = now
             _keepers = None   # live vol keepers for BOTH trackers; set in the `if ref` block
             if ref:
                 # FEED-FRESHNESS guard: a ref unchanged for >10s means the anchor feed is
@@ -545,10 +709,13 @@ async def price_to_beat_ticker():
                     list(price_to_beat_tracker.latest_round.values()), venue="pyth")
                 model_metrics_logger.log_ptb(
                     list(price_to_beat_binance_tracker.latest_round.values()), venue="binance")
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as exc:
+                logger.debug("Price-to-beat metrics logging skipped: %s", exc)
+        except Exception as exc:
+            now = time.time()
+            if now - _last_error_log >= 30.0:
+                logger.warning("Price-to-beat ticker error; loop will continue: %s", exc)
+                _last_error_log = now
         # Fast price-to-beat push (1s) so the Pyth-anchored panel doesn't wait for the heavy ~3s
         # main payload. Lightweight: just the live latest rounds for both trackers (no accuracy/
         # recent — those change slowly and ride the main payload). Crash-safe.
@@ -558,8 +725,8 @@ async def price_to_beat_ticker():
                 "pyth": price_to_beat_tracker.latest(),
                 "binance": price_to_beat_binance_tracker.latest(),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Price-to-beat tick broadcast skipped: %s", exc)
         await asyncio.sleep(1.0)
 
 
@@ -776,6 +943,57 @@ def _set_status(key: str, **updates) -> dict:
     elif status.get("started_at") and status.get("completed_at"):
         status["elapsed_seconds"] = round(status["completed_at"] - status["started_at"], 1)
     return status
+
+
+_PAPER_RULE_CACHE = {"ts": 0.0, "val": None}
+
+
+def _paper_rule_status_cached():
+    """RULE STATUS for the UI tile: forward paper-ledger summary of the frozen LATE_LEADER_30S_V1
+    rule + recorder liveness (quote-bridge file age). Cached 30s; crash-safe (None on failure)."""
+    now = time.time()
+    if now - _PAPER_RULE_CACHE["ts"] < 30.0:
+        return _PAPER_RULE_CACHE["val"]
+    _PAPER_RULE_CACHE["ts"] = now
+    try:
+        import database
+        s = database.rule_paper_summary("LATE_LEADER_30S_V1")
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        qpath = os.path.join(data_dir, "pm_live_quotes.json")
+        quote_age = round(now - os.path.getmtime(qpath), 1) if os.path.exists(qpath) else None
+        # Boot/code stamp (2026-07-04): compare core source content with the boot hash. Two
+        # restart collisions served stale code invisibly; touching a file without changing
+        # content no longer creates a false warning.
+        _bdir = os.path.dirname(os.path.abspath(__file__))
+        _code_mtime = max((os.path.getmtime(os.path.join(_bdir, f))
+                           for f in _BACKEND_CODE_FILES
+                           if os.path.exists(os.path.join(_bdir, f))), default=0.0)
+        _started = float(backend_state.get("startup_start_time") or 0.0)
+        _disk_code_hash = _backend_code_hash()
+        _hash_stale = _disk_code_hash != BACKEND_BOOT_CODE_HASH
+        val = {"summary": s, "quote_bridge_age_s": quote_age,
+               "backend": {"started_ts": _started, "code_mtime": _code_mtime,
+                           "boot_code_hash": BACKEND_BOOT_CODE_HASH,
+                           "disk_code_hash": _disk_code_hash,
+                           "stale_code": bool(_hash_stale)},
+               # pre-declared promotion thresholds (frozen 2026-07-02 -- no re-tuning)
+               "targets": {"n": 500, "ev_c": 2.0, "lb_c": 0.0, "pf": 1.2},
+               # live SHADOW replications of the three measured-dead strategies (paper-only):
+               # running EV shown next to the historical verdict in the dead-strategies panel.
+               "shadows": {r: database.rule_paper_summary(r) for r in
+                           ("MID_SCALP_LIVE_V1", "TP_OR_SETTLE_LIVE_V1", "STRADDLE_LIVE_V1",
+                            "MODEL_FADE_LIVE_V1", "MODEL_STRADDLE_LIVE_V1", "MODEL_RIDE_LIVE_V1",
+                            "LATE_LEADER_15M_SHADOW_V1", "LATE_LEADER_15S_V1",
+                            "LATE_LEADER_60S_V1", "LATE_LEADER_MAKER_V1",
+                            "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1")},
+               # live action feed: every shadow/rule entry+exit, newest first (UI table)
+               "recent": database.rule_paper_recent(14)}
+        _PAPER_RULE_CACHE["val"] = val
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"paper rule status skipped: {e}")
+        _PAPER_RULE_CACHE["val"] = None
+    return _PAPER_RULE_CACHE["val"]
 
 
 def _safe_public_status(status: dict) -> dict:
@@ -1251,7 +1469,7 @@ def update_global_oi_history():
             hist.pop(0)
 
 
-async def train_model(target_model=None):
+async def train_model(target_model=None, promotion_pipeline: bool = False, incumbent_model=None):
     """Train or retrain the multi-model ensemble."""
     target_model = target_model or model
     if len(data_state["klines"]) < LOOKBACK + 20:
@@ -1418,10 +1636,123 @@ async def train_model(target_model=None):
         backend_state["is_training"] = True
         loop = asyncio.get_event_loop()
         logger.info("[TRAIN] Dispatching ensemble training to worker thread...")
+        pipeline_result = {
+            "promotion_pipeline": bool(promotion_pipeline),
+            "evaluated_model": target_model,
+            "gate_report": None,
+            "shadow_model": None,
+            "smoke_test": None,
+        }
         try:
             await loop.run_in_executor(
                 None, functools.partial(target_model.train, X, Y, Ymag,
                                         regime_labels=regime_labels))
+
+            if promotion_pipeline:
+                _set_status(
+                    "relearn_status", running=True, phase="holdout-gate",
+                    message="Scoring untouched 2% holdout against frozen gates...", progress=0.48,
+                )
+                decision_timestamps = np.asarray(
+                    train_ts[LOOKBACK:LOOKBACK + len(X)], dtype=np.int64
+                )
+                gate_report = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        model_promotion.evaluate_candidate,
+                        target_model,
+                        incumbent_model,
+                        X,
+                        Y,
+                        int(target_model.train_split_idx),
+                        decision_timestamps,
+                        int(backend_state.get("train_boundary_ts") or 0),
+                    ),
+                )
+                gate_report.update({
+                    "historical_days": HISTORICAL_DAYS,
+                    "candidate_bundle_id": target_model.model_bundle_id,
+                    "candidate_model_dir": target_model.model_dir,
+                    "candidate_train_boundary_ts": int(
+                        decision_timestamps[max(0, int(target_model.train_split_idx) - 1)]
+                    ),
+                })
+                report_path = os.path.join(
+                    MODEL_PROMOTION_REPORT_DIR,
+                    f"{target_model.model_bundle_id}.json",
+                )
+                model_promotion.atomic_json(report_path, gate_report)
+                pipeline_result["gate_report"] = gate_report
+                pipeline_result["gate_report_path"] = report_path
+                logger.info("[PROMOTION] Holdout gate passed=%s report=%s",
+                            gate_report.get("passed"), report_path)
+
+                if gate_report.get("passed"):
+                    _set_status(
+                        "relearn_status", running=True, phase="full-refit",
+                        message="Holdout passed. Refitting production challenger on 100% of rows...",
+                        progress=0.55,
+                    )
+                    full_dir = os.path.join(os.path.dirname(target_model.model_dir), "full_refit")
+                    full_config = dict(getattr(target_model, "config", {}) or {})
+                    full_config["model_bundle_id"] = (
+                        f"full{HISTORICAL_DAYS}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                    )
+                    full_model = MultiModelEnsemble(
+                        horizons=target_model.horizons,
+                        config=full_config,
+                        model_dir=full_dir,
+                    )
+                    full_model.cascade_monitor = cascade_monitor
+                    await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            full_model.train,
+                            X,
+                            Y,
+                            Ymag,
+                            regime_labels=regime_labels,
+                            full_refit=True,
+                            calibration_source=target_model,
+                        ),
+                    )
+                    _set_status(
+                        "relearn_status", running=True, phase="staged-smoke-test",
+                        message="Loading and smoke-testing the staged 100% bundle...", progress=0.88,
+                    )
+                    staged = MultiModelEnsemble(
+                        horizons=full_model.horizons,
+                        config=full_config,
+                        model_dir=full_dir,
+                    )
+                    staged.cascade_monitor = cascade_monitor
+                    if not staged.load_models():
+                        raise RuntimeError("full-refit staging bundle failed reload validation")
+                    smoke = await loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            model_promotion.smoke_test_model,
+                            staged,
+                            X,
+                            staged.horizons,
+                            3,
+                        ),
+                    )
+                    shadow_payload = {
+                        "status": "shadow",
+                        "created_at": time.time(),
+                        "historical_days": HISTORICAL_DAYS,
+                        "bundle_id": staged.model_bundle_id,
+                        "model_dir": full_dir,
+                        "gate_report_path": report_path,
+                        "smoke_test": smoke,
+                        "training_fraction": 1.0,
+                        "decision_primary": False,
+                    }
+                    model_promotion.atomic_json(FULL_REFIT_SHADOW_MANIFEST, shadow_payload)
+                    pipeline_result["shadow_model"] = staged
+                    pipeline_result["shadow_manifest"] = shadow_payload
+                    pipeline_result["smoke_test"] = smoke
         except Exception:
             if isinstance(X, np.memmap):
                 try:
@@ -1452,11 +1783,18 @@ async def train_model(target_model=None):
                 _split_idx = int(_n_samp * min(max(_split_frac, 0.5), 0.98))
             _b_idx = min(LOOKBACK + _split_idx - 1, len(kl_snapshot) - 1)
             _b_ts = int(kl_snapshot[_b_idx]["time"])
-            backend_state["train_boundary_ts"] = _b_ts
-            with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
-                      "w", encoding="utf-8") as _bf:
-                json.dump({"train_boundary_ts": _b_ts}, _bf)
-            logger.info("[TRAIN] Out-of-sample boundary recorded at candle ts=%s", _b_ts)
+            if promotion_pipeline:
+                model_promotion.atomic_json(
+                    os.path.join(target_model.model_dir, "train_boundary.json"),
+                    {"train_boundary_ts": _b_ts},
+                )
+                logger.info("[TRAIN] Candidate holdout boundary recorded at candle ts=%s", _b_ts)
+            else:
+                backend_state["train_boundary_ts"] = _b_ts
+                with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
+                          "w", encoding="utf-8") as _bf:
+                    json.dump({"train_boundary_ts": _b_ts}, _bf)
+                logger.info("[TRAIN] Out-of-sample boundary recorded at candle ts=%s", _b_ts)
         except Exception as _be:
             logger.warning(f"[TRAIN] Could not record train boundary: {_be}")
         logger.info("[TRAIN] Model training complete in %.1fs", time.time() - train_started)
@@ -1476,8 +1814,10 @@ async def train_model(target_model=None):
             logger.info("[TRAIN] Training intermediates released (gc.collect, memmap removed).")
         except Exception:
             pass
+        return pipeline_result
     else:
         logger.warning("[TRAIN] No sequences built; model training skipped")
+        return None
 
 
 async def run_backtest_legacy_unused():
@@ -1607,6 +1947,28 @@ async def run_backtest(reason: str = "manual"):
         completed_at=None,
         error=None,
     )
+    if bool(getattr(model, "full_refit", False)) or float(
+        getattr(model, "train_split_frac", 0.0) or 0.0
+    ) >= 0.999:
+        message = (
+            "Historical backtest skipped: the active model was refit on 100% of history. "
+            "Use its saved candidate holdout report and live shadow results."
+        )
+        backend_state["last_backtest"] = {
+            "validation_mode": "candidate_holdout_plus_live_shadow",
+            "skipped": True,
+            "reason": "active_bundle_is_full_refit",
+            "model_bundle_id": getattr(model, "model_bundle_id", ""),
+            "calibration_provenance": getattr(model, "calibration_provenance", {}),
+        }
+        backend_state["last_backtest_time"] = time.time()
+        _set_status(
+            "backtest_status", running=False, phase="skipped-full-refit",
+            message=message, progress=1.0, completed_at=time.time(), error=None,
+        )
+        logger.warning("[BACKTEST] %s", message)
+        backtest_task = None
+        return
     try:
         bt_klines = list(data_state["klines"])  # copy: threaded build must not iterate the live list (deep-scan)
         if BACKTEST_MAX_ROWS and len(bt_klines) > BACKTEST_MAX_ROWS:
@@ -1851,7 +2213,7 @@ def schedule_backtest(reason: str = "background") -> bool:
 
 
 async def relearn_models_background(reason: str = "manual"):
-    """Train a candidate ensemble in the background, then swap it in atomically."""
+    """Train an evaluated candidate; optionally refit 100% into the live shadow lane."""
     global model, relearn_task
     started = time.time()
     if backend_state.get("is_training"):
@@ -1877,9 +2239,19 @@ async def relearn_models_background(reason: str = "manual"):
         error=None,
     )
     try:
+        had_trained_incumbent = bool(getattr(model, "is_trained", False))
+        promotion_pipeline = bool(FULL_REFIT_AFTER_GATE and reason == "forced-startup")
+        run_id = f"eval{HISTORICAL_DAYS}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        candidate_dir = (
+            os.path.join(MODEL_CHALLENGER_DIR, run_id, "evaluation")
+            if promotion_pipeline else None
+        )
+        candidate_config = dict(getattr(model, "config", {}) or {})
+        candidate_config["model_bundle_id"] = run_id
         candidate = MultiModelEnsemble(
             horizons=model.horizons,
-            config=getattr(model, "config", {}) or {},
+            config=candidate_config,
+            model_dir=candidate_dir,
         )
         candidate.cascade_monitor = cascade_monitor
         _set_status(
@@ -1889,9 +2261,87 @@ async def relearn_models_background(reason: str = "manual"):
             message="Training candidate model in background...",
             progress=0.20,
         )
-        await train_model(candidate)
+        pipeline_result = await train_model(
+            candidate,
+            promotion_pipeline=promotion_pipeline,
+            incumbent_model=model,
+        )
         if not candidate.is_trained:
             raise RuntimeError("Candidate model did not finish training")
+
+        if promotion_pipeline:
+            gate_report = (pipeline_result or {}).get("gate_report") or {}
+            if not gate_report.get("passed"):
+                if had_trained_incumbent:
+                    _write_retrain_completion_marker(
+                        candidate,
+                        deployment_state="gate_rejected",
+                        gate_report_path=(pipeline_result or {}).get("gate_report_path"),
+                    )
+                _set_status(
+                    "relearn_status",
+                    running=False,
+                    phase="gate-rejected",
+                    message="98/2 candidate failed promotion gates. Incumbent remains active.",
+                    progress=1.0,
+                    completed_at=time.time(),
+                    error=None,
+                )
+                logger.warning(
+                    "[PROMOTION] Candidate rejected by untouched holdout; no full refit or swap. report=%s",
+                    (pipeline_result or {}).get("gate_report_path"),
+                )
+                return
+            shadow_model = (pipeline_result or {}).get("shadow_model")
+            if not shadow_model or not shadow_model.is_trained:
+                raise RuntimeError("promotion gate passed but full-refit shadow bundle is unavailable")
+
+            if not had_trained_incumbent:
+                # First-ever boot has no incumbent to keep serving. The evaluated 98% candidate
+                # becomes the temporary primary; the 100% refit remains the silent challenger.
+                if not candidate._save_models(MODEL_DIR):
+                    raise RuntimeError("evaluated candidate could not be committed as bootstrap primary")
+                candidate.model_dir = MODEL_DIR
+                model = candidate
+                model.cascade_monitor = cascade_monitor
+                boundary_path = os.path.join(candidate_dir, "train_boundary.json")
+                boundary_ts = None
+                try:
+                    with open(boundary_path, "r", encoding="utf-8") as handle:
+                        boundary_ts = json.load(handle).get("train_boundary_ts")
+                except Exception:
+                    pass
+                _write_active_train_boundary(boundary_ts, full_refit=False,
+                                             gate_report_path=(pipeline_result or {}).get("gate_report_path"))
+
+            shadow_label = f"full_refit_shadow_{shadow_model.model_bundle_id}"
+            ab_runner.primary = ModelVariant(f"incumbent_{model.model_bundle_id}", model)
+            ab_runner.challenger = ModelVariant(
+                shadow_label,
+                shadow_model,
+                started_at=float(((pipeline_result or {}).get("shadow_manifest") or {}).get("created_at") or time.time()),
+            )
+            ab_runner.enabled = True
+            ab_runner.comparison_log.clear()
+            _write_retrain_completion_marker(
+                shadow_model,
+                deployment_state="shadow",
+                gate_report_path=(pipeline_result or {}).get("gate_report_path"),
+            )
+            _set_status(
+                "relearn_status",
+                running=False,
+                phase="shadow-verification",
+                message="100% refit passed smoke tests and is now a silent live challenger.",
+                progress=1.0,
+                completed_at=time.time(),
+                error=None,
+            )
+            logger.info(
+                "[PROMOTION] Full-data refit installed in live shadow: %s. Incumbent remains primary.",
+                shadow_label,
+            )
+            return
 
         _set_status(
             "relearn_status",
@@ -1903,6 +2353,7 @@ async def relearn_models_background(reason: str = "manual"):
         model = candidate
         model.cascade_monitor = cascade_monitor
         ab_runner.primary = ModelVariant(f"baseline_{int(time.time())}", model)
+        _write_retrain_completion_marker(model)
         _set_status(
             "relearn_status",
             running=False,
@@ -1913,7 +2364,8 @@ async def relearn_models_background(reason: str = "manual"):
             error=None,
         )
         logger.info("[RELEARN] Candidate model swapped active in %.1fs", time.time() - started)
-        schedule_backtest("post-relearn")
+        if MODEL_BOOT_BACKTEST:
+            schedule_backtest("post-relearn")
     except Exception as e:
         _set_status(
             "relearn_status",
@@ -2530,6 +2982,7 @@ def apply_live_quality_filters(
 
 
 async def main_loop():
+    global model
     """Background task: fetch data, train models, generate predictions."""
 
     # 1. Warm-up
@@ -2542,7 +2995,10 @@ async def main_loop():
         else "WARNING: a background retrain will saturate the CPU and freeze the live feed.",
     )
     if FORCE_MAIN_RETRAIN:
-        logger.warning("[BOOT] BTC_FORCE_MAIN_RETRAIN=1: saved main ensemble will be ignored and retrained.")
+        logger.warning(
+            "[BOOT] BTC_FORCE_MAIN_RETRAIN=1: a fresh candidate will train in the background; "
+            "a compatible saved ensemble remains active until the candidate swaps in."
+        )
     await broadcast(
         {
             "type": "status",
@@ -2592,18 +3048,33 @@ async def main_loop():
     )
     step_t0 = time.time()
     logger.info("[BOOT 5/7] Loading saved models from disk...")
-    loaded = False if FORCE_MAIN_RETRAIN else model.load_models()
+    # A forced long-window retrain should not blank the dashboard for hours or days. Load any
+    # compatible incumbent first, then train a separate candidate through the same atomic-swap
+    # path as a manual relearn. If no compatible incumbent exists, fall back to fresh startup
+    # training as before.
+    loaded = model.load_models()
     if loaded:
         # Restore the saved model's out-of-sample boundary so backtests stay honest
         # across restarts (models loaded from disk, no retrain → boundary from json).
         try:
             with open(os.path.join(DATA_DIR, "saved_models", "train_boundary.json"),
                       "r", encoding="utf-8") as _bf:
-                backend_state["train_boundary_ts"] = int(json.load(_bf)["train_boundary_ts"])
-                logger.info("[BOOT] Restored out-of-sample boundary ts=%s",
-                            backend_state["train_boundary_ts"])
+                boundary_payload = json.load(_bf)
+                if boundary_payload.get("full_refit"):
+                    backend_state["train_boundary_ts"] = None
+                    logger.info(
+                        "[BOOT] Active bundle is a 100%% refit; historical backtest is disabled."
+                    )
+                else:
+                    raw_boundary = boundary_payload.get("train_boundary_ts")
+                    backend_state["train_boundary_ts"] = (
+                        int(raw_boundary) if raw_boundary else None
+                    )
+                    logger.info("[BOOT] Restored out-of-sample boundary ts=%s",
+                                backend_state["train_boundary_ts"])
         except Exception:
             pass  # legacy bundle without a boundary file — backtest falls back to old behavior
+        restore_full_refit_shadow()
     startup_train_bg = None  # set to the bg training task when a fresh train is needed
 
     if not loaded:
@@ -2642,19 +3113,27 @@ async def main_loop():
                 error=None,
             )
             try:
-                await train_model()
-                _write_retrain_completion_marker(model)
+                if FORCE_MAIN_RETRAIN and FULL_REFIT_AFTER_GATE:
+                    await relearn_models_background("forced-startup")
+                    if not getattr(model, "is_trained", False):
+                        raise RuntimeError(
+                            "evaluated startup candidate did not pass gates; no active model available"
+                        )
+                else:
+                    await train_model()
+                    _write_retrain_completion_marker(model, deployment_state="active")
                 await broadcast({"type": "status", "step": "step-model", "msg": "Model trained"})
                 logger.info("[BOOT] Background startup training complete.")
-                _set_status(
-                    "relearn_status",
-                    running=False,
-                    phase="complete",
-                    message="Startup training complete.",
-                    progress=1.0,
-                    completed_at=time.time(),
-                    error=None,
-                )
+                if not (FORCE_MAIN_RETRAIN and FULL_REFIT_AFTER_GATE):
+                    _set_status(
+                        "relearn_status",
+                        running=False,
+                        phase="complete",
+                        message="Startup training complete.",
+                        progress=1.0,
+                        completed_at=time.time(),
+                        error=None,
+                    )
                 if MODEL_BOOT_BACKTEST and (FORCE_MAIN_RETRAIN or not _load_backtest_cache()):
                     schedule_backtest("startup")
             except Exception as e:
@@ -2677,6 +3156,14 @@ async def main_loop():
         await broadcast(
             {"type": "status", "step": "step-model", "msg": "Models loaded from disk"}
         )
+        if FORCE_MAIN_RETRAIN:
+            if schedule_relearn("forced-startup"):
+                startup_train_bg = relearn_task
+                logger.info(
+                    "[BOOT] Forced candidate retrain scheduled; incumbent model remains active."
+                )
+            else:
+                logger.warning("[BOOT] Forced candidate retrain could not be scheduled.")
 
     # 4. Backtest is intentionally backgrounded. The app should become usable as
     # soon as models are available; validation keeps running with visible progress.
@@ -3326,7 +3813,41 @@ async def main_loop():
                         logger.critical(
                             f"A/B TEST WIN: Challenger model beat primary! Triggering promotion. Delta: {comp.get('accuracy_delta', 0):.2f}"
                         )
-                        ab_runner.primary = ab_runner.challenger
+                        promoted_variant = ab_runner.challenger
+                        if (promoted_variant
+                                and promoted_variant.label.startswith("full_refit_shadow_")):
+                            if not promoted_variant.model._save_models(MODEL_DIR):
+                                logger.error(
+                                    "[PROMOTION] Live gates passed but active-bundle commit failed; "
+                                    "keeping incumbent primary."
+                                )
+                                continue
+                            promoted_variant.model.model_dir = MODEL_DIR
+                            model = promoted_variant.model
+                            model.cascade_monitor = cascade_monitor
+                            previous_manifest = {}
+                            try:
+                                with open(FULL_REFIT_SHADOW_MANIFEST, "r", encoding="utf-8") as handle:
+                                    previous_manifest = json.load(handle)
+                            except Exception:
+                                pass
+                            gate_report_path = previous_manifest.get("gate_report_path")
+                            _write_active_train_boundary(
+                                None, full_refit=True, gate_report_path=gate_report_path
+                            )
+                            model_promotion.atomic_json(
+                                FULL_REFIT_SHADOW_MANIFEST,
+                                {
+                                    "status": "promoted",
+                                    "promoted_at": time.time(),
+                                    "bundle_id": model.model_bundle_id,
+                                    "model_dir": MODEL_DIR,
+                                    "decision_primary": True,
+                                    "gate_report_path": gate_report_path,
+                                    "live_comparison": comp,
+                                },
+                            )
+                        ab_runner.primary = promoted_variant
                         ab_runner.challenger = None
                         ab_runner.enabled = False
                         ab_runner.comparison_log.clear()
@@ -3573,6 +4094,10 @@ async def main_loop():
                     "latest": price_to_beat_tracker.latest(),
                     "accuracy": price_to_beat_tracker.accuracy(),
                     "p_hold_status": persistence_model_status(),
+                    "round_state_status": round_state_panel.status(),
+                    # RULE STATUS tile: forward paper ledger of the frozen LATE_LEADER_30S_V1 rule
+                    # + recorder liveness (quote-bridge age). Cheap DB aggregate, cached 30s.
+                    "paper_rule_status": _paper_rule_status_cached(),
                     # 60: six mirror horizons now resolve rounds; keep slow ones visible
                     "recent": price_to_beat_tracker.recent(200),
                 },
@@ -3638,6 +4163,28 @@ async def runtime_status():
         "relearn_status": _safe_public_status(backend_state.get("relearn_status")),
         "replay_status": _safe_public_status(backend_state.get("replay_status")),
         "model_inventory": model.get_model_inventory(),
+    }
+
+
+@app.get("/api/paper-ledger")
+async def api_paper_ledger():
+    """FULL paper-trade blotter for the Trades tab: every rule/shadow entry with buy price, net
+    exit, per-trade P/L, plus per-rule + overall win rates and totals. Read-only aggregate."""
+    import database as _db
+    return _db.rule_paper_ledger(300)
+
+
+@app.get("/api/round-state")
+async def api_round_state():
+    """Current information-only 5m/15m state; never an order endpoint."""
+    latest = price_to_beat_tracker.latest()
+    return {
+        "mode": "SHADOW_INFO_ONLY",
+        "model_status": round_state_panel.status(),
+        "latest": {
+            str(horizon): (latest.get(horizon) or {}).get("round_state")
+            for horizon in price_to_beat_tracker.horizons
+        },
     }
 
 

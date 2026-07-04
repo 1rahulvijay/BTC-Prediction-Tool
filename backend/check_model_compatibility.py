@@ -5,7 +5,6 @@ import os
 import sys
 
 import joblib
-import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -15,7 +14,7 @@ VERSION_PATH = os.path.join(DATA_DIR, "saved_models", "architecture_version.pkl"
 def main() -> int:
     try:
         from features import LOOKBACK
-        from model import MODEL_ARCH_VERSION, MODEL_FEATURE_SCHEMA_HASH, MODEL_NUM_FEATURES
+        from model_contract import MODEL_ARCH_VERSION, MODEL_FEATURE_SCHEMA_HASH, MODEL_NUM_FEATURES
     except Exception as exc:
         print(f"[model-preflight] Cannot import current model architecture: {exc}")
         return 2
@@ -49,12 +48,25 @@ def main() -> int:
 
     # Validate a required GLOBAL model for every active horizon. This catches a
     # partially-written/corrupt bundle that an architecture string alone cannot detect.
-    dummy = np.zeros((1, LOOKBACK * MODEL_NUM_FEATURES), dtype=np.float32)
+    expected_width = LOOKBACK * MODEL_NUM_FEATURES
     for horizon in (5, 15):
         component = os.path.join(DATA_DIR, "saved_models", "GLOBAL", f"xgb_{horizon}.pkl")
         try:
             model = joblib.load(component)
-            model.predict(dummy)
+            # Metadata validation is enough for this short-lived preflight. Calling
+            # native XGBoost prediction here intermittently crashes Python 3.13 at
+            # process teardown on Windows (0xC0000005), despite a successful result.
+            # The long-running server still performs a real dummy prediction while
+            # loading the complete bundle.
+            if int(getattr(model, "n_features_in_", -1)) != int(expected_width):
+                raise ValueError(
+                    f"feature width {getattr(model, 'n_features_in_', None)} != {expected_width}"
+                )
+            classes = set(int(value) for value in getattr(model, "classes_", []))
+            if classes != {0, 1, 2}:
+                raise ValueError(f"unexpected classes {sorted(classes)}")
+            if not callable(getattr(model, "predict_proba", None)):
+                raise ValueError("predict_proba is unavailable")
         except Exception as exc:
             print(f"[model-preflight] Invalid required component xgb_{horizon}: {exc}")
             return 8

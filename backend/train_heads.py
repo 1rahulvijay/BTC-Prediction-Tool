@@ -68,6 +68,7 @@ def main():
     act_ver = _import_version("backend", "train_activity_keeper")
     champ_ver = _import_version("backend", "train_champion_meta")
     path_forecaster_ver = _import_version("backend", "train_path_forecaster")
+    round_state_ver = _import_version("backend", "train_round_state_heads")
 
     heads = [
         # versioned heads — retrain on MISSING or version change
@@ -77,9 +78,15 @@ def main():
          "cmd": [PY, os.path.join("backend", "train_signed_quantiles.py")]},
         {"name": "persistence", "out": os.path.join(SM, "persistence_model.pkl"), "ver": pers_ver,
          "cmd": [PY, os.path.join("backend", "train_persistence_model.py")]},
+        # Fade is deliberately NOT in the production retrain. The causal 1m head missed the
+        # frozen precision gate and the honest 1s challenger also failed its joint AUC/top-decile
+        # gate. Keep both as research artifacts; do not let --force silently reactivate them.
         {"name": "path_forecaster", "out": os.path.join(SM, "path_forecaster.pkl"),
          "ver": path_forecaster_ver,
          "cmd": [PY, os.path.join("backend", "train_path_forecaster.py")]},
+        {"name": "round_state", "out": os.path.join(SM, "round_state_heads.pkl"),
+         "ver": round_state_ver,
+         "cmd": [PY, os.path.join("backend", "train_round_state_heads.py")]},
         {"name": "bigmove", "out": os.path.join(SM, "bigmove_keeper_model.pkl"), "ver": bm_ver,
          "cmd": [PY, os.path.join("backend", "train_bigmove_keeper.py")]},
         {"name": "bigdrop", "out": os.path.join(SM, "bigdrop_keeper_model.pkl"), "ver": bd_ver,
@@ -107,7 +114,7 @@ def main():
     # outcome and must NOT be counted as a failure — otherwise the full-retrain completion marker never
     # gets written and start.bat re-runs the entire (18-36h) cycle on every boot. Only a NONZERO EXIT
     # (a real crash) fails an optional head. (Bug found 2026-06-22 during the pre-360d-run audit.)
-    OPTIONAL_HEADS = {"champion_meta", "beat", "magnitude", "path", "fingerprints"}
+    OPTIONAL_HEADS = {"round_state", "champion_meta", "beat", "magnitude", "path", "fingerprints"}
     print(f"[heads] version-aware head training (days={DAYS}, force={args.force})")
     failures = []
     for h in heads:

@@ -183,7 +183,8 @@ def main():
         if len(yv) < 300 or len(np.unique(yv)) < 2:
             print(f"{h:>3} {len(yv):>7}  (insufficient)"); continue
         # TEMPORAL split (no shuffle — train past, test unseen future)
-        n = len(yv); a, b = int(n * 0.6), int(n * 0.8)
+        _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)  # 98/2: fit+cal=sf, test=1-sf
+        n = len(yv); a, b = int(n * (2 * _sf - 1)), int(n * _sf)
         Xtr, ytr, Xca, yca, Xte, yte = Xv[:a], yv[:a], Xv[a:b], yv[a:b], Xv[b:], yv[b:]
         clf = HistGradientBoostingClassifier(max_iter=300, max_depth=4, learning_rate=0.05,
                                              l2_regularization=1.0, random_state=0)

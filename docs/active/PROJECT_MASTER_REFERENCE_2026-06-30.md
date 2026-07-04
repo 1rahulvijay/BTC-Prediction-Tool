@@ -1,5 +1,10 @@
 # BTC Quantum Trader — Master Reference (2026-06-30)
 
+> **2026-07-01 OVERRIDE:** Read `PROFITABILITY_AND_BETTING_VALIDATION_2026-07-01.md` first. The v4 fade
+> tables and profit-language below are retracted because completed touch-candle OHLC leaked post-entry
+> movement and Polymarket fee/execution accounting was incomplete. Direction remains non-predictive;
+> current real-money status is PAPER ONLY.
+
 The single canonical reference: every model in the app, every experiment (worked + failed, with *why*),
 how the system works end-to-end, and all forward plans. Every claim is a measured number. Detailed
 per-topic docs are linked inline; this is the index that ties them together.
@@ -41,6 +46,7 @@ no market, coin-flip) · arch `2horizon-5-15` · frozen on this 16GB box.
 |---|---|---|---|
 | **P(Hold) / persistence** | will the side currently ahead hold to close (late-entry) | dual per-horizon iso-calibrated | ✅ **calibrated** — P≥0.93→~95%, P≥0.95→97.2%; ECE **0.0108** / 67,529 rounds. The fair-value source. |
 | **Path forecaster v3** | touch $50/$100, round-trip, asymmetric, **early-touch**, net-mag, hi/lo band | ensemble (CatBoost+LightGBM+HistGBM) on 5 vol keepers | ✅ **validated + calibrated** — see §3 |
+| ⚠️ Fade / round-trip (v4) — **DISABLED live** | P(early touch reverts to anchor) | ensemble on keepers + touch-timing + touch-ctx, per-barrier {30,50} | ⚠️ **v4 label was leaked** (1m touch-candle look-ahead); causal ~42% win → not deployable. **v5 serving gate rejects v4 → PAPER ONLY** until a causal retrain. See `PROFITABILITY_AND_BETTING_VALIDATION` |
 | **Big-drop keeper** | downside path risk (flush) | 4-model | ✅ strongest risk head — gated AUC ~0.75, top-5% 63.5%; avoid-long flag |
 | **Big-move keeper** | will the window be active (timing gate) | 4-model VotingClassifier (LogReg+RF+ExtraTrees+CatBoost), auto $ buckets p75/p90/p97 | ✅ AUC 0.70–0.83 |
 | **Activity keeper** | participation / range proxy | 4-model | ✅ confirmation |
@@ -72,7 +78,7 @@ Live feeds (Binance WS trades/depth · Pyth · cross-venue) + 1m klines
    CHAMPION validator (rules-first) → ACTION (WAIT/AVOID/AVOID_LONG/WATCH/SETUP/NO_EDGE/PAPER_BET)
         │                              + the path PLAY (FADE-SETUP/RIDE/SKIP/WATCH)
         ▼
-   THE EDGE GATE:  fair_value(P(Hold)) − market_ask − costs − buffer > required_edge   → the only path to a bet
+   PAPER EDGE GATE: min(P(Hold),0.91) − executable_ask − taker_fee − 0.03 > 0
         │
         ▼  card (UI) + champion_snapshots (DuckDB) → meta-trainer later
 ```
@@ -88,19 +94,43 @@ recorder** (L2 OFI/microprice/depth + cross-venue lead-lag → the only untested
 | **Path: touch odds** | P(move ≥$50/$100) | AUC 0.795/0.799 · 0.837/0.786; **calibrated** (pred 0.659↔0.665, 0.906↔0.914) | path head, `path_plan_verifier.py` |
 | **Path: round-trip** | P(touch both ±$50) | AUC 0.851 / 0.758 | path head |
 | **Path: CHOP/TREND style** | fade-vs-ride | CHOP round-trips **24%/48%** vs quiet **0.5%/1.7%** (28–48× separation) | verifier |
-| **Path: early-touch (v3)** | ±$50 in first half | AUC **0.797 / 0.802** | `probe_first_touch_timing.py` |
+| ⚠️ ~~Fade / round-trip (v4 $30/$50)~~ **RETRACTED — leaked** | early touch that reaches anchor | the "base 35%, top-10% **77%**, +EV" was a **1m touch-candle look-ahead leak** (80.6% of touches resolve in-candle). **Causal** = **~42% win, below 50% breakeven, NOT deployable.** Fade disabled live (v5 gate). See `ANCHOR_ROUNDTRIP_180D_RESULTS`, `PROFITABILITY_AND_BETTING_VALIDATION` |
 | **Window selection** | BIG window (top-⅓ range) | AUC **0.843 / 0.832**; range autocorr 0.65 | `probe_range_expansion.py` |
-| **Post-touch reversal** | reversal after touch | AUC **0.634 / 0.586**; early touches revert **~2×** | `probe_post_touch_reversal.py` |
+| ⚠️ ~~Post-touch reversal / "early reverts 2×"~~ **RETRACTED** | reversal after touch | the old **AUC 0.63/0.59, "early reverts ~2×, ~79%"** was an **artifact** (see banner) | `probe_fade_entry_exit.py` (fixed) |
 | **High/low band** | conformal range | coverage **0.50 / 0.48** (nominal 0.50) | path head |
 | **P(Hold)** | side-holds | ECE 0.0108; P≥0.95→97.2% | persistence |
 | **Big-drop / big-move / activity** | risk + timing | gated AUC 0.70–0.83 | keepers |
 
-**The composed engine (live, v3):** window-select → CHOP/TREND → P(touch)+P(early) → **FADE-SETUP/RIDE/SKIP**.
-A genuine **within-window fade-vs-ride + timing** edge — the path is predictable where direction is not.
+> **⚠️ RETRACTION (2026-07-01, alternate session).** The earlier "early touch reverts ~2× / ~79% / early-touch
+> AUC 0.797/0.802" was **false** — caused by two real bugs: (1) `probe_fade_entry_exit.py` had `early = tm > half`
+> **inverted** (that's a *late* touch), and (2) a settle-generous grade scored any $1 tick off the level as a
+> "win," inflating late-touch win to 71% when strictly it reaches anchor only **6.9%**. Honest strict grade ($50,
+> 5m): earliest quartile **41%**, latest **6.9%**, overall **29.5%**. **Early touch is necessary but NOT
+> sufficient** — timing alone tops out ~48% (a loser); the **touch-context** lifts 41%→~69%. The production fade
+> model was **retrained on the honest strict label** (now `fade_model.pkl = 2026-07-01-fade-v4-multibarrier-30-50`,
+> which adds the $30 barrier + round-trip 2nd-leg grading; see `FADE_ROUNDTRIP_ENGINE`) and the
+> live gate now requires *early touch AND model P(reach-anchor) ≥ 0.55*. Still a BTC-reversion stat → **PAPER
+> until the recorder proves after-cost.** Details: `PATH_FORECASTER_TRADE_PLAN_HEAD` (fade section).
+
+**The composed engine (live, v4 multi-barrier):** window-select → CHOP/TREND → early **$30** touch **AND** model
+P(reach-anchor)≥0.55 → **FADE leg 1** (buy cheap side, exit anchor); on the opposite-side return → **FADE leg 2**
+(the two-sided round-trip play). `$30` is the live barrier (matches Polymarket share sensitivity: more setups +
+higher win). A genuine but **modest** within-window fade + timing edge — the path is predictable where direction
+is not, but the fade only pays when the touch is early *and* grades high, and only makes money if the share is
+mispriced. See `FADE_ROUNDTRIP_ENGINE_2026-07-01.md`.
 
 **Faint / conditional:** regime selection — RANGE 59% (Wilson-LB 52.3), LOW_VOLATILITY 63% — but the
 recent-window LB drops to 46.3%, so it stays in **shadow**, not promoted. Evening (20:00–24:00 CEST) on 15m
 recurs 7/8 days but is selection-biased (watch, don't trade).
+
+**Path play as a champion risk-signal (WATCH, 2026-06-30):** within the P(Hold)≥0.93 gate, `SKIP` rounds
+hold **91.2%** vs **96.9%** for non-SKIP — a P(Hold)-*independent* gap (matched-control **+4.2pp** at equal
+P(Hold)/horizon/regime; shuffled-null **p=0.000**). So the path play carries real hold-failure information.
+**But it is not a good binary filter** (dropping SKIP at the 0.93 gate avoids 68 line-crosses while cutting
+708 winners → net **−640**), and there is **no temporal holdout** yet (champion data spans only ~6 days). Use
+it as a **graded input to the edge gate** (more required edge / smaller size on SKIP), not a P(Hold)-gate
+drop; it bites most in the **mid P(Hold) bands** near the betting threshold. Now **shadow-logged** to
+`price_to_beat` (`path_*` columns) to earn a real forward holdout. (`PATH_CHAMPION_LIFT_2026-06-30.md`)
 
 ---
 
@@ -112,6 +142,8 @@ recurs 7/8 days but is selection-biased (watch, don't trade).
 | **Direction by hour / day / weekday** | DuckDB + CEST time-of-day analysis | 45–53% everywhere, all Wilson-LB <50% | no clock/calendar structure in direction |
 | **Triple-barrier model** | upper/lower/timeout labels, 5 libraries, top-N precision + profit-after-spread | AUC 0.65–0.69 but **net-negative after 2bps spread** every horizon | AUC is mostly vol-detection (will *a* barrier hit), not *which* — directional precision can't clear costs |
 | **Flow / cross-venue proxy** | candle-only vs +cvd/vpin/basis on the touch label | no top-bucket lift (0.675→0.673) | the order-flow we already have adds no directional signal (true L2 needs record-forward) |
+| **Impact / absorption → |move|** | impact-residual vs rv_15m on top-quartile \|move\| | +0.001 lift → redundant | rv already captures move size; flow adds nothing (`probe_impact_residual.py`) |
+| **Impact / absorption → reversal & big-drop** | v2: fitted square-root scale + 3-bar impulse + elasticity + **conditional** on top-30% impulse, shuffled-null | conditional reversal lift **−0.004 (p=0.61)**; impact univariate ~0.50–0.52; big-drop −0.002 | rebuilt after a feature critique — still flat. Reversal-after-a-move is near coin-flip at 1m for *every* feature; the absorption effect lives **sub-second** (3rd flow-null) — real test is `probe_l2_linecross.py` on the recorder (`IMPACT_REVERSION_PROBE_2026-06-30.md`) |
 | **Meta-skip model** | predict "acted side holds" from heads | top-decile 97.6% hold | circular — uses `p_hold` as a feature; re-expresses calibration, not new edge |
 | **Fallback-abstain in TRENDING** | shadow-replay abstaining fallback leans in trends | retained LB <50%, **harmful at 15m** (cut a 65% set) | the live "fallback 0/4" card that triggered it was small-sample noise |
 | **Deep sequence promotion** (PatchTST/iTransformer/TCN-as-primary) | research lanes | research-only, not promotable | same ceiling — sequence models don't beat tabular on direction |
@@ -126,7 +158,7 @@ architectures on the same candles will not move it.
 
 ## 5. The make-or-break (gates ALL real money)
 ```
-BET ONLY WHEN:  calibrated_fair_value(P(Hold)) − market_ask − costs − safety_buffer > required_edge
+PAPER-TRACK ONLY WHEN: min(P(Hold),0.91) − executable_ask − taker_fee − 0.03 > 0
 ```
 Everything above sharpens the *inputs*; none is profit by itself. Answered only by the **Polymarket
 recorder** (official CLOB/Gamma settlement — **364 outcomes ingested**, but only ~**4–6 joined quote+outcome
@@ -194,8 +226,19 @@ the heads, never merged into the frozen direction model.
 | Direction coin-flip by day/version/horizon | `DUCKDB_METRICS_ANALYSIS_2026-06-21.md` |
 | Timeframe / time-of-day / per-day | `TIMEFRAME_PERFORMANCE_pyth_2026-06-21.md` |
 | Regime / fallback shadows (negative results) | `REGIME_GATE_SHADOW_2026-06-21.md`, `FALLBACK_ABSTAIN_SHADOW_2026-06-21.md` |
+| **Two-sided round-trip fade engine ($30/$50, leg-2)** | `FADE_ROUNDTRIP_ENGINE_2026-07-01.md` |
+| **Reversal-fade backtest (5m+15m, 70 feat, 8 models, +EV proxy)** | `REVERSAL_STRATEGY_BACKTEST_2026-07-01.md` |
+| Path play → champion decision lift (WATCH) | `PATH_CHAMPION_LIFT_2026-06-30.md` |
+| Impact / absorption → reversal & big-drop (NEGATIVE) | `IMPACT_REVERSION_PROBE_2026-06-30.md` |
 | 360d retrain + settlement + bot requirements | `FULL_360D_RETRAIN_IMPLEMENTATION_2026-06-22.md`, `SETTLEMENT_INGESTION_2026-06-21.md`, `POLYMARKET_BOT_REQUIREMENTS_2026-06-21.md` |
 | 100-idea research backlog | `QUANT_RESEARCH_100_CEILING_BREAK_IDEAS_2026-06-30.md` |
 
 **Reproduce the validated signals:** `path_plan_verifier.py` · `probe_first_touch_timing.py` ·
 `probe_range_expansion.py` · `probe_post_touch_reversal.py` · `analyze_timeframe_performance.py`.
+**Reproduce the decision/flow tests:** `probe_path_champion_lift.py` (path→champion WATCH) ·
+`probe_impact_reversion.py` + `probe_impact_residual.py` (flow null) · `probe_l2_linecross.py` (sub-second, gated).
+
+**Now shadow-logging (record-forward, no decision change):** the frozen path plan is persisted to
+`price_to_beat.path_*` (play/style/p_move_50/100/roundtrip/early/asym/pred_high/low/net_move) on every round,
+so the path head can be graded on LIVE rounds and `PATH_CHAMPION_LIFT` gets a real out-of-sample holdout in
+~3–4 weeks. Takes effect on the next `start.bat` boot (additive DuckDB migration).

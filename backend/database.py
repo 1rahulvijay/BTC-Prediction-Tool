@@ -285,6 +285,38 @@ def init_db():
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS rule_paper_trades (
+            round_id VARCHAR,
+            rule VARCHAR,
+            ts BIGINT,
+            horizon INT,
+            side VARCHAR,          -- market leader bought (UP/DOWN); '' when not entered
+            ask DOUBLE,
+            bid DOUBLE,
+            fee DOUBLE,
+            spread DOUBLE,
+            depth DOUBLE,
+            action VARCHAR,        -- ENTER / SKIP_LOW_ASK / SKIP_HIGH_ASK / NO_QUOTE
+            outcome VARCHAR,       -- UP/DOWN once settled
+            pnl DOUBLE,            -- per 1 share: settle_value - ask - fee (NULL until settled)
+            settled_ts BIGINT,
+            btc_entry DOUBLE,      -- BTC price when the share was bought
+            btc_exit DOUBLE,       -- BTC price at exit / settlement
+            exit_gross DOUBLE,     -- raw bid/settlement proceeds before exit fee
+            exit_fee DOUBLE,       -- fee charged on an early exit (zero at settlement)
+            exit_reason VARCHAR,   -- TP / SL / TIME / SETTLED
+            state_json VARCHAR,    -- crash-safe state for multi-leg/early-exit shadows
+            PRIMARY KEY (round_id, rule)
+        )
+    """)
+    # Additive migration for ledgers created before 2026-07-04 (ADD COLUMN IF NOT EXISTS).
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS btc_entry DOUBLE")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS btc_exit DOUBLE")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_gross DOUBLE")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_fee DOUBLE")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS state_json VARCHAR")
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS analysis_snapshots (
             timestamp BIGINT PRIMARY KEY,
             price DOUBLE,
@@ -632,6 +664,27 @@ def init_db():
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS round_state_snapshots (
+            round_id VARCHAR,
+            ts BIGINT,
+            horizon INT,
+            seconds_left INT,
+            current_position VARCHAR,
+            current_move DOUBLE,
+            p_leader_holds DOUBLE,
+            flip_risk DOUBLE,
+            flip_risk_status VARCHAR,
+            late_shock_20 DOUBLE,
+            late_shock_50 DOUBLE,
+            late_shock_100 DOUBLE,
+            next_opportunity DOUBLE,
+            round_type VARCHAR,
+            action VARCHAR,
+            execution_status VARCHAR,
+            PRIMARY KEY(round_id, ts)
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS fsr_ppo_decisions (
             id VARCHAR PRIMARY KEY,
             prediction_id VARCHAR,
@@ -679,6 +732,428 @@ def log_exchange_verification(timestamp: int, horizon: int, direction: str,
         """, (timestamp, horizon, direction, confirmed, checked, rate, _json.dumps(venues)))
     except Exception as e:
         print(f"DuckDB Exchange Verify Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def similar_setup_stats(horizon: int, seconds_left: float, p_hold: float,
+                        current_move: float, regime: str = ""):
+    """Layer-3 SIMILAR-SETUP MEMORY ("markets like this held X%"): banded nearest-neighbor lookup
+    over this app's OWN graded ledger (champion_snapshots x price_to_beat outcomes, one late-window
+    snapshot per round). VALIDATED 2026-07-02 on a temporal holdout: beats the global action-bucket
+    baseline (Brier 0.0483 vs 0.0515) with monotone, near-perfectly calibrated quartiles (pred 79.7/
+    93.6/99.5 -> realized 79.7/97.1/99.5). Bands widen up to twice until n>=30 ('relaxed' reports how
+    far). Returns {n, held_pct, wilson_lb, relaxed} or None. Read-only, crash-safe (None on failure).
+    This is MEMORY/evidence, not a new model: it learns by accumulating rounds, never by fitting."""
+    import math
+    conn = None
+    try:
+        mb = 0 if abs(current_move) < 10 else 1 if abs(current_move) < 25 else 2 if abs(current_move) < 50 else 3
+        rf = "TREND" if str(regime or "").startswith("TREND") else ("RANGE" if regime == "RANGE" else "OTHER")
+        conn = _connect(read_only=False)
+        base = """
+            WITH late AS (
+                SELECT cs.round_id, cs.current_position, cs.seconds_left, cs.p_hold, cs.current_move,
+                       cs.regime, ROW_NUMBER() OVER (PARTITION BY cs.round_id ORDER BY cs.ts DESC) rn
+                FROM champion_snapshots cs
+                WHERE cs.seconds_left BETWEEN 10 AND 150 AND cs.p_hold IS NOT NULL AND cs.horizon = ?
+            )
+            SELECT COUNT(*) n,
+                   SUM(CASE WHEN l.current_position = p.actual_direction THEN 1 ELSE 0 END) k
+            FROM late l JOIN price_to_beat p ON l.round_id = p.id
+            WHERE l.rn = 1 AND p.actual_direction IN ('UP','DOWN')
+              AND l.current_position IN ('UP','DOWN')
+              AND ABS(l.seconds_left - ?) <= ?
+              AND ABS(l.p_hold - ?) <= ?
+              AND (CASE WHEN ABS(l.current_move) < 10 THEN 0 WHEN ABS(l.current_move) < 25 THEN 1
+                        WHEN ABS(l.current_move) < 50 THEN 2 ELSE 3 END) = ?
+              AND (? = 0 OR (CASE WHEN l.regime LIKE 'TREND%' THEN 'TREND'
+                                  WHEN l.regime = 'RANGE' THEN 'RANGE' ELSE 'OTHER' END) = ?)
+        """
+        for relax, (bs, bp, use_reg) in enumerate([(20, 0.04, 1), (30, 0.06, 0), (40, 0.08, 0)]):
+            n, k = conn.execute(base, (int(horizon), float(seconds_left), bs, float(p_hold), bp,
+                                       mb, use_reg, rf)).fetchone()
+            n, k = int(n or 0), int(k or 0)
+            if n >= 30:
+                p = k / n
+                d = 1 + 1.96 * 1.96 / n
+                lb = (p + 1.96 * 1.96 / (2 * n)) / d - 1.96 * math.sqrt(
+                    p * (1 - p) / n + 1.96 * 1.96 / (4 * n * n)) / d
+                return {"n": n, "held_pct": round(p * 100, 1),
+                        "wilson_lb": round(lb * 100, 1), "relaxed": relax}
+        return None
+    except Exception as e:
+        print(f"DuckDB similar-setup lookup skipped: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_rule_paper_trade(round_id: str, rule: str, ts: int, horizon: int, side: str,
+                         ask: float, bid: float, fee: float, spread: float, depth: float,
+                         action: str, pnl=None, outcome=None, settled_ts=None, btc_entry=None,
+                         state=None):
+    """FORWARD PAPER LEDGER for a frozen/shadow rule: one row per round the rule EVALUATED,
+    including SKIP/NO_QUOTE rows so denominators stay honest. INSERT OR IGNORE: the first
+    evaluation of a round wins (one entry per round). Rows may arrive PRE-SETTLED (pnl +
+    settled_ts set) for shadow strategies that exit mid-round; the generic round-resolve
+    settle only touches rows whose settled_ts is NULL. Crash-safe."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            INSERT OR IGNORE INTO rule_paper_trades
+            (round_id, rule, ts, horizon, side, ask, bid, fee, spread, depth, action,
+             outcome, pnl, settled_ts, btc_entry, btc_exit, state_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        """, (str(round_id), rule, int(ts), int(horizon), side or "", float(ask or 0.0),
+              float(bid or 0.0), float(fee or 0.0), float(spread or 0.0), float(depth or 0.0),
+              action, outcome,
+              float(pnl) if pnl is not None else None,
+              int(settled_ts) if settled_ts is not None else None,
+              float(btc_entry) if btc_entry is not None else None,
+              json.dumps(state, separators=(",", ":")) if state is not None else None))
+    except Exception as e:
+        print(f"DuckDB rule-paper-trade insert error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def rule_paper_recent(limit: int = 14):
+    """Most recent rule-ledger ACTIONS across all rules/shadows -- the UI's live action feed
+    ("everything recorded AND visible"). Returns newest-first list of plain dicts; [] on failure."""
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT rule, ts, horizon, side, ask, action, outcome, pnl, settled_ts
+            FROM rule_paper_trades
+            WHERE action = 'ENTER'
+            ORDER BY COALESCE(settled_ts, ts) DESC
+            LIMIT ?
+        """, (int(limit),)).fetchall()
+        return [{"rule": r[0], "ts": int(r[1]), "horizon": int(r[2]), "side": r[3],
+                 "ask": round(float(r[4]), 3) if r[4] is not None else None,
+                 "action": r[5], "outcome": r[6],
+                 "pnl_c": round(float(r[7]) * 100, 1) if r[7] is not None else None,
+                 "settled_ts": int(r[8]) if r[8] is not None else None}
+                for r in rows]
+    except Exception as e:
+        print(f"DuckDB rule-paper recent error: {e}")
+        return []
+
+
+def rule_paper_ledger(limit: int = 300):
+    """FULL TRADE BLOTTER for the Trades tab: every paper entry (all rules/shadows) with buy price,
+    net exit value, per-trade P/L, plus per-rule and overall aggregates (win rate, totals). Exit
+    value is reconstructed as pnl + ask + entry_fee = net proceeds (settle value for holds; bid
+    minus exit fee for early exits). Returns plain dicts; {} on failure. Read-only aggregate."""
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT rule, ts, horizon, side, ask, bid, fee, spread, action, outcome, pnl,
+                   settled_ts, round_id, btc_entry, btc_exit, exit_gross, exit_fee, exit_reason
+            FROM rule_paper_trades WHERE action = 'ENTER'
+            ORDER BY COALESCE(settled_ts, ts) DESC LIMIT ?
+        """, (int(limit),)).fetchall()
+        trades = []
+        for r in rows:
+            pnl = float(r[10]) if r[10] is not None else None
+            exit_gross = float(r[15]) if r[15] is not None else None
+            exit_fee = float(r[16] or 0.0)
+            exit_net = (
+                round(exit_gross - exit_fee, 4)
+                if exit_gross is not None
+                else round(pnl + float(r[4]) + float(r[6]), 4) if pnl is not None else None
+            )
+            expected_pnl = (
+                exit_gross - exit_fee - float(r[4]) - float(r[6])
+                if exit_gross is not None and pnl is not None else None
+            )
+            trades.append({"rule": r[0], "ts": int(r[1]), "horizon": int(r[2]), "side": r[3],
+                           "buy_at": round(float(r[4]), 4),
+                           "entry_bid": round(float(r[5]), 4),
+                           "fee": round(float(r[6]), 4),
+                           "entry_spread": round(float(r[7]), 4),
+                           "exit_gross": round(exit_gross, 4) if exit_gross is not None else None,
+                           "exit_fee": round(exit_fee, 4) if exit_gross is not None else None,
+                           "exit_net": exit_net, "exit_reason": r[17], "outcome": r[9],
+                           "pnl_c": round(pnl * 100, 2) if pnl is not None else None,
+                           "accounting_verified": (
+                               abs(pnl - expected_pnl) <= 1e-8 if expected_pnl is not None else None
+                           ),
+                           "settled": r[11] is not None, "round_id": r[12],
+                           "btc_entry": round(float(r[13]), 2) if r[13] is not None else None,
+                           "btc_exit": round(float(r[14]), 2) if r[14] is not None else None})
+        agg = conn.execute("""
+            SELECT rule, horizon,
+                   COUNT(*)                                            n_entered,
+                   COUNT(*) FILTER (WHERE pnl IS NOT NULL)             n_settled,
+                   COUNT(*) FILTER (WHERE pnl > 0)                     wins,
+                   COALESCE(SUM(pnl), 0)                               total,
+                   AVG(pnl)                                            avg_pnl
+            FROM rule_paper_trades WHERE action = 'ENTER'
+            GROUP BY rule, horizon ORDER BY total DESC
+        """).fetchall()
+        # per (rule, horizon) so the UI can show 5m and 15m separately; the frontend
+        # merges rows per rule for the ALL view.
+        per_rule = [{"rule": a[0], "horizon": int(a[1]), "n_entered": int(a[2]),
+                     "n_settled": int(a[3]), "wins": int(a[4]),
+                     "win_rate": round(a[4] / a[3] * 100, 1) if a[3] else None,
+                     "total_c": round(float(a[5]) * 100, 1),
+                     "avg_c": round(float(a[6]) * 100, 2) if a[6] is not None else None}
+                    for a in agg]
+        n_set = sum(p["n_settled"] for p in per_rule)
+        wins = sum(p["wins"] for p in per_rule)
+        overall = {"n_entered": sum(p["n_entered"] for p in per_rule), "n_settled": n_set,
+                   "wins": wins, "win_rate": round(wins / n_set * 100, 1) if n_set else None,
+                   "total_c": round(sum(p["total_c"] for p in per_rule), 1)}
+        action_rows = conn.execute("""
+            SELECT rule, horizon, action, COUNT(*)
+            FROM rule_paper_trades
+            GROUP BY rule, horizon, action
+            ORDER BY rule, horizon, action
+        """).fetchall()
+        attempts = [{"rule": row[0], "horizon": int(row[1]), "action": row[2],
+                     "count": int(row[3])} for row in action_rows]
+        return {"trades": trades, "per_rule": per_rule, "attempts": attempts,
+                "overall": overall}
+    except Exception as e:
+        print(f"DuckDB rule-paper ledger error: {e}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
+def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int,
+                           outcome: str = "EARLY_EXIT", btc_exit=None,
+                           exit_gross=None, exit_fee: float = 0.0, state=None):
+    """Close an OPEN shadow-rule row mid-round (TP/SL/time-stop exit at the live bid). Only rows
+    not yet settled are touched; the later round-resolve settle then skips them. Crash-safe."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            UPDATE rule_paper_trades
+            SET pnl = CASE WHEN ? IS NOT NULL THEN ? - ? - ask - fee ELSE ? END,
+                outcome = ?, settled_ts = ?, btc_exit = COALESCE(?, btc_exit),
+                exit_gross = ?, exit_fee = ?, exit_reason = ?,
+                state_json = COALESCE(?, state_json)
+            WHERE round_id = ? AND rule = ? AND settled_ts IS NULL
+        """, (float(exit_gross) if exit_gross is not None else None,
+              float(exit_gross) if exit_gross is not None else None,
+              float(exit_fee or 0.0), float(pnl), outcome, int(settled_ts),
+              float(btc_exit) if btc_exit is not None else None,
+              float(exit_gross) if exit_gross is not None else None,
+              float(exit_fee or 0.0) if exit_gross is not None else None,
+              outcome,
+              json.dumps(state, separators=(",", ":")) if state is not None else None,
+              str(round_id), rule))
+    except Exception as e:
+        print(f"DuckDB rule-paper-trade close error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def settle_rule_paper_trades(round_id: str, outcome: str, settled_ts: int, btc_exit=None):
+    """Settle every open paper trade for a resolved round: pnl = settle_value - ask - fee
+    (winner pays 1/share, loser 0; entry fee already recorded; hold-to-settle = no exit fee).
+    Only ENTER rows get a pnl; SKIP/NO_QUOTE rows just record the outcome. Crash-safe.
+
+    side='BOTH' (straddles) settles at 1.0: one leg always pays exactly $1 at settlement.
+    Normally the tracker's special straddle close (leg TP values from memory) runs FIRST and
+    sets settled_ts, so this only catches straddle rows orphaned by a mid-round restart —
+    without it they'd settle as (0 − both_asks − fees), a fake total loss."""
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT rule, side, ask, fee, action, state_json
+            FROM rule_paper_trades
+            WHERE round_id = ? AND settled_ts IS NULL
+        """, (str(round_id),)).fetchall()
+        for rule, side, ask, entry_fee, action, state_json in rows:
+            exit_gross = None
+            exit_fee = None
+            pnl = None
+            if action == "ENTER":
+                exit_gross = 1.0 if side == outcome else 0.0
+                exit_fee = 0.0
+                if side == "BOTH":
+                    # Persisted leg state makes partial straddle exits restart-safe. Legacy
+                    # rows without state retain the conservative $1 settlement floor.
+                    state = None
+                    try:
+                        state = json.loads(state_json) if state_json else None
+                    except Exception:
+                        state = None
+                    if isinstance(state, dict) and "up" in state and "dn" in state:
+                        exit_gross = 0.0
+                        exit_fee = 0.0
+                        for leg, leg_side in (("up", "UP"), ("dn", "DOWN")):
+                            leg_state = state.get(leg) or {}
+                            if leg_state.get("exit_bid") is not None:
+                                exit_gross += float(leg_state["exit_bid"])
+                                exit_fee += float(leg_state.get("exit_fee") or 0.0)
+                            else:
+                                exit_gross += 1.0 if outcome == leg_side else 0.0
+                    else:
+                        exit_gross = 1.0
+                        exit_fee = 0.0
+                pnl = float(exit_gross) - float(exit_fee) - float(ask) - float(entry_fee)
+            conn.execute("""
+                UPDATE rule_paper_trades
+                SET outcome = ?, settled_ts = ?, btc_exit = COALESCE(?, btc_exit),
+                    pnl = ?, exit_gross = ?, exit_fee = ?, exit_reason = 'SETTLED'
+                WHERE round_id = ? AND rule = ? AND settled_ts IS NULL
+            """, (outcome, int(settled_ts),
+                  float(btc_exit) if btc_exit is not None else None,
+                  pnl, exit_gross, exit_fee, str(round_id), rule))
+    except Exception as e:
+        print(f"DuckDB rule-paper-trade settle error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def update_rule_paper_state(round_id: str, rule: str, state) -> None:
+    """Persist mutable strategy state without closing the paper trade."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("""
+            UPDATE rule_paper_trades SET state_json = ?
+            WHERE round_id = ? AND rule = ? AND settled_ts IS NULL
+        """, (json.dumps(state, separators=(",", ":")), str(round_id), rule))
+    except Exception as exc:
+        print(f"DuckDB rule-paper state update error: {exc}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def fetch_open_rule_paper_states(round_id: str) -> dict:
+    """Load crash-safe state for open early-exit/multi-leg strategies in a round."""
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT rule, state_json FROM rule_paper_trades
+            WHERE round_id = ? AND action = 'ENTER' AND settled_ts IS NULL
+              AND state_json IS NOT NULL
+        """, (str(round_id),)).fetchall()
+        out = {}
+        for rule, raw in rows:
+            try:
+                state = json.loads(raw)
+                if isinstance(state, dict):
+                    out[str(rule)] = state
+            except Exception:
+                continue
+        return out
+    except Exception as exc:
+        print(f"DuckDB rule-paper state restore error: {exc}")
+        return {}
+    finally:
+        if conn:
+            conn.close()
+
+
+def invalidate_price_to_beat(round_id: str):
+    """Atomically remove a round with an unrecoverable same-feed boundary."""
+    conn = None
+    try:
+        conn = _connect()
+        conn.execute("BEGIN TRANSACTION")
+        for table in (
+            "rule_paper_trades",
+            "persistence_snapshot",
+            "champion_snapshots",
+            "round_state_snapshots",
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE round_id = ?", (str(round_id),))
+        conn.execute("DELETE FROM price_to_beat WHERE id = ?", (str(round_id),))
+        conn.execute("COMMIT")
+    except Exception:
+        if conn is not None:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def rule_paper_summary(rule: str = "LATE_LEADER_30S_V1"):
+    """Aggregate the forward paper ledger for the RULE STATUS tile: n entered/settled, mean EV,
+    normal-approx 95% LB, profit factor, win rate, ISO-week stability, quote coverage. Returns a
+    plain dict (None on failure/empty). Cheap: the ledger grows ~a few hundred rows/day."""
+    import math
+    conn = None
+    try:
+        conn = _connect()
+        row = conn.execute("""
+            SELECT COUNT(*) FILTER (WHERE action = 'ENTER')                          AS n_entered,
+                   COUNT(*) FILTER (WHERE action = 'ENTER' AND pnl IS NOT NULL)      AS n_settled,
+                   COUNT(*) FILTER (WHERE action = 'NO_QUOTE')                       AS n_noquote,
+                   COUNT(*)                                                          AS n_evaluated,
+                   AVG(pnl)    FILTER (WHERE pnl IS NOT NULL)                        AS ev,
+                   STDDEV(pnl) FILTER (WHERE pnl IS NOT NULL)                        AS sd,
+                   SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END)                        AS gross_win,
+                   -SUM(CASE WHEN pnl <= 0 THEN pnl ELSE 0 END)                      AS gross_loss,
+                   AVG(CASE WHEN pnl IS NOT NULL THEN (pnl > 0)::INT END)            AS win_rate,
+                   SUM(pnl) FILTER (WHERE pnl IS NOT NULL)                           AS total_pnl
+            FROM rule_paper_trades WHERE rule = ?
+        """, (rule,)).fetchone()
+        if not row or not row[3]:
+            return None
+        n_ent, n_set, n_nq, n_eval, ev, sd, gw, gl, wr, tot = row
+        n_set = int(n_set or 0)
+        lb = None
+        if n_set >= 2 and ev is not None and sd is not None:
+            lb = float(ev) - 1.96 * float(sd) / math.sqrt(n_set)
+        wk = conn.execute("""
+            SELECT COUNT(DISTINCT wk) FILTER (WHERE wpnl > 0), COUNT(DISTINCT wk) FROM (
+                SELECT DATE_TRUNC('week', TO_TIMESTAMP(ts / 1000)) wk, SUM(pnl) wpnl
+                FROM rule_paper_trades WHERE rule = ? AND pnl IS NOT NULL GROUP BY 1)
+        """, (rule,)).fetchone()
+        pf = (float(gw) / float(gl)) if gl and float(gl) > 0 else None
+        # Ask-bucket diagnostic (2026-07-04): offline, the EV lived in mid-priced asks (50–90c)
+        # and 90c+ added ~nothing. This splits the LIVE result the same way so a drawdown can be
+        # attributed to its bucket instead of guessed at. Diagnostic only — not a re-tuning input.
+        bk = conn.execute("""
+            SELECT CASE WHEN ask < 0.70 THEN '60-70c' WHEN ask < 0.80 THEN '70-80c'
+                        WHEN ask < 0.90 THEN '80-90c' ELSE '90c+' END bucket,
+                   COUNT(*), AVG((pnl > 0)::INT), AVG(pnl), SUM(pnl)
+            FROM rule_paper_trades
+            WHERE rule = ? AND action = 'ENTER' AND pnl IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+        """, (rule,)).fetchall()
+        ask_buckets = [{"bucket": b[0], "n": int(b[1]),
+                        "win_rate": round(float(b[2]) * 100, 1) if b[2] is not None else None,
+                        "ev_c": round(float(b[3]) * 100, 2) if b[3] is not None else None,
+                        "total_c": round(float(b[4]) * 100, 1) if b[4] is not None else None}
+                       for b in bk]
+        return {"rule": rule, "n_entered": int(n_ent or 0), "n_settled": n_set,
+                "n_evaluated": int(n_eval or 0), "n_noquote": int(n_nq or 0),
+                "ev_c": round(float(ev) * 100, 2) if ev is not None else None,
+                "ev_lb_c": round(lb * 100, 2) if lb is not None else None,
+                "pf": round(pf, 2) if pf is not None else None,
+                "win_rate": round(float(wr) * 100, 1) if wr is not None else None,
+                "total_pnl_c": round(float(tot) * 100, 1) if tot is not None else None,
+                "weeks_positive": int(wk[0] or 0), "weeks_total": int(wk[1] or 0),
+                "ask_buckets": ask_buckets}
+    except Exception as e:
+        print(f"DuckDB rule-paper summary error: {e}")
+        return None
     finally:
         if conn:
             conn.close()
@@ -811,6 +1286,60 @@ def log_champion_snapshot(round_data: dict, ts: int):
         ))
     except Exception as e:
         print(f"DuckDB champion-snapshot Insert Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def log_round_state_snapshot(round_data: dict, ts: int):
+    """Append one live round-state shadow-panel snapshot for later calibration.
+
+    Captures the flip-risk / late-shock $20/$50/$100 / next-opportunity probabilities the
+    panel displayed, plus the composed action. Outcomes are joined later from price_to_beat
+    by round_id (same lightweight pattern as champion_snapshots). SHADOW/INFO only — these
+    heads never change Champion behavior; this table exists purely to measure live calibration.
+    """
+    conn = None
+    try:
+        rs = round_data.get("round_state") or {}
+        if not rs:
+            return
+        flip = rs.get("flip_risk") or {}
+        shock = rs.get("late_shock") or {}
+        nxt = rs.get("next_three_rounds") or {}
+        execu = rs.get("execution") or {}
+
+        def _p(x):
+            return float(x) if x is not None else None
+
+        conn = _connect()
+        conn.execute("""
+            INSERT OR REPLACE INTO round_state_snapshots
+            (round_id, ts, horizon, seconds_left, current_position, current_move,
+             p_leader_holds, flip_risk, flip_risk_status,
+             late_shock_20, late_shock_50, late_shock_100,
+             next_opportunity, round_type, action, execution_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(round_data.get("id") or ""),
+            int(ts),
+            int(rs.get("horizon") or round_data.get("horizon") or 0),
+            int(rs.get("seconds_left") or round_data.get("seconds_left") or 0),
+            str(rs.get("leader") or ""),
+            float(rs.get("leader_move_usd") or 0.0),
+            _p(rs.get("p_leader_holds")),
+            _p(flip.get("probability")),
+            str(flip.get("status") or ""),
+            _p((shock.get("20") or {}).get("probability")),
+            _p((shock.get("50") or {}).get("probability")),
+            _p((shock.get("100") or {}).get("probability")),
+            _p(nxt.get("probability")),
+            str(rs.get("round_type") or ""),
+            str(rs.get("action") or ""),
+            str(execu.get("status") or ""),
+        ))
+    except Exception as e:
+        print(f"DuckDB round-state-snapshot Insert Error: {e}")
     finally:
         if conn:
             conn.close()
@@ -1748,6 +2277,34 @@ def fetch_ab_variant_stats() -> dict:
             conn.close()
     return out
 
+
+def fetch_ab_paired_outcomes(primary_variant: str, challenger_variant: str) -> list[tuple[bool, bool]]:
+    """Return exact primary/challenger hit pairs for the same resolved prediction.
+
+    Aggregate hit counts cannot be rearranged into paired evidence after a restart. The
+    promotion bootstrap must compare both variants on identical prediction IDs.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT p.hit, c.hit
+            FROM ab_results p
+            JOIN ab_results c
+              ON c.pred_id = p.pred_id AND c.horizon = p.horizon
+            WHERE p.variant = ? AND c.variant = ?
+              AND p.resolved = TRUE AND c.resolved = TRUE
+              AND p.hit IS NOT NULL AND c.hit IS NOT NULL
+            ORDER BY p.timestamp, p.pred_id
+        """, (primary_variant, challenger_variant)).fetchall()
+        return [(bool(p_hit), bool(c_hit)) for p_hit, c_hit in rows]
+    except Exception as exc:
+        print(f"DuckDB A/B Paired Outcomes Error: {exc}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
 def fetch_ab_variant_profit_stats() -> dict:
     """Cost-adjusted per-variant trade stats from resolved A/B rows.
 
@@ -1907,6 +2464,23 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                 float(context.get("confluence", 0.0)),
                 pred_id,
             ))
+        # Keep the first-class per-base-model ledger in sync with the ensemble
+        # row. The UI and weight audits query model_predictions; storing votes
+        # only in model_dirs_json left that table stale after architecture changes.
+        direction_labels = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
+        for model_name, model_direction in (model_dirs or {}).items():
+            try:
+                direction = direction_labels.get(int(model_direction), "NEUTRAL")
+            except (TypeError, ValueError):
+                direction = "NEUTRAL"
+            conn.execute("""
+                INSERT OR REPLACE INTO model_predictions
+                (id, model, timestamp, horizon, ref_price, direction, verify_at, resolved)
+                VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)
+            """, (
+                f"{pred_id}::{model_name}", str(model_name), int(timestamp),
+                int(horizon), float(binance_price), direction, int(verify_at or 0),
+            ))
     except Exception as e:
         print(f"DuckDB Insert Error: {e}")
     finally:
@@ -1926,6 +2500,15 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
             WHERE id = ?
         """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
               lean_hit, True, pred_id))
+        strict_direction = "UP" if float(actual_move or 0.0) >= 0.0 else "DOWN"
+        conn.execute("""
+            UPDATE model_predictions
+            SET actual_price = ?, actual_direction = ?,
+                hit = (direction = ?), resolved = TRUE
+            WHERE starts_with(id, ?)
+        """, (
+            float(actual_price), strict_direction, strict_direction, f"{pred_id}::",
+        ))
     except Exception as e:
         print(f"DuckDB Update Error: {e}")
     finally:
@@ -2094,7 +2677,7 @@ def log_raw_trade_parquet(trade: dict):
     if os.environ.get("BTC_LOG_TICKS_PARQUET", "0") != "1":
         return
     try:
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'trades')
+        data_dir = os.path.join(_DATA_DIR, 'trades')
         os.makedirs(data_dir, exist_ok=True)
         import datetime
         dt = datetime.datetime.fromtimestamp((trade.get("time", 0) / 1000) or time.time())
@@ -2133,7 +2716,7 @@ def log_depth_parquet(depth: dict):
     if os.environ.get("BTC_LOG_TICKS_PARQUET", "0") != "1":
         return
     try:
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'depth')
+        data_dir = os.path.join(_DATA_DIR, 'depth')
         os.makedirs(data_dir, exist_ok=True)
         import datetime
         dt = datetime.datetime.fromtimestamp((depth.get("time", 0) / 1000) or time.time())
@@ -2230,4 +2813,3 @@ def log_polymarket_paper_trade(trade: dict):
     finally:
         if conn:
             conn.close()
-

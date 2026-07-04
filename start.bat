@@ -23,10 +23,20 @@ REM microstructure features only fill from UPTIME, so after training, LEAVE IT R
 REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samples is enough to
 REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
-REM head. Set BTC_HISTORICAL_DAYS=180 (or 360) and big-move/up/down/drop/activity all retrain on
-REM that window. 180d is comfortable for the tiny heads; 360d works but the FIRST build downloads
-REM ~that many days of spot aggTrades (multi-GB, cached after) and the heads train ~1-2h.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=360"
+REM head (big-move/up/down/drop/activity, path forecaster, FADE model). Set the window here and every
+REM model retrains on it. Long windows are resumable through the daily-file cache, but 1500d is a
+REM multi-day first build. Do not expect the old 360/400d 18-36h estimate to apply.
+REM 1500d (operator-approved, 2026-07-03): multi-regime window back to ~2022-05-25, including the
+REM 2022 bear and the 2024-26 cycles (archive availability verified for spot AND perp at the boundary
+REM date). Made safer by the bps-label upgrade (labels remain comparable across price levels) and the
+REM VALIDATED-REFIT flow (each head measures on its untouched recent tail,
+REM then -- gate permitting -- refits production on all rows with rotated calibration; candidate test
+REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~30 recent days
+REM genuinely unseen by the candidates. First build: ~200-230GB of new daily spot/perp downloads and a
+REM MULTI-DAY (2-5 day) run on this laptop; files are cached and reused by all builders afterwards.
+REM Main direction learners remain capped to a representative 40k samples because the measured
+REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1265"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
@@ -34,6 +44,8 @@ REM set BTC_BACKFILL_DAYS=60  (or 90) here or in the environment — all scripts
 if not defined BTC_BACKFILL_DAYS set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
 REM One-shot full retrain: marker is written only after all heads and the main ensemble save.
 set "BTC_RETRAIN_COMPLETION_MARKER=%BTC_DATA_DIR%\saved_models\full_retrain_%BTC_HISTORICAL_DAYS%d_complete.json"
+if "%BTC_FORCE_FULL_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
+REM Backward-compatible alias retained for older operator notes/scripts.
 if "%BTC_FORCE_360_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
 if exist "%BTC_RETRAIN_COMPLETION_MARKER%" (
     set "BTC_FORCE_HEAD_RETRAIN=0"
@@ -54,6 +66,19 @@ REM data" (operator 2026-06-14, wanted ~100%) while keeping ~5% recent rows to k
 REM expected-drop/up bands honest. Literal 1.0 would make the bands too narrow + backtest
 REM in-sample, so it is intentionally not allowed.
 if not defined BTC_TRAIN_SPLIT_FRAC set "BTC_TRAIN_SPLIT_FRAC=0.98"
+REM === EVALUATE -> FULL REFIT -> LIVE SHADOW =============================
+REM The 98%% candidate must pass its untouched 2%% tail before a second model is fit on
+REM all rows. The full-data model is staged, reloaded, smoke-tested, then installed as a
+REM SILENT A/B challenger. The incumbent keeps driving decisions until >=30 calendar days,
+REM >=500 resolved predictions, PF>1.20 and positive expectancy all pass live.
+if not defined BTC_FULL_REFIT_AFTER_GATE set "BTC_FULL_REFIT_AFTER_GATE=1"
+if not defined BTC_PROMOTION_MIN_HOLDOUT_SAMPLES set "BTC_PROMOTION_MIN_HOLDOUT_SAMPLES=1000"
+if not defined BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION set "BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION=0.48"
+if not defined BTC_PROMOTION_MAX_BRIER set "BTC_PROMOTION_MAX_BRIER=0.80"
+if not defined BTC_PROMOTION_MAX_ECE set "BTC_PROMOTION_MAX_ECE=0.20"
+if not defined BTC_PROMOTION_MAX_PRECISION_REGRESSION set "BTC_PROMOTION_MAX_PRECISION_REGRESSION=0.03"
+if not defined BTC_PROMOTION_MAX_BRIER_REGRESSION set "BTC_PROMOTION_MAX_BRIER_REGRESSION=0.03"
+if not defined BTC_PROMOTION_MAX_EVAL_SAMPLES set "BTC_PROMOTION_MAX_EVAL_SAMPLES=12000"
 REM =======================================================================
 REM Run a validation backtest automatically on startup (1 = on, 0 = off).
 REM OFF by default (2026-06-19): the replay is CPU-bound (BTC_BACKTEST_MAX_ROWS candles x 7 horizons)
@@ -124,27 +149,62 @@ if "%BTC_VALIDATE_STARTUP%"=="1" (
     echo [validate] days=%BTC_HISTORICAL_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
     echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%
     echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB%
+    echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%
     echo [validate] marker=%BTC_RETRAIN_COMPLETION_MARKER%
     exit /b 0
 )
 
+REM Stop an existing app BEFORE any multi-day data/model work. The old guard exited here,
+REM making the later port-8000 killer unreachable. start.bat is an explicit relaunch command;
+REM browser refreshes never invoke it. Set BTC_AUTO_STOP_EXISTING_APP=0 to warn and abort instead.
+if not defined BTC_AUTO_STOP_EXISTING_APP set "BTC_AUTO_STOP_EXISTING_APP=1"
+powershell -NoProfile -Command "$p = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if (-not $p) { exit 0 }; $p | ForEach-Object { Write-Host ('[preflight] port {0} is held by PID {1}' -f $_.LocalPort,$_.OwningProcess) }; if ('%BTC_AUTO_STOP_EXISTING_APP%' -ne '1') { exit 2 }; $p.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500; $left = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if ($left) { exit 3 }"
+if errorlevel 3 (
+    echo [preflight] ERROR: existing frontend/backend could not be stopped.
+    exit /b 1
+)
+if errorlevel 2 (
+    echo [preflight] ERROR: frontend/backend already active and auto-stop is disabled.
+    echo             Close them manually or set BTC_AUTO_STOP_EXISTING_APP=1.
+    exit /b 1
+)
+
+REM Long-window disk guard. Existing 400d cache is ~73GB; extending to 1500d plus the temporary
+REM pruned sequence memmap needs roughly 230-270GB more. Keep a safety margin for parquet rewrites.
+for /f %%G in ('powershell -NoProfile -Command "[math]::Floor((Get-PSDrive -Name C).Free / 1GB)"') do set "BTC_FREE_DISK_GB=%%G"
+for /f %%G in ('powershell -NoProfile -Command "@(Get-ChildItem -LiteralPath '%BTC_DATA_DIR%\backfill_cache' -Filter 'BTCUSDT*aggTrades-*.csv' -File -ErrorAction SilentlyContinue).Count"') do set "BTC_BACKFILL_CACHE_FILES=%%G"
+if not defined BTC_BACKFILL_CACHE_FILES set "BTC_BACKFILL_CACHE_FILES=0"
+echo [preflight] C: free disk=%BTC_FREE_DISK_GB%GB, cache files=%BTC_BACKFILL_CACHE_FILES%, requested window=%BTC_HISTORICAL_DAYS%d.
+REM A first long build needs the full 300GB margin. Once >=1000 daily source files are cached,
+REM a retry is a RESUME, not a first build; requiring 300GB free again would reject the run simply
+REM because completed downloads now occupy disk. Resumes retain a hard 80GB floor for the sequence
+REM memmap, staged candidate/full-refit bundles and DuckDB/parquet rewrites.
+powershell -NoProfile -Command "$days=[int]'%BTC_HISTORICAL_DAYS%'; $free=[int]'%BTC_FREE_DISK_GB%'; $cached=[int]'%BTC_BACKFILL_CACHE_FILES%'; if ($days -ge 1200 -and (($cached -lt 1000 -and $free -lt 300) -or ($cached -ge 1000 -and $free -lt 80))) { exit 2 }"
+if errorlevel 2 (
+    echo [preflight] ERROR: insufficient free disk for this long run.
+    echo             First build requires 300GB; a cached resume requires at least 80GB.
+    exit /b 1
+)
+
+REM One-time rollback snapshot before any forced head can replace an artifact. Robocopy exit
+REM codes 0-7 are success/nonfatal; 8+ means at least one copy failed and training must stop.
+if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not exist "%BTC_DATA_DIR%\saved_models_pre1500d_backup" (
+    echo [preflight] Backing up the current working model bundle before the long retrain...
+    robocopy "%BTC_DATA_DIR%\saved_models" "%BTC_DATA_DIR%\saved_models_pre1500d_backup" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
+    if errorlevel 8 (
+        echo [preflight] ERROR: model backup failed. Training has not started.
+        exit /b 1
+    )
+    echo [preflight] Model rollback snapshot ready: data\saved_models_pre1500d_backup
+)
+
 echo Starting BTC Quantum Trader...
 
-REM The profit-proof recorder is a lightweight standalone process. Start it before the
-REM heavy backfills so quotes and official settlements keep accruing during long training.
-REM Set BTC_SKIP_PM_RECORDER=1 only for offline work. DuckDB enforces a single writer.
-if "%BTC_SKIP_PM_RECORDER%"=="1" (
-    echo [recorder] Polymarket recorder skipped: BTC_SKIP_PM_RECORDER=1.
-) else (
-    echo [recorder] Starting Polymarket quote + official-settlement recorder...
-    start "BTC Polymarket Recorder" /min cmd /k call "%PROJECT_ROOT%start_recorder.bat"
-)
-if "%BTC_SKIP_MICROSTRUCTURE_RECORDER%"=="1" (
-    echo [recorder] Microstructure recorder skipped: BTC_SKIP_MICROSTRUCTURE_RECORDER=1.
-) else (
-    echo [recorder] Starting L2 and cross-exchange microstructure recorder...
-    start "BTC Microstructure Recorder" /min cmd /k call "%PROJECT_ROOT%start_microstructure_recorder.bat"
-)
+REM Start all record-forward collectors once. The PowerShell helper detects existing
+REM Python writers, skips duplicates, runs missing collectors hidden, and redirects
+REM stdout/stderr to data\*.log. Individual BTC_SKIP_* flags remain supported.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%backend\start_recorders_once.ps1"
+if errorlevel 1 echo [recorder] Recorder launcher failed - app startup will continue.
 
 REM === TRADE-FEATURE BACKFILL (incremental) ==============================
 REM Updates data\trade_features_backfill.parquet BEFORE the app starts so the
@@ -163,7 +223,9 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     echo [0/3] Data backfills skipped: BTC_SKIP_BACKFILL=1.
 ) else (
     echo [0/3] a. Updating trade-feature backfill - CVD/VPIN/large-trade...
-    python backend\backfill_trade_features.py --auto --days %BTC_BACKFILL_DAYS%
+    REM Keep extracted spot files: persistence and cross-venue builders immediately reuse them.
+    REM Without this flag a wide run downloads the same daily spot archive twice.
+    python backend\backfill_trade_features.py --auto --days %BTC_BACKFILL_DAYS% --keep-cache
     if errorlevel 1 echo [0/3a] Trade-feature backfill failed - continuing with existing data.
     echo [0/3] b. Updating A1 persistence dataset - late-entry/T3 engine...
     python backend\build_persistence_dataset.py --auto --days %BTC_BACKFILL_DAYS%
@@ -195,6 +257,12 @@ if errorlevel 1 (
     ) else (
         set "BTC_HEAD_RETRAIN_COMPLETE=1"
     )
+)
+if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not "%BTC_HEAD_RETRAIN_COMPLETE%"=="1" (
+    echo [0/3] ERROR: the 1500d matrix or a required specialist head failed.
+    echo       Main-ensemble training will NOT start against incomplete inputs.
+    echo       Fix the logged failure and run start.bat again; cached daily files are reused.
+    exit /b 1
 )
 echo [0/3] e. Data-quality health check - last 3 days - report only:
 python backend\data_quality_audit.py --days 3

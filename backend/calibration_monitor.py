@@ -1,8 +1,9 @@
 """
 calibration_monitor.py — live calibration drift monitor for P(hold) (Tier-1 #1).
 ================================================================================
-Calibration, not accuracy, is what the champion and the Polymarket edge gate consume
-(fair_value = P(hold)). This tool measures whether the SERVED P(hold) still means what it
+Calibration, not accuracy, is what the champion and the Polymarket edge gate consume.
+The live gate now caps entry fair value at the independent-entry lower bound, while this
+tool measures whether the SERVED P(hold) still means what it
 says — does "93%" still hold 93% of the time on REAL resolved rounds — and flags drift.
 
 Source (read-only, safe while the backend holds the DB):
@@ -43,17 +44,22 @@ OVERLAY = os.path.join(DATA_DIR, "saved_models", "phold_live_recal.pkl")
 TRAINED_CLAIM = {0.85: 0.921, 0.90: 0.946, 0.93: 0.963, 0.95: 0.972}
 MIN_ROWS = 200                 # below this we report "insufficient" rather than mislead
 DRIFT_TOL = 0.04               # realized more than 4 pts under the claim at a tier == drift
+ENTRY_HORIZONS = (5, 15)
+ENTRY_MIN_SECONDS = 15
+ENTRY_MAX_SECONDS = 120
+ENTRY_MIN_MOVE_USD = 10.0
 
 
 def _load_pairs():
-    """Return (p_hold, realized_hold, horizon) for resolved directional rounds, or None."""
+    """Return served snapshot rows joined to resolved rounds, or None."""
     import duckdb
     if not os.path.exists(DB_PATH):
         return None
     conn = duckdb.connect(DB_PATH, read_only=True)
     try:
         return conn.execute("""
-            SELECT cs.p_hold AS p, cs.horizon AS h,
+            SELECT cs.round_id, cs.ts, cs.p_hold AS p, cs.horizon AS h,
+                   cs.seconds_left, cs.current_move,
                    CASE WHEN cs.current_position = p.actual_direction THEN 1 ELSE 0 END AS y
             FROM champion_snapshots cs
             JOIN price_to_beat p ON p.id = cs.round_id
@@ -140,6 +146,55 @@ def _section(df, title):
     return L
 
 
+def _wilson_lb(k, n, z=1.96):
+    if n <= 0:
+        return None
+    phat = k / n
+    den = 1.0 + z * z / n
+    centre = phat + z * z / (2.0 * n)
+    margin = z * np.sqrt(phat * (1.0 - phat) / n + z * z / (4.0 * n * n))
+    return (centre - margin) / den
+
+
+def _first_qualifying_entries(df, threshold):
+    """Choose the first qualifying timestamp and at most one simulated entry per round."""
+    eligible = df[
+        df["h"].isin(ENTRY_HORIZONS)
+        & (df["p"] >= float(threshold))
+        & (df["seconds_left"] > ENTRY_MIN_SECONDS)
+        & (df["seconds_left"] <= ENTRY_MAX_SECONDS)
+        & (df["current_move"].abs() >= ENTRY_MIN_MOVE_USD)
+    ].copy()
+    if eligible.empty:
+        return eligible
+    return (eligible.sort_values(["ts", "round_id"])
+            .drop_duplicates("round_id", keep="first")
+            .reset_index(drop=True))
+
+
+def _entry_section(df):
+    lines = ["## Decision-Level Late-Entry Scorecard (Independent Rounds)", "",
+             "Each row counts at most one decision per round: the first 5m/15m snapshot that "
+             f"clears P(hold), {ENTRY_MIN_SECONDS}<seconds_left<={ENTRY_MAX_SECONDS}, and "
+             f"|move|>=${ENTRY_MIN_MOVE_USD:.0f}. This is side-hold precision, not profitability; "
+             "market ask, taker fee, spread, depth, and fill are not included.", "",
+             "| P(hold) >= | rounds | held | mean predicted | 95% Wilson lower bound |",
+             "|---:|---:|---:|---:|---:|"]
+    for threshold in sorted(TRAINED_CLAIM):
+        entries = _first_qualifying_entries(df, threshold)
+        n = len(entries)
+        if n == 0:
+            lines.append(f"| {threshold:.2f} | 0 | - | - | - |")
+            continue
+        held = float(entries["y"].mean())
+        lower = _wilson_lb(int(entries["y"].sum()), n)
+        lines.append(f"| {threshold:.2f} | {n:,} | {held*100:.1f}% | "
+                     f"{entries['p'].mean()*100:.1f}% | {lower*100:.1f}% |")
+    lines += ["", "Snapshot counts below are useful for drift diagnosis only. "
+              "Do not quote them as independent bets.", ""]
+    return lines
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--recalibrate", action="store_true",
@@ -155,9 +210,12 @@ def main():
 
     L = [f"# P(hold) Calibration Monitor — {datetime.now():%Y-%m-%d %H:%M}", "",
          "Does the SERVED P(hold) still mean what it says, on REAL resolved rounds? "
-         "fair_value = P(hold), so this is the calibration the champion + edge gate depend on. "
-         "Read-only; does not change serving.", ""]
-    L += _section(df, "Overall (all horizons)")
+         "The champion consumes this probability but caps entry fair value at 91c. "
+         "Read-only; does not change serving.", "",
+         "> Snapshot rows are repeated observations inside the same round. They diagnose "
+         "calibration drift but are not independent betting opportunities.", ""]
+    L += _entry_section(df)
+    L += _section(df, "Snapshot Diagnostics — Overall (all horizons)")
     for h in sorted(df["h"].unique()):
         sub = df[df["h"] == h]
         if len(sub) >= 100:

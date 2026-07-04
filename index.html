@@ -109,14 +109,21 @@
       </header>
 
       <nav class="app-tabs" aria-label="Dashboard views">
-        <button class="app-tab active" data-view="analysis">🧭 Decision</button>
-        <button class="app-tab" data-view="technical">📈 Markets &amp; Live Feed</button>
+        <!-- 2026-07-03 UI simplification (operator): two-tab layout — Polymarket (the game) +
+             Bitcoin (the market). The Decision/Markets/Diagnostics views remain in the DOM and
+             render code so nothing is lost; restore a tab button here to bring one back. -->
+        <button class="app-tab active" data-view="polymarket">🎯 Polymarket</button>
+        <button class="app-tab" data-view="trades" title="Every paper trade from all rules and shadows: buys, exits, P/L, win rates, totals">📒 Trades</button>
         <button class="app-tab" data-view="binance">₿ Bitcoin</button>
-        <button class="app-tab" data-view="polymarket">🎯 Polymarket</button>
-        <button class="app-tab" data-view="diagnostics">🔬 Diagnostics</button>
-        <a class="app-tab" href="/guide.html" target="_blank" rel="noopener"
-           style="text-decoration:none" title="Plain-English guide: every metric, every signal, how to decide">📖 Guide</a>
+        <button class="app-tab" data-view="tanalysis">📊 Analysis</button>
+        <a class="app-tab" href="/polymarket-betting.html" target="_blank" rel="noopener"
+           style="text-decoration:none" title="How to bet: which side, what price, when to sit out">📖 How to bet</a>
       </nav>
+
+      <!-- 📒 TRADES: full paper-trade blotter (all rules + shadows) — rendered by renderTradesBlotter() -->
+      <main class="hidden" id="trades-view" style="padding:0 .8rem .8rem">
+        <div id="trades-blotter" aria-live="polite">Loading trade ledger…</div>
+      </main>
 
       <!-- Dashboard Grid -->
       <main class="dashboard-grid hidden" id="technical-view">
@@ -354,7 +361,7 @@
       </main>
 
       <!-- Plain-English Analysis Tab -->
-      <main class="analysis-view" id="analysis-view">
+      <main class="analysis-view hidden" id="analysis-view">
 
         <!-- Decision-first cockpit: the simplest top-level flow -->
         <section class="decision-cockpit" id="decision-cockpit">
@@ -871,25 +878,41 @@
       </main>
 
       <!-- ═══ POLYMARKET VIEW (Pyth anchor — 5m/15m binary bets) ═══ -->
-      <main class="models-view hidden" id="polymarket-view">
+      <main class="models-view" id="polymarket-view">
         <section class="analysis-section">
           <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
-            <h2>🎯 Polymarket — Price to Beat (Pyth anchor)</h2>
-            <p>Dedicated to the Polymarket BTC up/down 5m &amp; 15m markets. Prices are from <strong>Pyth</strong>
-               (the settlement-oracle proxy) — both the live price and the price-to-beat. Model lean, setup
-               grade, path outlook, hold/exit advice, and the mirror win rate.</p>
+            <h2>🎯 Polymarket — BTC Up/Down 5m &amp; 15m</h2>
+            <p>Priced on <strong>Pyth</strong> (the settlement oracle). One card per round, top-down:
+               <strong>verdict → leader &amp; hold odds → risk tiles → projected path</strong>.
+               Hover any tile or chip for what it means; "Full detail" opens the evidence.</p>
           </div>
           <div id="pm-price-strip" style="margin:0 0 1rem;font-size:1.1em;"></div>
-          <div id="pm-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:.8rem;"></div>
+          <div class="round-state-board" id="pm-round-state" aria-live="polite">
+            <div class="round-state-empty">Waiting for synchronized 5m and 15m round state...</div>
+          </div>
+          <div id="pm-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:.8rem;"></div>
         </section>
         <section class="analysis-section">
           <div class="analysis-section-header" style="border-left:4px solid #ffd700; padding-left:1rem;">
-            <h2>Recent Resolved Rounds &amp; Win Rate</h2>
-            <p>Discipline: bet <strong>model</strong> leans only (fallback leans ≈ coin-flip), prefer grade <strong>A/B</strong> setups, skip CHOP/STRETCH outlooks.</p>
+            <h2>History — Resolved Rounds &amp; Win Rate</h2>
           </div>
           <div id="pm-accuracy" style="margin-bottom:.8rem;"></div>
           <div id="pm-grade-stats" style="margin-bottom:.8rem;"></div>
           <div id="pm-recent" class="action-log-wrap"></div>
+        </section>
+      </main>
+
+      <main class="models-view hidden" id="tanalysis-view">
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #64b5f6; padding-left:1rem;">
+            <h2>📊 Technical Analysis — Binance BTCUSDT</h2>
+            <p>Indicator <strong>signals</strong>, one tile each — hover for meaning. Context/timing only:
+               5m/15m direction is ≈coin-flip; no indicator here is a bet trigger.</p>
+          </div>
+          <div id="ta-consensus" style="margin:0 0 .8rem"></div>
+          <div id="ta-indicators" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:.6rem;margin-bottom:1rem"></div>
+          <h3 style="margin:.8rem 0 .4rem;color:var(--text-secondary);font-size:.85em;text-transform:uppercase;letter-spacing:.5px">Order flow — what the model sees</h3>
+          <div id="ta-flow" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:.6rem"></div>
         </section>
       </main>
 

@@ -3,7 +3,7 @@ analyze_pm_recorder.py — THE ceiling-breaker: is our P(Hold) mispriced by Poly
 =================================================================================================
 The only path past the direction ceiling is market mispricing, not a better BTC model. This measures:
 
-    EDGE = P(Hold of the current side) - market_ask(that side) - buffer
+    EDGE = P(Hold of the current side) - market_ask(that side) - taker_fee - buffer
 
 over the live-recorded rounds, and reports ROI / hit-rate at buffers 1c/2c/3c/5c. If `edge > 3c`
 yields positive ROI over enough resolved rounds, there is a real path; if every buffer fails,
@@ -14,7 +14,8 @@ Data (all read-only — safe while the app runs):
   • analytics.duckdb       : polymarket_quotes (market yes/no ask) + polymarket_markets (token map)
   • persistence_model.pkl  : computes P(Hold) from the snapshot (distance, seconds_left, side, vol_60s)
 
-ROI per trade (buy the held side at `ask`, hold to expiry): win -> (1-ask)/ask ; lose -> -1.
+ROI per trade uses the actual taker-fee-adjusted cost basis. Crypto fees follow
+`fee_per_share = 0.07 * ask * (1-ask)` unless the market reports a different schedule.
 
 Usage:  python backend/polymarket/analyze_pm_recorder.py
         python backend/polymarket/analyze_pm_recorder.py --selftest
@@ -28,6 +29,13 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 BUFFERS = (0.01, 0.02, 0.03, 0.05)
+CRYPTO_TAKER_FEE_RATE = 0.07
+ENTRY_FAIR_CAP = 0.91
+
+
+def _taker_fee_per_share(price, fee_rate=CRYPTO_TAKER_FEE_RATE):
+    p = np.clip(np.asarray(price, dtype=float), 0.0, 1.0)
+    return np.maximum(0.0, float(fee_rate)) * p * (1.0 - p)
 
 
 def _phold(distance_pct, seconds_left, vol_60s_pct, horizon):
@@ -104,7 +112,7 @@ def _first_signal_indices(edge, slugs, ts, buffer):
     return np.asarray(keep, dtype=int)
 
 
-def _roi_table(edge, won, ask, label, slugs=None, ts=None):
+def _roi_table(edge, won, ask, label, slugs=None, ts=None, fee=None):
     """ROI/hit-rate at each buffer, allowing at most one position per round."""
     print(f"\n  {label}: {len(edge)} eligible snapshots with an official outcome")
     print(f"    {'buffer':>7} {'n_trades':>9} {'win%':>7} {'avg_ROI':>9} {'total_ROI':>10}")
@@ -114,7 +122,10 @@ def _roi_table(edge, won, ask, label, slugs=None, ts=None):
         if n == 0:
             print(f"    {int(b*100):>6}c {'0':>9}  (none clear this buffer)"); continue
         w = won[idx].astype(bool); a = ask[idx]
-        roi = np.where(w, (1.0 - a) / np.maximum(a, 1e-6), -1.0)
+        f = (_taker_fee_per_share(a) if fee is None else np.asarray(fee, dtype=float)[idx])
+        cost_basis = a + f
+        pnl = np.where(w, 1.0 - cost_basis, -cost_basis)
+        roi = pnl / np.maximum(cost_basis, 1e-6)
         print(f"    {int(b*100):>6}c {n:>9} {w.mean()*100:>6.1f}% {roi.mean():>+9.3f} {roi.sum():>+10.2f}")
 
 
@@ -157,10 +168,9 @@ def run():
           f"{len(setts)} official settlements | source={recorder_source}")
     if len(snaps) == 0:
         sys.exit("no round snapshots yet — let live_btc_updown_recorder.py run, then rerun.")
-    # Before 2026-06-30, exact-slug discovery could first see an already-open round
-    # and silently use that late price as its anchor. Such rounds start more than five
-    # seconds after the timestamp encoded in the slug with exactly zero distance.
-    # Remove the entire round; it cannot support an honest P(Hold)/ROI test.
+    # A trustworthy round must begin within five seconds of the timestamp encoded in
+    # the slug. Positive delays are late manufactured anchors. Negative delays are
+    # smoke/future-round contamination from the old smoke path. Remove both.
     first = snaps.sort_values("ts").groupby("slug", as_index=False).first()
     invalid_slugs = set()
     for _, row in first.iterrows():
@@ -169,14 +179,14 @@ def run():
             quote_ts = float(row["ts"])
             if quote_ts > 1e11:
                 quote_ts /= 1000.0
-            if quote_ts - anchor_ts > 5.0 and abs(float(row["distance_pct"])) < 1e-12:
+            if abs(quote_ts - anchor_ts) > 5.0:
                 invalid_slugs.add(str(row["slug"]))
         except Exception:
             continue
     if invalid_slugs:
         before = len(snaps)
         snaps = snaps[~snaps["slug"].astype(str).isin(invalid_slugs)].reset_index(drop=True)
-        print(f"anchor-quality filter: removed {len(invalid_slugs)} late-anchored rounds / "
+        print(f"anchor-quality filter: removed {len(invalid_slugs)} off-open rounds / "
               f"{before - len(snaps)} snapshots")
     if len(snaps) == 0:
         sys.exit("no trustworthy near-open anchors remain; keep the fixed recorder running.")
@@ -228,13 +238,16 @@ def run():
         if not (0.0 < ask < 1.0):
             continue
         won = int(side == int(sett[s["slug"]]))
-        rows.append((float(s["p_hold"]) - ask, won, ask, str(s["slug"]), float(s["ts"])))
+        fee = float(_taker_fee_per_share([ask])[0])
+        fair = min(float(s["p_hold"]), ENTRY_FAIR_CAP)
+        rows.append((fair - ask - fee, won, ask, fee,
+                     str(s["slug"]), float(s["ts"])))
     if not rows:
         print("\nNo (snapshot↔quote↔outcome) joins yet — rerun as data accrues.")
         return
     edge = np.array([r[0] for r in rows]); won = np.array([r[1] for r in rows]); ask = np.array([r[2] for r in rows])
-    slugs = np.array([r[3] for r in rows]); ts = np.array([r[4] for r in rows])
-    _roi_table(edge, won, ask, "EDGE = best available P(Hold) - recorded ask", slugs=slugs, ts=ts)
+    fee = np.array([r[3] for r in rows]); slugs = np.array([r[4] for r in rows]); ts = np.array([r[5] for r in rows])
+    _roi_table(edge, won, ask, "EDGE = min(P(Hold), 91c) - ask - crypto taker fee", slugs=slugs, ts=ts, fee=fee)
     trade_counts = {b: len(_first_signal_indices(edge, slugs, ts, b)) for b in BUFFERS}
     if max(trade_counts.values(), default=0) < 500:
         print("\nINSUFFICIENT DATA: fewer than 500 one-entry-per-round signals. "
@@ -249,7 +262,9 @@ def selftest():
     # _roi_table math: a planted +edge winner set yields positive ROI; a losing set negative.
     edge = np.array([0.05, 0.04, 0.06, 0.02, 0.01])
     won = np.array([1, 1, 1, 0, 0]); ask = np.array([0.85, 0.88, 0.84, 0.90, 0.95])
-    roi = np.where(won.astype(bool), (1 - ask) / ask, -1.0)
+    fee = _taker_fee_per_share(ask)
+    cost = ask + fee
+    roi = np.where(won.astype(bool), (1 - cost) / cost, -1.0)
     assert roi[0] > 0 and roi[3] == -1.0, "ROI math wrong"
     # at buffer 3c, only the 3 winners (edge .05/.04/.06) clear -> all won -> positive
     m = edge >= 0.03

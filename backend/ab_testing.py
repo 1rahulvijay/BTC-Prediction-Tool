@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 class ModelVariant:
     """Wraps a MultiModelEnsemble with a configuration label for A/B tracking."""
 
-    def __init__(self, label: str, model):
+    def __init__(self, label: str, model, started_at: float = None):
         self.label = label
         self.model = model
+        self.started_at = float(started_at or time.time())
         self.predictions = []
         self.verified = []
         self.total_correct = 0
@@ -53,6 +54,8 @@ class ModelVariant:
             "total_predictions": self.total_predictions,
             "verified": len(self.verified),
             "accuracy": round(self.accuracy, 4),
+            "started_at": self.started_at,
+            "live_days": round(max(0.0, time.time() - self.started_at) / 86400.0, 3),
         }
 
 
@@ -175,9 +178,12 @@ class ABTestRunner:
                 "reason": "no_trained_challenger",
                 "promotion_criteria": {
                     "min_verified": 500,
+                    "min_paired": 500,
                     "min_live_days": 30,
                     "min_profit_factor": 1.20,
                     "requires_positive_ev": True,
+                    "requires_positive_accuracy_delta": True,
+                    "requires_positive_paired_bootstrap_lb": True,
                 },
             }
         if not getattr(self.challenger.model, "is_trained", False):
@@ -189,9 +195,12 @@ class ABTestRunner:
                 "promotion_recommendation": "keep_primary",
                 "promotion_criteria": {
                     "min_verified": 500,
+                    "min_paired": 500,
                     "min_live_days": 30,
                     "min_profit_factor": 1.20,
                     "requires_positive_ev": True,
+                    "requires_positive_accuracy_delta": True,
+                    "requires_positive_paired_bootstrap_lb": True,
                 },
             }
 
@@ -204,24 +213,45 @@ class ABTestRunner:
         )
         criteria = {
             "min_verified": 500,
+            "min_paired": 500,
             "min_live_days": 30,
             "min_profit_factor": 1.20,
             "requires_positive_ev": True,
+            "requires_positive_accuracy_delta": True,
+            "requires_positive_paired_bootstrap_lb": True,
         }
 
-        # Calculate 95% bootstrap lower bound for accuracy delta (legacy edge metric)
+        # Compare exact pairs from DuckDB. Reconstructing [hits..., misses...] from aggregate
+        # counts after a restart destroys pairing and can manufacture a false bootstrap win.
+        paired = []
+        if self.primary and self.challenger:
+            try:
+                paired = database.fetch_ab_paired_outcomes(
+                    self.primary.label, self.challenger.label
+                )
+            except Exception:
+                paired = []
+        if paired:
+            p_arr = np.asarray([p for p, _ in paired], dtype=float)
+            c_arr = np.asarray([c for _, c in paired], dtype=float)
+            accuracy_delta = float(c_arr.mean() - p_arr.mean())
+        else:
+            p_arr = c_arr = np.asarray([], dtype=float)
+
+        # Calculate a paired 95% bootstrap lower bound for accuracy delta.
         bootstrap_lower = 0.0
-        if len(self.challenger.verified) >= criteria["min_verified"] and len(self.primary.verified) >= criteria["min_verified"]:
-            n_min = min(len(self.challenger.verified), len(self.primary.verified))
-            c_arr = np.array(self.challenger.verified[-n_min:], dtype=float)
-            p_arr = np.array(self.primary.verified[-n_min:], dtype=float)
+        if len(paired) >= criteria["min_paired"]:
+            n_min = len(paired)
+            rng = np.random.default_rng(42)
             diffs = []
             for _ in range(1000):
-                idx = np.random.randint(0, n_min, n_min)
+                idx = rng.integers(0, n_min, n_min)
                 diffs.append(c_arr[idx].mean() - p_arr[idx].mean())
-            bootstrap_lower = float(np.percentile(diffs, 5))
+            bootstrap_lower = float(np.percentile(diffs, 2.5))
             
-        simulated_live_days = len(self.challenger.verified) / max(1.0, 1440.0)  # assume 1440 predictions/day
+        # Calendar evidence cannot be inferred from prediction count: horizons have
+        # different cadences and restarts change throughput. Use actual elapsed time.
+        simulated_live_days = max(0.0, time.time() - self.challenger.started_at) / 86400.0
         try:
             profit_stats = database.fetch_ab_variant_profit_stats()
         except Exception:
@@ -232,6 +262,9 @@ class ABTestRunner:
         challenger_trades = int(challenger_profit.get("trades", 0) or 0)
         
         passes_sample_size = len(self.challenger.verified) >= criteria["min_verified"]
+        passes_paired = len(paired) >= criteria["min_paired"]
+        passes_accuracy_delta = accuracy_delta > 0.0
+        passes_bootstrap = passes_paired and bootstrap_lower > 0.0
         passes_live_days = simulated_live_days >= criteria["min_live_days"]
         passes_profit_samples = challenger_trades >= criteria["min_verified"]
         passes_pf = passes_profit_samples and challenger_pf > criteria["min_profit_factor"]
@@ -239,6 +272,9 @@ class ABTestRunner:
 
         promotable = (
             passes_sample_size
+            and passes_paired
+            and passes_accuracy_delta
+            and passes_bootstrap
             and passes_live_days
             and passes_profit_samples
             and passes_pf
@@ -250,6 +286,7 @@ class ABTestRunner:
             "primary": self.primary.get_stats() if self.primary else {},
             "challenger": self.challenger.get_stats() if self.challenger else {},
             "total_comparisons": n,
+            "paired_resolved": len(paired),
             "agreement_rate": round(agree_count / max(1, n), 4),
             "disagreement_rate": round(disagreement_rate, 4),
             "accuracy_delta": round(accuracy_delta, 4),
@@ -261,10 +298,14 @@ class ABTestRunner:
             "promotion_criteria": criteria,
             "gates_passed": {
                 "sample_size": passes_sample_size,
+                "paired_sample_size": passes_paired,
+                "accuracy_delta": passes_accuracy_delta,
+                "paired_bootstrap_lb": passes_bootstrap,
                 "live_days": passes_live_days,
                 "profit_samples": passes_profit_samples,
                 "profit_factor": passes_pf,
                 "positive_ev": passes_ev
             },
+            "significant": bool(passes_bootstrap),
             "promotion_recommendation": "promote_challenger" if promotable else "keep_primary",
         }

@@ -207,10 +207,11 @@ if __name__ == "__main__":
     os.remove(tmp)
     print("shadow_store self-test PASSED")
 
-    # Create the REAL (empty) execution-layer DB so the schema is ready for wiring.
-    real = init_db()
-    real_tbls = sorted(r[0] for r in real.execute("SHOW TABLES").fetchall())
-    real.close()
-    print(f"Initialized {DB_PATH}")
-    print(f"  tables: {real_tbls}")
-    print("  (separate file — the live app's analytics.duckdb is untouched)")
+    # Never touch the live execution DB from a self-test. The recorder may own
+    # its Windows file lock, and a validation command must stay side-effect free.
+    if "--init-real" in __import__("sys").argv:
+        real = init_db()
+        real_tbls = sorted(r[0] for r in real.execute("SHOW TABLES").fetchall())
+        real.close()
+        print(f"Initialized {DB_PATH}")
+        print(f"  tables: {real_tbls}")

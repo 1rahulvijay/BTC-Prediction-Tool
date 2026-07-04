@@ -69,7 +69,8 @@ def main():
         # live regime). The old code calibrated cqr on an OLDER slice (60-80%) and tested on a more
         # volatile recent slice -> undercovered (~72%). Recency calibration restores honest ~80%
         # coverage going forward (standard fix for non-stationary CQR).
-        a = int(n * 0.8)
+        _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
+        a = int(n * _sf)                            # 98/2: fit = sf (98%); conformal-cal = recent 1-sf (2%)
         Xtr, ytr = Xh[:a], yh[:a]
         Xca, yca = Xh[a:], yh[a:]                   # recent slice = conformal calibration set
         q10, q50, q90 = _fit_q(Xtr, ytr, 0.10), _fit_q(Xtr, ytr, 0.50), _fit_q(Xtr, ytr, 0.90)

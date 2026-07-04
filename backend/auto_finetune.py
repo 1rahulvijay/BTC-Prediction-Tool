@@ -14,7 +14,7 @@ Payload = RECALIBRATION, not accuracy: with `--with-backfill` it appends new day
 recalibrate on the newer recent slice (the conformal cqr / isotonic that actually drift with vol).
 
 Usage:
-  python backend/auto_finetune.py                    # refit the 4 heads on existing data
+  python backend/auto_finetune.py                    # refit the cheap heads on existing data
   python backend/auto_finetune.py --with-backfill --days 90   # append new days, then refit (nightly)
   python backend/auto_finetune.py --dry-run          # show the plan, run nothing
 """
@@ -44,9 +44,18 @@ BACKFILL = [
 ]
 REFIT = [
     ("signed-quantile band (recalibrate cqr)", "train_signed_quantiles.py", [], False),
-    ("selectivity ensemble", os.path.join("decision", "train_selectivity_models.py"), [], False),
+    # selectivity ensemble REMOVED from the nightly refit (2026-07-02 wiring audit): it is trained
+    # version-aware at boot (train_heads.py) but NOTHING in the live serving path loads it -- the
+    # timing edge is carried live by the big-move keeper head. Nightly retraining an unserved model
+    # was pure wasted compute. Re-add here only when decision_composer actually serves it.
     ("persistence P(Hold)", "train_persistence_model.py", [], False),
     ("path forecaster (high/low band + touch)", "train_path_forecaster.py", [], False),
+    ("fade entry model (touch-context)", "train_fade_model.py", [], False),
+    # round-state shadow heads (flip risk / late-shock / next-opportunity) train from the SAME research
+    # matrix as the heads above; without this entry a full-window retrain refreshed every other cheap
+    # head but silently left the round-state panel on the old window (train_heads.py only retrains on
+    # VERSION change, not data change).
+    ("round-state shadow heads", "train_round_state_heads.py", [], False),
 ]
 
 
@@ -108,10 +117,16 @@ def main():
 def selftest():
     # dry-run plan builds without running anything; step scripts resolve to real paths or SKIP.
     steps = BACKFILL + REFIT
-    assert len(REFIT) == 4 and len(BACKFILL) == 4
+    assert len(BACKFILL) == 4
+    assert {s for _, s, _, _ in REFIT} == {
+        "train_signed_quantiles.py",
+        "train_persistence_model.py",
+        "train_path_forecaster.py",
+        "train_fade_model.py",
+        "train_round_state_heads.py",
+    }, "cheap-head refit plan changed; review this self-test and the operator docs"
     present = [s for _, s, _, _ in steps if os.path.exists(os.path.join(BACKEND, s))]
     assert os.path.exists(os.path.join(BACKEND, "train_signed_quantiles.py")), "missing band trainer"
-    assert os.path.exists(os.path.join(BACKEND, "decision", "train_selectivity_models.py")), "missing selectivity trainer"
     print(f"auto_finetune self-test: ALL PASS ({len(present)}/{len(steps)} step scripts present)")
 
 

@@ -29,6 +29,7 @@ import os
 
 import database
 import decision_champion
+import round_state_panel
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,280 @@ def _load_path_forecaster():
     return _PATH_FORECASTER
 
 
+_FADE_MODEL = None
+_FADE_MTIME = -2.0
+_FADE_CHECKED = 0.0
+_FADE_ERROR = ""
+
+# Reversal WINDOW favorability (from backtest_reversal_strategy.py --export-windows): per-CEST-hour + per-weekday
+# fade-reach-anchor rate / base. SOFT, informational prior surfaced on the card ("strong/weak reversal window"),
+# NOT a hard gate -- the time-of-day edge is real but modest and partly selection bias.
+_WINFAV = None
+_WINFAV_MTIME = -2.0
+_WINFAV_CHECKED = 0.0
+
+_PM_QUOTES = None
+_PM_QUOTES_MTIME = -2.0
+_PM_QUOTES_CHECKED = 0.0
+
+
+def _load_fade_model():
+    """FADE ENTRY head: P(this touch reverts to the anchor TP before the 2x stop) -- the HONEST
+    causal strict-label model (train_fade_model.py v5). Same keepers + timing + pre-touch context.
+    Used to grade a LIVE early touch; None until trained. mtime-reload, crash-safe."""
+    global _FADE_MODEL, _FADE_MTIME, _FADE_CHECKED, _FADE_ERROR
+    import time
+    now = time.time()
+    if _FADE_CHECKED and now - _FADE_CHECKED < 30.0:
+        return _FADE_MODEL
+    _FADE_CHECKED = now
+    try:
+        import joblib
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "saved_models", "fade_model.pkl")
+        mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+        if mt == _FADE_MTIME:
+            return _FADE_MODEL
+        _FADE_MTIME = mt
+        if mt < 0:
+            _FADE_ERROR = "missing"
+            return _FADE_MODEL
+        loaded = joblib.load(path)
+        from train_fade_model import HEAD_VERSION as expected_version
+        if not (loaded.get("features") and loaded.get("horizons")):
+            _FADE_MODEL = None
+            _FADE_ERROR = "incompatible fade-model schema"
+            return _FADE_MODEL
+        if (loaded.get("version") != expected_version
+                or not loaded.get("causal_touch_context")
+                or not loaded.get("ambiguous_touch_bars_excluded")
+                or loaded.get("live_supported") is not True):
+            _FADE_MODEL = None
+            _FADE_ERROR = (f"unsafe/stale fade model {loaded.get('version')}; "
+                           f"expected {expected_version}")
+            logger.warning(_FADE_ERROR + " -- live fade entry disabled until a challenger passes its frozen gate.")
+            return _FADE_MODEL
+        _FADE_MODEL = loaded
+        _FADE_ERROR = ""
+        logger.info(f"Fade entry head (re)loaded: version={loaded.get('version')}, features={loaded.get('features')}")
+    except Exception as _e:
+        _FADE_ERROR = str(_e)
+        logger.warning(f"Fade model reload failed; keeping prior model: {_e}")
+    return _FADE_MODEL
+
+
+def _load_window_favorability():
+    """Load the reversal window-favorability table (mtime-reload, crash-safe). None until exported."""
+    global _WINFAV, _WINFAV_MTIME, _WINFAV_CHECKED
+    import time
+    now = time.time()
+    if _WINFAV_CHECKED and now - _WINFAV_CHECKED < 300.0:
+        return _WINFAV
+    _WINFAV_CHECKED = now
+    try:
+        import json
+        import os
+        data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data")
+        path = os.path.join(data_dir, "reversal_window_favorability.json")
+        mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+        if mt == _WINFAV_MTIME:
+            return _WINFAV
+        _WINFAV_MTIME = mt
+        if mt < 0:
+            return _WINFAV
+        with open(path, "r", encoding="utf-8") as f:
+            _WINFAV = json.load(f)
+    except Exception as _e:
+        logger.debug(f"window-favorability load skipped: {_e}")
+    return _WINFAV
+
+
+def _window_quality(horizon, window_start_ms):
+    """Soft Europe/Warsaw local-hour x weekday reversal prior for display only.
+
+    Returns a
+    display dict or None. score>1 = historically above-average reversal window. NOT a hard gate."""
+    fav = _load_window_favorability()
+    if not fav or not window_start_ms:
+        return None
+    hz = fav.get("horizons", {}).get(str(int(horizon))) or fav.get("horizons", {}).get("5")
+    if not hz:
+        return None
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromtimestamp(int(window_start_ms) / 1000, tz=timezone.utc).astimezone(
+            ZoneInfo("Europe/Warsaw"))
+        hx = float((hz.get("hour") or {}).get(str(dt.hour), 1.0))
+        dx = float((hz.get("dow") or {}).get(str(dt.weekday()), 1.0))
+        score = hx * 0.7 + dx * 0.3          # hour is the stronger effect; weekday a lighter tilt
+        label = "STRONG" if score >= 1.10 else "WEAK" if score <= 0.90 else "OK"
+        tier = "Above-average" if score >= 1.10 else "Below-average" if score <= 0.90 else "Average"
+        return {"score": round(score, 2), "hour_x": round(hx, 2), "dow_x": round(dx, 2), "label": label,
+                "note": (f"{tier} reversal window ({dt.hour:02d}h Europe/Warsaw). "
+                         f"Soft prior — be more/less selective; not a hard gate.")}
+    except Exception:
+        return None
+
+
+def _market_quote_for_round(round_data, now_ms):
+    """Return a fresh executable quote from the recorder's atomic JSON bridge.
+
+    Matching fails closed on horizon, exact clock anchor, and quote age. The JSON bridge
+    avoids sharing the recorder's DuckDB writer lock with the backend process.
+    """
+    global _PM_QUOTES, _PM_QUOTES_MTIME, _PM_QUOTES_CHECKED
+    import json
+    import time
+    now = time.time()
+    if not _PM_QUOTES_CHECKED or now - _PM_QUOTES_CHECKED >= 0.5:
+        _PM_QUOTES_CHECKED = now
+        try:
+            data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "data")
+            path = os.path.join(data_dir, "pm_live_quotes.json")
+            mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+            if mt != _PM_QUOTES_MTIME:
+                _PM_QUOTES_MTIME = mt
+                if mt >= 0:
+                    with open(path, "r", encoding="utf-8") as f:
+                        _PM_QUOTES = json.load(f)
+        except Exception:
+            _PM_QUOTES = None
+    payload = _PM_QUOTES or {}
+    quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
+    if not quote:
+        return None
+    try:
+        expected_anchor = int(round_data.get("window_start") or 0) // 1000
+        quote_ts = float(quote.get("ts") or 0.0)
+        if int(quote.get("anchor_ts") or 0) != expected_anchor:
+            return None
+        if abs(float(now_ms) / 1000.0 - quote_ts) > 5.0:
+            return None
+        position = round_data.get("current_position")
+        if position not in ("UP", "DOWN"):
+            return None
+        prefix = "up" if position == "UP" else "down"
+        ask = float(quote[f"{prefix}_ask"])
+        bid = float(quote[f"{prefix}_bid"])
+        if not (0.0 <= bid <= ask < 1.0) or ask <= 0.0:
+            return None
+        spread = float(quote.get(f"{prefix}_spread") or ask - bid)
+        if spread < 0.0:
+            return None
+        return {
+            "slug": quote.get("slug"), "ts": quote_ts, "side": position,
+            "ask": ask, "bid": bid,
+            "spread": spread,
+            "depth": float(quote.get(f"{prefix}_top_ask_size") or 0.0),
+            "fees_enabled": quote.get("fees_enabled") is not False,
+            "fee_rate": float(quote.get("fee_rate") or 0.07),
+            "age_seconds": round(max(0.0, float(now_ms) / 1000.0 - quote_ts), 3),
+        }
+    except Exception:
+        return None
+
+
+def _leader_quote(round_data, now_ms):
+    """BOTH-sides view of the fresh bridge quote, picking the MARKET's leader (higher bid) --
+    the side LATE_LEADER_30S_V1 buys. Same fail-closed anchor/age checks as _market_quote_for_round
+    (which keeps the _PM_QUOTES cache warm every tick). Returns dict or None."""
+    payload = _PM_QUOTES or {}
+    quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
+    if not quote:
+        return None
+    try:
+        expected_anchor = int(round_data.get("window_start") or 0) // 1000
+        if int(quote.get("anchor_ts") or 0) != expected_anchor:
+            return None
+        if abs(float(now_ms) / 1000.0 - float(quote.get("ts") or 0.0)) > 5.0:
+            return None
+        ub, db_ = float(quote["up_bid"]), float(quote["down_bid"])
+        side = "UP" if ub > db_ else "DOWN"
+        pfx = "up" if side == "UP" else "down"
+        ask, bid = float(quote[f"{pfx}_ask"]), float(quote[f"{pfx}_bid"])
+        if not (0.0 <= bid <= ask < 1.0) or ask <= 0.0:
+            return None
+        fee_rate = float(quote.get("fee_rate") or 0.07)
+        fee = fee_rate * ask * (1.0 - ask) if quote.get("fees_enabled") is not False else 0.0
+        return {"side": side, "ask": ask, "bid": bid, "fee": fee,
+                "spread": round(ask - bid, 4),
+                "depth": float(quote.get(f"{pfx}_top_ask_size") or 0.0)}
+    except Exception:
+        return None
+
+
+def _live_share_prices_for_round(round_data, now_ms):
+    """Return both executable Polymarket contract quotes for the exact live round."""
+    payload = _PM_QUOTES or {}
+    quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
+    if not quote:
+        return None
+    try:
+        expected_anchor = int(round_data.get("window_start") or 0) // 1000
+        quote_ts = float(quote.get("ts") or 0.0)
+        if int(quote.get("anchor_ts") or 0) != expected_anchor:
+            return None
+        age = float(now_ms) / 1000.0 - quote_ts
+        if abs(age) > 5.0:
+            return None
+        fee_rate = float(quote.get("fee_rate") or 0.07)
+        fees_enabled = quote.get("fees_enabled") is not False
+        sides = {}
+        for side, prefix in (("UP", "up"), ("DOWN", "down")):
+            bid = float(quote[f"{prefix}_bid"])
+            ask = float(quote[f"{prefix}_ask"])
+            if not (0.0 <= bid <= ask <= 1.0) or ask <= 0.0:
+                return None
+            sides[side.lower()] = {
+                "bid": round(bid, 4),
+                "ask": round(ask, 4),
+                "spread": round(float(quote.get(f"{prefix}_spread") or ask - bid), 4),
+                "ask_size": round(float(quote.get(f"{prefix}_top_ask_size") or 0.0), 2),
+                "buy_fee": round(fee_rate * ask * (1.0 - ask), 5) if fees_enabled else 0.0,
+            }
+        return {
+            "slug": quote.get("slug"),
+            "ts": quote_ts,
+            "age_seconds": round(max(0.0, age), 3),
+            "fees_enabled": fees_enabled,
+            **sides,
+        }
+    except Exception:
+        return None
+
+
+def _side_quote(round_data, now_ms, side):
+    """Fresh bridge quote for ONE side ('UP'/'DOWN') -- used by the live SHADOW strategies to
+    track their entered side's bid after entry (the leader may have changed since). Same
+    fail-closed anchor/age checks as _leader_quote. Returns {ask,bid,fee} or None."""
+    payload = _PM_QUOTES or {}
+    quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
+    if not quote:
+        return None
+    try:
+        if int(quote.get("anchor_ts") or 0) != int(round_data.get("window_start") or 0) // 1000:
+            return None
+        if abs(float(now_ms) / 1000.0 - float(quote.get("ts") or 0.0)) > 5.0:
+            return None
+        pfx = "up" if side == "UP" else "down"
+        ask, bid = float(quote[f"{pfx}_ask"]), float(quote[f"{pfx}_bid"])
+        if not (0.0 <= bid <= ask < 1.0):
+            return None
+        rate = float(quote.get("fee_rate") or 0.07)
+        fees_on = quote.get("fees_enabled") is not False
+        return {"ask": ask, "bid": bid,
+                "fee_in": rate * ask * (1 - ask) if fees_on else 0.0,
+                "fee_out": rate * bid * (1 - bid) if fees_on else 0.0,
+                "spread": ask - bid}
+    except Exception:
+        return None
+
+
 def _predict_path_plan(bundle, horizon, keepers, price):
     """STABLE intra-window trade plan from live keepers: ENSEMBLE high/low band + touch / round-trip
     odds + net-drift + chop/trend style. Pure numpy; crash-safe at the call site. Once per window."""
@@ -251,11 +526,15 @@ def _predict_path_plan(bundle, horizon, keepers, price):
     x = np.array([values], dtype=float)
     _epred = lambda models: float(np.mean([m.predict(x)[0] for m in models]))
     _eproba = lambda models: float(np.mean([m.predict_proba(x)[:, 1][0] for m in models]))
+    # Headline HIGH/LOW = the likely REACH IF price moves that way = P75 of max_up / P25 of max_down.
+    # NOT the unconditional median (P50): a window is one-sided, so the median of each side blends in the
+    # opposite-direction windows (where that side's excursion is tiny) and badly understates the reach --
+    # which read as inconsistent with P(moves>=$X) on the card (operator-caught 2026-06-30).
     up50 = _epred(hz["qhi"][0.5]); dn50 = _epred(hz["qlo"][0.5])
-    up_lo = _epred(hz["qhi"][0.25]) - hz["conformal"]["up"]
-    up_hi = _epred(hz["qhi"][0.75]) + hz["conformal"]["up"]
-    dn_lo = _epred(hz["qlo"][0.25]) - hz["conformal"]["dn"]
-    dn_hi = _epred(hz["qlo"][0.75]) + hz["conformal"]["dn"]
+    up75 = _epred(hz["qhi"][0.75])
+    dn25 = _epred(hz["qlo"][0.25])
+    up_hi = up75 + hz["conformal"]["up"]
+    dn_lo = dn25 - hz["conformal"]["dn"]
     _bps = lambda v: price * v / 1e4
 
     def _p_move(dollars):
@@ -270,6 +549,15 @@ def _predict_path_plan(bundle, horizon, keepers, price):
     _te = hz.get("touch_early")   # v3+ only; backward-compatible (None on the v2 bundle)
     p_early = float(_te["iso"].transform([_eproba(_te["models"])])[0]) if _te else None
     p_move_50 = _p_move(50.0)
+    def _effective_touch_usd(nominal):
+        levels = bundle.get("touch_bps") or {}
+        if not levels:
+            return float(nominal)
+        key = min(levels, key=lambda value: abs(float(value) - float(nominal)))
+        return price * float(levels[key]) / 1e4
+
+    move_50_threshold_usd = _effective_touch_usd(50.0)
+    move_100_threshold_usd = _effective_touch_usd(100.0)
     style = None
     play = "WATCH"   # composed live engine: SKIP / FADE-SETUP / RIDE / WATCH
     if p_rt is not None:
@@ -294,21 +582,253 @@ def _predict_path_plan(bundle, horizon, keepers, price):
         else:
             play = "WATCH"                                  # mixed -> wait for the touch
     return {
-        "pred_high": round(price + _bps(up50)),
-        "pred_low": round(price + _bps(dn50)),
-        "high_band": [round(price + _bps(up_lo)), round(price + _bps(up_hi))],
-        "low_band": [round(price + _bps(dn_lo)), round(price + _bps(dn_hi))],
-        "pred_range_usd": round(_bps(up50 - dn50)),
+        "pred_high": round(price + _bps(up75)),          # likely up-reach (if it moves up), not the blended median
+        "pred_low": round(price + _bps(dn25)),           # likely down-reach (if it moves down)
+        "high_band": [round(price + _bps(up50)), round(price + _bps(up_hi))],   # typical -> extended up-reach
+        "low_band": [round(price + _bps(dn_lo)), round(price + _bps(dn50))],    # extended -> typical down-reach
+        "pred_range_usd": round(_bps(up50 - dn50)),      # typical TOTAL travel (one-sided; not high-low of the reaches)
         "p_move_50": round(p_move_50, 3),
         "p_move_100": round(_p_move(100.0), 3),
+        "move_50_threshold_usd": round(move_50_threshold_usd, 1),
+        "move_100_threshold_usd": round(move_100_threshold_usd, 1),
         "p_roundtrip": round(p_rt, 3) if p_rt is not None else None,
         "p_touch_asym": round(p_asym, 3) if p_asym is not None else None,
         "net_move_usd": round(net_mag) if net_mag is not None else None,
         "p_early": round(p_early, 3) if p_early is not None else None,
         "style": style,
         "play": play,
-        "threshold_units": "usd",
+        "threshold_units": "bps_labels_live_usd",
     }
+
+
+# Primary LIVE fade barrier. $30 (not $50) matches how Polymarket UP/DOWN shares actually reprice: a $20-30 move
+# near the anchor already swings the share price enough to fade, and $30 touches happen ~2x as often as $50 (more
+# setups). The multi-barrier fade model (train_fade_model.py v4) has a matching $30 head. The path STYLE / round-
+# trip context stays $50-based (a $50 chop window is also a $30 chop window). Set BTC_FADE_BARRIER to override.
+try:
+    FADE_L = float(os.environ.get("BTC_FADE_BARRIER", "30") or 30)
+except Exception:
+    FADE_L = 30.0
+
+
+def _path_touch_state(plan, side, touch_secs_left, horizon, both):
+    """LIVE read once price has touched the +/-$FADE_L fade barrier this window. The fade (revert to
+    anchor) is only playable on an EARLY touch: on the honest strict grade only ~27% of touches ever
+    reach the anchor, and a LATE touch almost never does -- no time to revert before expiry (6.9%
+    strict at $50/5m vs 41% for an early touch). So 'bias' (the fade LEAN) is emitted ONLY for an
+    early touch in a chop/round-trip window; a late touch is watch-only. Pure / crash-safe.
+    NOTE: which side ultimately wins is still coin-flip -- 'bias' is the conditional reversal LEAN
+    (increase vs decrease from here), not a guaranteed direction; a real entry edge needs mispricing.
+    (Corrected 2026-07-01: the old 'early reverts ~2x' claim was a mislabel + settle-rule artifact.)"""
+    dur = max(1, int(horizon) * 60)
+    phase = "early" if touch_secs_left > dur * 0.5 else "late"
+    style = (plan or {}).get("style")
+    p_rt = (plan or {}).get("p_roundtrip") or 0.0
+    if both:
+        return {"side": "BOTH", "phase": phase, "bias": None,
+                "call": "Round-trip in progress — both sides touched; fade the SECOND leg (see leg2)."}
+    fade = (style == "two_sided") or (p_rt >= 0.30)
+    if fade and phase == "early":
+        return {"side": side, "phase": phase,
+                "bias": ("DOWN" if side == "HIGH" else "UP"),
+                "call": "PAPER fade candidate — confirm model grade and executable share-price edge"}
+    if fade and phase == "late":
+        return {"side": side, "phase": phase, "bias": None,
+                "call": "Chop, but LATE touch — usually too late to revert to anchor before close; don't fade"}
+    if style == "one_sided":
+        return {"side": side, "phase": phase,
+                "bias": ("UP" if side == "HIGH" else "DOWN"),
+                "call": "CONTINUATION more likely — ride it, low reversal odds"}
+    return {"side": side, "phase": phase, "bias": None,
+            "call": "MIXED — watch for follow-through vs fade"}
+
+
+def _grade_fade(side, touch_secs_left, pre_hi, pre_lo, anchor, horizon, keepers, L=50.0):
+    """LIVE P(this fade reaches the anchor TP before the stop), from the honest fade model. Rebuilds
+    the 3 touch-context features EXACTLY as train_fade_model does, from the pre-touch running hi/lo
+    frozen at the touch. side='HIGH' = an up-touch (BUY DOWN, side_up=1). Returns float or None."""
+    fm = _load_fade_model()
+    if not fm or anchor <= 0 or not keepers:
+        return None
+    if any(keepers.get(k) is None for k in fm.get("keepers", [])):
+        return None
+    dur = max(1, int(horizon) * 60)
+    touch_frac = max(0.0, min(1.0, float(touch_secs_left) / dur))     # high = early touch
+    # v5 is trained from completed bars before the 1m touch candle. Represent the
+    # crossing at the exact barrier (zero overshoot); do not serve post-touch extrema.
+    if side == "HIGH":                                                # up-touch -> BUY DOWN
+        side_up = 1
+        known_hi = anchor + L
+        known_lo = min(anchor, pre_lo)
+        overshoot = 0.0
+        pre_opp = (anchor - known_lo) / anchor * 1e4
+    else:                                                             # down-touch -> BUY UP
+        side_up = 0
+        known_hi = max(anchor, pre_hi)
+        known_lo = anchor - L
+        overshoot = 0.0
+        pre_opp = (known_hi - anchor) / anchor * 1e4
+    pre_range = (known_hi - known_lo) / anchor * 1e4
+    try:
+        from train_fade_model import predict_fade
+        # forward L so the matching per-barrier head ($30 or $50) is used -- NOT just the feature math
+        return round(float(predict_fade(fm, int(horizon), keepers, touch_frac, side_up,
+                                        overshoot, pre_opp, pre_range, L=L)), 3)
+    except Exception:
+        return None
+
+
+def _trade_signal(plan, p_hold, cur_pos, cur_move, secs_left, horizon, ptb):
+    """Unified ENTRY/EXIT from the VALIDATED edges only: (1) late-entry HOLD (ahead + late + P(hold)>=0.93
+    -> ~95% holds, the one proven entry), (2) FADE an EARLY touch in chop, gated on the honest fade model
+    P(reach anchor) -- fade only the top touches (P>=0.55; base reach-rate is ~0.27). Pure / crash-safe.
+    Honest: the side is the already-ahead side (late-hold) or the cheap side (fade), NOT a direction
+    prediction; true +EV per trade still needs the Polymarket price mispriced vs P(hold)/fair."""
+    if not isinstance(plan, dict):
+        return None
+    dur = max(60, int(horizon) * 60)
+    late_win = min(120, int(dur * 0.4))
+    late_entry = 15 < secs_left <= late_win           # the proven late-entry window -- NOT the final 15s
+    ahead = cur_pos in ("UP", "DOWN") and abs(cur_move) >= 10
+    ts = plan.get("touch_state") or {}
+    hi, lo = plan.get("pred_high"), plan.get("pred_low")
+    # 1. Late-entry HOLD -- the one proven entry (buy the already-ahead side inside the late window)
+    if ahead and late_entry and p_hold is not None and p_hold >= 0.93:
+        entry_fair = min(p_hold, decision_champion.DEFAULT_ENTRY_FAIR_CAP)
+        max_ask = decision_champion.max_taker_ask(entry_fair)
+        return {"do": "CHECK EDGE", "tone": "warn", "side": cur_pos,
+                "max_taker_ask": round(max_ask, 4),
+                "short": f"BUY {cur_pos} if ask <= {max_ask*100:.0f}c",
+                "text": f"Late-hold setup on {cur_pos}: ahead ${abs(cur_move):.0f}, {secs_left}s left, "
+                        f"P(hold)={p_hold*100:.0f}%, conservative entry fair={entry_fair*100:.0f}c. "
+                        f"Do not buy above ~{max_ask*100:.0f}c taker ask (crypto fee + 3c safety "
+                        f"buffer included). Confirm the live champion edge first."}
+    # 2. Too late to ENTER (final ~15s): if already ahead, just hold to close -- don't enter fresh
+    if ahead and secs_left <= 15 and p_hold is not None and p_hold >= 0.80:
+        return {"do": "HOLD", "tone": "good", "side": cur_pos,
+                "short": f"HOLD {cur_pos} to close",
+                "text": f"HOLD to close -- ahead ${abs(cur_move):.0f}, only {secs_left}s left, P(hold)={p_hold*100:.0f}%. "
+                        f"Too late to enter fresh; ride your position out."}
+    # 3. Fade an EARLY touch in active chop, GATED on the honest fade model (P reaches anchor before stop).
+    #    ts.bias is set only for an early touch in chop (late touches can't revert in time). We fade only
+    #    the touches the model ranks high -- base reach-rate ~0.27, so P>=0.55 is roughly the top quartile.
+    if plan.get("play") == "FADE-SETUP" and ts.get("bias") and secs_left > 20:
+        fade = "DOWN" if ts.get("side") == "HIGH" else "UP"
+        p_fade = ts.get("p_fade")
+        if p_fade is None:
+            return {"do": "WAIT", "tone": "muted", "short": "WAIT -- fade model offline",
+                    "text": "Fade model is missing, stale, or warming up. No fade entry is allowed."}
+        if p_fade < 0.45:
+            return {"do": "SKIP", "tone": "muted", "short": "SKIP this touch",
+                    "text": f"{ts.get('side')} touched but the fade model says only {p_fade*100:.0f}% reach ${ptb:,.0f} "
+                            f"(anchor) before extending -- skip this fade."}
+        if p_fade >= 0.55:
+            return {"do": "PAPER ONLY", "tone": "warn", "side": fade,
+                    "short": f"PAPER: fade -> buy {fade} ({p_fade*100:.0f}%)",
+                    "text": f"FADE {fade} paper setup: model P(reach anchor)={p_fade*100:.0f}%. "
+                            f"BTC reach probability is not a binary-share fair value; entry/exit bids, "
+                            f"two taker fees, and stop value are unproven. Track on paper only."}
+        return {"do": "WATCH", "tone": "muted", "short": "WAIT -- borderline touch",
+                "text": f"{ts.get('side')} touched, fade model P(reach anchor)={p_fade*100:.0f}% -- borderline; "
+                        f"wait for a cleaner (higher-P) early touch."}
+    # 3b. ROUND-TRIP RETURN (the two-sided play): after leg 1, the OPPOSITE side also spiked -> fade the 2nd
+    #     leg (buy the now-cheap side, exit at anchor). ts.leg2 is set once both sides touched at $FADE_L;
+    #     it is graded like leg 1 on the opposite side. Honest: gate on the model, same as leg 1.
+    leg2 = ts.get("leg2")
+    if leg2 and leg2.get("side") and secs_left > 20:
+        p2 = leg2.get("p_fade")
+        if p2 is not None and p2 >= 0.55:
+            return {"do": "PAPER ONLY", "tone": "warn", "side": leg2["fade"],
+                    "short": f"PAPER: buy {leg2['fade']} (2nd leg, {p2*100:.0f}%)",
+                    "text": f"ROUND-TRIP RETURN -> FADE BUY {leg2['fade']} (2nd leg, now-cheap side). "
+                            f"model P(reach anchor)={p2*100:.0f}%. EXIT near ${ptb:,.0f}. Two-sided play -- you "
+                            f"faded leg 1, this is the return. Track ask, exit bid, fees, and stop on paper."}
+        if p2 is not None and p2 < 0.45:
+            return {"do": "SKIP", "tone": "muted", "short": "SKIP 2nd leg",
+                    "text": f"Round-trip return, but the 2nd-leg fade model says only {p2*100:.0f}% reach "
+                            f"${ptb:,.0f} -- skip this leg."}
+    # 4. Ahead but not yet in the late-entry window -> watch, with an exit target
+    if ahead:
+        tp = hi if cur_pos == "UP" else lo
+        tp_txt = f" take profit near ${int(tp):,};" if tp is not None else ""
+        return {"do": "WATCH", "tone": "muted", "short": "WAIT for the late window",
+                "text": f"In {cur_pos}?{tp_txt} or wait for the late-entry window (P(hold)>=93% at 15-{late_win}s left)."}
+    if plan.get("style") == "quiet":
+        return {"do": "SKIP", "tone": "muted", "short": "SIT OUT -- quiet round",
+                "text": "QUIET -- no range to capture; skip this window. At 50/50 share prices a coin-flip round "
+                        "is exactly fairly priced -- buying either side is -EV after fees."}
+    # 5. WINDOW OPEN game-plan (no leader yet, shares ~50/50). Direction is coin-flip, so 50c shares are
+    #    FAIR -- buying either side now is -EV after fees. The honest open action is a PLAN: what event
+    #    this round type is waiting for. (Round type = the frozen path head; HF audit: TREND rounds hold
+    #    95%+, CHOP fades revert -- but both need their trigger EVENT, not an at-open direction buy.)
+    if secs_left > late_win:
+        style = plan.get("style")
+        p_rt = plan.get("p_roundtrip")
+        p_early = plan.get("p_early")
+        fifty = ("At ~50/50 shares a direction buy is -EV after fees -- the edge only appears when the market "
+                 "must reprice (a spike to fade, or a late leader cheaper than its hold odds).")
+        if style == "two_sided":
+            return {"do": "PLAN", "tone": "muted", "short": "PLAN: wait for a spike, then fade it",
+                    "text": f"CHOP round expected (round-trip {round((p_rt or 0)*100)}%, early-touch "
+                            f"{round((p_early or 0)*100)}%). Do NOT buy at 50/50. Wait for the first ~$30 spike; "
+                            f"if the fade model grades it >=55%, buy the CHEAP side and exit near the anchor. {fifty}"}
+        if style == "one_sided":
+            return {"do": "PLAN", "tone": "muted", "short": "PLAN: let a leader form, buy it late",
+                    "text": f"TREND-ish round expected. Do NOT buy at 50/50 -- wait for a clear leader, then enter in "
+                            f"the late window (15-{late_win}s left) only if P(hold)>=93% and the ask is under the "
+                            f"fee-adjusted cap. Historically late leaders in trend rounds hold ~95%. {fifty}"}
+        return {"do": "PLAN", "tone": "muted", "short": "PLAN: no 50/50 buys -- wait for the event",
+                "text": f"MIXED round -- let it show its hand. Two triggers to watch: a ~$30 spike (fade if the model "
+                        f"grades >=55%) or a clear late leader (buy only under the ask cap). {fifty}"}
+    # 6. Late window but NO clear leader -> a flat finish; there is nothing to buy at fair 50/50.
+    return {"do": "WAIT", "tone": "muted", "short": "WAIT -- no clear leader",
+            "text": f"Late window ({secs_left}s left) but no side is clearly ahead -- a near-anchor finish is a "
+                    f"coin-flip and 50/50 shares price it fairly. No entry."}
+
+
+def _log_path_plan_outcome(rnd, plan, end_price):
+    """Append one served-plan-vs-realized row for the live path-plan scorecard (the verifier's
+    'ongoing live recording' step). Self-contained CSV append; crash-safe at the call site."""
+    import csv
+    import os
+    import time
+    anchor = float(rnd.get("price_to_beat") or 0.0)
+    if anchor <= 0 or not isinstance(plan, dict):
+        return
+    rhi = float(rnd.get("_tp_run_hi") or end_price); rlo = float(rnd.get("_tp_run_lo") or end_price)
+    tu = int((rhi - anchor) >= 50.0); td = int((anchor - rlo) >= 50.0)
+    tu30 = int((rhi - anchor) >= 30.0); td30 = int((anchor - rlo) >= 30.0)   # $30 = the live fade barrier
+    hb = plan.get("high_band") or [None, None]
+    cov = (int(hb[0] <= rhi <= hb[1]) if (hb and hb[0] is not None) else "")
+    ts = plan.get("touch_state") or {}                                       # the FADE grade (the profit signal)
+    leg2 = ts.get("leg2") or {}
+    wq = plan.get("window_quality") or {}
+    data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "data")
+    path = os.path.join(data_dir, "path_plan_outcomes.csv")
+    row = {"ts": int(time.time()), "horizon": rnd.get("horizon"), "anchor": round(anchor, 2),
+           "pred_high": plan.get("pred_high"), "pred_low": plan.get("pred_low"),
+           "p_move_50": plan.get("p_move_50"), "p_roundtrip": plan.get("p_roundtrip"),
+           "p_early": plan.get("p_early"), "style": plan.get("style"), "play": plan.get("play"),
+           "realized_hi": round(rhi, 2), "realized_lo": round(rlo, 2),
+           "end_price": round(float(end_price), 2), "touched_up_50": tu, "touched_dn_50": td,
+           "touched_up_30": tu30, "touched_dn_30": td30,
+           "roundtrip_realized": int(tu and td), "band_cover_hi": cov,
+           # FADE prediction tracking: the grade assigned at the touch (leg 1 + round-trip leg 2), the window
+           # prior, and a COARSE outcome (did it close back within $30 of the anchor = reverted). The STRICT
+           # reach-anchor-before-stop outcome is validated offline (REVERSAL_STRATEGY_BACKTEST); this records
+           # the live grade so a forward scorecard can be built.
+           "fade_side": ts.get("side"), "p_fade": ts.get("p_fade"),
+           "leg2_side": leg2.get("side"), "p_fade2": leg2.get("p_fade"),
+           "window_score": wq.get("score"), "window_label": wq.get("label"),
+           "reverted_to_anchor": int(abs(float(end_price) - anchor) <= 30.0),
+           "net_usd": round(abs(float(end_price) - anchor), 2)}
+    new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if new:
+            w.writeheader()
+        w.writerow(row)
 
 
 def _select_keeper_config(bundle: dict, model_key: str = None, horizon: int = None):
@@ -600,6 +1120,15 @@ class PriceToBeatTracker:
                 late_ms = now_ms - win_start
                 anchor = ref_price
                 if late_ms > self.LATE_MS:
+                    if not klines:
+                        # Pyth has no same-feed candle from which to recover a missed
+                        # boundary. Using the current tick would fabricate the anchor.
+                        logger.warning(
+                            "Skipping %sm %s round: settlement-feed anchor arrived %sms "
+                            "late and no same-feed boundary history exists.",
+                            h, self.source, int(late_ms),
+                        )
+                        continue
                     anchor = self._price_at_boundary(win_start, klines, ref_price)
                 entry = {
                     "id": f"ptb_{'' if self.source == 'pyth' else self.source + '_'}{h}m_{win_start}",
@@ -635,8 +1164,11 @@ class PriceToBeatTracker:
                     "window_end": win_end,
                     "window_label": f"{_hms(win_start)}-{_hms(win_end)}",
                 }
-                self.pending.append(entry)
-                self.latest_round[h] = {**entry, "status": "pending"}
+                # Keep one shared round object. Live fields such as late_entry and the frozen
+                # path plan must still be present when _resolve grades/persists this pending row.
+                round_state = {**entry, "status": "pending"}
+                self.pending.append(round_state)
+                self.latest_round[h] = round_state
                 if self.persist:
                     try:
                         database.log_price_to_beat(entry)
@@ -699,6 +1231,13 @@ class PriceToBeatTracker:
                     _plan = _predict_path_plan(_pf, _hh, _kp, float(_ref))
                     if _plan:
                         _plan["generated_at_ms"] = int(rnd.get("_heads_ts") or 0)
+                        # SOFT reversal-window prior (time-of-day/weekday favorability from the backtest). Display
+                        # only -- informs how selective to be; does NOT gate the fade. Crash-safe.
+                        try:
+                            _plan["window_quality"] = _window_quality(
+                                _hh, rnd.get("window_start") or rnd.get("timestamp"))
+                        except Exception:
+                            _plan["window_quality"] = None
                         rnd["trade_plan"] = _plan
                         # SHADOW LOG (record-forward, no decision change): persist the frozen plan
                         # onto this round's price_to_beat row so the path head can be verified on
@@ -790,6 +1329,24 @@ class PriceToBeatTracker:
         rnd["regime"] = p.get("regime", rnd.get("regime", "UNKNOWN"))
         rnd["live_lean"] = live_lean
         rnd["live_expected_move"] = (round(float(live_exp), 2) if live_exp is not None else None)
+        # Round-state SHADOW inputs. Historical labels use completed 30-second
+        # observations, so side occupancy/recrosses are sampled at the same cadence;
+        # high/low travel is updated every tick to retain intra-bucket extremes.
+        _rs = rnd.setdefault("_round_state_live", {
+            "run_high": float(ref_price), "run_low": float(ref_price),
+            "last_sample_ms": 0, "last_side": None, "samples": 0,
+            "above_samples": 0, "recrosses": 0,
+        })
+        _rs["run_high"] = max(float(_rs.get("run_high") or ref_price), float(ref_price))
+        _rs["run_low"] = min(float(_rs.get("run_low") or ref_price), float(ref_price))
+        if not _rs.get("last_sample_ms") or now_ms - int(_rs["last_sample_ms"]) >= 30_000:
+            if _rs.get("last_side") in ("UP", "DOWN") and _rs["last_side"] != cur_pos:
+                _rs["recrosses"] = int(_rs.get("recrosses") or 0) + 1
+            _rs["last_side"] = cur_pos
+            _rs["last_sample_ms"] = int(now_ms)
+            _rs["samples"] = int(_rs.get("samples") or 0) + 1
+            if cur_pos == "UP":
+                _rs["above_samples"] = int(_rs.get("above_samples") or 0) + 1
         # ── A1 / T3 P(hold): calibrated prob the side price is CURRENTLY ahead on holds to
         # close. Mirrors the offline label (pos==actual) and feature recipe EXACTLY:
         # abs_distance_pct, seconds_left, vol_60s_pct (trailing-60s std/anchor*100), horizon,
@@ -836,6 +1393,23 @@ class PriceToBeatTracker:
         except Exception as _pe:
             logger.debug(f"P(hold) compute skipped: {_pe}")
         rnd["p_hold"] = (round(p_hold, 4) if p_hold is not None else None)
+        # ── Layer-3 SIMILAR-SETUP MEMORY ("markets like this"): once per round, on entering the late
+        # window, look up this exact live state (horizon/seconds-left/P(hold)/lead/regime) in the app's
+        # OWN graded ledger and surface n / held% / Wilson-LB. Validated vs the global bucket on a
+        # temporal holdout (Brier 0.0483 vs 0.0515, calibrated quartiles). Evidence, not a prediction;
+        # crash-safe; recomputed once more if P(hold) has moved a lot since the first lookup.
+        try:
+            if (self.persist and p_hold is not None and 10 <= secs_left <= 150
+                    and cur_pos in ("UP", "DOWN")
+                    and (rnd.get("_simstats_ph") is None
+                         or abs(p_hold - rnd["_simstats_ph"]) >= 0.10)):
+                rnd["_simstats_ph"] = p_hold
+                _ss = database.similar_setup_stats(int(rnd.get("horizon", 5) or 5), float(secs_left),
+                                                   float(p_hold), float(cur_move or 0.0),
+                                                   str(rnd.get("regime") or ""))
+                rnd["similar_setups"] = _ss    # None when <30 neighbors even relaxed -> UI hides it
+        except Exception as _se:
+            logger.debug(f"similar-setup lookup skipped: {_se}")
         # ── Specialist heads (big-move / big-drop / directional / activity): THROTTLED. Their
         # 4-model ensembles are the bulk of the per-tick CPU but barely move second-to-second, so
         # recompute at most every _HEADS_THROTTLE_MS PER ROUND (last values stay on rnd between).
@@ -845,6 +1419,64 @@ class PriceToBeatTracker:
                 or (now_ms - int(rnd.get("_heads_ts") or 0)) >= _HEADS_THROTTLE_MS):
             rnd["_heads_ts"] = now_ms
             self._compute_specialist_heads(rnd)
+        # Path-plan LIVE touch state (early-exit): track the window's running high/low and, once price
+        # touches the +/-$FADE_L fade barrier, freeze the touch timing and surface the validated
+        # reversal/continuation read. Additive + crash-safe; mutates only trade_plan["touch_state"],
+        # never the frozen predictions. Per-tick (cheap comparisons).
+        _pl = rnd.get("trade_plan")
+        if isinstance(_pl, dict) and ptb > 0 and ref_price > 0:
+            rnd["_tp_run_hi"] = max(rnd.get("_tp_run_hi") or ref_price, ref_price)
+            rnd["_tp_run_lo"] = min(rnd.get("_tp_run_lo") or ref_price, ref_price)
+            _hz = int(rnd.get("horizon", 5) or 5)
+            _uh = (rnd["_tp_run_hi"] - ptb) >= FADE_L      # up-spike reached anchor+$FADE_L (Polymarket-relevant)
+            _dh = (ptb - rnd["_tp_run_lo"]) >= FADE_L      # down-spike reached anchor-$FADE_L
+            # LEG 1 = the FIRST fadeable spike (either side) at the $FADE_L barrier.
+            if (_uh or _dh) and rnd.get("_tp_touch_secs") is None:
+                rnd["_tp_touch_secs"] = secs_left          # freeze WHEN the first touch happened
+                rnd["_tp_touch_side"] = ("HIGH" if (rnd["_tp_run_hi"] - ptb) >= (ptb - rnd["_tp_run_lo"]) else "LOW")
+                rnd["_tp_touch_pre_hi"] = rnd["_tp_run_hi"]   # freeze pre-touch hi/lo for the fade features
+                rnd["_tp_touch_pre_lo"] = rnd["_tp_run_lo"]
+            # LEG 2 = the OPPOSITE-side spike AFTER leg 1 = the round-trip RETURN (the two-sided play): price
+            # spiked one way (faded), reverted through the anchor, now spikes the other way -> fade again.
+            if rnd.get("_tp_touch_secs") is not None and rnd.get("_tp_leg2_secs") is None:
+                _opp_hit = _dh if rnd.get("_tp_touch_side") == "HIGH" else _uh
+                if _opp_hit:
+                    rnd["_tp_leg2_secs"] = secs_left
+                    rnd["_tp_leg2_side"] = "LOW" if rnd.get("_tp_touch_side") == "HIGH" else "HIGH"
+            if rnd.get("_tp_touch_secs") is not None:
+                try:
+                    _both = bool(_uh and _dh)
+                    _pl["touch_state"] = _path_touch_state(_pl, rnd.get("_tp_touch_side"),
+                                                           int(rnd["_tp_touch_secs"]), _hz, _both)
+                    # LEG 1 honest fade grade at $FADE_L: P(this early touch reaches the anchor TP before the 2L stop).
+                    _pf1 = _grade_fade(rnd.get("_tp_touch_side"), int(rnd["_tp_touch_secs"]),
+                                       float(rnd["_tp_touch_pre_hi"]), float(rnd["_tp_touch_pre_lo"]),
+                                       ptb, _hz, self._last_keepers, L=FADE_L)
+                    if _pf1 is not None:
+                        _pl["touch_state"]["p_fade"] = _pf1
+                    # LEG 2 honest fade grade (the round-trip return). Graded from the CURRENT running hi/lo at the
+                    # opposite touch, which correctly encodes leg 1's spike as the 'stretched spring' pre_opp
+                    # feature (a big opposite excursion reverts harder) -- exactly as train_fade_model builds it.
+                    if rnd.get("_tp_leg2_secs") is not None:
+                        _pf2 = _grade_fade(rnd.get("_tp_leg2_side"), int(rnd["_tp_leg2_secs"]),
+                                           float(rnd["_tp_run_hi"]), float(rnd["_tp_run_lo"]),
+                                           ptb, _hz, self._last_keepers, L=FADE_L)
+                        _pl["touch_state"]["leg2"] = {
+                            "side": rnd.get("_tp_leg2_side"),
+                            "fade": ("DOWN" if rnd.get("_tp_leg2_side") == "HIGH" else "UP"),
+                            "p_fade": _pf2,
+                            "call": ("Round-trip RETURN paper candidate — the opposite side touched after leg 1. "
+                                     "Record the second leg's ask, exit bid, fees, and outcome."
+                                     if (_pf2 is None or _pf2 >= 0.45) else
+                                     "Round-trip return, but the model says the 2nd leg is unlikely to revert — skip.")}
+                except Exception:
+                    pass
+            # Unified ENTRY/EXIT signal composed from the validated edges (late-entry hold + chop fade).
+            try:
+                _pl["trade_signal"] = _trade_signal(_pl, rnd.get("p_hold"), cur_pos, cur_move,
+                                                    secs_left, int(rnd.get("horizon", 5) or 5), ptb)
+            except Exception:
+                pass
         # Magnitude FORECAST for the Polymarket card: the model's directional move-size
         # regressor (conformal low/median/high band) projected onto a close estimate vs
         # the price-to-beat. Lets the bettor see "expected drop/rise of ~$X" and whether
@@ -994,13 +1626,59 @@ class PriceToBeatTracker:
         # A13 exit guidance returns once A3/A2 give a trustworthy probability.)
         # ── CHAMPION DECISION VALIDATOR (Final Plan §3/P5) ────────────────────────
         # Strict rules-first combiner of every head above → one honest ACTION + reason.
-        # No live Polymarket ask here, so it reports probability/risk and "edge not
-        # evaluated"; the recorder/bot supplies `market` to unlock the edge gate. Crash-safe.
+        # The standalone recorder publishes a lock-free atomic quote snapshot. Only an exact
+        # round match fresher than five seconds unlocks the fee-adjusted PAPER_BET edge gate.
         try:
-            rnd["champion"] = decision_champion.champion_decision(rnd)
+            market_quote = _market_quote_for_round(rnd, now_ms)
+            rnd["market_quote"] = market_quote
+            rnd["share_prices"] = _live_share_prices_for_round(rnd, now_ms)
+            rnd["champion"] = decision_champion.champion_decision(rnd, market=market_quote)
         except Exception as _ce:
             logger.debug(f"champion decision skipped: {_ce}")
+            rnd["share_prices"] = None
             rnd["champion"] = None
+        # Round-state decision-support snapshot. It consumes the Champion verdict
+        # read-only and never feeds back into Champion, signal, tier, or trade gates.
+        try:
+            _rs_values = {
+                **(self._last_keepers or {}),
+                "seconds_left": float(secs_left),
+                "distance_usd": float(cur_move),
+                "abs_distance_usd": abs(float(cur_move)),
+                "range_so_far_usd": float(_rs["run_high"] - _rs["run_low"]),
+                "recrosses_so_far": float(_rs.get("recrosses") or 0),
+                "time_above_so_far": (
+                    float(_rs.get("above_samples") or 0) / max(1, int(_rs.get("samples") or 0))
+                ),
+                "current_side_up": 1.0 if cur_pos == "UP" else 0.0,
+            }
+            _last_score_ms = int(rnd.get("_round_state_score_ms") or 0)
+            if not rnd.get("_round_state_scores") or now_ms - _last_score_ms >= _HEADS_THROTTLE_MS:
+                _scores = round_state_panel.score_snapshot(int(rnd.get("horizon") or 5), _rs_values)
+                if rnd.get("ref_captured_late_ms"):
+                    for _score in _scores.values():
+                        _score["probability"] = None
+                        _score["status"] = "invalid_late_anchor"
+                elif not (30 <= secs_left <= 120):
+                    for _score in _scores.values():
+                        _score["probability"] = None
+                        _score["status"] = "outside_validated_final_30_120s"
+                rnd["_round_state_scores"] = _scores
+                rnd["_round_state_score_ms"] = int(now_ms)
+            _opportunity = rnd.get("_round_state_opportunity")
+            if not _opportunity or _opportunity.get("probability") is None:
+                _opportunity = round_state_panel.score_opportunity(
+                    int(rnd.get("horizon") or 5), self._last_keepers)
+                if _opportunity.get("probability") is not None:
+                    rnd["_round_state_opportunity"] = _opportunity
+            rnd["round_state"] = round_state_panel.compose(
+                rnd,
+                rnd.get("_round_state_scores") or {},
+                _opportunity or {"probability": None, "status": "unavailable"},
+            )
+        except Exception as _rse:
+            logger.debug(f"round-state shadow skipped: {_rse}")
+            rnd["round_state"] = None
         # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────
         # Log intra-window snapshots (distance to line, seconds left, side) for the
         # late-entry / T3 persistence model. Pyth tracker only (the settlement feed);
@@ -1021,6 +1699,324 @@ class PriceToBeatTracker:
                     database.log_champion_snapshot(rnd, int(now_ms))
                 except Exception as _ce:
                     logger.debug(f"Champion snapshot skipped: {_ce}")
+                # Round-state shadow-panel probabilities (flip/shock/opportunity) for later
+                # live calibration. Outcomes join by round_id -> price_to_beat.actual_direction.
+                try:
+                    database.log_round_state_snapshot(rnd, int(now_ms))
+                except Exception as _rse2:
+                    logger.debug(f"Round-state snapshot skipped: {_rse2}")
+            # ── FORWARD PAPER LEDGER for the frozen rule LATE_LEADER_30S_V1 (2026-07-02): at ~30s
+            # left in a 5m round, buy the MARKET's leader at its executable ask, skip ask<0.60,
+            # one entry per round, hold to settlement. Evaluated ONCE per round from the same
+            # fresh bridge quote the champion sees; SKIP/NO_QUOTE rows keep denominators honest.
+            # This ledger IS the live validation of the rule -- no thresholds may be re-tuned.
+            if (int(rnd.get("horizon", 0) or 0) == 5 and 20 <= secs_left <= 32
+                    and not rnd.get("_ll30_eval") and rnd.get("id")):
+                rnd["_ll30_eval"] = True
+                try:
+                    _lq = _leader_quote(rnd, now_ms)
+                    if _lq is None:
+                        database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_30S_V1", int(now_ms),
+                                                      5, "", 0.0, 0.0, 0.0, 0.0, 0.0, "NO_QUOTE")
+                    else:
+                        _act = ("ENTER" if 0.60 <= _lq["ask"] < 0.97
+                                else "SKIP_LOW_ASK" if _lq["ask"] < 0.60 else "SKIP_HIGH_ASK")
+                        database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_30S_V1", int(now_ms),
+                                                      5, _lq["side"], _lq["ask"], _lq["bid"],
+                                                      _lq["fee"], _lq["spread"], _lq["depth"], _act,
+                                                      btc_entry=rnd.get("current_price"))
+                except Exception as _lle:
+                    logger.debug(f"LATE_LEADER_30S paper log skipped: {_lle}")
+            # ── 15m VARIANT as a SEPARATE SHADOW (operator 2026-07-04): same mechanics on 15m
+            # rounds, its own name + evidence. NOT the frozen rule — the Kaggle validation was
+            # 5m-only (no 15m quote history existed in any archive), so the 15m question gets
+            # answered here on live quotes instead of assumed.
+            if (int(rnd.get("horizon", 0) or 0) == 15 and 20 <= secs_left <= 32
+                    and not rnd.get("_ll15_eval") and rnd.get("id")):
+                rnd["_ll15_eval"] = True
+                try:
+                    _lq = _leader_quote(rnd, now_ms)
+                    if _lq is None:
+                        database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_15M_SHADOW_V1",
+                                                      int(now_ms), 15, "", 0.0, 0.0, 0.0, 0.0,
+                                                      0.0, "NO_QUOTE")
+                    else:
+                        _act = ("ENTER" if 0.60 <= _lq["ask"] < 0.97
+                                else "SKIP_LOW_ASK" if _lq["ask"] < 0.60 else "SKIP_HIGH_ASK")
+                        database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_15M_SHADOW_V1",
+                                                      int(now_ms), 15, _lq["side"], _lq["ask"],
+                                                      _lq["bid"], _lq["fee"], _lq["spread"],
+                                                      _lq["depth"], _act,
+                                                      btc_entry=rnd.get("current_price"))
+                except Exception as _lle2:
+                    logger.debug(f"LATE_LEADER_15M shadow log skipped: {_lle2}")
+            # ── LIVE SHADOW REPLICATION of the three MEASURED-DEAD strategies (2026-07-04) ──
+            # Operator request: give the historical kills a standing live test on real executable
+            # quotes -- entry at ASK, exits at BID, fees both legs, one entry per rule per round,
+            # BOTH horizons (finally tests the 15m variants no archive could). Rules are paper-only
+            # shadows; the dead-strategies panel shows their running live EV next to the historical
+            # verdict. All state is per-round + crash-safe; a dead bridge simply means no entry.
+            try:
+                _dur = max(60, int(rnd.get("horizon", 5) or 5) * 60)
+                _sh = rnd.setdefault("_shadow", {})
+                if not rnd.get("_paper_state_restored") and rnd.get("id"):
+                    rnd["_paper_state_restored"] = True
+                    _state_keys = {
+                        "MID_SCALP_LIVE_V1": "scalp",
+                        "TP_OR_SETTLE_LIVE_V1": "tps",
+                        "STRADDLE_LIVE_V1": "strad",
+                        "MODEL_FADE_LIVE_V1": "mfade",
+                        "MODEL_STRADDLE_LIVE_V1": "mstrad",
+                    }
+                    for _rule, _state in database.fetch_open_rule_paper_states(rnd["id"]).items():
+                        _key = _state_keys.get(_rule)
+                        if _key and _key not in _sh:
+                            _sh[_key] = _state
+                _nowq = _leader_quote(rnd, now_ms)
+                # entries (each once per round, first qualifying tick in its window)
+                if _nowq and "scalp" not in _sh and _dur * 0.2 < secs_left <= _dur * 0.6:
+                    if 0.50 <= _nowq["ask"] <= 0.70 and _nowq["spread"] <= 0.02:
+                        _sh["scalp"] = {"side": _nowq["side"], "entry": _nowq["ask"],
+                                        "fee_in": _nowq["fee"], "t0": secs_left, "open": True}
+                        database.log_rule_paper_trade(rnd["id"], "MID_SCALP_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), _nowq["side"],
+                                                      _nowq["ask"], _nowq["bid"], _nowq["fee"],
+                                                      _nowq["spread"], _nowq["depth"], "ENTER",
+                                                      btc_entry=rnd.get("current_price"),
+                                                      state=_sh["scalp"])
+                if _nowq and "tps" not in _sh and _dur * 0.6 < secs_left <= _dur * 0.8:
+                    if 0.50 <= _nowq["ask"] <= 0.70 and _nowq["spread"] <= 0.02:
+                        _sh["tps"] = {"side": _nowq["side"], "entry": _nowq["ask"],
+                                      "fee_in": _nowq["fee"], "open": True}
+                        database.log_rule_paper_trade(rnd["id"], "TP_OR_SETTLE_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), _nowq["side"],
+                                                      _nowq["ask"], _nowq["bid"], _nowq["fee"],
+                                                      _nowq["spread"], _nowq["depth"], "ENTER",
+                                                      btc_entry=rnd.get("current_price"),
+                                                      state=_sh["tps"])
+                if "strad" not in _sh and _dur * 0.6 < secs_left <= _dur * 0.9:
+                    _qu = _side_quote(rnd, now_ms, "UP")
+                    _qd = _side_quote(rnd, now_ms, "DOWN")
+                    if (_qu and _qd and max(_qu["bid"], _qd["bid"]) <= 0.55
+                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02):
+                        _sh["strad"] = {
+                            "up": {"entry": _qu["ask"], "fee_in": _qu["fee_in"],
+                                   "exit_bid": None, "exit_fee": 0.0},
+                            "dn": {"entry": _qd["ask"], "fee_in": _qd["fee_in"],
+                                   "exit_bid": None, "exit_fee": 0.0},
+                        }
+                        database.log_rule_paper_trade(rnd["id"], "STRADDLE_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), "BOTH",
+                                                      _qu["ask"] + _qd["ask"], _qu["bid"] + _qd["bid"],
+                                                      _qu["fee_in"] + _qd["fee_in"], 0.0, 0.0, "ENTER",
+                                                      btc_entry=rnd.get("current_price"),
+                                                      state=_sh["strad"])
+                # exits (checked per tick while open)
+                _sc = _sh.get("scalp")
+                if _sc and _sc.get("open"):
+                    _q = _side_quote(rnd, now_ms, _sc["side"])
+                    if _q:
+                        _hit = ("TP" if _q["bid"] >= _sc["entry"] + 0.05
+                                else "SL" if _q["bid"] <= _sc["entry"] - 0.03
+                                else "TIME" if (_sc["t0"] - secs_left) >= 30 else None)
+                        if _hit:
+                            _sc["open"] = False
+                            _pnl = _q["bid"] - _sc["entry"] - _sc["fee_in"] - _q["fee_out"]
+                            database.close_rule_paper_trade(rnd["id"], "MID_SCALP_LIVE_V1",
+                                                            _pnl, int(now_ms), _hit,
+                                                            btc_exit=rnd.get("current_price"),
+                                                            exit_gross=_q["bid"],
+                                                            exit_fee=_q["fee_out"], state=_sc)
+                _tp = _sh.get("tps")
+                if _tp and _tp.get("open"):
+                    _q = _side_quote(rnd, now_ms, _tp["side"])
+                    if _q and _q["bid"] >= _tp["entry"] * 1.20:
+                        _tp["open"] = False
+                        _pnl = _q["bid"] - _tp["entry"] - _tp["fee_in"] - _q["fee_out"]
+                        database.close_rule_paper_trade(rnd["id"], "TP_OR_SETTLE_LIVE_V1",
+                                                        _pnl, int(now_ms), "TP",
+                                                        btc_exit=rnd.get("current_price"),
+                                                        exit_gross=_q["bid"],
+                                                        exit_fee=_q["fee_out"], state=_tp)
+                for _stkey in ("strad", "mstrad"):
+                    _st = _sh.get(_stkey)
+                    if _st:
+                        for _leg, _sd in (("up", "UP"), ("dn", "DOWN")):
+                            if _st[_leg].get("exit_bid") is None:
+                                _q = _side_quote(rnd, now_ms, _sd)
+                                if _q and _q["bid"] >= _st[_leg]["entry"] * 1.20:
+                                    _st[_leg]["exit_bid"] = _q["bid"]
+                                    _st[_leg]["exit_fee"] = _q["fee_out"]
+                                    _strule = ("STRADDLE_LIVE_V1" if _stkey == "strad"
+                                                else "MODEL_STRADDLE_LIVE_V1")
+                                    database.update_rule_paper_state(rnd["id"], _strule, _st)
+                # ── MODEL-GATED shadow rules (operator request 2026-07-04): the SAME mechanics, but
+                # every entry is DECIDED BY THE MODELS -- the head predictions are the trigger, so
+                # these measure whether our models add value over the blind versions above.
+                _plx = rnd.get("trade_plan") or {}
+                _tsx = _plx.get("touch_state") or {}
+                # 1. MODEL FADE: path head said FADE-SETUP, a barrier touch happened, and the fade
+                #    model grades the revert >=55% -> buy the CHEAP side; TP +20% or settle.
+                if ("mfade" not in _sh and _plx.get("play") == "FADE-SETUP"
+                        and _tsx.get("side") in ("HIGH", "LOW")
+                        and (_tsx.get("p_fade") or 0) >= 0.55 and secs_left > 20):
+                    _cheap = "DOWN" if _tsx.get("side") == "HIGH" else "UP"
+                    _q = _side_quote(rnd, now_ms, _cheap)
+                    if _q and 0.03 <= _q["ask"] <= 0.90:
+                        _sh["mfade"] = {"side": _cheap, "entry": _q["ask"],
+                                        "fee_in": _q["fee_in"], "open": True}
+                        database.log_rule_paper_trade(rnd["id"], "MODEL_FADE_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), _cheap,
+                                                      _q["ask"], _q["bid"], _q["fee_in"],
+                                                      _q["spread"], 0.0, "ENTER",
+                                                      btc_entry=rnd.get("current_price"),
+                                                      state=_sh["mfade"])
+                _mf = _sh.get("mfade")
+                if _mf and _mf.get("open"):
+                    _q = _side_quote(rnd, now_ms, _mf["side"])
+                    if _q and _q["bid"] >= _mf["entry"] * 1.20:
+                        _mf["open"] = False
+                        database.close_rule_paper_trade(rnd["id"], "MODEL_FADE_LIVE_V1",
+                                                        _q["bid"] - _mf["entry"] - _mf["fee_in"] - _q["fee_out"],
+                                                        int(now_ms), "TP",
+                                                        btc_exit=rnd.get("current_price"),
+                                                        exit_gross=_q["bid"],
+                                                        exit_fee=_q["fee_out"], state=_mf)
+                # 2. MODEL STRADDLE: only when the path head PREDICTS chop (two_sided, round-trip
+                #    >=35%) -- vs the blind straddle above which fires on price shape alone.
+                if ("mstrad" not in _sh and _plx.get("style") == "two_sided"
+                        and (_plx.get("p_roundtrip") or 0) >= 0.35
+                        and _dur * 0.6 < secs_left <= _dur * 0.9):
+                    _qu = _side_quote(rnd, now_ms, "UP")
+                    _qd = _side_quote(rnd, now_ms, "DOWN")
+                    if (_qu and _qd and max(_qu["bid"], _qd["bid"]) <= 0.55
+                            and _qu["spread"] <= 0.02 and _qd["spread"] <= 0.02):
+                        _sh["mstrad"] = {
+                            "up": {"entry": _qu["ask"], "fee_in": _qu["fee_in"],
+                                   "exit_bid": None, "exit_fee": 0.0},
+                            "dn": {"entry": _qd["ask"], "fee_in": _qd["fee_in"],
+                                   "exit_bid": None, "exit_fee": 0.0},
+                        }
+                        database.log_rule_paper_trade(rnd["id"], "MODEL_STRADDLE_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), "BOTH",
+                                                      _qu["ask"] + _qd["ask"], _qu["bid"] + _qd["bid"],
+                                                      _qu["fee_in"] + _qd["fee_in"], 0.0, 0.0, "ENTER",
+                                                      btc_entry=rnd.get("current_price"),
+                                                      state=_sh["mstrad"])
+                # 3. MODEL RIDE: path head says TREND (one_sided RIDE) and the big-move timing head
+                #    is elevated+ -> buy the leader mid-window, HOLD to settlement (trend thesis).
+                if ("mride" not in _sh and _plx.get("play") == "RIDE"
+                        and str(rnd.get("big_move_tier") or "") in ("elevated", "likely")
+                        and _dur * 0.2 < secs_left <= _dur * 0.6):
+                    _q = _leader_quote(rnd, now_ms)
+                    if _q and 0.55 <= _q["ask"] <= 0.80 and _q["spread"] <= 0.02:
+                        _sh["mride"] = True
+                        database.log_rule_paper_trade(rnd["id"], "MODEL_RIDE_LIVE_V1", int(now_ms),
+                                                      int(rnd.get("horizon") or 5), _q["side"],
+                                                      _q["ask"], _q["bid"], _q["fee"],
+                                                      _q["spread"], _q["depth"], "ENTER",
+                                                      btc_entry=rnd.get("current_price"))
+                # ── EDGE-CANDIDATE shadows (operator 2026-07-04, frozen specs — no re-tuning) ──
+                # 1+2. LATE_LEADER ladder: 60s and 15s checkpoints (5m, same gates as the frozen
+                # 30s rule). Measures the EV-vs-expiry gradient LIVE: calibration showed
+                # 120s −0.1c → 60s +0.5c → 30s +2.1c LB; 15s was never measurable offline.
+                if int(rnd.get("horizon") or 5) == 5:
+                    for _lkey, _lrule, _lo, _hi in (("ll60", "LATE_LEADER_60S_V1", 50, 65),
+                                                    ("ll15s", "LATE_LEADER_15S_V1", 10, 17)):
+                        if _lkey not in _sh and _lo <= secs_left <= _hi:
+                            _sh[_lkey] = True
+                            _lq2 = _leader_quote(rnd, now_ms)
+                            if _lq2 is None:
+                                database.log_rule_paper_trade(rnd["id"], _lrule, int(now_ms), 5,
+                                                              "", 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                              "NO_QUOTE")
+                            else:
+                                _act2 = ("ENTER" if 0.60 <= _lq2["ask"] < 0.97
+                                         else "SKIP_LOW_ASK" if _lq2["ask"] < 0.60
+                                         else "SKIP_HIGH_ASK")
+                                database.log_rule_paper_trade(rnd["id"], _lrule, int(now_ms), 5,
+                                                              _lq2["side"], _lq2["ask"],
+                                                              _lq2["bid"], _lq2["fee"],
+                                                              _lq2["spread"], _lq2["depth"],
+                                                              _act2,
+                                                              btc_entry=rnd.get("current_price"))
+                    # 3. MAKER variant: at ~30s REST at the leader's bid instead of crossing.
+                    # Conservative fill: only if a later ask trades DOWN TO our price (maker fee
+                    # = 0). Unfilled by 3s left → NO_FILL row (honest denominator). This tests
+                    # the biggest cost lever: the spread is ~half the whole taker edge.
+                    if "maker" not in _sh and 20 <= secs_left <= 32:
+                        _mq = _leader_quote(rnd, now_ms)
+                        if _mq and 0.55 <= _mq["bid"] < 0.97:
+                            _sh["maker"] = {"side": _mq["side"], "price": _mq["bid"], "done": False}
+                        else:
+                            _sh["maker"] = {"done": True}
+                            database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_MAKER_V1",
+                                                          int(now_ms), 5, "", 0.0, 0.0, 0.0,
+                                                          0.0, 0.0, "NO_QUOTE")
+                    _mk = _sh.get("maker")
+                    if _mk and not _mk.get("done"):
+                        _q3 = _side_quote(rnd, now_ms, _mk["side"])
+                        if _q3 and _q3["ask"] <= _mk["price"] + 1e-9:
+                            _mk["done"] = True
+                            database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_MAKER_V1",
+                                                          int(now_ms), 5, _mk["side"],
+                                                          _mk["price"], _q3["bid"], 0.0, 0.0,
+                                                          0.0, "ENTER",
+                                                          btc_entry=rnd.get("current_price"))
+                        elif secs_left <= 3:
+                            _mk["done"] = True
+                            database.log_rule_paper_trade(rnd["id"], "LATE_LEADER_MAKER_V1",
+                                                          int(now_ms), 5, _mk["side"],
+                                                          _mk["price"], 0.0, 0.0, 0.0, 0.0,
+                                                          "NO_FILL")
+                # 4. CHEAP-SAFE early leader (HF_CHEAP_LEADER_DANGER follow-up): cheap ask
+                # 0.42–0.58 + SAFE lead (dist/vol ratio ≥ 1.5) in the early-mid window, hold to
+                # settle. The shuffled-gate nulls say BTC-state gates are priced in → expectation
+                # LOW; running it to close the question on live asks. Both horizons.
+                if "csafe" not in _sh and _dur * 0.4 < secs_left <= _dur * 0.8:
+                    _cq = _leader_quote(rnd, now_ms)
+                    _vol = float(rnd.get("vol_60s_pct") or 0.0)
+                    _pxn = float(rnd.get("current_price") or 0.0)
+                    if _cq and _pxn > 0 and _vol > 0 and 0.42 <= _cq["ask"] <= 0.58:
+                        if (abs(float(cur_move)) / _pxn * 100.0) / (_vol + 1e-6) >= 1.5:
+                            _sh["csafe"] = True
+                            database.log_rule_paper_trade(rnd["id"], "CHEAP_SAFE_EARLY_V1",
+                                                          int(now_ms),
+                                                          int(rnd.get("horizon") or 5),
+                                                          _cq["side"], _cq["ask"], _cq["bid"],
+                                                          _cq["fee"], _cq["spread"],
+                                                          _cq["depth"], "ENTER",
+                                                          btc_entry=rnd.get("current_price"))
+                # 5. SHOCK SNIPER (1s approximation of the sub-second idea): BTC jumped ≥$20
+                # within ~3–8s while the target side's ask did NOT move → buy the stale ask,
+                # hold to settle. The 1s bridge cadence UNDERSTATES the true opportunity — the
+                # exact test is the offline L2 replay (queued; needs recorders stopped).
+                _hist = _sh.setdefault("hist", [])
+                _qU = _side_quote(rnd, now_ms, "UP")
+                _qD = _side_quote(rnd, now_ms, "DOWN")
+                if _qU and _qD and rnd.get("current_price"):
+                    _hist.append((int(now_ms), float(rnd["current_price"]),
+                                  _qU["ask"], _qD["ask"]))
+                    del _hist[:-8]
+                if "snipe" not in _sh and len(_hist) >= 3 and secs_left > 20 and _qU and _qD:
+                    _then = next((s for s in _hist if now_ms - s[0] >= 2500), None)
+                    if _then is not None:
+                        _dpx = float(rnd["current_price"]) - _then[1]
+                        if abs(_dpx) >= 20.0:
+                            _tgt = "UP" if _dpx > 0 else "DOWN"
+                            _qn = _qU if _tgt == "UP" else _qD
+                            _athen = _then[2] if _tgt == "UP" else _then[3]
+                            if abs(_qn["ask"] - _athen) < 0.005 and _qn["ask"] <= 0.90:
+                                _sh["snipe"] = True
+                                database.log_rule_paper_trade(rnd["id"], "SHOCK_SNIPER_LIVE_V1",
+                                                              int(now_ms),
+                                                              int(rnd.get("horizon") or 5),
+                                                              _tgt, _qn["ask"], _qn["bid"],
+                                                              _qn["fee_in"], _qn["spread"],
+                                                              0.0, "ENTER",
+                                                              btc_entry=rnd.get("current_price"))
+            except Exception as _she:
+                logger.debug(f"shadow strategies skipped: {_she}")
 
     @staticmethod
     def _path_outlook(cur_move: float, cur_pos: str, lean: str, p: dict,
@@ -1072,7 +2068,7 @@ class PriceToBeatTracker:
         winning = (cur_pos == bet_dir)
         lean_agrees = (live_lean == bet_dir)
         urgent = secs_left <= 30
-        mv = f"{cur_move:+.0f}"
+        mv = f"${abs(cur_move):.0f}"
         if winning and lean_agrees:
             return {"action": "HOLD", "tone": "good",
                     "text": f"Ahead {mv} and the model still leans {bet_dir}. Let it ride to settle."}
@@ -1109,6 +2105,23 @@ class PriceToBeatTracker:
                 # recovered from klines, not the drifted current price.
                 end_price = ref_price
                 if now_ms - p["verify_at"] > self.LATE_MS:
+                    if not klines:
+                        # A late Pyth close cannot be reconstructed from Binance
+                        # candles without mixing feeds. Remove it from every metric.
+                        logger.warning(
+                            "Invalidating %s: settlement-feed resolution arrived %sms "
+                            "late without same-feed boundary history.",
+                            p.get("id"), int(now_ms - p["verify_at"]),
+                        )
+                        invalid = {**p, "status": "invalid", "invalid_reason": "late_resolution_no_boundary"}
+                        if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
+                            self.latest_round[p["horizon"]] = invalid
+                        if self.persist:
+                            try:
+                                database.invalidate_price_to_beat(p["id"])
+                            except Exception as exc:
+                                logger.warning("Could not remove invalid price-to-beat round %s: %s", p.get("id"), exc)
+                        continue
                     end_price = self._price_at_boundary(p["verify_at"], klines, ref_price)
                 actual_dir = self._direction(end_price, p["price_to_beat"])
                 move = round(end_price - p["price_to_beat"], 2)
@@ -1125,6 +2138,14 @@ class PriceToBeatTracker:
                             "actual_direction": actual_dir, "hit": hit,
                             "move": move, "status": "resolved"}
                 self.recent_rounds.appendleft(resolved)
+                # Path-plan LIVE metrics: log the served plan vs the realized window extremes (grab the
+                # round dict BEFORE it is replaced below). Crash-safe; never blocks resolution.
+                try:
+                    _rd = self.latest_round.get(p["horizon"]) or {}
+                    if _rd.get("trade_plan") and _rd.get("id") == p.get("id"):
+                        _log_path_plan_outcome(_rd, _rd["trade_plan"], end_price)
+                except Exception as _ple:
+                    logger.debug(f"path-plan outcome log skipped: {_ple}")
                 if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
                     self.latest_round[p["horizon"]] = resolved
                 if self.persist:
@@ -1133,6 +2154,39 @@ class PriceToBeatTracker:
                                                        late_entry=bool(p.get("late_entry", False)))
                     except Exception as e:
                         logger.debug(f"Price-to-beat resolve failed: {e}")
+                    # STRADDLE shadow: settle unexited legs at outcome value (winner 1 / loser 0)
+                    # and close its row with the TOTAL pnl BEFORE the generic settler runs (the
+                    # generic hold-to-settle formula is single-side and would misprice 'BOTH').
+                    try:
+                        for _stkey, _strule in (("strad", "STRADDLE_LIVE_V1"),
+                                                ("mstrad", "MODEL_STRADDLE_LIVE_V1")):
+                            _st = (p.get("_shadow") or {}).get(_stkey)
+                            if not _st:
+                                continue
+                            _gross = 0.0
+                            _exit_fees = 0.0
+                            for _leg, _sd in (("up", "UP"), ("dn", "DOWN")):
+                                if _st[_leg].get("exit_bid") is not None:
+                                    _gross += float(_st[_leg]["exit_bid"])
+                                    _exit_fees += float(_st[_leg].get("exit_fee") or 0.0)
+                                else:
+                                    _gross += 1.0 if actual_dir == _sd else 0.0
+                            _cost = (_st["up"]["entry"] + _st["up"]["fee_in"]
+                                     + _st["dn"]["entry"] + _st["dn"]["fee_in"])
+                            database.close_rule_paper_trade(
+                                p["id"], _strule,
+                                _gross - _exit_fees - _cost, int(now_ms), "SETTLED",
+                                btc_exit=end_price, exit_gross=_gross,
+                                exit_fee=_exit_fees, state=_st)
+                    except Exception as _ste:
+                        logger.debug(f"Straddle shadow settle skipped: {_ste}")
+                    # Settle any frozen-rule paper trades on this round (LATE_LEADER_30S_V1 ledger
+                    # + still-open shadow rows): pnl = settle_value - ask - fee, hold-to-settle.
+                    try:
+                        database.settle_rule_paper_trades(p["id"], actual_dir, int(now_ms),
+                                                          btc_exit=end_price)
+                    except Exception as _pse:
+                        logger.debug(f"Rule paper settle skipped: {_pse}")
             else:
                 still.append(p)
         self.pending = still

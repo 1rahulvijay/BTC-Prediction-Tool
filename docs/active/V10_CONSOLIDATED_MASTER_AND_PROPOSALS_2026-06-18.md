@@ -85,7 +85,7 @@ Latency-aware edge persistence, depth/slippage-aware sizing, then paper-agent �
 ---
 
 ## 4. Built this session (2026-06-18)
-- **Calibration monitor** ([calibration_monitor.py](backend/calibration_monitor.py)) — joins
+- **Calibration monitor** ([calibration_monitor.py](../../backend/calibration_monitor.py)) — joins
   `champion_snapshots ⋈ price_to_beat` (read-only) and measures live P(hold) reliability. **First run
   on 13,972 resolved rounds found a real ~2-pt optimism at the top tiers** (P≥0.93 claims 96.3%,
   realizes **94.0%**; P≥0.95 claims 97.2%, realizes **94.9%**) — overall ECE 0.033, verdict STABLE but

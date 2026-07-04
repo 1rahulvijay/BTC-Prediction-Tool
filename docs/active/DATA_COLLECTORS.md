@@ -91,3 +91,14 @@ python backend/build_persistence_dataset.py --start <90d-ago> --end <today>
 python backend/build_crossvenue_flow.py     --start <90d-ago> --end <today>
 ```
 Each: ~68–93 MB/day/source cached; validate one day first. All three verified end-to-end 2026-06-13.
+
+## Polymarket Full-L2 Execution Recorder (2026-07-01)
+
+`backend/polymarket/l2_recorder.py` is a standalone public WebSocket collector for current/next BTC
+5m and 15m UP/DOWN tokens. It reconstructs complete books, records level changes and trades, and writes
+exact size-specific taker VWAP into `data/polymarket_l2.duckdb`. Calculated states are sampled at one
+second per token while causal level updates remain event-by-event for queue replay.
+
+Run `.\run_polymarket_l2_recorder.bat`; analyze with `.\run_polymarket_l2_execution_test.bat`.
+Queue output is conservative/base/optimistic because public L2 does not reveal order IDs or true rank.
+See [POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md](POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md).

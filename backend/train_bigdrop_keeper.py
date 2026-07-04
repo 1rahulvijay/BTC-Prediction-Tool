@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 
 from keeper_head_training import (
-    BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, buckets_for_training,
-    fit_binary_head, future_window, model_summary,
+    BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, derive_buckets_bps,
+    fit_binary_head, future_window, model_summary, rel_bps,
 )
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -22,7 +22,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 )
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
 OUT = os.path.join(DATA_DIR, "saved_models", "bigdrop_keeper_model.pkl")
-HEAD_VERSION = f"2026-06-18-bigdrop-keeper4-horizons-buckets-iso-split-{TRAIN_DAYS_TAG}-{BUCKET_TAG}"
+HEAD_VERSION = f"2026-07-03-bigdrop-keeper5-bpslabels-horizons-iso-split-{TRAIN_DAYS_TAG}-{BUCKET_TAG}"
 
 
 def _ensemble():
@@ -40,35 +40,45 @@ def main():
     close = df["close"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
     X_all = df[FEATURES].values
-    buckets = buckets_for_training(close)   # auto-derived p75/p90/p97 from THIS matrix; env-overridable
+    buckets = derive_buckets_bps(close)      # BPS labels (2026-07-03): price-level-proof for long windows
+    px_now = float(close[-1])
 
     models = {}
     for h in HORIZONS:
         if h not in buckets:
             continue
-        threshold = buckets[h][0]
+        threshold = buckets[h][0]            # bps
         future_low = future_window(low, h, np.min)
-        drop_usd = future_low - close
-        mask = ~np.isnan(drop_usd)
-        y = (drop_usd[mask] <= -threshold).astype(int)
+        drop_rel = rel_bps(future_low - close, close)     # signed bps of the row's own price
+        mask = np.isfinite(drop_rel)
+        y = (drop_rel[mask] <= -threshold).astype(int)
         model = fit_binary_head(X_all[mask], y)
         if model:
             models[int(h)] = model
-        print(f"big_drop_{h}m <= -${threshold:.0f}: {model_summary(model)}")
+        print(f"big_drop_{h}m <= -{threshold:.1f}bps (~-${threshold*px_now/1e4:.0f} now): {model_summary(model)}")
 
     bundle = {
         "models": models,
         "features": FEATURES,
         "horizons": sorted(models),
-        "drop_threshold_usd_by_horizon": {h: v[0] for h, v in buckets.items()},
-        "move_buckets_usd_by_horizon": buckets,
+        "label_units": "bps",
+        "drop_threshold_bps_by_horizon": {h: v[0] for h, v in buckets.items()},
+        "move_buckets_bps_by_horizon": buckets,
+        "drop_threshold_usd_by_horizon": {h: round(v[0] * px_now / 1e4) for h, v in buckets.items()},
+        "move_buckets_usd_by_horizon": {h: tuple(round(x * px_now / 1e4) for x in v) for h, v in buckets.items()},
         "version": HEAD_VERSION,
-        "note": "P(big_drop|keepers): future low <= close - horizon meaningful bucket. Calibrated per horizon.",
+        "note": "P(big_drop|keepers): future low <= close - horizon meaningful bucket (BPS-relative labels). Calibrated per horizon.",
     }
     if 5 in models:
         bundle.update({k: v for k, v in models[5].items() if k not in ("pipe", "iso")})
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    joblib.dump(bundle, OUT)
+    _tmp = f"{OUT}.tmp.{os.getpid()}"
+    try:
+        joblib.dump(bundle, _tmp)
+        os.replace(_tmp, OUT)
+    finally:
+        if os.path.exists(_tmp):
+            os.remove(_tmp)
     print(f"Saved {OUT}")
 
 

@@ -21,9 +21,13 @@ from typing import Any, Dict, Optional
 PHOLD_STRONG = 0.93
 PHOLD_GOOD = 0.85
 
-DEFAULT_BUFFER = 0.02
-DEFAULT_COSTS = 0.0
+DEFAULT_BUFFER = 0.03
+DEFAULT_CRYPTO_TAKER_FEE_RATE = 0.07
 DEFAULT_REQUIRED_EDGE = 0.0
+# First qualifying 5m/15m entries at P(Hold)>=0.93 realized 92.6% with a 91.3%
+# Wilson lower bound. Raw snapshot probabilities averaged 97.8% in that selected set.
+# Cap fair value at the rounded lower bound until entry-specific recalibration is proven.
+DEFAULT_ENTRY_FAIR_CAP = 0.91
 
 _META_MODEL = None
 _META_CHECKED = False
@@ -31,6 +35,52 @@ _META_ERROR = ""
 
 META_GATE_MIN = 0.55
 META_GATED_ACTIONS = {"PAPER_BET", "SETUP", "LEAN", "WATCH_UP", "WATCH_DOWN"}
+
+
+def polymarket_taker_fee_per_share(price: float, fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE) -> float:
+    """Return the current crypto-market taker fee for one share.
+
+    Polymarket's fee formula is C * fee_rate * p * (1-p). This helper uses C=1.
+    Maker orders have zero protocol fee and should pass an explicit cost of 0 instead.
+    """
+    p = max(0.0, min(1.0, float(price)))
+    return max(0.0, float(fee_rate)) * p * (1.0 - p)
+
+
+def max_taker_ask(
+    fair_value: float,
+    buffer: float = DEFAULT_BUFFER,
+    required_edge: float = DEFAULT_REQUIRED_EDGE,
+    fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE,
+) -> float:
+    """Highest ask that clears fair - ask - taker_fee - buffer > required_edge."""
+    target = max(0.0, min(1.0, float(fair_value) - float(buffer) - float(required_edge)))
+    rate = max(0.0, float(fee_rate))
+    if rate == 0.0:
+        return target
+    # rate*q^2 - (1+rate)*q + target = 0; choose the root in [0, 1].
+    disc = max(0.0, (1.0 + rate) ** 2 - 4.0 * rate * target)
+    return max(0.0, min(1.0, ((1.0 + rate) - disc ** 0.5) / (2.0 * rate)))
+
+
+KELLY_FRACTION = 0.25   # quarter-Kelly: estimation error in P(hold) makes full Kelly reckless
+KELLY_CAP = 0.10        # never suggest more than 10% of bankroll on one round
+
+
+def kelly_stake(fair_value, ask, effective_costs=0.0,
+                fraction=KELLY_FRACTION, cap=KELLY_CAP) -> float:
+    """Suggested stake as a FRACTION of bankroll for a binary share bought at `ask` plus per-share
+    costs, sized by quarter-Kelly. Effective cost c = ask + fees; a win pays 1/share, so full Kelly
+    is f* = (p - c) / (1 - c). Returns fraction*f* capped at `cap`; 0.0 when there is no positive
+    edge. Pure and crash-safe (returns 0.0 on any bad input) -- sizing SUPPORT, not an order."""
+    try:
+        p = float(fair_value)
+        c = float(ask) + max(0.0, float(effective_costs))
+        if not (0.0 < c < 1.0) or not (0.0 < p <= 1.0) or p <= c:
+            return 0.0
+        return round(max(0.0, min(float(cap), float(fraction) * (p - c) / (1.0 - c))), 4)
+    except Exception:
+        return 0.0
 
 
 def _load_meta_model():
@@ -112,7 +162,7 @@ def champion_decision(
     round_data: Dict[str, Any],
     market: Optional[Dict[str, Any]] = None,
     *,
-    costs: float = DEFAULT_COSTS,
+    costs: Optional[float] = None,
     buffer: float = DEFAULT_BUFFER,
     required_edge: float = DEFAULT_REQUIRED_EDGE,
 ) -> Dict[str, Any]:
@@ -131,6 +181,7 @@ def champion_decision(
         *,
         bet: bool = False,
         edge: Optional[float] = None,
+        stake_frac: Optional[float] = None,
         invalidate: str = "",
     ) -> Dict[str, Any]:
         zone = None
@@ -154,6 +205,7 @@ def champion_decision(
             "zone": zone,
             "bet_candidate": bool(bet),
             "edge": round(edge, 4) if edge is not None else None,
+            "stake_frac": round(stake_frac, 4) if stake_frac else None,
         }
         meta_p = _meta_probability(round_data, action, result["confidence"])
         if meta_p is not None:
@@ -170,6 +222,7 @@ def champion_decision(
                     ),
                     "bet_candidate": False,
                     "edge": None,
+                    "stake_frac": None,
                     "invalidate": "Meta hold probability rises above 55% with the same setup.",
                 })
         return result
@@ -292,7 +345,9 @@ def champion_decision(
             invalidate="The model lean and live price side agree, or P(hold) becomes strong enough to override the conflict.",
         )
 
-    fair_value = p_hold
+    fair_value = min(p_hold, DEFAULT_ENTRY_FAIR_CAP)
+    if p_hold > fair_value:
+        flags.append(f"entry fair value conservatively capped at {fair_value*100:.0f}c")
     tier = round_data.get("tier")
     confidence = p_hold * 100.0
 
@@ -308,6 +363,13 @@ def champion_decision(
     room = _reward_room(round_data, position)
     gap = abs(_f(round_data.get("current_move")) or 0.0)
     seconds_left = _f(round_data.get("seconds_left")) or 0.0
+    horizon = max(1, int(_f(round_data.get("horizon")) or 5))
+    late_max = min(120.0, horizon * 60.0 * 0.4)
+    structural_late_entry = (
+        p_hold >= PHOLD_STRONG
+        and 15.0 < seconds_left <= late_max
+        and gap >= 10.0
+    )
     if room is not None and room < max(5.0, gap * 0.25) and seconds_left > 30:
         flags.append("thin reward room")
 
@@ -325,22 +387,72 @@ def champion_decision(
 
     ask = _f((market or {}).get("ask"))
     spread = _f((market or {}).get("spread"))
+    depth = _f((market or {}).get("depth"))
     if ask is not None:
-        net_edge = fair_value - ask - costs - buffer
-        if spread is not None and spread > 0.03:
+        if not 0.0 < ask < 1.0:
+            return out(
+                "AVOID",
+                "AVOID - invalid market ask",
+                0,
+                f"The supplied ask ({ask}) is outside the valid 0-1 share-price range.",
+                invalidate="A fresh exact-round order book supplies a valid executable ask.",
+            )
+        fee_rate = _f((market or {}).get("fee_rate"))
+        if fee_rate is None:
+            fee_rate = DEFAULT_CRYPTO_TAKER_FEE_RATE
+        fees_enabled = (market or {}).get("fees_enabled") is not False
+        effective_costs = (float(costs) if costs is not None else
+                           polymarket_taker_fee_per_share(ask, fee_rate) if fees_enabled else 0.0)
+        net_edge = fair_value - ask - effective_costs - buffer
+        if spread is not None and (spread < 0.0 or spread > 0.03):
             flags.append(f"wide spread ({spread * 100:.0f}c)")
         edge_line = (
             f"fair {fair_value * 100:.0f}c - ask {ask * 100:.0f}c - "
-            f"buffer {buffer * 100:.0f}c = {net_edge * 100:+.0f}c"
+            f"fee {effective_costs * 100:.1f}c - buffer {buffer * 100:.0f}c = "
+            f"{net_edge * 100:+.1f}c"
         )
-        if net_edge > required_edge and p_hold >= PHOLD_GOOD and not (drop_risk == "HIGH" and position == "UP"):
+        if not structural_late_entry:
+            return out(
+                "WAIT",
+                "WAIT - outside audited late-entry gate",
+                confidence,
+                f"The quote is available, but a paper entry requires P(hold)>=93%, at least $10 from "
+                f"the line, and 15-{int(late_max)} seconds left. Current: P(hold)={p_hold*100:.0f}%, "
+                f"distance=${gap:.0f}, seconds={seconds_left:.0f}.",
+                invalidate="All audited late-entry conditions become true on the same fresh quote.",
+            )
+        if spread is not None and (spread < 0.0 or spread > 0.03):
+            return out(
+                "NO_EDGE",
+                "NO EDGE - spread too wide",
+                confidence,
+                f"The executable spread is {spread*100:.1f}c, above the 3c liquidity gate. {edge_line}.",
+                invalidate="Spread narrows to 3c or less while the structural and edge gates still hold.",
+            )
+        if depth is not None and depth <= 0:
+            return out(
+                "NO_EDGE",
+                "NO EDGE - no displayed ask depth",
+                confidence,
+                "The quoted ask has no displayed top-level size. Treat it as non-executable.",
+                invalidate="Positive ask depth appears on a fresh exact-round quote.",
+            )
+        if net_edge > required_edge and not (drop_risk == "HIGH" and position == "UP"):
+            # Lever 2: PROPORTIONAL sizing. The bet decision is edge-based (fair - ask - costs), and
+            # the suggested stake scales WITH that edge (quarter-Kelly, 10% bankroll cap) instead of
+            # a fixed unit. Sizing support for the paper ledger -- not an order, not real-money advice.
+            stake = kelly_stake(fair_value, ask, effective_costs)
+            stake_line = (f" Suggested paper stake: {stake * 100:.1f}% of bankroll "
+                          f"(quarter-Kelly, 10% cap)." if stake > 0 else "")
             return out(
                 "PAPER_BET",
                 f"PAPER-BET {position} - net edge {net_edge * 100:+.0f}c",
                 min(99.0, confidence),
-                f"Calibrated fair value beats the market after costs: {edge_line}. Paper-bet candidate only.",
+                f"Calibrated fair value beats the market after costs: {edge_line}. Paper-bet candidate only."
+                + stake_line,
                 bet=True,
                 edge=net_edge,
+                stake_frac=stake,
                 invalidate="Ask rises to fair value, P(hold) decays, or spread widens.",
             )
         return out(
