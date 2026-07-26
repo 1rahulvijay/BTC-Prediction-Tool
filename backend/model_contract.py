@@ -48,6 +48,7 @@ MODEL_FEATURE_SCHEMA_HASH = hashlib.sha1(
     "\n".join(MODEL_FEATURE_NAMES).encode("utf-8")
 ).hexdigest()[:12]
 MODEL_ARCH_VERSION = (
-    f"2026-06-15-v11-pruned{MODEL_NUM_FEATURES}-{MODEL_FEATURE_SCHEMA_HASH}-"
-    f"2horizon-5-15-rf-persist-split98-classbal-vrts-session-136-{DL_ARCH.lower()}"
+    f"2026-07-26-v12-pruned{MODEL_NUM_FEATURES}-{MODEL_FEATURE_SCHEMA_HASH}-"
+    f"2horizon-5-15-rf-persist-split98-classbal-simw-tcnbal-purged-"
+    f"vrts-session-136-{DL_ARCH.lower()}"
 )

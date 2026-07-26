@@ -17,12 +17,17 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from artifact_identity import artifact_matches_current_training
+from polymarket_fee import (
+    DEFAULT_CRYPTO_TAKER_FEE_RATE,
+    polymarket_taker_fee_per_share,
+)
+
 
 PHOLD_STRONG = 0.93
 PHOLD_GOOD = 0.85
 
 DEFAULT_BUFFER = 0.03
-DEFAULT_CRYPTO_TAKER_FEE_RATE = 0.07
 DEFAULT_REQUIRED_EDGE = 0.0
 # First qualifying 5m/15m entries at P(Hold)>=0.93 realized 92.6% with a 91.3%
 # Wilson lower bound. Raw snapshot probabilities averaged 97.8% in that selected set.
@@ -35,16 +40,6 @@ _META_ERROR = ""
 
 META_GATE_MIN = 0.55
 META_GATED_ACTIONS = {"PAPER_BET", "SETUP", "LEAN", "WATCH_UP", "WATCH_DOWN"}
-
-
-def polymarket_taker_fee_per_share(price: float, fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE) -> float:
-    """Return the current crypto-market taker fee for one share.
-
-    Polymarket's fee formula is C * fee_rate * p * (1-p). This helper uses C=1.
-    Maker orders have zero protocol fee and should pass an explicit cost of 0 instead.
-    """
-    p = max(0.0, min(1.0, float(price)))
-    return round(max(0.0, float(fee_rate)) * p * (1.0 - p), 5)
 
 
 def max_taker_ask(
@@ -65,6 +60,18 @@ def max_taker_ask(
 
 KELLY_FRACTION = 0.25   # quarter-Kelly: estimation error in P(hold) makes full Kelly reckless
 KELLY_CAP = 0.10        # never suggest more than 10% of bankroll on one round
+
+# ── PR1 safety switches (2026-07-26), both DEFAULT OFF ────────────────────────────────────────
+# PAPER_BET_ENABLED: P(hold) is measurably overconfident live (predicted 96.1% vs realized 89.3%
+#   over 6,725 official resolved rounds; the 90-95% band realizes 81.2%). Any fair value derived from it
+#   overstates edge, so the champion may DISPLAY a candidate but may not AUTHORIZE one until a
+#   calibrated probability beats raw on Brier, log-loss and ECE.
+# KELLY_SIZING_ENABLED: Kelly turns that same miscalibrated probability into a position size, and
+#   measured EV moves further negative with size (-0.26c/share at 25, -1.48c/share at 250).
+#   Capacity belongs to a ladder-walking function, not to bankroll fractions.
+# Both are explicit operator overrides. Neither should be switched on to "see more signals".
+PAPER_BET_ENABLED = os.environ.get("BTC_ENABLE_PAPER_BET", "0") == "1"
+KELLY_SIZING_ENABLED = os.environ.get("BTC_ENABLE_KELLY_SIZING", "0") == "1"
 
 
 def kelly_stake(fair_value, ask, effective_costs=0.0,
@@ -95,6 +102,10 @@ def _load_meta_model():
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(root, "data")
         path = os.path.join(data_dir, "saved_models", "champion_meta_model.pkl")
         if os.path.exists(path):
+            identity_ok, reasons = artifact_matches_current_training(path)
+            if not identity_ok:
+                _META_ERROR = "artifact identity mismatch: " + "; ".join(reasons)
+                return None
             _META_MODEL = joblib.load(path)
     except Exception as exc:
         _META_ERROR = str(exc)
@@ -182,6 +193,7 @@ def champion_decision(
         bet: bool = False,
         edge: Optional[float] = None,
         stake_frac: Optional[float] = None,
+        paper_quantity: Optional[int] = None,
         invalidate: str = "",
     ) -> Dict[str, Any]:
         zone = None
@@ -206,6 +218,9 @@ def champion_decision(
             "bet_candidate": bool(bet),
             "edge": round(edge, 4) if edge is not None else None,
             "stake_frac": round(stake_frac, 4) if stake_frac else None,
+            # Fixed paper size while probabilities are uncalibrated (PR1). Capacity must come
+            # from walking the ladder, never from a bankroll fraction times a biased probability.
+            "paper_quantity": int(paper_quantity) if paper_quantity else None,
         }
         meta_p = _meta_probability(round_data, action, result["confidence"])
         if meta_p is not None:
@@ -223,6 +238,7 @@ def champion_decision(
                     "bet_candidate": False,
                     "edge": None,
                     "stake_frac": None,
+                    "paper_quantity": None,
                     "invalidate": "Meta hold probability rises above 55% with the same setup.",
                 })
         return result
@@ -438,12 +454,43 @@ def champion_decision(
                 invalidate="At least one share appears at the fresh exact-round best ask.",
             )
         if net_edge > required_edge and not (drop_risk == "HIGH" and position == "UP"):
-            # Lever 2: PROPORTIONAL sizing. The bet decision is edge-based (fair - ask - costs), and
-            # the suggested stake scales WITH that edge (quarter-Kelly, 10% bankroll cap) instead of
-            # a fixed unit. Sizing support for the paper ledger -- not an order, not real-money advice.
-            stake = kelly_stake(fair_value, ask, effective_costs)
-            stake_line = (f" Suggested paper stake: {stake * 100:.1f}% of bankroll "
-                          f"(quarter-Kelly, 10% cap)." if stake > 0 else "")
+            # ── PR1 (2026-07-26): P(hold) MAY NOT AUTHORIZE A BET UNTIL RECALIBRATED ─────────
+            # Live calibration over 6,725 official resolved rounds (DECISION_LOCKDOWN_AND_CALIBRATION_2026-07-26):
+            # predicted 96.1% vs realized 89.3%, and the gap is WORST exactly where this branch
+            # fires -- the 90-95% band realizes 81.2% and the 85-90% band realizes 72.3%. The
+            # PHOLD_STRONG=0.93 gate below therefore authorizes action on a claim that is ~12pp
+            # optimistic, and `fair_value` derived from it overstates edge by roughly that much.
+            # The live ledger agrees: the PAPER bucket held 69.4% while WAIT held 89.6% -- the tier
+            # presented as strongest was the weakest.
+            #
+            # Until a calibrated probability exists and wins on Brier/log-loss/ECE against raw,
+            # this branch DISPLAYS the candidate and REFUSES to authorize it. Re-enable only with
+            # BTC_ENABLE_PAPER_BET=1, which is an explicit operator override, not a default.
+            if not PAPER_BET_ENABLED:
+                return out(
+                    "NO_EDGE",
+                    f"CANDIDATE {position} - uncalibrated, not authorized",
+                    min(70.0, confidence),
+                    f"Raw-P(hold) edge would be {edge_line}, but P(hold) is measurably "
+                    f"overconfident on live data (96.1% predicted vs 89.3% realized; the 90-95% "
+                    f"band realizes 81.2%). This edge is computed from a probability known to be "
+                    f"optimistic, so it is shown for research and NOT authorized as a paper bet. "
+                    f"Set BTC_ENABLE_PAPER_BET=1 to override.",
+                    edge=net_edge,
+                    invalidate="A calibrated P(hold) beats raw on Brier, log-loss and ECE.",
+                )
+            # Sizing: fixed ONE share. Kelly is disabled by default because it multiplies a
+            # miscalibrated probability into a position size, and measured EV goes MORE negative
+            # with size (-0.26c/share at 25, -1.48c/share at 250). Capacity must be derived from
+            # the ladder, not from bankroll. Re-enable with BTC_ENABLE_KELLY_SIZING=1.
+            if KELLY_SIZING_ENABLED:
+                stake = kelly_stake(fair_value, ask, effective_costs)
+                stake_line = (f" Suggested paper stake: {stake * 100:.1f}% of bankroll "
+                              f"(quarter-Kelly, 10% cap)." if stake > 0 else "")
+            else:
+                stake = 0.0
+                stake_line = (" Paper quantity fixed at 1 share (Kelly disabled: sizing on an "
+                              "uncalibrated probability, and measured EV worsens with size).")
             return out(
                 "PAPER_BET",
                 f"PAPER-BET {position} - net edge {net_edge * 100:+.0f}c",
@@ -453,6 +500,7 @@ def champion_decision(
                 bet=True,
                 edge=net_edge,
                 stake_frac=stake,
+                paper_quantity=1,
                 invalidate="Ask rises to fair value, P(hold) decays, or spread widens.",
             )
         return out(

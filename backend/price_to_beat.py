@@ -31,6 +31,8 @@ import os
 import database
 import decision_champion
 import round_state_panel
+from trade_forecast import live_forecaster as complete_trade_forecaster
+from artifact_identity import artifact_matches_current_training
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,71 @@ _PERSIST_MODEL_MTIME = -2.0
 _PERSIST_MODEL_CHECKED = 0.0
 
 
+# ── FROZEN-ARTIFACT IMMUTABILITY (PR1, 2026-07-26) ────────────────────────────────────────────
+# BTC_FREEZE_MODEL=1 exists so an evidence run measures ONE bundle. But every loader below
+# hot-reloads on mtime, so any other process replacing a .pkl silently swapped the model
+# mid-run -- and the live evidence would then describe two different models with no record of
+# the change. Under freeze, the FIRST successfully loaded artifact is authoritative for the
+# life of the process; a later change is refused and alerted, never adopted.
+_FROZEN = os.environ.get("BTC_FREEZE_MODEL", "1") != "0"
+_FROZEN_LOADED = {}          # path -> (mtime, sha256[:16]) of the artifact this process serves
+_FROZEN_ALERTED = set()
+_IDENTITY_ALERTED = set()
+
+
+def _artifact_sha(path):
+    import hashlib
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:16]
+    except Exception:
+        return "?"
+
+
+def _freeze_blocks_reload(path, mtime, label):
+    """True when a frozen process must REFUSE this artifact change.
+
+    First load under freeze is recorded (path, mtime, sha) and permitted. Any later mtime for
+    the same path is refused and alerted ONCE -- loudly, because a silent swap invalidates every
+    measurement taken after it.
+    """
+    if not _FROZEN:
+        return False
+    prev = _FROZEN_LOADED.get(path)
+    if prev is None:
+        _FROZEN_LOADED[path] = (mtime, _artifact_sha(path))
+        logger.info("[frozen] %s pinned: sha=%s mtime=%.0f", label,
+                    _FROZEN_LOADED[path][1], mtime)
+        return False
+    if mtime == prev[0]:
+        return False
+    if path not in _FROZEN_ALERTED:
+        _FROZEN_ALERTED.add(path)
+        logger.error(
+            "[frozen] ARTIFACT CHANGED WHILE FROZEN - refusing to load: %s | "
+            "serving sha=%s (mtime %.0f), on disk sha=%s (mtime %.0f) | "
+            "evidence from this process describes the SERVING artifact | "
+            "restart deliberately to adopt the new one, or unset BTC_FREEZE_MODEL",
+            label, prev[1], prev[0], _artifact_sha(path), mtime)
+    return True
+
+
+def _identity_blocks_load(path, label):
+    """Fail closed when an artifact was trained on different or unidentified data."""
+    ok, reasons = artifact_matches_current_training(path)
+    if ok:
+        return False
+    alert_key = (path, tuple(reasons))
+    if alert_key not in _IDENTITY_ALERTED:
+        _IDENTITY_ALERTED.add(alert_key)
+        logger.error(
+            "[artifact identity] refusing %s: %s",
+            label,
+            "; ".join(reasons),
+        )
+    return True
+
+
 def _load_persistence_model():
     """Return the persistence-model dict {clf, iso, features, ...} or None. HOT-RELOADS when the
     .pkl changes (mtime, throttled 30s) so a nightly refit goes live WITHOUT a restart; keeps the
@@ -74,10 +141,16 @@ def _load_persistence_model():
         mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
         if mt == _PERSIST_MODEL_MTIME:
             return _PERSIST_MODEL                    # unchanged (incl. still-missing) — no work
+        if _freeze_blocks_reload(path, mt, "persistence_model (P(hold))"):
+            return _PERSIST_MODEL                    # frozen: keep serving the pinned artifact
         if mt < 0:
             _PERSIST_MODEL_ERROR = "missing"; _PERSIST_MODEL_MTIME = mt
             if _PERSIST_MODEL is None:
                 logger.info(f"A1 persistence model absent at {path} — P(hold) disabled.")
+            return _PERSIST_MODEL
+        if _identity_blocks_load(path, "persistence_model (P(hold))"):
+            _PERSIST_MODEL_ERROR = "artifact identity mismatch"
+            _PERSIST_MODEL_MTIME = mt
             return _PERSIST_MODEL
         loaded = joblib.load(path)                   # only reaches here when the file CHANGED
         _PERSIST_MODEL = loaded; _PERSIST_MODEL_MTIME = mt; _PERSIST_MODEL_ERROR = ""
@@ -111,7 +184,7 @@ def _load_bigmove_keeper_model():
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "bigmove_keeper_model.pkl")
-        if os.path.exists(path):
+        if os.path.exists(path) and not _identity_blocks_load(path, "bigmove_keeper"):
             _BIGMOVE_MODEL = joblib.load(path)
             logger.info(f"Big-move keeper head loaded: AUC={_BIGMOVE_MODEL.get('auc'):.3f}, "
                         f"features={_BIGMOVE_MODEL.get('features')}")
@@ -136,7 +209,7 @@ def _load_bigdrop_keeper_model():
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "bigdrop_keeper_model.pkl")
-        if os.path.exists(path):
+        if os.path.exists(path) and not _identity_blocks_load(path, "bigdrop_keeper"):
             _BIGDROP_MODEL = joblib.load(path)
             logger.info(f"Big-drop keeper head loaded: AUC={_BIGDROP_MODEL.get('auc'):.3f}, "
                         f"top5%={_BIGDROP_MODEL.get('top5_prec'):.2f}")
@@ -161,7 +234,7 @@ def _load_directional_keeper_model():
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "directional_keeper_model.pkl")
-        if os.path.exists(path):
+        if os.path.exists(path) and not _identity_blocks_load(path, "directional_keeper"):
             _DIRECTIONAL_MODEL = joblib.load(path)
             logger.info("Directional keeper heads loaded: %s", list((_DIRECTIONAL_MODEL.get("models") or {}).keys()))
     except Exception as _e:
@@ -185,7 +258,7 @@ def _load_activity_keeper_model():
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "activity_keeper_model.pkl")
-        if os.path.exists(path):
+        if os.path.exists(path) and not _identity_blocks_load(path, "activity_keeper"):
             _ACTIVITY_MODEL = joblib.load(path)
             logger.info(f"Activity keeper head loaded: AUC={_ACTIVITY_MODEL.get('auc'):.3f}")
     except Exception as _e:
@@ -219,9 +292,15 @@ def _load_path_forecaster():
         mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
         if mt == _PATH_MODEL_MTIME:
             return _PATH_FORECASTER
+        if _freeze_blocks_reload(path, mt, "path_forecaster"):
+            return _PATH_FORECASTER                  # frozen: keep the pinned artifact
         if mt < 0:
             _PATH_MODEL_MTIME = mt
             _PATH_MODEL_ERROR = "missing"
+            return _PATH_FORECASTER
+        if _identity_blocks_load(path, "path_forecaster"):
+            _PATH_MODEL_MTIME = mt
+            _PATH_MODEL_ERROR = "artifact identity mismatch"
             return _PATH_FORECASTER
         loaded = joblib.load(path)
         if loaded.get("threshold_units") != "usd":   # accept any usd-barriers bundle (v2/v3); units is the real safety guard
@@ -277,9 +356,14 @@ def _load_fade_model():
         mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
         if mt == _FADE_MTIME:
             return _FADE_MODEL
+        if _freeze_blocks_reload(path, mt, "fade_model"):
+            return _FADE_MODEL                  # frozen: keep the pinned artifact
         _FADE_MTIME = mt
         if mt < 0:
             _FADE_ERROR = "missing"
+            return _FADE_MODEL
+        if _identity_blocks_load(path, "fade_model"):
+            _FADE_ERROR = "artifact identity mismatch"
             return _FADE_MODEL
         loaded = joblib.load(path)
         from train_fade_model import HEAD_VERSION as expected_version
@@ -322,6 +406,8 @@ def _load_window_favorability():
         mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
         if mt == _WINFAV_MTIME:
             return _WINFAV
+        if _freeze_blocks_reload(path, mt, "window_favorability"):
+            return _WINFAV                  # frozen: keep the pinned artifact
         _WINFAV_MTIME = mt
         if mt < 0:
             return _WINFAV
@@ -450,6 +536,29 @@ def _leader_quote(round_data, now_ms):
 
 def _live_share_prices_for_round(round_data, now_ms):
     """Return both executable Polymarket contract quotes for the exact live round."""
+    import json
+
+    def validated_levels(raw_levels, *, ascending, expected_top):
+        levels = []
+        for raw in raw_levels or []:
+            if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+                return None
+            try:
+                price, size = float(raw[0]), float(raw[1])
+            except (TypeError, ValueError):
+                return None
+            if not np.isfinite(price) or not np.isfinite(size):
+                return None
+            if not (0.0 <= price <= 1.0) or size <= 0.0:
+                return None
+            levels.append([price, size])
+        if not levels:
+            return None
+        ordered = sorted(levels, key=lambda item: item[0], reverse=not ascending)
+        if levels != ordered or abs(float(levels[0][0]) - float(expected_top)) > 1e-6:
+            return None
+        return levels
+
     payload = _PM_QUOTES or {}
     quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
     if not quote:
@@ -470,11 +579,35 @@ def _live_share_prices_for_round(round_data, now_ms):
             ask = float(quote[f"{prefix}_ask"])
             if not (0.0 <= bid <= ask <= 1.0) or ask <= 0.0:
                 return None
+            try:
+                ladder = quote.get(f"{prefix}_ladder")
+                ladder = json.loads(ladder) if isinstance(ladder, str) else ladder
+                bids = validated_levels(
+                    (ladder or {}).get("b"),
+                    ascending=False,
+                    expected_top=bid,
+                )
+                asks = validated_levels(
+                    (ladder or {}).get("a"),
+                    ascending=True,
+                    expected_top=ask,
+                )
+            except (TypeError, ValueError):
+                bids, asks = None, None
+            if bids is None or asks is None:
+                return None
             sides[side.lower()] = {
                 "bid": round(bid, 4),
                 "ask": round(ask, 4),
                 "spread": round(float(quote.get(f"{prefix}_spread") or ask - bid), 4),
                 "ask_size": round(float(quote.get(f"{prefix}_top_ask_size") or 0.0), 2),
+                "bid_size": round(float(quote.get(f"{prefix}_top_bid_size") or 0.0), 2),
+                "bid_depth_1c": round(float(quote.get(f"{prefix}_b1") or 0.0), 2),
+                "bid_depth_5c": round(float(quote.get(f"{prefix}_b5") or 0.0), 2),
+                "bid_ladder": bids,
+                "ask_ladder": asks,
+                "book_ts": quote.get(f"{prefix}_book_ts"),
+                "book_hash": quote.get(f"{prefix}_book_hash"),
                 "buy_fee": round(fee_rate * ask * (1.0 - ask), 5) if fees_enabled else 0.0,
             }
         return {
@@ -482,6 +615,7 @@ def _live_share_prices_for_round(round_data, now_ms):
             "ts": quote_ts,
             "age_seconds": round(max(0.0, age), 3),
             "fees_enabled": fees_enabled,
+            "artifact_hash": quote.get("artifact_hash"),
             **sides,
         }
     except Exception:
@@ -928,10 +1062,15 @@ def _load_signed_quantile_model():
         mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
         if mt == _SIGNED_QMODEL_MTIME:
             return _SIGNED_QMODEL
+        if _freeze_blocks_reload(path, mt, "signed_quantile_model"):
+            return _SIGNED_QMODEL                  # frozen: keep the pinned artifact
         if mt < 0:
             _SIGNED_QMODEL_MTIME = mt
             if _SIGNED_QMODEL is None:
                 logger.info("Signed-quantile band absent — using symmetric band.")
+            return _SIGNED_QMODEL
+        if _identity_blocks_load(path, "signed_quantile_model"):
+            _SIGNED_QMODEL_MTIME = mt
             return _SIGNED_QMODEL
         _SIGNED_QMODEL = joblib.load(path); _SIGNED_QMODEL_MTIME = mt
         logger.info(f"Signed-quantile band (re)loaded: horizons={_SIGNED_QMODEL.get('horizons')}, "
@@ -1720,6 +1859,22 @@ class PriceToBeatTracker:
         except Exception as _rse:
             logger.debug(f"round-state shadow skipped: {_rse}")
             rnd["round_state"] = None
+        # Complete-trade forecaster is a separate SHADOW/PILOT lane. It predicts
+        # execution/path distributions from the fresh full ladders and can only
+        # return NO_TRADE until its recorder and M0 evidence gates pass. It never
+        # feeds Champion, our_direction, advice, or any production decision field.
+        try:
+            rnd["complete_trade_forecast"] = complete_trade_forecaster.score_round(
+                rnd, rnd.get("share_prices"), int(now_ms)
+            )
+        except Exception as _ctf:
+            logger.debug(f"complete-trade shadow skipped: {_ctf}")
+            rnd["complete_trade_forecast"] = {
+                "mode": "SHADOW_PILOT_ONLY",
+                "status": "ERROR_FAIL_CLOSED",
+                "action": "NO_TRADE",
+                "plain_reason": "Complete-trade shadow unavailable; Champion is unchanged.",
+            }
         # ── A1 persistence recorder (2026-06-13) ──────────────────────────────────
         # Log intra-window snapshots (distance to line, seconds left, side) for the
         # late-entry / T3 persistence model. Pyth tracker only (the settlement feed);

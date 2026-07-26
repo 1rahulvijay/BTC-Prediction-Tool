@@ -45,6 +45,7 @@ from features import (
 from model_verifier import PerModelVerifier
 from price_to_beat import PriceToBeatTracker, persistence_model_status
 import round_state_panel
+from trade_forecast import live_forecaster as complete_trade_forecaster
 import model_metrics_logger        # separate DuckDB; logs every model's live output (crash-safe)
 from exchange_verifier import PerVenueVerifier
 from model import MultiModelEnsemble, CascadeMonitor, MODEL_ARCH_VERSION, MODEL_DIR
@@ -137,14 +138,24 @@ MODEL_BOOT_BACKTEST = os.getenv("BTC_RUN_STARTUP_BACKTEST", "1") != "0"
 MODEL_FROZEN = os.getenv("BTC_FREEZE_MODEL", "1") != "0"
 
 # Admin passcode gate for expensive/mutating actions (relearn, backtest, replay).
-# Ported from the Oracle deployment 2026-07-25: a publicly reachable dashboard MUST NOT let a
-# viewer trigger a multi-hour retrain or a CPU-bound replay by accident. When BTC_ADMIN_TOKEN is
-# set those endpoints require a matching X-Admin-Token header; unset (local dev) = no gate, so
-# existing local behaviour is preserved exactly.
+# Local development may deliberately run without a token. A production deployment may not:
+# leaving the token unset used to disable the gate entirely, so any dashboard viewer could launch
+# a multi-hour retrain or replay.
 ADMIN_TOKEN = (os.getenv("BTC_ADMIN_TOKEN") or "").strip()
+DEPLOYMENT_ENV = (os.getenv("BTC_DEPLOYMENT_ENV") or "development").strip().lower()
+REQUIRE_ADMIN_TOKEN = (
+    os.getenv("BTC_REQUIRE_ADMIN_TOKEN", "1" if DEPLOYMENT_ENV == "production" else "0") == "1"
+)
+if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN:
+    raise RuntimeError(
+        "BTC_ADMIN_TOKEN is required when BTC_REQUIRE_ADMIN_TOKEN=1 "
+        f"(BTC_DEPLOYMENT_ENV={DEPLOYMENT_ENV!r})."
+    )
 
 
 def _require_admin(token: str | None) -> None:
+    if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Admin actions are disabled: token not configured.")
     if ADMIN_TOKEN and (token or "").strip() != ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="Admin passcode required for this action.")
 FORCE_MAIN_RETRAIN = (
@@ -4165,6 +4176,7 @@ async def main_loop():
                     "accuracy": _accuracy_alltime(price_to_beat_tracker),
                     "p_hold_status": persistence_model_status(),
                     "round_state_status": round_state_panel.status(),
+                    "complete_trade_status": complete_trade_forecaster.status(),
                     # RULE STATUS tile: forward paper ledger of the frozen LATE_LEADER_30S_V1 rule
                     # + recorder liveness (quote-bridge age). Cheap DB aggregate, cached 30s.
                     "paper_rule_status": _paper_rule_status_cached(),

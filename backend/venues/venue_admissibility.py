@@ -156,11 +156,30 @@ def require_leadlag(basis_a, basis_b, basis=None):
 
 # Enforcement lives in SQL so it cannot be bypassed by post-filtering a DataFrame in a notebook.
 _ADMISSIBLE_SQL = """
-WITH first_seen AS (
+-- IDENTITY IS RESOLVED OVER ALL HISTORY, THEN THE WINDOW IS APPLIED (fixed 2026-07-26).
+-- The previous form filtered to the lookback BEFORE ranking, so ROW_NUMBER() only ever saw rows
+-- inside the window. An event first observed OUTSIDE the lookback and re-polled INSIDE it then
+-- ranked 1 within the window and entered features as though it were new - the precise
+-- double-count the event_key mechanism exists to prevent, reintroduced by the scoping.
+-- Ranking must therefore span every row up to the decision instant, never just the window.
+WITH canonical AS (
+    -- Ordered by recv_ts ALONE. The invariant is "the earliest observation wins"; adding
+    -- process_start_id as a tiebreaker made this gate fail on any table lacking that column,
+    -- which is a brittleness the enforcement layer must not have. A recv_ts tie for the SAME
+    -- event_key means two sightings of one event at the same instant - either is equally valid
+    -- as "first", so the tiebreaker bought no correctness.
     SELECT *, ROW_NUMBER() OVER (
-                  PARTITION BY venue, stream, event_key ORDER BY recv_ts) AS _rn
+                  PARTITION BY venue, stream, event_key
+                  ORDER BY recv_ts) AS _rn
     FROM venue_events
-    WHERE recv_ts <= ? AND recv_ts > ?
+    WHERE recv_ts <= ?                    -- causal: nothing after the decision instant
+),
+admissible AS (
+    SELECT * FROM canonical
+    -- (4) first observation wins, resolved GLOBALLY. A restart re-polls data already recorded and
+    --     the second sighting carries a recv_ts that never reflected when we could first know it.
+    WHERE (event_key IS NULL OR _rn = 1)
+      AND recv_ts > ?                     -- ...only now is the lookback window applied
       -- (1) REST backlog: prohibited outright, never merely filterable
       AND NOT (source_mode = 'REST_POLL' AND (poll_id IS NULL OR poll_id < {first_live}))
       -- (2) Class B staleness: a delayed observable past its frozen age is unavailable, not fresh
@@ -170,10 +189,7 @@ WITH first_seen AS (
       --     reconnect, so it can silently double-count. Recorded, but never a feature.
       AND NOT (source_mode = 'REST_POLL' AND (event_key IS NULL OR event_key = ''))
 )
-SELECT * EXCLUDE (_rn) FROM first_seen
--- (4) first observation wins: a restart re-polls data already recorded, and the SECOND sighting of
---     an event carries a recv_ts that never reflected when we could first have known it
-WHERE event_key IS NULL OR _rn = 1
+SELECT * EXCLUDE (_rn) FROM admissible
 """
 
 
@@ -184,7 +200,9 @@ def admissible_sql(basis=None):
         allowed = sorted(k for k, v in BASIS_USABLE.items() if basis in v)
         if not allowed:
             raise InadmissiblePairing(f"no timestamp basis supports '{basis}'")
-        sql += "\n  AND timestamp_basis IN (" + ",".join(f"'{a}'" for a in allowed) + ")"
+        # The outer SELECT carries no WHERE of its own (identity is resolved inside the CTEs), so
+        # the basis restriction must open its own clause rather than AND onto nothing.
+        sql += "\nWHERE timestamp_basis IN (" + ",".join(f"'{a}'" for a in allowed) + ")"
     return sql + "\nORDER BY recv_ts"
 
 
@@ -268,7 +286,7 @@ def selftest():
     con.execute("""CREATE TABLE venue_events(
         recv_ts DOUBLE, exch_ts DOUBLE, venue VARCHAR, stream VARCHAR, seq DOUBLE,
         event_key VARCHAR, price DOUBLE, source_mode VARCHAR, poll_id DOUBLE,
-        timestamp_basis VARCHAR)""")
+        timestamp_basis VARCHAR, process_start_id DOUBLE)""")
     D = 10_000.0                                  # decision_ts
     R, W = "REST_POLL", "WS"
     rows = [
@@ -294,7 +312,8 @@ def selftest():
         # a polled row the venue gave no identity for: unrecognisable as a repeat after a reconnect
         (D - 15, D - 16, "binance_perp", "openInterest", None, None, 9.0, R, 6, POLL_RECEIVE_TIME),
     ]
-    con.executemany("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    con.executemany("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    [tuple(r) + (1.0,) for r in rows])
 
     df = admissible_events(con, D, lookback_s=600)
     got = set(zip(df["stream"], df["event_key"]))
@@ -379,6 +398,95 @@ def selftest():
         chk(True, "'venue_lead' REFUSED for a receive-basis feature")
     chk(leadlag_feature_name("venue_lead", "exch") == "venue_lead",
         "an economic lead name is allowed once BOTH sides carry exchange time")
+
+    # ---- IDENTITY SCOPE: an event first seen OUTSIDE the lookback, re-polled INSIDE it, must
+    # stay excluded. The previous SQL applied the lookback BEFORE ranking, so ROW_NUMBER() only
+    # saw rows inside the window and the re-poll ranked 1 -- reintroducing the exact double-count
+    # event_key exists to prevent. This is the regression test for that scoping.
+    cs = duckdb.connect(":memory:")
+    cs.execute("""CREATE TABLE venue_events(
+        recv_ts DOUBLE, exch_ts DOUBLE, venue VARCHAR, stream VARCHAR, seq DOUBLE,
+        event_key VARCHAR, price DOUBLE, source_mode VARCHAR, poll_id DOUBLE,
+        timestamp_basis VARCHAR, process_start_id DOUBLE)""")
+    DEC, LOOK = 10_000.0, 300.0
+    # first observation is 600s before the decision => OUTSIDE a 300s lookback
+    cs.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               [DEC - 600, DEC - 601, "binance_perp", "aggTrade_rest", 1.0, "a:777", 100.0,
+                "REST_POLL", float(FIRST_LIVE_POLL_ID), POLL_RECEIVE_TIME, 1.0])
+    # a restart re-polls the SAME trade 100s before the decision => INSIDE the lookback
+    cs.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               [DEC - 100, DEC - 601, "binance_perp", "aggTrade_rest", 1.0, "a:777", 100.0,
+                "REST_POLL", float(FIRST_LIVE_POLL_ID + 9), POLL_RECEIVE_TIME, 2.0])
+    # a genuinely new trade inside the lookback
+    cs.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               [DEC - 90, DEC - 91, "binance_perp", "aggTrade_rest", 2.0, "a:778", 101.0,
+                "REST_POLL", float(FIRST_LIVE_POLL_ID + 9), POLL_RECEIVE_TIME, 2.0])
+    sdf = admissible_events(cs, DEC, lookback_s=LOOK)
+    keys = list(sdf["event_key"])
+    chk("a:777" not in keys,
+        "re-poll of an event first seen OUTSIDE the lookback stays excluded (identity is global)")
+    chk("a:778" in keys, "a genuinely new event inside the lookback is admitted")
+    chk(len(sdf) == 1, f"exactly one admissible row (got {len(sdf)}: {keys})")
+    cs.close()
+
+    # ---- REST repeat-poll accounting: features must count DISTINCT OBSERVATIONS, not rows.
+    # A 5s poll against a venue that republishes slower returns the same observation repeatedly.
+    # If a feature counted rows, "OI updated 5 times" and "OI changed" would both be fabricated
+    # out of a completely static market. This is the concrete case that motivated event_key.
+    co = duckdb.connect(":memory:")
+    co.execute("""CREATE TABLE venue_events(
+        recv_ts DOUBLE, exch_ts DOUBLE, venue VARCHAR, stream VARCHAR, seq DOUBLE,
+        event_key VARCHAR, price DOUBLE, size DOUBLE, source_mode VARCHAR, poll_id DOUBLE,
+        timestamp_basis VARCHAR)""")
+    T = 10_000.0
+    PUB = 9_998.0                                  # one venue publication, polled five times
+    for i in range(5):                             # identical payload -> identical event_key
+        co.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   [T - 20 + i, PUB, "binance_perp", "openInterest", None,
+                    "t:9998000#h:aaaaaaaaaaaa", None, 12345.678, "REST_POLL",
+                    float(FIRST_LIVE_POLL_ID + i), POLL_RECEIVE_TIME])
+    # then a genuinely new publication with a different value
+    co.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               [T - 5, T - 6, "binance_perp", "openInterest", None,
+                "t:9994000#h:bbbbbbbbbbbb", None, 12400.0, "REST_POLL",
+                float(FIRST_LIVE_POLL_ID + 5), POLL_RECEIVE_TIME])
+    oi = admissible_events(co, T, lookback_s=300.0)
+    oi = oi[oi["stream"] == "openInterest"]
+    chk(len(oi) == 2, f"5 identical polls + 1 new publication -> 2 distinct observations (got {len(oi)})")
+    chk(oi["event_key"].nunique() == 2, "distinct observations are keyed, not counted by row")
+    # the surviving row for the repeated publication must carry the EARLIEST receive time: a
+    # re-poll never gets to claim it arrived later than we actually first knew it
+    first = oi[oi["event_key"] == "t:9998000#h:aaaaaaaaaaaa"]
+    chk(len(first) == 1 and abs(float(first["recv_ts"].iloc[0]) - (T - 20)) < 1e-9,
+        "exact duplicate keeps the EARLIEST recv_ts")
+    vals = list(oi.sort_values("recv_ts")["size"])
+    chk(abs((vals[-1] - vals[0]) - (12400.0 - 12345.678)) < 1e-6,
+        "OI change computed from distinct observations, not repeated polls")
+    # and the static case: five identical polls alone must produce ZERO change and ONE update
+    co.execute("DELETE FROM venue_events WHERE event_key = 't:9994000#h:bbbbbbbbbbbb'")
+    st = admissible_events(co, T, lookback_s=300.0)
+    st = st[st["stream"] == "openInterest"]
+    chk(len(st) == 1, f"5 identical polls -> update count 1 (got {len(st)})")
+    chk(abs(float(st["size"].iloc[0]) - 12345.678) < 1e-9 and len(st) == 1,
+        "5 identical polls -> OI change 0")
+    # REVISION: same publication time, DIFFERENT payload -> a distinct key, so both are retained
+    # for audit and each is usable only from its own recv_ts (no back-dating of a correction).
+    co.execute("INSERT INTO venue_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               [T - 2, PUB, "binance_perp", "openInterest", None,
+                "t:9998000#h:cccccccccccc", None, 12350.0, "REST_POLL",
+                float(FIRST_LIVE_POLL_ID + 6), POLL_RECEIVE_TIME])
+    rev = admissible_events(co, T, lookback_s=300.0)
+    rev = rev[rev["stream"] == "openInterest"]
+    chk(len(rev) == 2, "same publication time + different payload = revision, BOTH retained")
+    early = rev[rev["event_key"].str.endswith("aaaaaaaaaaaa")]
+    chk(abs(float(early["recv_ts"].iloc[0]) - (T - 20)) < 1e-9,
+        "a revision never back-dates onto the original's receive time")
+    # as of a decision BEFORE the revision arrived, only the original is visible
+    pre = admissible_events(co, T - 10, lookback_s=300.0)
+    pre = pre[pre["stream"] == "openInterest"]
+    chk(len(pre) == 1 and pre["event_key"].iloc[0].endswith("aaaaaaaaaaaa"),
+        "a correction is invisible to decisions made before it arrived")
+    co.close()
 
     con.close()
     print("\nSELFTEST", "PASS" if ok else "FAIL")

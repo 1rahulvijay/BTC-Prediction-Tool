@@ -1,0 +1,237 @@
+"""Frozen declarations and validation for COMPLETE_TRADE_FORECAST_V1."""
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Any
+
+
+CONFIG_VERSION = "2026-07-26-complete-trade-forecast-v1"
+MODE = "SHADOW_PILOT_ONLY"
+
+HORIZONS = (5, 15)
+ENTRY_CHECKPOINTS_S = {
+    5: (240, 180, 120, 90, 60, 30),
+    15: (720, 600, 480, 360, 240, 180, 120, 90, 60, 30),
+}
+FUTURE_OFFSETS_S = (5, 10, 15, 30, 60, 120)
+QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90)
+QUANTITIES = (1, 5, 10, 25, 50, 100)
+ENTRY_LATENCY_MS = 500
+M0_STRESS_LATENCY_MS = 1000
+MAX_DECISION_BOOK_AGE_S = 5.0
+MAX_BTC_OBSERVATION_AGE_S = 10.0
+MAX_FUTURE_OBSERVATION_LAG_S = 10.0
+# Relative barriers keep the event definition stable as BTC's dollar price changes.
+# Approximately $30 at $60k for 5m and $60 at $60k for 15m.
+BTC_TOUCH_BPS = {5: 5.0, 15: 10.0}
+
+EXIT_PLANS = (
+    "HOLD_TO_SETTLEMENT",
+    "TAKE_1C",
+    "TAKE_3C",
+    "TAKE_5C",
+    "TAKE_3C_OR_STOP_3C",
+    "TIME_EXIT_15S",
+    "TIME_EXIT_30S",
+    "TIME_EXIT_60S",
+    "BREAK_EVEN_LOCK_AFTER_3C",
+)
+
+PROMOTION_GATE = {
+    "min_independent_rounds": 500,
+    "min_calendar_weeks": 8,
+    "m0_quantiles": 5,
+    "m0_q5_day_block_lb_min": 0.0,
+    "m0_q5_minus_q3_min": 0.005,
+    "m0_require_broad_monotonicity": True,
+    "m0_require_week_stability": True,
+    "m0_require_fee_and_latency_survival": True,
+    "m0_min_test_weeks": 2,
+    "m0_max_single_hour_share": 0.50,
+    "m0_min_profit_factor": 1.20,
+}
+
+FEATURE_COLUMNS = (
+    "horizon",
+    "seconds_left",
+    "seconds_elapsed",
+    "requested_qty",
+    "side_up",
+    "side_is_leader",
+    "current_btc",
+    "anchor_price",
+    "distance_usd_side",
+    "distance_bps_side",
+    "abs_distance_bps",
+    "btc_return_5s_bps",
+    "btc_return_15s_bps",
+    "btc_return_30s_bps",
+    "btc_return_60s_bps",
+    "btc_vol_60s_pct",
+    "p_hold_side",
+    "own_bid",
+    "own_ask",
+    "own_spread",
+    "own_bid_size",
+    "own_ask_size",
+    "own_bid_depth",
+    "own_ask_depth",
+    "own_bid_levels",
+    "own_ask_levels",
+    "opp_bid",
+    "opp_ask",
+    "opp_spread",
+    "opp_bid_size",
+    "opp_ask_size",
+    "contract_bid_velocity_5s",
+    "contract_bid_velocity_15s",
+    "contract_bid_velocity_30s",
+    "btc_share_sensitivity_30s",
+    "top_imbalance",
+    "depth_imbalance",
+    "decision_quote_age_s",
+)
+
+# Generic BTC path head uses one canonical UP-side/1-share row per checkpoint.
+# Quantity and trade-side orientation are intentionally excluded.
+BTC_FEATURE_COLUMNS = (
+    "horizon",
+    "seconds_left",
+    "seconds_elapsed",
+    "current_btc",
+    "anchor_price",
+    "distance_usd_side",
+    "distance_bps_side",
+    "abs_distance_bps",
+    "btc_return_5s_bps",
+    "btc_return_15s_bps",
+    "btc_return_30s_bps",
+    "btc_return_60s_bps",
+    "btc_vol_60s_pct",
+    "p_hold_side",
+    "own_bid",
+    "own_ask",
+    "own_spread",
+    "own_bid_size",
+    "own_ask_size",
+    "own_bid_depth",
+    "own_ask_depth",
+    "opp_bid",
+    "opp_ask",
+    "opp_spread",
+    "top_imbalance",
+    "depth_imbalance",
+    "decision_quote_age_s",
+)
+
+CLASSIFICATION_TARGETS = (
+    "entry_complete",
+    "label_ever_profitable",
+    "label_stays_profitable_to_settlement",
+    "label_lockable_1c",
+    "label_take_1c_before_stop_3c",
+    "label_take_3c_before_stop_3c",
+    "label_take_5c_before_stop_5c",
+    "label_settlement_win",
+)
+CROSSING_TARGETS = tuple(
+    f"label_{event}_by_{offset}s"
+    for offset in FUTURE_OFFSETS_S
+    for event in ("break_even", "target_3c", "stop_3c")
+)
+
+SHARE_SUMMARY_TARGETS = (
+    "actual_mfe",
+    "actual_mae",
+    "actual_first_profitable_s",
+)
+
+
+def frozen_config() -> dict[str, Any]:
+    return {
+        "version": CONFIG_VERSION,
+        "mode": MODE,
+        "horizons": list(HORIZONS),
+        "entry_checkpoints_s": {
+            str(key): list(value) for key, value in ENTRY_CHECKPOINTS_S.items()
+        },
+        "future_offsets_s": list(FUTURE_OFFSETS_S),
+        "quantiles": list(QUANTILES),
+        "quantities": list(QUANTITIES),
+        "entry_latency_ms": ENTRY_LATENCY_MS,
+        "m0_stress_latency_ms": M0_STRESS_LATENCY_MS,
+        "max_decision_book_age_s": MAX_DECISION_BOOK_AGE_S,
+        "max_btc_observation_age_s": MAX_BTC_OBSERVATION_AGE_S,
+        "max_future_observation_lag_s": MAX_FUTURE_OBSERVATION_LAG_S,
+        "btc_touch_bps": {str(key): value for key, value in BTC_TOUCH_BPS.items()},
+        "exit_plans": list(EXIT_PLANS),
+        "promotion_gate": PROMOTION_GATE,
+        "feature_columns": list(FEATURE_COLUMNS),
+        "btc_feature_columns": list(BTC_FEATURE_COLUMNS),
+        "classification_targets": list(CLASSIFICATION_TARGETS),
+        "crossing_targets": list(CROSSING_TARGETS),
+        "share_summary_targets": list(SHARE_SUMMARY_TARGETS),
+    }
+
+
+def policy_hash() -> str:
+    raw = json.dumps(frozen_config(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def validate_candidate(candidate: dict[str, Any]) -> list[str]:
+    """Return all fail-closed reasons for a canonical candidate snapshot."""
+    reasons: list[str] = []
+    if int(candidate.get("horizon") or 0) not in HORIZONS:
+        reasons.append("unsupported_horizon")
+    if str(candidate.get("side") or "") not in ("UP", "DOWN"):
+        reasons.append("invalid_side")
+    if float(candidate.get("requested_qty") or 0.0) <= 0.0:
+        reasons.append("invalid_quantity")
+    if float(candidate.get("seconds_left") or -1.0) < 0.0:
+        reasons.append("round_expired")
+    if not candidate.get("round_id"):
+        reasons.append("missing_round_id")
+    if not candidate.get("decision_ts_ns"):
+        reasons.append("missing_decision_timestamp")
+    for field in ("anchor_price", "current_btc", "own_bid", "own_ask"):
+        value = candidate.get(field)
+        try:
+            valid = value is not None and float(value) > 0.0
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            reasons.append(f"missing_{field}")
+    try:
+        if float(candidate.get("own_bid")) > float(candidate.get("own_ask")):
+            reasons.append("crossed_book")
+    except (TypeError, ValueError):
+        pass
+    if float(candidate.get("decision_quote_age_s") or 0.0) > MAX_DECISION_BOOK_AGE_S:
+        reasons.append("stale_decision_book")
+    return reasons
+
+
+def selftest() -> None:
+    assert len(policy_hash()) == 64
+    valid = {
+        "horizon": 5,
+        "side": "UP",
+        "requested_qty": 10,
+        "seconds_left": 60,
+        "round_id": "round",
+        "decision_ts_ns": 1,
+        "anchor_price": 100_000,
+        "current_btc": 100_020,
+        "own_bid": 0.55,
+        "own_ask": 0.56,
+        "decision_quote_age_s": 0.1,
+    }
+    assert validate_candidate(valid) == []
+    assert "crossed_book" in validate_candidate({**valid, "own_bid": 0.60})
+    print("trade_schema self-test: ALL PASS")
+
+
+if __name__ == "__main__":
+    selftest()

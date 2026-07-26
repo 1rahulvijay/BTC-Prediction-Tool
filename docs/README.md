@@ -1,5 +1,8 @@
 # Documentation Index
 
+- [Complete Trade Forecaster V1 (2026-07-26)](active/COMPLETE_TRADE_FORECAST_V1_IMPLEMENTATION_2026-07-26.md) - executable entry, BTC/share path distributions, full-depth capacity, causal plan optimizer, strict M0 gates, dedicated DuckDB ledger, shadow UI, commands and validation evidence.
+- [1,265-Day Multi-Window Expert Implementation (2026-07-26)](active/LONG_WINDOW_1265D_EXPERT_IMPLEMENTATION_2026-07-26.md) - true OHLC, monthly data gates, artifact identity, W90/W400/W1265 experts, purged OOF, sample-budget experiments, TCN sampling, forward shadow scoring, run order, and remaining evidence-gated work.
+
 ## Frozen preregistration — Binance lane (M0 not yet runnable)
 - **[PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md](active/PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md)** —
   frozen 2026-07-26, sha256 `0973744b7365…` (in `PREREG_HASH.txt`). One instrument, one cadence,
@@ -15,8 +18,8 @@
   and can never be cited as a pass.
 - **Collector:** `backend/venues/multi_venue_recorder.py` — synchronized event-time capture across
   Binance spot/perp, Bybit, Coinbase with `exch_ts`/`recv_ts`/`seq`, per-venue reconnect isolation,
-  measured clock drift (push streams only), 8/8 stream-health check, and an offline `--selftest`
-  (18 checks). Enforces the admissibility contract **in the data, not by convention**: every row
+  measured clock drift (push streams only), 9/9 stream-health check, and an offline `--selftest`
+  (26 checks). Enforces the admissibility contract **in the data, not by convention**: every row
   carries `source_mode` (`WS`/`REST_POLL`) and REST rows carry `poll_id`, so Class A and Class B are
   separable in SQL alone. Per-5-minute-episode health is persisted to `venue_episodes`
   (`stream_counts`, `streams_live`, `max_ws_age_ms`, `max_rest_age_ms`, `reconnects`, `qualifying`,
@@ -50,9 +53,11 @@
   [`PREREG_BINANCE_V1_CLARIFICATION_001.md`](active/PREREG_BINANCE_V1_CLARIFICATION_001.md)
   `12bf5e1e5829d320…` completes `CLASS_B_MAX_AGE_S = 60.0`, the limit section 10 names but leaves
   unvalued; [`PREREG_BINANCE_V1_CLARIFICATION_002.md`](active/PREREG_BINANCE_V1_CLARIFICATION_002.md)
-  `320631b2a83aaaca…` binds the receive-basis interpretation rule. Both declared 2026-07-26 with
-  **0 production rows and no analysis run**, so they complete rather than amend. Revising either
-  after an M0 result invalidates the experiment.
+  `320631b2a83aaaca…` binds the receive-basis interpretation rule; and
+  [`PREREG_BINANCE_V1_CLARIFICATION_003.md`](active/PREREG_BINANCE_V1_CLARIFICATION_003.md)
+  `05e3ab773b80e81b…` binds the nine-stream denominator, feed-silence semantics and strict
+  continuity. All were declared 2026-07-26 with **0 production rows and no analysis run**, so
+  they complete rather than amend. Revising any of them after an M0 result invalidates the experiment.
 - **[COLLECTOR_DEPLOYMENT_RUNBOOK_2026-07-26.md](active/COLLECTOR_DEPLOYMENT_RUNBOOK_2026-07-26.md)** —
   executable handoff for whoever holds Oracle shell access: admin-token security procedure
   (generate, `.env` at `chmod 600`, `EnvironmentFile=`, **verify the token is absent from
@@ -87,7 +92,8 @@
   in any observable state available beforehand.
 - **[HEAD_CALIBRATION_2026-07-25.md](active/HEAD_CALIBRATION_2026-07-25.md)** -
   Priority-1 test: are the app's DEPLOYED probabilities calibrated live? (21d Oracle, one row per
-  round, n=6,727). **P(Hold) is over-confident by 6.7pp** (predicted 96.1% vs realized 89.3%; its
+  round; official-only corrected n=6,725). **P(Hold) is over-confident by 6.7pp** (predicted 96.1%
+  vs realized 89.3%; its
   95-100% band holds 82% of all rounds and realizes 93.4%) - a ~6.7c bias in fair value, about
   **seven times the frozen rule's entire +0.90c edge**, always in the optimistic direction.
   **Champion action tiers are INVERTED** (PAPER held 69.4% vs WAIT 89.6%) - they rank cheapness,
@@ -118,8 +124,9 @@
   book. The boundary-lag species does NOT generalize from the expiry boundary to the round open.
 - **[POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md](active/POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md)** -
   fee-aware complement-arbitrage and next-round drift tests, five-model OOS straddle selectors, and the
-  restart-safe sequential opposite-side paper strategy. The full replay is queued behind the active
-  1,500-day retrain so both jobs do not compete for the laptop's 16 GB RAM.
+  restart-safe sequential opposite-side paper strategy. This is a historical research record: the
+  later executable evidence in `STRUCTURAL_EDGE_HUNT_2026-07-25.md` rejects complement arbitrage
+  and opening drift, and no straddle is approved for real money.
 - **[VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md](active/VIRTUE_COMPLEXITY_LATE_LEADER_2026-07-04.md)** -
   the Kelly/Malamud/Zhou "virtue of complexity" recipe applied to late-leader fair value (30 days of
   kachoio executable asks, ridge/poly/RFF up to 1,500 features, purged walk-forward, mandatory nulls).
@@ -139,15 +146,19 @@
   (TDZ blank-UI, relative-URL fetch, straddle orphan floor, false "no entries", missing lab row), and the
   stale-backend verification recipe (port-owner start time vs file mtime).
 - **[FULL_1500D_RETRAIN_RUNBOOK_2026-07-03.md](active/FULL_1500D_RETRAIN_RUNBOOK_2026-07-03.md)** -
-  current 1,500-day training contract, 16GB-laptop safeguards, disk/time expectations, incumbent-to-candidate
-  atomic swap behavior, operator steps, completion evidence and mandatory post-training evaluation.
+  historical 1,500-day target contract, 16GB-laptop safeguards, disk/time expectations,
+  incumbent-to-candidate atomic swap behavior, operator steps, completion evidence and mandatory
+  post-training evaluation. **Current executable state differs:** `start.bat` requests 1,265 days,
+  the current research-matrix manifest contains 360 days, and no 1,265-day or 1,500-day completion
+  marker exists. Do not describe the serving bundle as a 1,500-day model.
 - **[CODEBASE_INTEGRITY_AUDIT_2026-07-04.md](active/CODEBASE_INTEGRITY_AUDIT_2026-07-04.md)** -
   latest launch, promotion, backtest and paper-ledger integrity fixes plus remaining risks.
 - **[CODEBASE_AUDIT_2026-07-02.md](active/CODEBASE_AUDIT_2026-07-02.md)** -
   repository-wide compile, build, contract, persistence, feed-sync, UI and documentation audit. Records
   the late-Pyth/cross-feed correctness fixes, restored per-base-model analytics, lightweight model
-  compatibility contract and verification evidence. Its former 400-day next-start warning is marked
-  superseded by the current 1,500-day retrain runbook.
+  compatibility contract and verification evidence. Its former 400-day next-start warning is historical;
+  use the current manifest and launcher values recorded above rather than inferring a completed long-window
+  model from an old runbook.
 - **[PREDICTION_HEADS_DATA_SPLIT_AND_TEST_LEDGER_2026-07-02.md](active/PREDICTION_HEADS_DATA_SPLIT_AND_TEST_LEDGER_2026-07-02.md)** -
   classifies every proposed prediction head as **Category A (existing data)** vs **Category B (forward/live
   recorder)** vs **Composition**, with my one-line opinion on each of the 30 latest heads (~8 A / ~19 B / ~3 C).
@@ -408,3 +419,22 @@ active docs.
   implemented enhancements (block-bootstrap gate, win-rate demotion, unmeasurable-trigger labels,
   research infrastructure, the Oracle production merge incl. admin auth, and the version-string
   collision fix), the deployment topology, and the ranked Tier A/B/C test plan for new work.
+- **[COLLECTOR_INTEGRITY_FIXES_2026-07-26.md](active/COLLECTOR_INTEGRITY_FIXES_2026-07-26.md)**
+  — silent evidence-qualification defects found by external review of `8998d5b` and closed:
+  a required Class-A stream missing from the health gate (8/8 -> 9/9), stale feeds qualifying,
+  the evidence clock starting before any row persisted, episode health counting parsed instead
+  of persisted rows, dedup scoped inside the lookback, REST revision identity, connection_id
+  conflated with poll_id, writer-task exceptions being swallowed, synchronous REST calls blocking
+  the event loop, and 'four continuous weeks' enforced as count+span rather than continuity.
+  Regression suite: `backend/venues/test_collector_integrity.py`.
+- **[DECISION_LOCKDOWN_AND_CALIBRATION_2026-07-26.md](active/DECISION_LOCKDOWN_AND_CALIBRATION_2026-07-26.md)**
+  — BEHAVIOUR CHANGE. `PAPER_BET` is disabled by default (P(hold) is 12pp optimistic at the exact
+  0.93 gate that authorized it; the live `PAPER` tier realized 64.0% vs `SETUP` 99.4%), Kelly
+  disabled in favour of fixed quantity 1, and frozen artifacts made genuinely immutable across all
+  five loaders. Plus the P(hold) recalibration challenger (5m overconfidence +8.70pp -> +0.57pp,
+  skill quadrupled) and the head-health monitor. Switches, results and what is deliberately NOT
+  wired are listed in the doc.
+- **[EXTERNAL_REVIEW_CONSOLIDATION_2026-07-26.md](active/EXTERNAL_REVIEW_CONSOLIDATION_2026-07-26.md)**
+  — canonical reconciliation of the latest external GitHub reviews against the newer local code
+  and executable research. Separates implemented fixes, evidence-backed rejections, recorder-gated
+  work and true remaining priorities; also records the current model/data state and validation suite.

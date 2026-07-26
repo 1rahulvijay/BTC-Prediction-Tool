@@ -76,7 +76,10 @@ class DecisionContext:
 
     # Economics
     expected_move_bps: float = 0.0
-    exec_mode: str = "MAKER_MAKER"     # MAKER_MAKER | MAKER_TAKER | TAKER_TAKER
+    # Fail closed until the caller supplies an explicit execution mechanism. Defaulting to
+    # MAKER_MAKER made the cost gate pass at zero cost even when fills/adverse selection had not
+    # been established.
+    exec_mode: str = "UNSPECIFIED"      # MAKER_MAKER | MAKER_TAKER | TAKER_TAKER
     spread_bps: float = 0.0
     expected_cost_bps_override: Optional[float] = None  # if you already modeled cost
 
@@ -100,7 +103,7 @@ class DecisionResult:
     tier: str                   # raw tier from the side engine (T0..T3)
     reason: str                 # primary rejection/decision reason (machine-readable)
     move_cost_ratio: float = 0.0
-    expected_cost_bps: float = 0.0
+    expected_cost_bps: Optional[float] = None
     side_reason: str = ""       # which microstructure rule fired
     diagnostics: dict = field(default_factory=dict)
 
@@ -128,7 +131,8 @@ def compose_decision(ctx: DecisionContext) -> DecisionResult:
     def result(action, side, tier, reason, side_reason=""):
         return DecisionResult(action=action, side=side, tier=tier, reason=reason,
                               move_cost_ratio=round(ratio, 3) if ratio != float("inf") else ratio,
-                              expected_cost_bps=round(cost, 3), side_reason=side_reason,
+                              expected_cost_bps=(round(cost, 3) if cost is not None else None),
+                              side_reason=side_reason,
                               diagnostics=diag)
 
     # 1. Feed / spread integrity — hard NO_TRADE.
@@ -136,6 +140,8 @@ def compose_decision(ctx: DecisionContext) -> DecisionResult:
         return result("NO_TRADE", "NO_SIDE", "T0", "feed_stale")
     if ctx.spread_too_wide:
         return result("NO_TRADE", "NO_SIDE", "T0", "spread_too_wide")
+    if cost is None:
+        return result("NO_TRADE", "NO_SIDE", "T0", "execution_mode_unspecified")
 
     # 2. Selectivity floor — below it, the window is not worth predicting.
     if ctx.p_big_move < ctx.selectivity_floor:
@@ -187,6 +193,10 @@ if __name__ == "__main__":
 
     # B: weak selectivity -> NO_TRADE
     r = compose_decision(DecisionContext(p_big_move=0.40))
+    assert r.action == "NO_TRADE" and r.reason == "execution_mode_unspecified", r
+
+    # B2: once execution is explicit, weak selectivity remains the next gate.
+    r = compose_decision(DecisionContext(p_big_move=0.40, exec_mode="TAKER_TAKER"))
     assert r.action == "NO_TRADE" and r.reason == "weak_selectivity", r
 
     # C: strong selectivity + extreme basis in CHOP (p_tradable low) -> side fires,

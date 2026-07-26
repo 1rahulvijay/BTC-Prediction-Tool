@@ -1,5 +1,11 @@
 # Deployed-head live calibration (2026-07-25)
 
+> **Correction recorded 2026-07-26:** this original report included two resolved rows whose
+> settlement source was not official. The official-only, chronological rerun contains 6,725 rows
+> and is authoritative in
+> `DECISION_LOCKDOWN_AND_CALIBRATION_2026-07-26.md`. The central P(Hold) overconfidence verdict is
+> unchanged. The tables below are retained as the original research artifact.
+
 Every strategy consumes these probabilities. If they are biased, every downstream edge calculation is wrong before a trade is placed. Joined to officially resolved outcomes over the 21-day Oracle deployment. **One observation per round per head** (never per tick - pooling ticks would inflate n ~13x and manufacture false confidence).
 
 ## P(Hold) - the app's most-used probability

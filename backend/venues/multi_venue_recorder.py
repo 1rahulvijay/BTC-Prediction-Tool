@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -65,9 +66,19 @@ STREAMS = {
 
 # Streams that MUST produce rows in a healthy run. A silent zero here means a venue changed
 # something - the collector reports it rather than quietly recording an incomplete picture.
+# bybit_perp/publicTrade added 2026-07-26: the Binance V1 preregistration names Bybit public
+# trades as CLASS-A input for trade imbalance and directional flow. Omitting it from the health
+# gate let an episode qualify while a REQUIRED strategy input was entirely absent - the health
+# report read 8/8 while the data was incomplete. Required health is now 9/9.
 EXPECTED = ("binance_spot/bookTicker", "binance_spot/aggTrade", "binance_perp/bookTicker",
             "binance_perp/aggTrade_rest", "binance_perp/premiumIndex",
-            "binance_perp/openInterest", "bybit_perp/orderbook.1", "coinbase/ticker")
+            "binance_perp/openInterest", "bybit_perp/orderbook.1", "bybit_perp/publicTrade",
+            "coinbase/ticker")
+REST_EXPECTED = {
+    "binance_perp/aggTrade_rest",
+    "binance_perp/premiumIndex",
+    "binance_perp/openInterest",
+}
 
 try:
     from .venue_admissibility import basis_for
@@ -89,7 +100,11 @@ _TEXT = {"venue", "stream", "symbol", "event", "side", "extra", "source_mode",
 # Identity per stream:
 #   aggTrade / aggTrade_rest   venue (aggregate) trade id
 #   bookTicker / orderbook.1   venue update id
-#   premiumIndex / openInterest   instrument + venue publication timestamp
+#   premiumIndex / openInterest   instrument + venue publication timestamp + PAYLOAD HASH
+#     (2026-07-26: timestamp alone cannot separate an exact duplicate from a same-timestamp
+#      revision. same ts + same hash = duplicate, earliest recv_ts wins; same ts + different
+#      hash = revision -- both retained, each usable only from its own recv_ts, so a
+#      correction is never back-dated onto the original's arrival.)
 # A REST row that cannot produce one is recorded, but is barred from features (see
 # venue_admissibility.admissible_sql) precisely because it could not survive a reconnect intact.
 
@@ -97,6 +112,18 @@ _TEXT = {"venue", "stream", "symbol", "event", "side", "extra", "source_mode",
 # PREREG_BINANCE_VOLATILITY_MOMENTUM_V1 section 8. An episode only counts if the streams it
 # needs were actually healthy for it - a running process is NOT the same as valid data.
 EPISODE_S = 300
+
+# FROZEN EPISODE HEALTH LIMITS - declared 2026-07-26, BEFORE any M0 score exists.
+# D2 (2026-07-26): these ages were already being measured and written to venue_episodes, but were
+# never used in the qualification decision - so an episode whose feeds were minutes stale still
+# counted as evidence. They are now gating conditions.
+#   REST 60s: the same limit venue_admissibility already enforces for Class-B observables, so an
+#             episode cannot qualify on data a feature would refuse.
+#   WS    5s: observed steady state is tens of milliseconds, so this is ~100x looser than normal
+#             operation. It excludes malfunction (a wedged-but-"connected" socket), not jitter.
+# REVISING EITHER AFTER SEEING AN M0 RESULT INVALIDATES THE EXPERIMENT.
+REST_MAX_AGE_MS = 60_000.0
+WS_MAX_AGE_MS = 5_000.0
 
 
 def init_db(path=None):
@@ -243,10 +270,25 @@ class Writer:
         self.drift = defaultdict(lambda: deque(maxlen=4000))
         self.persistent = persistent
         self.boot_ts = time.time()
-        self.ep_counts = defaultdict(int)      # per-episode, reset each episode
+        self.ep_counts = defaultdict(int)      # per-episode RECEIVED (parsed), reset each episode
+        # D4 (2026-07-26): qualification must use PERSISTED rows, not parsed ones. ep_counts
+        # advances in add() before the rows reach DuckDB, so a failing writer previously left an
+        # episode looking fully healthy while nothing had been stored. Parsed counts stay for
+        # diagnostics; only ep_persisted decides whether an episode is evidence.
+        self.ep_persisted = defaultdict(int)     # rows CONFIRMED written this episode
+        self._pending_counts = defaultdict(int)  # parsed, awaiting a successful insert
+        self.writer_errors = 0
+        self.ep_writer_failed = False
         self.ep_start = int(self.boot_ts // EPISODE_S) * EPISODE_S
         self.ep_ws_age = 0.0
         self.ep_rest_age = 0.0
+        # Arrival latency and feed silence are different failure modes. `ep_*_age` measures how
+        # old an event was when received; `ep_*_silence` measures inter-arrival/tail gaps. The old
+        # gate checked only the former, so a socket that emitted one fresh row and then went quiet
+        # for four minutes still qualified.
+        self.ep_ws_silence = 0.0
+        self.ep_rest_silence = 0.0
+        self._last_recv = {}
         self.reconnects = 0
         self.started_marked = False
 
@@ -255,16 +297,13 @@ class Writer:
         if not self.persistent:
             return
         here = os.path.dirname(os.path.abspath(__file__))
-        try:
-            self.con.execute(
-                "INSERT OR REPLACE INTO collector_sessions VALUES (?,?,?,?,?,?)",
-                (self.process_start_id,
-                 os.environ.get("BTC_COLLECTOR_HOST_ID") or __import__("socket").gethostname(),
-                 os.getpid(), time.time(),
-                 _sha256_of(os.path.join(here, "multi_venue_recorder.py")),
-                 _sha256_of(os.path.join(here, "venue_admissibility.py"))))
-        except Exception:
-            pass
+        self.con.execute(
+            "INSERT OR REPLACE INTO collector_sessions VALUES (?,?,?,?,?,?)",
+            (self.process_start_id,
+             os.environ.get("BTC_COLLECTOR_HOST_ID") or __import__("socket").gethostname(),
+             os.getpid(), time.time(),
+             _sha256_of(os.path.join(here, "multi_venue_recorder.py")),
+             _sha256_of(os.path.join(here, "venue_admissibility.py"))))
 
     def mark_start(self):
         """Record the collection-start timestamp once, on the first PERSISTENT row.
@@ -273,16 +312,28 @@ class Writer:
         and never on a --smoke run, which writes to :memory: and is discarded."""
         if self.started_marked or not self.persistent:
             return
+        self.con.execute("INSERT OR IGNORE INTO venue_collection_meta VALUES (?,?)",
+                         ("collection_start_ts", f"{time.time():.3f}"))
         self.started_marked = True
-        try:
-            self.con.execute("INSERT OR IGNORE INTO venue_collection_meta VALUES (?,?)",
-                             ("collection_start_ts", f"{time.time():.3f}"))
-        except Exception:
-            pass
 
-    def _put_episode(self, start, counts, ws_age, rest_age, reconnects, partial):
+    def _put_episode(self, start, counts, ws_age, rest_age, reconnects, partial,
+                     persisted=None, writer_failed=False):
         """Write one episode row. Non-qualifying episodes are stored WITH a reason, never dropped -
-        silence would be indistinguishable from a healthy quiet period."""
+        silence would be indistinguishable from a healthy quiet period.
+
+        QUALIFICATION USES PERSISTED ROWS AND ENFORCES THE AGE LIMITS (fixed 2026-07-26).
+        Two defects were closed here:
+          D2  max_ws_age_ms / max_rest_age_ms were recorded but never gated on, so an episode
+              whose feeds were minutes stale still qualified as evidence.
+          D4  `counts` came from parsed events, which advance before the rows reach DuckDB, so a
+              failing writer left an episode looking fully healthy while nothing was stored.
+        Both limits are frozen and DECLARED BEFORE any M0 score exists. CLASS_B_MAX_AGE_S is the
+        same 60s the admissibility contract already enforces for REST; the WS limit is set an
+        order of magnitude looser than observed steady state (tens of ms), so it excludes
+        malfunction rather than normal operation. Revising either after seeing M0 invalidates
+        the experiment.
+        """
+        counts = persisted if persisted is not None else counts
         live = [s for s in EXPECTED if counts.get(s)]
         missing = [s for s in EXPECTED if not counts.get(s)]
         why = []
@@ -292,15 +343,18 @@ class Writer:
             why.append("missing:" + ",".join(missing))
         if reconnects:
             why.append(f"reconnects:{reconnects}")
-        try:
-            self.con.execute(
-                "INSERT OR REPLACE INTO venue_episodes VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (int(start), int(start + EPISODE_S),
-                 json.dumps(dict(counts), separators=(",", ":")),
-                 len(live), len(EXPECTED), ws_age, rest_age, int(reconnects),
-                 not why, " ".join(why)))
-        except Exception:
-            pass
+        if writer_failed:
+            why.append("writer_failed")
+        if rest_age is not None and rest_age > REST_MAX_AGE_MS:
+            why.append(f"rest_stale:{rest_age:.0f}ms>{REST_MAX_AGE_MS:.0f}")
+        if ws_age is not None and ws_age > WS_MAX_AGE_MS:
+            why.append(f"ws_stale:{ws_age:.0f}ms>{WS_MAX_AGE_MS:.0f}")
+        self.con.execute(
+            "INSERT OR REPLACE INTO venue_episodes VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (int(start), int(start + EPISODE_S),
+             json.dumps(dict(counts), separators=(",", ":")),
+             len(live), len(EXPECTED), ws_age, rest_age, int(reconnects),
+             not why, " ".join(why)))
 
     def close_episode(self, now=None):
         """Seal every episode window that has fully elapsed.
@@ -311,21 +365,48 @@ class Writer:
         cur = int(now // EPISODE_S) * EPISODE_S
         if cur <= self.ep_start:
             return
+        end = self.ep_start + EPISODE_S
+        ws_health_age = self.ep_ws_age
+        rest_health_age = self.ep_rest_age
+        # Include silence from the final event to the episode boundary. Inter-arrival gaps were
+        # accumulated in add(). A feed that produced one fresh row and then stalled now fails.
+        for key in EXPECTED:
+            last = self._last_recv.get(key)
+            if last is None:
+                continue
+            tail_ms = max(0.0, (end - max(float(last), float(self.ep_start))) * 1000.0)
+            if key in REST_EXPECTED:
+                rest_health_age = max(rest_health_age, self.ep_rest_silence, tail_ms)
+            else:
+                ws_health_age = max(ws_health_age, self.ep_ws_silence, tail_ms)
         # The window in progress at boot is partial by construction; it cannot qualify.
-        self._put_episode(self.ep_start, self.ep_counts, self.ep_ws_age, self.ep_rest_age,
-                          self.reconnects, partial=self.boot_ts > self.ep_start)
+        self._put_episode(
+            self.ep_start, self.ep_counts, ws_health_age, rest_health_age,
+            self.reconnects, partial=self.boot_ts > self.ep_start,
+            persisted=self.ep_persisted, writer_failed=self.ep_writer_failed,
+        )
         # Windows with no housekeeper tick at all (process stalled): record them as empty.
         gap = self.ep_start + EPISODE_S
         while gap < cur:
             self._put_episode(gap, {}, 0.0, 0.0, 0, partial=False)
             gap += EPISODE_S
         self.ep_counts = defaultdict(int)
+        self.ep_persisted = defaultdict(int)
+        self.ep_writer_failed = False
         self.ep_ws_age = self.ep_rest_age = 0.0
+        self.ep_ws_silence = self.ep_rest_silence = 0.0
         self.reconnects = 0
         self.ep_start = cur
 
     def add(self, rows):
         for r in rows:
+            recv_ts = float(r.get("recv_ts") or time.time())
+            # Assign a boundary-crossing event to the new episode. The housekeeper runs every
+            # five seconds, so without this roll the first few seconds after each boundary were
+            # counted in the previous episode. Flush pending old-window rows before sealing it.
+            if recv_ts >= self.ep_start + EPISODE_S:
+                self.flush()
+                self.close_episode(now=recv_ts)
             # Stamped HERE, centrally, rather than in each parser: a parser added for a new venue
             # next year cannot forget to label its clock, because it never gets the chance to.
             r["timestamp_basis"] = basis_for(r.get("source_mode"), r.get("exch_ts"),
@@ -337,8 +418,21 @@ class Writer:
                 r["processing_delay_ms"] = (r["_t_parsed"] - r["recv_ts"]) * 1000.0
             self.buf.append([r.get(c) for c in COLS])
             key = f"{r['venue']}/{r['stream']}"
+            prev_recv = self._last_recv.get(key)
+            if prev_recv is None:
+                silence_ms = max(0.0, (recv_ts - self.ep_start) * 1000.0)
+            else:
+                silence_ms = max(
+                    0.0, (recv_ts - max(float(prev_recv), float(self.ep_start))) * 1000.0
+                )
+            if key in REST_EXPECTED:
+                self.ep_rest_silence = max(self.ep_rest_silence, silence_ms)
+            else:
+                self.ep_ws_silence = max(self.ep_ws_silence, silence_ms)
+            self._last_recv[key] = max(float(prev_recv or recv_ts), recv_ts)
             self.counts[key] += 1
-            self.ep_counts[key] += 1
+            self.ep_counts[key] += 1          # RECEIVED
+            self._pending_counts[key] += 1    # promoted to ep_persisted only on a good insert
             # Feature age = recv_ts - exch_ts: how stale the datum already was on arrival. Tracked
             # SEPARATELY per class, because a 54s REST lag must never mask a healthy 20ms WS feed
             # (or vice versa) - the admissibility contract gates them on different limits.
@@ -359,17 +453,37 @@ class Writer:
             self.flush()
 
     def flush(self):
+        """Persist the buffer. THE EVIDENCE CLOCK STARTS ONLY AFTER A SUCCESSFUL INSERT.
+
+        Previously `mark_start()` ran BEFORE the insert and the buffer was cleared even when the
+        insert raised. That permitted the worst possible state for an evidence run:
+        `collection_start_ts` exists, so the clock appears to be running, while zero rows were
+        ever persisted - and the dropped rows were gone with only a console line to show for it.
+
+        Now: insert first; on failure keep the buffer, count the error, mark the episode
+        writer-failed, and re-raise. A persistent writer fault must surface as a visible outage
+        (systemd restarts the unit) rather than as silently thinned evidence.
+        """
         if not self.buf:
             return
-        self.mark_start()
+        rows = list(self.buf)
         try:
             self.con.executemany(
                 "INSERT INTO venue_events (" + ",".join(COLS) + ") VALUES (" +
-                ",".join("?" * len(COLS)) + ")", self.buf)
+                ",".join("?" * len(COLS)) + ")", rows)
         except Exception as e:
-            print(f"[venues] insert error ({len(self.buf)} rows dropped): {e}")
+            self.writer_errors += 1
+            self.ep_writer_failed = True
+            print(f"[venues] INSERT FAILED ({len(rows)} rows retained, "
+                  f"error #{self.writer_errors}): {e}")
+            raise
+        # success only past this point
+        for k, n in self._pending_counts.items():
+            self.ep_persisted[k] += n
+        self._pending_counts.clear()
         self.buf.clear()
         self.last = time.time()
+        self.mark_start()
 
     def write_clock(self):
         """Persist measured clock drift per venue per minute; assumed sync is a silent killer."""
@@ -462,17 +576,56 @@ async def _coinbase(w, stop):
                 await asyncio.sleep(3)
 
 
-def _stamp_key(d):
+def _payload_digest(d, fields):
+    """Canonical hash of the SEMANTIC payload - order-independent, precision-sensitive.
+
+    Values are normalised through repr(float(...)) where numeric so that 12.30 and 12.3 hash
+    alike (they are the same observation), while a genuine value change does not."""
+    parts = []
+    for f in sorted(fields):
+        v = d.get(f)
+        if v is None:
+            parts.append(f"{f}=")
+            continue
+        try:
+            parts.append(f"{f}={float(v)!r}")
+        except (TypeError, ValueError):
+            parts.append(f"{f}={v}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def _stamp_key(d, fields=()):
     """Stable identity for the slow REST observables.
 
     premiumIndex and openInterest carry no id of their own, so identity is instrument +
-    VENUE PUBLICATION TIME (venue+stream already pin the instrument). This is the case that
-    actually needed fixing: both are polled every 5s against a venue that republishes less often,
-    so without an identity the same observation was stored - and would have been counted - repeatedly.
+    VENUE PUBLICATION TIME + CANONICAL PAYLOAD HASH (venue+stream already pin the instrument).
+    Both are polled every 5s against a venue that republishes less often, so without an identity
+    the same observation was stored - and would have been counted - repeatedly. A real duplicate
+    OI observation was found inside 45s, so this is not a theoretical concern.
+
+    The payload hash (added 2026-07-26) covers the case publication time alone cannot:
+
+        same time + same hash  -> EXACT DUPLICATE. Same event_key, so first_seen dedupe keeps the
+                                  EARLIEST recv_ts. A repeat can never claim a later arrival.
+        same time + diff hash  -> REVISION/CONFLICT. Different event_key, so BOTH rows survive for
+                                  audit. Each is usable only from its own recv_ts, so a correction
+                                  is never back-dated onto the moment the original was published.
+                                  This is the frozen revision policy: causal, not last-write-wins.
+
     A missing venue timestamp yields NO key, which bars the row from features by design rather
     than inventing an identity that could not survive a reconnect."""
     t = d.get("time")
-    return f"t:{int(t)}" if t else None
+    if not t:
+        return None
+    if not fields:
+        return f"t:{int(t)}"
+    return f"t:{int(t)}#h:{_payload_digest(d, fields)}"
+
+
+# The semantic fields per REST stream. Ancillary/bookkeeping fields are deliberately excluded:
+# hashing them would turn a cosmetic venue change into a fake new observation.
+_PREMIUM_FIELDS = ("markPrice", "indexPrice", "lastFundingRate", "nextFundingTime")
+_OI_FIELDS = ("openInterest",)
 
 
 async def _binance_perp_rest(w, stop):
@@ -495,11 +648,27 @@ async def _binance_perp_rest(w, stop):
     last_id = 0
     last_slow = 0.0
     poll_id = 0
+    # D7 (2026-07-26): `connection_id` used to be assigned `poll_id`, so every single poll looked
+    # like a fresh network connection. That is not a cosmetic mislabel - connection generation is
+    # provenance: it is how an analyst distinguishes "the session was recreated after a failure"
+    # (which resets poll_id and produces a poll-1 BACKLOG) from "we polled again on a healthy
+    # session". Conflating them made every row look like backlog-adjacent and made reconnect
+    # accounting meaningless. The generation now advances ONLY when the HTTP session is actually
+    # rebuilt after a failure, which is also the only moment poll_id legitimately restarts.
+    consecutive_failures = 0
+
+    async def get(path, **kwargs):
+        # `requests` is synchronous. Calling it directly inside this coroutine blocked every
+        # WebSocket parser and the event-loop lag monitor for up to six seconds per request,
+        # manufacturing receive-time lead/lag and stale-feed episodes. Keep the existing HTTP
+        # client but move each blocking request off the event loop.
+        return await asyncio.to_thread(sess.get, path, **kwargs)
+
     while not stop.is_set():
         now = time.time()
         try:
             poll_id += 1
-            r = sess.get(f"{F}/aggTrades", params={"symbol": "BTCUSDT", "limit": 1000}, timeout=6)
+            r = await get(f"{F}/aggTrades", params={"symbol": "BTCUSDT", "limit": 1000}, timeout=6)
             if r.status_code == 200:
                 rows = []
                 for t in r.json():
@@ -510,37 +679,55 @@ async def _binance_perp_rest(w, stop):
                     rows.append({"recv_ts": time.time(), "exch_ts": float(t["T"]) / 1000.0,
                                  "venue": "binance_perp", "stream": "aggTrade_rest",
                                  "source_mode": "REST_POLL", "poll_id": float(poll_id),
-                                 "connection_id": float(poll_id),
+                                 "connection_id": float(w.connection_id["binance_perp_rest"]),
                                  "symbol": "BTCUSDT", "event": "trade", "seq": tid,
                                  "event_key": f"a:{int(tid)}",
                                  "price": float(t["p"]), "size": float(t["q"]),
                                  "side": "sell" if t.get("m") else "buy"})
                 if rows:
                     w.add(rows)
-        except Exception:
-            pass
+            consecutive_failures = 0
+        except Exception as exc:
+            # A failed poll is not automatically a new connection. Only rebuild the session (and
+            # therefore advance the generation) once the failure looks persistent, so transient
+            # timeouts do not manufacture fake reconnect churn in the provenance record.
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                try:
+                    sess.close()
+                except Exception:
+                    pass
+                sess = requests.Session()
+                w.connection_id["binance_perp_rest"] += 1
+                poll_id = 0          # a rebuilt session re-polls history: poll 1 is BACKLOG again
+                consecutive_failures = 0
+                print(f"[venues] binance_perp REST session rebuilt after repeated failure "
+                      f"({type(exc).__name__}); connection generation "
+                      f"#{w.connection_id['binance_perp_rest']}, poll_id reset")
         if now - last_slow >= 5.0:          # mark/index/funding + OI change slowly
             last_slow = now
             try:
-                p = sess.get(f"{F}/premiumIndex", params={"symbol": "BTCUSDT"}, timeout=6)
+                p = await get(f"{F}/premiumIndex", params={"symbol": "BTCUSDT"}, timeout=6)
                 if p.status_code == 200:
                     d = p.json()
                     w.add([{"recv_ts": time.time(), "exch_ts": float(d.get("time", 0)) / 1000.0,
                             "venue": "binance_perp", "stream": "premiumIndex", "symbol": "BTCUSDT",
                             "source_mode": "REST_POLL", "poll_id": float(poll_id),
-                            "event": "mark", "event_key": _stamp_key(d),
+                            "connection_id": float(w.connection_id["binance_perp_rest"]),
+                            "event": "mark", "event_key": _stamp_key(d, _PREMIUM_FIELDS),
                             "price": float(d.get("markPrice") or 0.0),
                             "extra": json.dumps({"index": d.get("indexPrice"),
                                                  "funding": d.get("lastFundingRate"),
                                                  "next_funding_ts": d.get("nextFundingTime")},
                                                 separators=(",", ":"))}])
-                o = sess.get(f"{F}/openInterest", params={"symbol": "BTCUSDT"}, timeout=6)
+                o = await get(f"{F}/openInterest", params={"symbol": "BTCUSDT"}, timeout=6)
                 if o.status_code == 200:
                     d = o.json()
                     w.add([{"recv_ts": time.time(), "exch_ts": float(d.get("time", 0)) / 1000.0,
                             "venue": "binance_perp", "stream": "openInterest", "symbol": "BTCUSDT",
                             "source_mode": "REST_POLL", "poll_id": float(poll_id),
-                            "event": "oi", "event_key": _stamp_key(d),
+                            "connection_id": float(w.connection_id["binance_perp_rest"]),
+                            "event": "oi", "event_key": _stamp_key(d, _OI_FIELDS),
                             "size": float(d.get("openInterest") or 0.0)}])
             except Exception:
                 pass
@@ -578,9 +765,16 @@ async def _run(con, smoke_s=None):
              asyncio.create_task(_loop_lag(w, stop)),
              asyncio.create_task(_housekeeper(w, stop, smoke_s))]
     try:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Do not use return_exceptions=True here. A DuckDB writer failure must terminate the
+        # service so systemd can restart it; swallowing the exception left the process alive with
+        # one dead task and made the evidence outage look like an ordinary quiet period.
+        await asyncio.gather(*tasks)
     finally:
         stop.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         w.flush()
         w.write_clock()
         w.close_episode()
@@ -606,6 +800,68 @@ def report(path=None):
     con.close()
 
 
+# The frozen forward-data gate. D8 (2026-07-26): the previous check was
+#     qualifying >= 1000  AND  wall_clock_span >= 4 weeks
+# which a collector with large outages satisfies trivially - run for six weeks, be healthy for
+# ten days, and both conditions pass while the preregistration's word "CONTINUOUS" is unmet.
+# "Continuous" is the frozen requirement and is NOT reinterpretable: it means an unbroken run of
+# consecutive qualifying episodes, not a total count spread across a long calendar window.
+GATE_MIN_QUALIFYING = 1000
+GATE_MIN_CONTINUOUS_WEEKS = 4
+# One missing episode breaks a run. A gap larger than this many episode-slots is an OUTAGE; the
+# run restarts. (A single 5-minute slot lost to a restart is still a break - it just produces a
+# short gap rather than a long one. The gate cares about the longest unbroken run either way.)
+GATE_EPISODES_PER_WEEK = int(7 * 24 * 3600 / EPISODE_S)     # 2016
+
+
+def continuity_report(con):
+    """Longest UNBROKEN run of qualifying episodes, plus coverage and outage geometry.
+
+    Returns the numbers the frozen gate actually requires. Consecutiveness is measured on the
+    episode grid (every EPISODE_S seconds), so a missing or excluded episode breaks the run -
+    which is the whole point: an outage in the middle of week three does not get to be averaged
+    away by healthy weeks either side of it.
+    """
+    rows = con.execute("""SELECT episode_start, qualifying FROM venue_episodes
+                          ORDER BY episode_start""").fetchall()
+    out = {"longest_run_episodes": 0, "longest_run_weeks": 0.0, "coverage_pct": 0.0,
+           "largest_gap_h": 0.0, "gaps": 0, "total_qualifying": 0,
+           "gate": "NOT MET", "gate_reason": "no episodes recorded"}
+    if not rows:
+        return out
+    q_total = sum(1 for _, q in rows if q)
+    out["total_qualifying"] = q_total
+    span_eps = int((rows[-1][0] - rows[0][0]) / EPISODE_S) + 1
+    out["coverage_pct"] = 100.0 * q_total / max(1, span_eps)
+
+    best = run = 0
+    prev_slot = None
+    gaps = []
+    for start, qual in rows:
+        slot = int(start // EPISODE_S)
+        contiguous = prev_slot is not None and slot == prev_slot + 1
+        if not contiguous and prev_slot is not None:
+            gaps.append((slot - prev_slot - 1) * EPISODE_S)
+        run = run + 1 if (qual and contiguous) else (1 if qual else 0)
+        best = max(best, run)
+        prev_slot = slot
+    out["longest_run_episodes"] = best
+    out["longest_run_weeks"] = best / GATE_EPISODES_PER_WEEK
+    out["gaps"] = len(gaps)
+    out["largest_gap_h"] = (max(gaps) / 3600.0) if gaps else 0.0
+
+    need_run = GATE_MIN_CONTINUOUS_WEEKS * GATE_EPISODES_PER_WEEK
+    reasons = []
+    if q_total < GATE_MIN_QUALIFYING:
+        reasons.append(f"qualifying {q_total:,} < {GATE_MIN_QUALIFYING:,}")
+    if best < need_run:
+        reasons.append(f"longest continuous run {best:,} episodes "
+                       f"({out['longest_run_weeks']:.2f}w) < {need_run:,} ({GATE_MIN_CONTINUOUS_WEEKS}w)")
+    out["gate"] = "MET" if not reasons else "NOT MET"
+    out["gate_reason"] = "; ".join(reasons)
+    return out
+
+
 def episode_report(con):
     """Uptime and qualifying coverage are DIFFERENT numbers. The promotion contract counts the
     second one; reporting only the first is how a lane claims four weeks of data it does not have."""
@@ -624,8 +880,16 @@ def episode_report(con):
     print(f"  wall-clock span    {wall_h:.2f}h  ({wall_h/168:.2f} weeks)")
     print(f"  episodes recorded  {n:,}")
     print(f"  QUALIFYING         {q:,}  ({100.0*q/n:.1f}% of recorded)")
-    print(f"  prereg requires    >= 1,000 qualifying AND >= 4 weeks -> "
-          f"{'MET' if q >= 1000 and wall_h >= 4*168 else 'NOT MET'}")
+    cont = continuity_report(con)
+    print(f"  longest CONTINUOUS qualifying run  {cont['longest_run_episodes']:,} episodes"
+          f"  ({cont['longest_run_weeks']:.2f} weeks)")
+    print(f"  qualifying coverage of span        {cont['coverage_pct']:.1f}%")
+    print(f"  largest outage gap                 {cont['largest_gap_h']:.2f}h"
+          f"  ({cont['gaps']} gaps total)")
+    print(f"  prereg requires    >= {GATE_MIN_QUALIFYING:,} qualifying AND "
+          f">= {GATE_MIN_CONTINUOUS_WEEKS} CONTINUOUS weeks -> {cont['gate']}")
+    if cont["gate"] != "MET":
+        print(f"    why: {cont['gate_reason']}")
     ex = con.execute("""SELECT exclusion_reason, COUNT(*) FROM venue_episodes
                         WHERE NOT qualifying GROUP BY 1 ORDER BY 2 DESC LIMIT 8""").fetchall()
     for r in ex:
@@ -691,7 +955,9 @@ def selftest():
     w.boot_ts = w.ep_start = t0
     for s in EXPECTED:                          # a fully healthy window
         v, st = s.split("/", 1)
-        w.ep_counts[f"{v}/{st}"] = 10
+        w.ep_counts[f"{v}/{st}"] = 10           # parsed
+        w.ep_persisted[f"{v}/{st}"] = 10        # AND confirmed written (D4: only this qualifies)
+    w.ep_ws_age, w.ep_rest_age = 25.0, 6_000.0  # both inside the frozen limits (D2)
     w.close_episode(now=t0 + EPISODE_S + 1)
     r = con.execute("SELECT qualifying, streams_live, exclusion_reason FROM venue_episodes "
                     "WHERE episode_start=?", (int(t0),)).fetchone()

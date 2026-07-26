@@ -1,5 +1,13 @@
 # DEPLOYMENT RUNBOOK — collector hardening + Oracle security (2026-07-26)
 
+> **UPDATED 2026-07-26 — required stream health is 9/9, not 8/8.**
+> `bybit_perp/publicTrade` was missing from the health gate while the preregistration names it as
+> Class-A input, so an episode could report 8/8 healthy with a required input absent. Episode
+> qualification additionally now enforces REST/WS age limits, counts PERSISTED (not parsed) rows,
+> and refuses to start the evidence clock unless an insert actually succeeded.
+> See `COLLECTOR_INTEGRITY_FIXES_2026-07-26.md`. Deploying against the pre-fix collector would
+> re-open every one of those defects.
+
 **Who executes this:** whoever holds Oracle shell access. It is not held in the session that wrote
 this document, so every step below is written to be executed verbatim by someone else, with an
 explicit pass/fail check after each one.
@@ -139,10 +147,10 @@ call.
 python backend/venues/multi_venue_recorder.py --smoke --seconds 60
 ```
 
-Expect `stream health: 8/8 expected streams live (all healthy)` and `unstamped rows: 0`. The smoke
+Expect `stream health: 9/9 expected streams live (all healthy)` and `unstamped rows: 0`. The smoke
 run writes to `:memory:` and **cannot** touch the evidence DB or start the evidence clock.
 
-> If stream health is < 8/8, record which stream is missing and **do not** start the service.
+> If stream health is < 9/9, record which stream is missing and **do not** start the service.
 > A venue silently serving zero messages is exactly how the perp `aggTrade` gap went unnoticed for
 > weeks; starting collection anyway produces episodes that are all non-qualifying.
 
@@ -417,13 +425,15 @@ clarification 001 hash      12bf5e1e5829d320b4d6bbe9a7c3b94af23b33e433b7bdc6782b
                             (CLASS_B_MAX_AGE_S = 60.0)          [ ] verified
 clarification 002 hash      320631b2a83aaaca5b21e888d5fcfdf51e416bb1f4429c1bdb988207e3700d3f
                             (receive-basis interpretation rule)  [ ] verified
+clarification 003 hash      05e3ab773b80e81bb833d38f0e728d8ca9609009ee2c78be890132bcd512f5e7
+                            (9/9 health + stale-silence semantics) [ ] verified
 collection_start_ts         ______________________  <- the evidence clock for
                                                        BINANCE_VOLATILITY_MOMENTUM_V1 starts HERE
 systemd service status      btc-venues ______  btc-recorder ______  btc-backend ______
 database path               ______________________
 first persistent row        ______________________  (MIN(recv_ts) in venue_events)
 first sealed episode        ______________________  (MIN(episode_start) in venue_episodes)
-stream-health report        ____ / 8 streams live   [ ] --report output attached
+stream-health report        ____ / 9 streams live   [ ] --report output attached
 admin-token verification    [ ] 401/403 without token   [ ] 401/403 with wrong token
                             [ ] .env is 600 + service-user owned
                             [ ] token count in journalctl = 0
@@ -432,11 +442,10 @@ thresholds changed          NONE                    <- must remain NONE
 executed_by                 ______________________
 ```
 
-If **any** of the three hashes does not match, **stop and report it**. A changed protocol or
+If **any** of the four hashes does not match, **stop and report it**. A changed protocol or
 clarification file invalidates the experiment regardless of how good the data is. The clarification
-records exist precisely so that the completed `CLASS_B_MAX_AGE_S` value and the receive-basis
-interpretation rule live in separately hashed artifacts, rather than only in source code where they
-could be edited without trace.
+records exist precisely so that completed limits and interpretation rules live in separately hashed
+artifacts, rather than only in source code where they could be edited without trace.
 
 ---
 
@@ -445,7 +454,7 @@ could be edited without trace.
 The `BINANCE_VOLATILITY_MOMENTUM_V1` M0 gate still **cannot run**, and this deployment does not
 change that. Section 12 of the frozen preregistration
 (`PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md`, sha256 `0973744b73651e82…`) requires ≥ 4 continuous
-weeks at 8/8 stream health covering ≥ 1,000 non-overlapping qualifying episodes. Historical
+weeks at 9/9 stream health covering ≥ 1,000 non-overlapping qualifying episodes. Historical
 archives cannot substitute: they carry `exch_ts` only, and inventing a `recv_ts` for them violates
 section 0 of that contract.
 

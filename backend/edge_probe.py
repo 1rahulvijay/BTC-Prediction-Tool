@@ -45,6 +45,7 @@ def per_minute_bars(ts_ms, price, qty, is_buyer_maker):
     g = df.groupby("m")
     out = {
         "minute": g["price"].last().index.values.astype(np.int64),
+        "open": g["price"].first().values,
         "close": g["price"].last().values,
         "high": g["price"].max().values,
         "low": g["price"].min().values,
@@ -416,7 +417,7 @@ def selftest():
     tsell = np.clip(50 - cvd_drive * 15 + rng.normal(0, 4, n), 1, None)
     ret = 0.0012 * cvd_drive + rng.normal(0, 0.0006, n)    # each minute drifts with current flow
     close = 100.0 * np.exp(np.cumsum(np.concatenate([[0], ret[:-1]])))  # shift: ret[t] moves t->t+1
-    bars = {"minute": minute, "close": close, "high": close, "low": close,
+    bars = {"minute": minute, "open": close, "close": close, "high": close, "low": close,
             "vol": tb + tsell, "count": np.full(n, 100.0),
             "taker_buy": tb, "taker_sell": tsell, "large_signed": cvd_drive * 5}
 
@@ -426,6 +427,8 @@ def selftest():
     ibm = np.array([False, True, False, False])  # min0: buy1 sell2 ; min1: buy7
     pb = per_minute_bars(ts, pr, q, ibm)
     assert pb["taker_buy"][0] == 1.0 and pb["taker_sell"][0] == 2.0 and pb["taker_buy"][1] == 7.0
+    assert pb["open"].tolist() == [100.0, 100.2]
+    assert pb["close"].tolist() == [100.1, 100.3]
 
     # CVD feature should show a DIRECTION edge on this planted (persistent-flow) data.
     Xc, _ = _f_cvd(bars)

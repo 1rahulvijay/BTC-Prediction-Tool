@@ -8,6 +8,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+from artifact_identity import artifact_matches_current_training
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,10 @@ def load_model() -> dict | None:
         _MTIME = mtime
         if mtime < 0:
             _MODEL, _ERROR = None, "artifact missing"
+            return None
+        identity_ok, reasons = artifact_matches_current_training(MODEL_PATH)
+        if not identity_ok:
+            _MODEL, _ERROR = None, "artifact identity mismatch: " + "; ".join(reasons)
             return None
         loaded = joblib.load(MODEL_PATH)
         if loaded.get("version") != EXPECTED_VERSION:

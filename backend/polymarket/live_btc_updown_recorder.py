@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 import time
 from collections import deque
@@ -34,6 +35,15 @@ import numpy as np
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BACKEND_DIR = os.path.join(ROOT, "backend")
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+from polymarket_fee import (  # noqa: E402
+    DEFAULT_CRYPTO_TAKER_FEE_RATE as CRYPTO_TAKER_FEE_RATE,
+    polymarket_taker_fee_per_share,
+)
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 DB_PATH = os.environ.get("BTC_EXEC_DB") or os.path.join(DATA_DIR, "execution_layer.duckdb")
 MODEL_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
@@ -48,7 +58,6 @@ PYTH_BTC_ID = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "btc-polymarket-shadow-recorder/2.0"})
 ANCHOR_CAPTURE_MAX_LATE_SEC = 5.0
-CRYPTO_TAKER_FEE_RATE = 0.07
 ENTRY_FAIR_CAP = 0.91
 LIVE_QUOTES_PATH = os.path.join(DATA_DIR, "pm_live_quotes.json")
 
@@ -196,8 +205,7 @@ def _winner_from_tokens(tokens):
 
 
 def _taker_fee_per_share(price, fee_rate=CRYPTO_TAKER_FEE_RATE):
-    p = max(0.0, min(1.0, float(price)))
-    return max(0.0, float(fee_rate)) * p * (1.0 - p)
+    return polymarket_taker_fee_per_share(price, fee_rate)
 
 
 def _write_live_quotes(now, markets):
@@ -544,6 +552,15 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                         "up_top_bid_size": ub["top_bid_size"], "up_b1": ub["b1"], "up_b5": ub["b5"],
                         "down_top_bid_size": dbk["top_bid_size"], "down_b1": dbk["b1"],
                         "down_b5": dbk["b5"],
+                        # Complete-trade shadow lane: carry the already-recorded full
+                        # 12-level ladders through the lock-free JSON bridge. The backend
+                        # must not open this recorder's DuckDB writer file.
+                        "up_ladder": ub["ladder"], "down_ladder": dbk["ladder"],
+                        "up_book_ts": ub["book_ts"] or None,
+                        "down_book_ts": dbk["book_ts"] or None,
+                        "up_recv_ms": ub["recv_ms"], "down_recv_ms": dbk["recv_ms"],
+                        "up_book_hash": ub["book_hash"], "down_book_hash": dbk["book_hash"],
+                        "artifact_hash": _ARTIFACT_HASH,
                         "fees_enabled": True, "fee_rate": CRYPTO_TAKER_FEE_RATE,
                     }
                     n += 1

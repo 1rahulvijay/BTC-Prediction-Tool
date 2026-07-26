@@ -3573,6 +3573,55 @@ function renderPMCore(data, cfg) {
         <div style="width:100%;font-size:.68em;color:#8892a6">Buy = current ask you would pay. Sell now = current bid available to exit. Prices exclude the displayed strategy's separate fee calculation.</div>
       </div>`;
     })();
+    // Complete-trade forecaster: entry, executable bid path, exit math and capacity.
+    // This lane is deliberately SHADOW/PILOT and is visually separate from Champion.
+    const completeTradeHtml = (() => {
+      if (resolved || !r.complete_trade_forecast) return '';
+      const tf = r.complete_trade_forecast;
+      const cents = value => value == null ? '--' : `${(Number(value) * 100).toFixed(1)}c`;
+      const pct = value => value == null ? '--' : `${Math.round(Number(value) * 100)}%`;
+      const money = value => value == null ? '--' : `${Number(value) >= 0 ? '+' : ''}${(Number(value) * 100).toFixed(1)}c`;
+      const blocked = tf.status !== 'SHADOW_EVALUATED';
+      const action = (tf.decision && tf.decision.action) || tf.action || 'NO_TRADE';
+      const reason = tf.plain_reason || ((tf.reason_codes || []).join(', ')) || 'Waiting for synchronized evidence.';
+      const btc60 = (((tf.btc_forecast || {}).path || {})['60s']) || {};
+      const btcRange = btc60.q10 != null && btc60.q90 != null
+        ? `$${Number(btc60.q10).toLocaleString()} to $${Number(btc60.q90).toLocaleString()}`
+        : '--';
+      const cards = (tf.candidates || []).map(candidate => {
+        const color = candidate.side === 'UP' ? '#00e676' : '#ff5252';
+        const event = candidate.events || {};
+        const summary = candidate.summary || {};
+        const evaluation = candidate.evaluation || {};
+        const entry = candidate.predicted_entry_vwap;
+        const capacity = (candidate.capacity || []).filter(row => row.entry_available && row.exit_available);
+        const maxCapacity = capacity.length ? Math.max(...capacity.map(row => Number(row.quantity))) : 0;
+        return `<div style="flex:1;min-width:230px;padding:.5rem .6rem;border:1px solid ${color}55;border-radius:6px;background:${color}0a">
+          <div style="display:flex;justify-content:space-between;gap:.5rem"><strong style="color:${color}">BUY ${candidate.side} scenario</strong><span style="font-size:.72em;color:var(--text-secondary)">${candidate.requested_qty || 10} shares</span></div>
+          <div style="margin-top:.25rem;font-size:.82em">Current full-size ask: <strong>${cents(candidate.current_full_qty_ask_vwap)}</strong> ${candidate.current_full_qty_entry_available ? '<span style="color:#00e676">available</span>' : '<span style="color:#ff5252">not fillable</span>'}</div>
+          <div style="font-size:.82em">Predicted post-latency entry: <strong>${cents(entry)}</strong></div>
+          <div style="font-size:.82em">Need bid <strong>${cents(candidate.break_even_bid)}</strong> to break even; <strong>${cents(candidate.target_3c_bid)}</strong> for +3c</div>
+          <div style="font-size:.78em;color:var(--text-secondary);margin-top:.2rem">P(ever profitable) ${pct(event.label_ever_profitable)} · P(full-size +1c lock) ${pct(event.label_lockable_1c)} · P(+3c before -3c) ${pct(event.label_take_3c_before_stop_3c)}</div>
+          <div style="font-size:.76em;color:var(--text-secondary)">P(stays profitable to settlement) ${pct(event.label_stays_profitable_to_settlement)}</div>
+          <div style="font-size:.76em;color:var(--text-secondary)">Expected best/worst net: ${money((summary.actual_mfe || {}).q50)} / ${money((summary.actual_mae || {}).q50)}; first profit ${(summary.actual_first_profitable_s || {}).q50 == null ? '--' : `${Number(summary.actual_first_profitable_s.q50).toFixed(0)}s`}</div>
+          <div style="font-size:.76em;color:var(--text-secondary)">Plan ${String(evaluation.recommended_exit_plan || '--').replaceAll('_', ' ')}; EV ${money(evaluation.expected_pnl)}; q10 ${money(evaluation.pnl_q10)}; P(profit) ${pct(evaluation.p_profit)}</div>
+          <div style="font-size:.76em;color:var(--text-secondary)">Model-safe max entry ${cents(evaluation.maximum_safe_entry_ask)}; expected hold ${evaluation.expected_holding_s == null ? '--' : `${Number(evaluation.expected_holding_s).toFixed(0)}s`}; profit factor ${evaluation.profit_factor == null ? '--' : Number(evaluation.profit_factor).toFixed(2)}</div>
+          <div style="font-size:.75em;color:var(--text-secondary)">Current two-way ladder supports up to ${maxCapacity || 0} shares at a tested size.</div>
+        </div>`;
+      }).join('');
+      const decision = tf.decision || {};
+      return `<div style="margin-top:.5rem;padding:.55rem .65rem;border:1px solid ${blocked ? '#ffb74d55' : '#64b5f688'};border-radius:7px;background:${blocked ? 'rgba(255,183,77,.05)' : 'rgba(100,181,246,.06)'}">
+        <div style="display:flex;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
+          <strong style="color:${blocked ? '#ffb74d' : '#64b5f6'}">COMPLETE TRADE FORECAST - ${blocked ? 'PILOT ONLY' : 'SHADOW'}</strong>
+          <strong style="color:${action.startsWith('BUY_') ? '#64b5f6' : '#aab4c8'}">${action.replaceAll('_', ' ')}</strong>
+        </div>
+        <div style="font-size:.78em;color:var(--text-secondary);margin:.2rem 0 .4rem">${reason}</div>
+        <div style="font-size:.78em;color:var(--text-secondary);margin-bottom:.35rem">Predicted BTC 60s q10-q90: <strong style="color:var(--text-primary)">${btcRange}</strong></div>
+        <div style="display:flex;gap:.4rem;flex-wrap:wrap">${cards || '<span style="color:var(--text-secondary)">Waiting for fresh full ladders.</span>'}</div>
+        ${decision.expected_pnl != null ? `<div style="font-size:.78em;margin-top:.3rem">Best frozen plan: <strong>${String(decision.recommended_exit_plan || '--').replaceAll('_', ' ')}</strong> · expected ${money(decision.expected_pnl)} · conservative q10 ${money(decision.pnl_q10)} · worst-tail ${money(decision.cvar_05)}</div>` : ''}
+        <div style="font-size:.68em;color:#8892a6;margin-top:.3rem">This does not change the Champion or place a trade. It stays NO TRADE until the live L2 sample reaches 500 independent rounds, 8 weeks, and the frozen M0 ranking gate.</div>
+      </div>`;
+    })();
     // HEADS GRID (2026-07-04, operator request): every model head as one small tile —
     // label + value + color, tooltip for meaning, tile hidden when the head has no data.
     const headsGrid = (()=>{
@@ -3625,6 +3674,7 @@ function renderPMCore(data, cfg) {
       ${actionHtml}
       ${leaderHtml}
       ${sharePricesHtml}
+      ${completeTradeHtml}
       ${pathStrip}
       ${headsGrid}
       ${resolved?`<div style="margin-top:.5rem;font-size:1.1em;font-weight:800;color:${r.hit?'#00e676':r.hit===false?'#ff5252':'#8892a6'}">${r.hit?'✓ WON':r.hit===false?'✗ LOST':'— no bet'} (closed $${Number(r.actual_price||0).toLocaleString()}, ${(r.move||0)>=0?'+':''}$${Math.round(r.move||0)})</div>`:''}

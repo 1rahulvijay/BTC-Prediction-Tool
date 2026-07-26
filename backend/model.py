@@ -19,7 +19,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
 from typing import Optional, Dict
-from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES, FEATURE_NAMES
+from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES
 from model_contract import (
     DL_ARCH,
     MODEL_ARCH_VERSION,
@@ -28,6 +28,13 @@ from model_contract import (
     MODEL_FEATURE_PRUNING,
     MODEL_FEATURE_SCHEMA_HASH,
     MODEL_NUM_FEATURES,
+)
+from artifact_identity import (
+    artifact_compatibility,
+    artifact_manifest_path,
+    current_training_identity,
+    training_identity_issues,
+    write_artifact_manifest,
 )
 
 warnings.filterwarnings("ignore", message=".*Falling back to prediction using DMatrix due to mismatched devices.*")
@@ -51,6 +58,10 @@ QUANTILE_MAX_ITER = _env_int("BTC_QUANTILE_MAX_ITER", 45)
 LINEAR_MAX_SAMPLES = _env_int("BTC_LINEAR_MAX_SAMPLES", 12000)
 # (SGD_MAX_ITER removed in v6 — SGD retired from the roster)
 STACKER_MAX_SAMPLES = _env_int("BTC_STACKER_MAX_SAMPLES", 6000)
+TCN_MAX_SAMPLES = _env_int("BTC_TCN_MAX_SAMPLES", 25000)
+SAMPLE_WEIGHT_MODE = os.environ.get(
+    "BTC_SAMPLE_WEIGHT_MODE", "recency_similarity"
+).strip().lower()
 # Memory-safe cap for each direction-model regime bucket. A value of 0 uses every row.
 # Long-window laptop runs set this explicitly and sample across the full history plus a
 # recent tail; this avoids materializing a multi-gigabyte GLOBAL advanced-index copy.
@@ -76,6 +87,110 @@ def _representative_training_indices(indices: np.ndarray, max_samples: int) -> n
     return np.unique(np.concatenate([older[positions], recent]))
 
 
+def _regime_similarity_weights(
+    X_model: np.ndarray,
+    feature_names: list[str],
+    split_idx: int,
+    recent_rows: int = 1440,
+) -> np.ndarray:
+    """Causal similarity to the latest training regime using robust feature distance."""
+    weights = np.ones(split_idx, dtype=np.float64)
+    if split_idx < 100 or SAMPLE_WEIGHT_MODE not in {
+        "similarity",
+        "recency_similarity",
+    }:
+        return weights
+    candidates = (
+        "atr_norm",
+        "adx_norm",
+        "volume_ma_ratio",
+        "rv_5m",
+        "rv_15m",
+        "ewma_vol",
+        "variance_ratio",
+        "rv_term_structure",
+    )
+    feature_idx = [
+        feature_names.index(name) for name in candidates if name in feature_names
+    ]
+    if not feature_idx:
+        return weights
+    values = np.asarray(X_model[:split_idx, -1, feature_idx], dtype=np.float64)
+    values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+    recent = values[max(0, split_idx - recent_rows):split_idx]
+    center = np.median(recent, axis=0)
+    q25, q75 = np.quantile(values, [0.25, 0.75], axis=0)
+    scale = np.maximum(q75 - q25, 1e-6)
+    distance = np.mean(np.square(np.clip((values - center) / scale, -6.0, 6.0)), axis=1)
+    weights = np.exp(-0.5 * distance)
+    weights = np.clip(weights, 0.15, 1.0)
+    return weights / max(float(np.mean(weights)), 1e-9)
+
+
+def _balanced_sequence_indices(
+    X_flat: np.ndarray,
+    max_samples: int,
+    lookback: int,
+    input_dim: int,
+) -> np.ndarray:
+    """50% recent, 25% historical-regime, 25% historical-tail sampling.
+
+    All scores use only each sample's input sequence. No label or future value is
+    consulted, so the sampler cannot leak the target.
+    """
+    n_samples = len(X_flat)
+    if not max_samples or n_samples <= max_samples:
+        return np.arange(n_samples, dtype=np.int64)
+    recent_n = max_samples // 2
+    regime_n = max_samples // 4
+    tail_n = max_samples - recent_n - regime_n
+    recent = np.arange(n_samples - recent_n, n_samples, dtype=np.int64)
+    historical = np.arange(0, n_samples - recent_n, dtype=np.int64)
+    if not len(historical):
+        return recent
+
+    X_seq = np.asarray(X_flat).reshape(n_samples, lookback, input_dim)
+    regime_score = np.nanmean(
+        np.nanstd(X_seq[historical, -min(5, lookback):, :], axis=1),
+        axis=1,
+    )
+    regime_score = np.nan_to_num(regime_score, nan=0.0, posinf=0.0, neginf=0.0)
+    quantiles = np.quantile(regime_score, [0.25, 0.50, 0.75])
+    bins = np.digitize(regime_score, quantiles, right=True)
+    regime_parts = []
+    per_bin = max(1, regime_n // 4)
+    for bucket in range(4):
+        members = historical[bins == bucket]
+        if len(members):
+            positions = np.linspace(
+                0, len(members) - 1, min(per_bin, len(members)), dtype=np.int64
+            )
+            regime_parts.append(members[positions])
+    regime_sample = (
+        np.concatenate(regime_parts) if regime_parts else np.array([], dtype=np.int64)
+    )
+
+    temporal_change = np.nanmean(
+        np.abs(X_seq[historical, -1, :] - X_seq[historical, 0, :]), axis=1
+    )
+    tail_order = np.argsort(
+        np.nan_to_num(temporal_change, nan=-np.inf)
+    )[::-1]
+    tail_sample = historical[tail_order[:tail_n]]
+    selected = np.unique(np.concatenate([recent, regime_sample, tail_sample]))
+    if len(selected) < max_samples:
+        remaining = np.setdiff1d(historical, selected, assume_unique=False)
+        need = min(max_samples - len(selected), len(remaining))
+        if need:
+            positions = np.linspace(
+                0, len(remaining) - 1, need, dtype=np.int64
+            )
+            selected = np.unique(np.concatenate([selected, remaining[positions]]))
+    if len(selected) > max_samples:
+        selected = selected[-max_samples:]
+    return np.sort(selected.astype(np.int64))
+
+
 def _atomic_joblib_dump(value, path: str) -> None:
     """Write one model artifact atomically so an interrupted save keeps the prior file."""
     tmp = f"{path}.tmp.{os.getpid()}"
@@ -98,20 +213,18 @@ except ImportError:
     HAS_LGBM = False
     logger.warning("LightGBM not installed. Ensemble will skip LightGBM.")
 
-# Probe LightGBM GPU support ONCE at import. Many pip wheels are CPU-only and
-# `device_type='gpu'` raises at fit time, which previously caused LightGBM to be
-# silently skipped on CPU-only machines. We detect the working device here and reuse it.
-LGB_DEVICE = "cpu"
+# LightGBM's Windows OpenCL backend is unstable on this machine: even a one-tree
+# capability probe intermittently terminates Python with 0xC0000005 during native
+# teardown. Do not run a fit at import time. CPU is the safe default; an operator
+# may explicitly opt into the OpenCL path after validating the local wheel/driver.
+_lgb_requested_device = os.environ.get("BTC_LGB_DEVICE", "cpu").strip().lower()
+LGB_DEVICE = "gpu" if _lgb_requested_device in {"gpu", "opencl"} else "cpu"
 if HAS_LGBM:
-    try:
-        import numpy as _np_probe
-        _probe = lgb.LGBMClassifier(device_type="gpu", n_estimators=1, verbose=-1)
-        _probe.fit(_np_probe.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
-        LGB_DEVICE = "gpu"
-        logger.info("LightGBM GPU support detected — using device_type='gpu'.")
-    except Exception:
-        LGB_DEVICE = "cpu"
-        logger.info("LightGBM GPU not available — falling back to device_type='cpu'.")
+    logger.info(
+        "LightGBM device=%s%s.",
+        LGB_DEVICE,
+        " (explicit opt-in)" if LGB_DEVICE == "gpu" else " (safe default)",
+    )
 
 # Optional CatBoost
 try:
@@ -223,11 +336,23 @@ try:
             if N == 0:
                 return self
             X_3d = X_flat.reshape(N, self.lookback, self.input_dim)
-            if N > 25000:
-                X_3d = X_3d[-25000:]
-                y = y[-25000:]
+            if N > TCN_MAX_SAMPLES:
+                selected = _balanced_sequence_indices(
+                    X_flat,
+                    TCN_MAX_SAMPLES,
+                    self.lookback,
+                    self.input_dim,
+                )
+                X_3d = X_3d[selected]
+                y = np.asarray(y)[selected]
                 if sample_weight is not None:
-                    sample_weight = sample_weight[-25000:]
+                    sample_weight = np.asarray(sample_weight)[selected]
+                logger.info(
+                    "[TRAIN DL] balanced sample: total=%s selected=%s "
+                    "(50%% recent, 25%% historical regime, 25%% historical tail)",
+                    N,
+                    len(selected),
+                )
 
             # v6 fix (operator-caught audit): sample_weight was ACCEPTED but silently
             # IGNORED — the class-balanced loss (v5's headline) never reached TCN while
@@ -562,6 +687,25 @@ class MultiModelEnsemble:
         trained a different partition than serving used — the mismatch P4.3 fixes).
         """
         train_started = time.time()
+        requested_days = _env_int(
+            "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
+        )
+        self.training_identity = current_training_identity(
+            requested_days=requested_days,
+            feature_names=self.model_feature_names,
+            code_paths=[
+                __file__,
+                os.path.join(os.path.dirname(__file__), "features.py"),
+                os.path.join(os.path.dirname(__file__), "model_contract.py"),
+            ],
+            full_refit=full_refit,
+        )
+        identity_issues = training_identity_issues(self.training_identity)
+        if identity_issues:
+            raise RuntimeError(
+                "training-data identity contract failed before training: "
+                + "; ".join(identity_issues)
+            )
         n_samples, lookback, n_features = X.shape
         X_model = self._select_model_features(X)
         _, _, model_n_features = X_model.shape
@@ -610,6 +754,22 @@ class MultiModelEnsemble:
         half_life = max(50.0, split_idx / 3.0)
         _idx = np.arange(split_idx)
         recency_w = 0.5 ** ((split_idx - 1 - _idx) / half_life)
+        similarity_w = _regime_similarity_weights(
+            X_model, self.model_feature_names, split_idx
+        )
+        if SAMPLE_WEIGHT_MODE == "similarity":
+            recency_w = similarity_w
+        elif SAMPLE_WEIGHT_MODE == "recency_similarity":
+            recency_w = recency_w * similarity_w
+            recency_w = recency_w / max(float(np.mean(recency_w)), 1e-9)
+        logger.info(
+            "[TRAIN] sample_weight_mode=%s similarity_q10/q50/q90=%s",
+            SAMPLE_WEIGHT_MODE,
+            [
+                round(float(value), 3)
+                for value in np.quantile(similarity_w, [0.1, 0.5, 0.9])
+            ],
+        )
 
         # Cluster training indices by regime. P4.3: prefer the HMM labels (same partition
         # serving routes by); fall back to the legacy ADX/vol thresholds only if labels
@@ -1031,7 +1191,17 @@ class MultiModelEnsemble:
                 try:
                     X_stack, y_stack, _ = recent_classification_slice(X_train_h, y_train_h, sw, STACKER_MAX_SAMPLES)
                     _t0 = log_component_start(h, reg, "OOFStacker", len(X_stack))
-                    tscv = TimeSeriesSplit(n_splits=3)
+                    purge_gap = min(
+                        max(LOOKBACK + int(h), 1),
+                        max(1, len(X_stack) // 8),
+                    )
+                    tscv = TimeSeriesSplit(n_splits=3, gap=purge_gap)
+                    logger.info(
+                        "[OOF] h=%sm reg=%s purged_gap=%s rows",
+                        h,
+                        reg,
+                        purge_gap,
+                    )
                     
                     reg_store = self.models_by_regime[reg]
                     base_models = {
@@ -2497,8 +2667,56 @@ class MultiModelEnsemble:
             return False
         target_dir = os.path.abspath(model_dir or self.model_dir)
         try:
+            requested_days = _env_int(
+                "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
+            )
+            current_identity = current_training_identity(
+                requested_days=requested_days,
+                feature_names=self.model_feature_names,
+                code_paths=[
+                    __file__,
+                    os.path.join(os.path.dirname(__file__), "features.py"),
+                    os.path.join(os.path.dirname(__file__), "model_contract.py"),
+                ],
+                full_refit=self.full_refit,
+            )
+            base_identity = copy.deepcopy(
+                getattr(self, "training_identity", None) or current_identity
+            )
+            identity_issues = training_identity_issues(base_identity)
+            if identity_issues:
+                raise RuntimeError(
+                    "training-data identity contract failed before save: "
+                    + "; ".join(identity_issues)
+                )
+            identity_keys = (
+                "requested_days",
+                "matrix_requested_days",
+                "actual_start_ts_ms",
+                "actual_end_ts_ms",
+                "actual_span_days",
+                "row_count",
+                "training_data_hash",
+                "source_manifest_hash",
+                "feature_schema_hash",
+                "code_hash",
+                "matrix_monthly_quality_passed",
+            )
+            changed = [
+                key for key in identity_keys
+                if base_identity.get(key) != current_identity.get(key)
+            ]
+            if changed:
+                raise RuntimeError(
+                    "training identity changed while models were fitting; refusing "
+                    "to stamp or save the stale in-memory bundle (fields: "
+                    + ", ".join(changed)
+                    + ")"
+                )
+
             os.makedirs(target_dir, exist_ok=True)
             saved_count = 0
+            saved_files = []
             for reg in self.regimes:
                 reg_dir = os.path.join(target_dir, reg)
                 os.makedirs(reg_dir, exist_ok=True)
@@ -2506,12 +2724,19 @@ class MultiModelEnsemble:
                     store = self.models_by_regime[reg][name]
                     for h in self.horizons:
                         if h in store:
-                            _atomic_joblib_dump(store[h], os.path.join(reg_dir, f"{name}_{h}.pkl"))
+                            model_path = os.path.join(reg_dir, f"{name}_{h}.pkl")
+                            _atomic_joblib_dump(store[h], model_path)
+                            saved_files.append(os.path.relpath(model_path, target_dir))
                             saved_count += 1
-            _atomic_joblib_dump(self.model_accuracies, os.path.join(target_dir, "accuracies.pkl"))
-            _atomic_joblib_dump(self.conformal_residuals, os.path.join(target_dir, "conformal_residuals.pkl"))
-            _atomic_joblib_dump(self.feature_reference, os.path.join(target_dir, "feature_reference.pkl"))
-            _atomic_joblib_dump(self.feature_reference_names, os.path.join(target_dir, "feature_reference_names.pkl"))
+            def save_bundle_value(value, name):
+                path = os.path.join(target_dir, name)
+                _atomic_joblib_dump(value, path)
+                saved_files.append(name)
+
+            save_bundle_value(self.model_accuracies, "accuracies.pkl")
+            save_bundle_value(self.conformal_residuals, "conformal_residuals.pkl")
+            save_bundle_value(self.feature_reference, "feature_reference.pkl")
+            save_bundle_value(self.feature_reference_names, "feature_reference_names.pkl")
             _atomic_joblib_dump(
                 {
                     "mode": self.model_feature_pruning,
@@ -2522,11 +2747,14 @@ class MultiModelEnsemble:
                 },
                 os.path.join(target_dir, "model_feature_schema.pkl"),
             )
-            _atomic_joblib_dump(self.move_size_stats, os.path.join(target_dir, "move_size_stats.pkl"))
-            _atomic_joblib_dump(self.class_priors, os.path.join(target_dir, "class_priors.pkl"))
-            _atomic_joblib_dump(self.stackers_by_regime, os.path.join(target_dir, "stackers.pkl"))
-            _atomic_joblib_dump(getattr(self, "calibration_provenance", {}),
-                                os.path.join(target_dir, "calibration_provenance.pkl"))
+            saved_files.append("model_feature_schema.pkl")
+            save_bundle_value(self.move_size_stats, "move_size_stats.pkl")
+            save_bundle_value(self.class_priors, "class_priors.pkl")
+            save_bundle_value(self.stackers_by_regime, "stackers.pkl")
+            save_bundle_value(
+                getattr(self, "calibration_provenance", {}),
+                "calibration_provenance.pkl",
+            )
             _atomic_joblib_dump(
                 {
                     "model_bundle_id": self.model_bundle_id,
@@ -2538,9 +2766,52 @@ class MultiModelEnsemble:
                 },
                 os.path.join(target_dir, "bundle_metadata.pkl"),
             )
+            saved_files.append("bundle_metadata.pkl")
             # Commit the architecture marker last. Launch preflight never sees the new
             # version before every component and metadata artifact has been replaced.
             _atomic_joblib_dump(MODEL_ARCH_VERSION, os.path.join(target_dir, "architecture_version.pkl"))
+            saved_files.append("architecture_version.pkl")
+
+            start_ts = base_identity.get("actual_start_ts_ms")
+            end_ts = base_identity.get("actual_end_ts_ms")
+            split_ts = None
+            if (
+                not self.full_refit
+                and start_ts is not None
+                and end_ts is not None
+            ):
+                split_ts = int(
+                    int(start_ts)
+                    + (int(end_ts) - int(start_ts)) * float(self.train_split_frac)
+                )
+            base_identity["split_timestamps"] = {
+                "train_start_ts_ms": start_ts,
+                "train_end_ts_ms": end_ts if self.full_refit else split_ts,
+                "holdout_start_ts_ms": None if self.full_refit else split_ts,
+                "holdout_end_ts_ms": None if self.full_refit else end_ts,
+                "estimated_from_matrix_span": True,
+            }
+            base_identity["calibration_timestamps"] = {
+                **base_identity["split_timestamps"],
+                "source": getattr(self, "calibration_provenance", {}).get(
+                    "method", "unknown"
+                ),
+            }
+            write_artifact_manifest(
+                target_dir,
+                base_identity,
+                artifact_type="multi_model_ensemble",
+                extra={
+                    "artifact_files": saved_files,
+                    "model_arch_version": MODEL_ARCH_VERSION,
+                    "model_bundle_id": self.model_bundle_id,
+                    "horizons": [int(h) for h in self.horizons],
+                    "direction_max_samples": DIRECTION_MAX_SAMPLES,
+                    "stacker_max_samples": STACKER_MAX_SAMPLES,
+                    "tcn_max_samples": TCN_MAX_SAMPLES,
+                    "sample_weight_mode": SAMPLE_WEIGHT_MODE,
+                },
+            )
             logger.info("[MODEL SAVE] Saved %s model components to %s", saved_count, target_dir)
             return True
         except Exception as e:
@@ -2553,6 +2824,38 @@ class MultiModelEnsemble:
         if not HAS_JOBLIB or not os.path.exists(model_dir):
             return False
         try:
+            strict_identity = os.environ.get(
+                "BTC_STRICT_ARTIFACT_IDENTITY", "1"
+            ).strip().lower() not in ("0", "false", "no")
+            manifest_path = artifact_manifest_path(model_dir)
+            if strict_identity and not manifest_path.exists():
+                logger.warning(
+                    "[MODEL LOAD] Rejecting legacy bundle without identity manifest: %s",
+                    model_dir,
+                )
+                return False
+            expected_identity = current_training_identity(
+                requested_days=_env_int(
+                    "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
+                ),
+                feature_names=self.model_feature_names,
+                code_paths=[
+                    __file__,
+                    os.path.join(os.path.dirname(__file__), "features.py"),
+                    os.path.join(os.path.dirname(__file__), "model_contract.py"),
+                ],
+            )
+            compatible, incompatibilities = artifact_compatibility(
+                model_dir, expected_identity, strict=strict_identity
+            )
+            if not compatible:
+                logger.warning(
+                    "[MODEL LOAD] Rejecting incompatible bundle %s: %s",
+                    model_dir,
+                    "; ".join(incompatibilities),
+                )
+                return False
+
             loaded_any = False
             loaded_count = 0
             for reg in self.regimes:

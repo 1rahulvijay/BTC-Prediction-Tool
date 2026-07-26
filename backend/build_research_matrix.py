@@ -8,13 +8,35 @@ import time
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from edge_probe import _load_bars, FEATURE_BUILDERS
+from artifact_identity import (
+    atomic_write_json,
+    feature_schema_hash,
+    hash_file,
+    hash_json,
+)
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data"
 )
 DAYS_SIDECAR = os.path.join(DATA_DIR, "research_matrix_1m.days.txt")
 MANIFEST_PATH = os.path.join(DATA_DIR, "research_matrix_1m.manifest.json")
+MONTHLY_QUALITY_PATH = os.path.join(DATA_DIR, "research_matrix_monthly_quality.json")
+MONTHLY_QUALITY_CSV_PATH = os.path.join(DATA_DIR, "research_matrix_monthly_quality.csv")
 MIN_SOURCE_COVERAGE = 0.98
+MAX_CONTIGUOUS_GAP_MINUTES = int(
+    os.environ.get("BTC_MAX_CONTIGUOUS_GAP_MINUTES", "15")
+)
+MANDATORY_DYNAMIC_FEATURES = (
+    "cvd_1m",
+    "cvd_5m",
+    "vpin",
+    "large_trade_delta",
+    "cvd_spot",
+    "cvd_perp",
+    "perp_spot_basis_bps",
+    "vol_spot",
+    "vol_perp",
+)
 
 
 def _path_mtime(path: str) -> float:
@@ -64,8 +86,14 @@ def _coverage_ok(summary: dict | None, days: int) -> bool:
 
 def _source_coverage_ok(manifest: dict) -> bool:
     coverage = manifest.get("source_coverage") or {}
-    return all(float(coverage.get(name, 0.0)) >= MIN_SOURCE_COVERAGE
-               for name in ("trade_features", "crossvenue"))
+    monthly = manifest.get("monthly_quality") or {}
+    return (
+        all(
+            float(coverage.get(name, 0.0)) >= MIN_SOURCE_COVERAGE
+            for name in ("trade_features", "crossvenue")
+        )
+        and bool(monthly.get("passed", False))
+    )
 
 
 def _load_manifest() -> dict:
@@ -84,6 +112,272 @@ def _default_days() -> int:
         return 60
 
 
+def _source_present_rate(df: pd.DataFrame, column: str) -> float:
+    if column not in df.columns or df.empty:
+        return 0.0
+    return float(pd.to_numeric(df[column], errors="coerce").fillna(0).gt(0).mean())
+
+
+def _max_gap_minutes(
+    ts_ms: pd.Series,
+    expected_start_ms: int | None = None,
+    expected_end_ms: int | None = None,
+) -> float:
+    values = np.sort(pd.to_numeric(ts_ms, errors="coerce").dropna().unique())
+    if not len(values):
+        return float("inf")
+    gaps = (
+        [float(max(0.0, np.max(np.diff(values)) / 60_000.0 - 1.0))]
+        if len(values) >= 2
+        else [0.0]
+    )
+    if expected_start_ms is not None:
+        gaps.append(float(max(0.0, (values[0] - expected_start_ms) / 60_000.0)))
+    if expected_end_ms is not None:
+        gaps.append(float(max(0.0, (expected_end_ms - values[-1]) / 60_000.0)))
+    return max(gaps)
+
+
+def _monthly_quality_report(df: pd.DataFrame) -> dict:
+    work = df.copy()
+    work["ts_ms"] = pd.to_numeric(work["ts_ms"], errors="coerce")
+    future_ts = int(work["ts_ms"].gt(int(time.time() * 1000) + 60_000).sum())
+    invalid_ts = int(work["ts_ms"].isna().sum())
+    work = work.dropna(subset=["ts_ms"]).copy()
+    work["ts_ms"] = work["ts_ms"].astype(np.int64)
+    work["month"] = pd.to_datetime(
+        work["ts_ms"], unit="ms", utc=True
+    ).dt.strftime("%Y-%m")
+    global_first_ts = int(work["ts_ms"].min()) if not work.empty else 0
+    global_last_ts = int(work["ts_ms"].max()) if not work.empty else 0
+
+    core = ["open", "high", "low", "close", "volume"]
+    feature_columns = [
+        column
+        for column in work.columns
+        if column
+        not in {
+            "ts_ms",
+            "timestamp",
+            "month",
+            "_trade_source_present",
+            "_cross_source_present",
+            *core,
+        }
+        and not column.startswith("future_")
+    ]
+    numeric = {name: pd.to_numeric(work[name], errors="coerce") for name in core}
+    ohlc_invalid = (
+        (numeric["open"] <= 0)
+        | (numeric["high"] <= 0)
+        | (numeric["low"] <= 0)
+        | (numeric["close"] <= 0)
+        | (numeric["volume"] < 0)
+        | (numeric["high"] < numeric["open"])
+        | (numeric["high"] < numeric["close"])
+        | (numeric["low"] > numeric["open"])
+        | (numeric["low"] > numeric["close"])
+    )
+    work["_ohlc_invalid"] = ohlc_invalid.fillna(True)
+    work["_core_null"] = pd.concat(numeric, axis=1).isna().any(axis=1)
+
+    rows: list[dict] = []
+    months = (
+        pd.period_range(
+            pd.to_datetime(global_first_ts, unit="ms", utc=True).strftime("%Y-%m"),
+            pd.to_datetime(global_last_ts, unit="ms", utc=True).strftime("%Y-%m"),
+            freq="M",
+        )
+        if not work.empty
+        else []
+    )
+    for period in months:
+        month = str(period)
+        group = work.loc[work["month"].eq(month)]
+        month_start = int(pd.Timestamp(f"{month}-01", tz="UTC").timestamp() * 1000)
+        month_end = int(
+            (pd.Timestamp(f"{month}-01", tz="UTC") + pd.offsets.MonthBegin(1)).timestamp()
+            * 1000
+            - 60_000
+        )
+        expected_start = max(global_first_ts, month_start)
+        expected_end = min(global_last_ts, month_end)
+        expected = max(1, (expected_end - expected_start) // 60_000 + 1)
+        unique_rows = int(group["ts_ms"].nunique())
+        coverage = min(1.0, unique_rows / expected)
+        duplicate_rows = int(len(group) - unique_rows)
+        trade_coverage = _source_present_rate(group, "_trade_source_present")
+        cross_coverage = _source_present_rate(group, "_cross_source_present")
+        max_gap = _max_gap_minutes(
+            group["ts_ms"], expected_start, expected_end
+        )
+        feature_values = (
+            group[feature_columns].apply(pd.to_numeric, errors="coerce")
+            if feature_columns
+            else pd.DataFrame(index=group.index)
+        )
+        feature_cells = max(1, feature_values.shape[0] * feature_values.shape[1])
+        feature_nan_pct = float(feature_values.isna().sum().sum() / feature_cells)
+        feature_zero_pct = float(
+            feature_values.fillna(0.0).eq(0.0).sum().sum() / feature_cells
+        )
+        constant_features = int(
+            sum(feature_values[column].nunique(dropna=True) <= 1 for column in feature_values)
+        )
+        unavailable_mandatory = []
+        for column in MANDATORY_DYNAMIC_FEATURES:
+            if column not in group.columns:
+                unavailable_mandatory.append(f"{column}:missing")
+                continue
+            values = pd.to_numeric(group[column], errors="coerce")
+            non_null = values.dropna()
+            if len(non_null) == 0:
+                unavailable_mandatory.append(f"{column}:all_null")
+            elif non_null.nunique() <= 1:
+                unavailable_mandatory.append(f"{column}:constant")
+            elif float(non_null.ne(0.0).mean()) < 0.01:
+                unavailable_mandatory.append(f"{column}:over_99pct_zero")
+        passed = (
+            coverage >= MIN_SOURCE_COVERAGE
+            and trade_coverage >= MIN_SOURCE_COVERAGE
+            and cross_coverage >= MIN_SOURCE_COVERAGE
+            and duplicate_rows == 0
+            and max_gap <= MAX_CONTIGUOUS_GAP_MINUTES
+            and int(group["_core_null"].sum()) == 0
+            and int(group["_ohlc_invalid"].sum()) == 0
+            and not unavailable_mandatory
+        )
+        rows.append(
+            {
+                "month": month,
+                "rows": int(len(group)),
+                "expected_rows_in_observed_span": int(expected),
+                "minute_coverage": coverage,
+                "trade_features_coverage": trade_coverage,
+                "crossvenue_coverage": cross_coverage,
+                "duplicate_rows": duplicate_rows,
+                "max_contiguous_gap_minutes": max_gap,
+                "core_null_rows": int(group["_core_null"].sum()),
+                "ohlc_invalid_rows": int(group["_ohlc_invalid"].sum()),
+                "feature_nan_pct": feature_nan_pct,
+                "feature_zero_pct": feature_zero_pct,
+                "constant_feature_count": constant_features,
+                "feature_count": int(len(feature_columns)),
+                "unavailable_mandatory_features": unavailable_mandatory,
+                "passed": bool(passed),
+            }
+        )
+
+    passed = (
+        bool(rows)
+        and all(row["passed"] for row in rows)
+        and invalid_ts == 0
+        and future_ts == 0
+    )
+    return {
+        "passed": passed,
+        "minimum_monthly_coverage": MIN_SOURCE_COVERAGE,
+        "maximum_contiguous_gap_minutes": MAX_CONTIGUOUS_GAP_MINUTES,
+        "invalid_timestamp_rows": invalid_ts,
+        "future_timestamp_rows": future_ts,
+        "months": rows,
+    }
+
+
+def _source_file_identity(paths: dict[str, str]) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for name, path in paths.items():
+        try:
+            stat = os.stat(path)
+            result[name] = {
+                "path": os.path.abspath(path),
+                "size_bytes": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        except OSError:
+            result[name] = {
+                "path": os.path.abspath(path),
+                "missing": True,
+            }
+    return result
+
+
+def _official_ohlc_parity(base_df: pd.DataFrame) -> dict:
+    """Compare aggregate-trade OHLC with a small cached official Binance kline tail."""
+    configured = os.environ.get("BTC_OFFICIAL_1M_PARITY_PATH")
+    candidate = configured or os.path.join(
+        DATA_DIR, "cache", "btcusdt_1m_3d.json"
+    )
+    if not os.path.exists(candidate):
+        return {
+            "available": False,
+            "passed": True,
+            "reason": "official 1m reference cache unavailable",
+            "path": candidate,
+        }
+    try:
+        with open(candidate, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload.get("klines") if isinstance(payload, dict) else payload
+        reference = pd.DataFrame(rows or [])
+        if reference.empty or "time" not in reference.columns:
+            raise ValueError("reference has no kline rows")
+        reference["ts_ms"] = pd.to_numeric(
+            reference["time"], errors="coerce"
+        ).astype("Int64") * 1000
+        columns = ["ts_ms", "open", "high", "low", "close"]
+        reference = reference[columns].dropna(subset=["ts_ms"])
+        joined = base_df[columns].merge(
+            reference,
+            on="ts_ms",
+            how="inner",
+            suffixes=("_agg", "_official"),
+        )
+        if len(joined) < 100:
+            return {
+                "available": True,
+                "passed": False,
+                "reason": f"only {len(joined)} overlapping minutes",
+                "path": candidate,
+            }
+        differences = []
+        per_field = {}
+        for field in ("open", "high", "low", "close"):
+            diff = np.abs(
+                pd.to_numeric(joined[f"{field}_agg"], errors="coerce")
+                - pd.to_numeric(joined[f"{field}_official"], errors="coerce")
+            ).dropna()
+            differences.extend(diff.tolist())
+            per_field[field] = {
+                "median_absolute_difference": float(np.median(diff)),
+                "p99_absolute_difference": float(np.quantile(diff, 0.99)),
+                "maximum_absolute_difference": float(np.max(diff)),
+            }
+        all_differences = np.asarray(differences, dtype=float)
+        median_diff = float(np.median(all_differences))
+        p99_diff = float(np.quantile(all_differences, 0.99))
+        median_limit = float(os.environ.get("BTC_OHLC_MEDIAN_DIFF_MAX", "0.001"))
+        p99_limit = float(os.environ.get("BTC_OHLC_P99_DIFF_MAX", "0.011"))
+        return {
+            "available": True,
+            "passed": median_diff <= median_limit and p99_diff <= p99_limit,
+            "path": candidate,
+            "overlap_minutes": int(len(joined)),
+            "median_absolute_difference": median_diff,
+            "p99_absolute_difference": p99_diff,
+            "median_limit": median_limit,
+            "p99_limit": p99_limit,
+            "fields": per_field,
+        }
+    except Exception as exc:
+        return {
+            "available": True,
+            "passed": False,
+            "reason": str(exc),
+            "path": candidate,
+        }
+
+
 def export_base_csv(days=60):
     """
     Exports the base OHLCV from edge_probe._load_bars into data/btc_1m_data.csv.
@@ -98,7 +392,7 @@ def export_base_csv(days=60):
         # Build pandas dataframe from bars
         df = pd.DataFrame({
             "ts_ms": bars["minute"] * 60000,
-            "open": bars["close"], # Approximation: close is carried over
+            "open": bars["open"],
             "high": bars["high"],
             "low": bars["low"],
             "close": bars["close"],
@@ -197,6 +491,23 @@ def main(days=None, force=False):
         print("No base data found.")
         return
 
+    ohlc_parity = _official_ohlc_parity(base_df)
+    if ohlc_parity.get("available"):
+        print(
+            "Official OHLC parity: "
+            f"passed={ohlc_parity.get('passed')} "
+            f"overlap={ohlc_parity.get('overlap_minutes', 0)} "
+            f"median_diff={ohlc_parity.get('median_absolute_difference')} "
+            f"p99_diff={ohlc_parity.get('p99_absolute_difference')}"
+        )
+    if not ohlc_parity.get("passed", False):
+        print(
+            "\nERROR: aggregate-trade OHLC does not match the official Binance "
+            f"1m reference: {ohlc_parity}"
+        )
+        print("The previous research matrix is preserved.")
+        raise SystemExit(2)
+
     # Ensure timestamp is datetime and ts_ms is present
     if 'timestamp' in base_df.columns and 'ts_ms' not in base_df.columns:
         base_df['timestamp'] = pd.to_datetime(base_df['timestamp'])
@@ -235,8 +546,8 @@ def main(days=None, force=False):
     merged = pd.merge(merged, cross_df, on="ts_ms", how="left")
 
     source_coverage = {
-        "trade_features": float(merged.get("_trade_source_present", pd.Series(0, index=merged.index)).notna().mean()),
-        "crossvenue": float(merged.get("_cross_source_present", pd.Series(0, index=merged.index)).notna().mean()),
+        "trade_features": _source_present_rate(merged, "_trade_source_present"),
+        "crossvenue": _source_present_rate(merged, "_cross_source_present"),
     }
     print("Joined source coverage: " + ", ".join(
         f"{name}={value * 100:.2f}%" for name, value in source_coverage.items()))
@@ -246,6 +557,26 @@ def main(days=None, force=False):
             "The previous research matrix is preserved; fix/retry the backfill."
         )
         raise SystemExit(2)
+
+    monthly_quality = _monthly_quality_report(merged)
+    atomic_write_json(MONTHLY_QUALITY_PATH, monthly_quality)
+    pd.DataFrame(monthly_quality["months"]).to_csv(
+        MONTHLY_QUALITY_CSV_PATH, index=False
+    )
+    failed_months = [
+        row["month"] for row in monthly_quality["months"] if not row["passed"]
+    ]
+    if not monthly_quality["passed"]:
+        print(
+            "\nERROR: monthly data-quality gate failed. "
+            f"Failed months={failed_months or 'global timestamp checks'}; "
+            f"details={MONTHLY_QUALITY_PATH}"
+        )
+        print("The previous research matrix is preserved.")
+        raise SystemExit(2)
+    print(
+        f"Monthly data-quality gate passed for {len(monthly_quality['months'])} months."
+    )
     merged.drop(columns=["_trade_source_present", "_cross_source_present"],
                 errors="ignore", inplace=True)
     
@@ -274,7 +605,15 @@ def main(days=None, force=False):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
     sources = _source_mtimes()
+    source_paths = {
+        "trade_features": trade_path,
+        "crossvenue": cross_path,
+        "base_ohlcv_csv": os.path.join(DATA_DIR, "btc_1m_data.csv"),
+    }
+    source_files = _source_file_identity(source_paths)
     ok = _coverage_ok(summary, days)
+    training_data_hash = hash_file(out_path)
+    monthly_quality_hash = hash_file(MONTHLY_QUALITY_PATH)
     manifest = {
         "requested_days": int(days),
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -282,9 +621,29 @@ def main(days=None, force=False):
         "source_coverage": source_coverage,
         "summary": summary or {},
         "source_mtimes": sources,
+        "source_files": source_files,
+        "source_manifest_hash": hash_json(source_files),
+        "monthly_quality": {
+            "passed": bool(monthly_quality["passed"]),
+            "months_checked": len(monthly_quality["months"]),
+            "path": MONTHLY_QUALITY_PATH,
+        },
+        "monthly_quality_hash": monthly_quality_hash,
+        "training_data_hash": training_data_hash,
+        "feature_schema_hash": feature_schema_hash(merged.columns),
+        "ohlc_provenance": {
+            "source": "Binance spot aggTrades",
+            "resolution": "1m",
+            "open": "first aggregate trade in minute",
+            "high": "maximum aggregate trade price in minute",
+            "low": "minimum aggregate trade price in minute",
+            "close": "last aggregate trade in minute",
+            "volume": "sum of aggregate trade quantity in minute",
+            "validated_invariants": True,
+            "official_parity": ohlc_parity,
+        },
     }
-    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+    atomic_write_json(MANIFEST_PATH, manifest)
 
     try:
         with open(DAYS_SIDECAR, "w") as f:
@@ -297,10 +656,98 @@ def main(days=None, force=False):
     print(f"Coverage: span={summary['span_days']:.1f}d | manifest={MANIFEST_PATH}")
     print(f"Columns: {list(merged.columns)}")
 
+
+def selftest():
+    import tempfile
+
+    n = 65 * 1440
+    ts_ms = np.arange(n, dtype=np.int64) * 60_000
+    close = np.full(n, 100.0)
+    data = {
+        "ts_ms": ts_ms,
+        "open": close,
+        "high": close + 1.0,
+        "low": close - 1.0,
+        "close": close,
+        "volume": np.ones(n),
+        "_trade_source_present": np.ones(n),
+        "_cross_source_present": np.ones(n),
+    }
+    for offset, column in enumerate(MANDATORY_DYNAMIC_FEATURES, start=1):
+        data[column] = np.sin(np.arange(n) / (10.0 + offset))
+    frame = pd.DataFrame(data)
+    report = _monthly_quality_report(frame)
+    assert report["passed"] and len(report["months"]) == 3
+
+    broken = frame.drop(index=np.arange(1000, 1020))
+    broken_report = _monthly_quality_report(broken)
+    assert not broken_report["passed"]
+    assert any(
+        row["max_contiguous_gap_minutes"] >= 20
+        for row in broken_report["months"]
+    )
+
+    boundary_gap = frame.drop(index=np.arange(31 * 1440, 31 * 1440 + 20))
+    boundary_report = _monthly_quality_report(boundary_gap)
+    assert not boundary_report["passed"]
+    assert any(
+        row["max_contiguous_gap_minutes"] >= 20
+        for row in boundary_report["months"]
+    )
+
+    month_values = pd.to_datetime(frame["ts_ms"], unit="ms", utc=True).dt.strftime("%Y-%m")
+    missing_month_report = _monthly_quality_report(frame.loc[month_values.ne("1970-02")])
+    assert not missing_month_report["passed"]
+    february = next(
+        row for row in missing_month_report["months"] if row["month"] == "1970-02"
+    )
+    assert february["rows"] == 0 and february["minute_coverage"] == 0.0
+
+    zeroed = frame.copy()
+    zeroed["cvd_1m"] = 0.0
+    zero_report = _monthly_quality_report(zeroed)
+    assert not zero_report["passed"]
+    assert any(
+        any("cvd_1m:" in item for item in row["unavailable_mandatory_features"])
+        for row in zero_report["months"]
+    )
+
+    previous_reference = os.environ.get("BTC_OFFICIAL_1M_PARITY_PATH")
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            reference_path = os.path.join(temporary, "official.json")
+            reference = pd.DataFrame(
+                {
+                    "time": ts_ms[:200] // 1000,
+                    "open": close[:200],
+                    "high": close[:200] + 1.0,
+                    "low": close[:200] - 1.0,
+                    "close": close[:200],
+                }
+            )
+            with open(reference_path, "w", encoding="utf-8") as handle:
+                json.dump({"klines": reference.to_dict("records")}, handle)
+            os.environ["BTC_OFFICIAL_1M_PARITY_PATH"] = reference_path
+            assert _official_ohlc_parity(frame.iloc[:200])["passed"]
+            changed = frame.iloc[:200].copy()
+            changed.loc[0:20, "open"] += 1.0
+            assert not _official_ohlc_parity(changed)["passed"]
+    finally:
+        if previous_reference is None:
+            os.environ.pop("BTC_OFFICIAL_1M_PARITY_PATH", None)
+        else:
+            os.environ["BTC_OFFICIAL_1M_PARITY_PATH"] = previous_reference
+    print("build_research_matrix self-test: ALL PASS")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Build the 1m research matrix for the keeper heads.")
     ap.add_argument("--days", type=int, default=None,
                     help="History window in days (default: BTC_HISTORICAL_DAYS or 60).")
     ap.add_argument("--force", action="store_true", help="Rebuild even if the sidecar matches.")
+    ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
-    main(days=args.days, force=args.force)
+    if args.selftest:
+        selftest()
+    else:
+        main(days=args.days, force=args.force)

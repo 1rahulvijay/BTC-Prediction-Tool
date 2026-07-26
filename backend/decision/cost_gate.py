@@ -36,7 +36,7 @@ EXEC_BASE_COST_BPS = {
 
 
 def expected_cost_bps(exec_mode: str, spread_bps: float = 0.0,
-                      extra_slippage_bps: float = 0.0) -> float:
+                      extra_slippage_bps: float = 0.0) -> float | None:
     """Modeled round-trip execution cost in bps for an execution mode.
 
     cost = base_fee[mode] + spread_component + extra_slippage
@@ -47,7 +47,9 @@ def expected_cost_bps(exec_mode: str, spread_bps: float = 0.0,
     deliberately conservative proxy — the TRUE maker cost (missed fills, adverse
     selection) can only be measured in live shadow, never assumed here.
     """
-    base = EXEC_BASE_COST_BPS.get(exec_mode, EXEC_BASE_COST_BPS["TAKER_TAKER"])
+    if exec_mode not in EXEC_BASE_COST_BPS:
+        return None
+    base = EXEC_BASE_COST_BPS[exec_mode]
     spread_bps = max(0.0, float(spread_bps or 0.0))
     if exec_mode == "MAKER_MAKER":
         spread_component = 0.0          # resting both sides: do not pay the spread
@@ -73,9 +75,11 @@ def cost_gate(expected_move_bps: float | None, expected_cost_bps_val: float | No
     """
     move = float(expected_move_bps or 0.0)
     cost = expected_cost_bps_val
-    if cost is None or cost <= 0.0:
-        # Zero/negative modeled cost = ideal maker fill. Gate passes by construction,
-        # but the composer still requires maker-fill to be LIVE-SHADOW proven before T3.
+    if cost is None:
+        return False, 0.0, "execution_cost_unavailable"
+    if cost <= 0.0:
+        # Zero modeled cost is allowed only for an explicitly selected maker/maker mode.
+        # The composer separately requires live-shadow maker-fill proof before an actionable tier.
         return True, float("inf"), "zero_or_maker_cost"
     cost = float(cost)
     if move <= 0.0:
@@ -114,4 +118,7 @@ if __name__ == "__main__":
     assert expected_cost_bps("MAKER_MAKER", spread_bps=3.0) == 0.0
     assert expected_cost_bps("MAKER_TAKER", spread_bps=3.0) == 10.0   # 7 + 3
     assert expected_cost_bps("TAKER_TAKER", spread_bps=3.0) == 20.0   # 14 + 2*3
+    assert expected_cost_bps("UNSPECIFIED", spread_bps=3.0) is None
+    ok, r, why = cost_gate(40.0, None)
+    assert not ok and why == "execution_cost_unavailable"
     print("cost_gate self-test PASSED")

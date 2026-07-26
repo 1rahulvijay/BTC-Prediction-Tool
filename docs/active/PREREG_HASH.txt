@@ -36,3 +36,13 @@ bytes  = 3056
 Completes a parameter the preregistration named but left unvalued.
 The preregistration itself is UNCHANGED - verify both:
   python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_V1_CLARIFICATION_002.md','rb').read()).hexdigest())"
+
+======================================================================
+PREREG_BINANCE_V1_CLARIFICATION_003.md
+sha256 = 05e3ab773b80e81bb833d38f0e728d8ca9609009ee2c78be890132bcd512f5e7
+frozen = 2026-07-26
+bytes  = 2800
+
+Completes the required-stream denominator and stale-stream interpretation before collection.
+The preregistration itself is UNCHANGED - verify both:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_V1_CLARIFICATION_003.md','rb').read()).hexdigest())"

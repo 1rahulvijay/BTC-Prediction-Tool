@@ -126,6 +126,32 @@ REM 360-day laptop safety. The full sequence tensor is disk-backed; each directi
 REM learner uses a representative sample spanning history plus a recent tail.
 if not defined BTC_SEQUENCE_MEMMAP_THRESHOLD_MB set "BTC_SEQUENCE_MEMMAP_THRESHOLD_MB=1024"
 if not defined BTC_DIRECTION_MAX_SAMPLES set "BTC_DIRECTION_MAX_SAMPLES=40000"
+REM Long-window sample policy. The production control keeps the proven 40k direction
+REM budget, while each selected row is weighted by both recency and similarity to the
+REM latest causal volatility/trend regime. Monthly source-quality gating makes the
+REM data-quality factor exactly 1 for admitted rows and rejects broken months entirely.
+if not defined BTC_SAMPLE_WEIGHT_MODE set "BTC_SAMPLE_WEIGHT_MODE=recency_similarity"
+REM TCN no longer means "latest 25k only": it uses 50%% recent, 25%% historical-regime,
+REM and 25%% historical-tail rows. The separate multi-window harness tests alternatives.
+if not defined BTC_TCN_MAX_SAMPLES set "BTC_TCN_MAX_SAMPLES=25000"
+REM LightGBM's Windows OpenCL path intermittently crashes this wheel/driver.
+REM Keep it on CPU; XGBoost and PyTorch may still use CUDA on the RTX 4050.
+if not defined BTC_LGB_DEVICE set "BTC_LGB_DEVICE=cpu"
+REM Reject model/head artifacts whose requested days, source/data hash, end timestamp,
+REM feature schema, or artifact bytes differ from the current matrix contract.
+REM
+REM 2026-07-26 -- WHY THIS IS 0 UNTIL THE 1265d BUNDLE EXISTS:
+REM   Sidecar manifests are written only by the NEW training path. Every artifact currently on
+REM   disk predates it, so with strict=1 all six are refused at load and the app serves with
+REM   NO heads at all (measured: P(hold), path, fade, signed-quantile, round-state, keepers).
+REM   Back-filling manifests is NOT a fix: artifact_compatibility compares every key against the
+REM   CURRENT training identity, so a manifest recording their real 400d provenance is refused
+REM   anyway, and one recording the current identity would be a lie about what trained them.
+REM   The honest state is "identity is not yet enforced because no artifact can satisfy it".
+REM   The 1265d run writes real manifests; AFTER it completes, set this back to 1 and the gate
+REM   becomes meaningful instead of merely fatal. Verify with:
+REM     python backend/verify_artifact_identity.py
+if not defined BTC_STRICT_ARTIFACT_IDENTITY set "BTC_STRICT_ARTIFACT_IDENTITY=0"
 REM Retrain at most ~once a day so each retrain learns from a meaningful chunk of NEW data
 REM (and the UI isn't freezing every few hours). 86400s = 24h.
 if not defined BTC_AUTO_RELEARN_COOLDOWN_SEC set "BTC_AUTO_RELEARN_COOLDOWN_SEC=86400"
@@ -148,7 +174,7 @@ REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
 if "%BTC_VALIDATE_STARTUP%"=="1" (
     echo [validate] days=%BTC_HISTORICAL_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
     echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%
-    echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB%
+    echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB% lgb_device=%BTC_LGB_DEVICE%
     echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%
     echo [validate] marker=%BTC_RETRAIN_COMPLETION_MARKER%
     exit /b 0
