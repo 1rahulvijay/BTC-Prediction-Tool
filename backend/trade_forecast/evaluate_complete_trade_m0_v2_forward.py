@@ -98,6 +98,70 @@ def _load_threshold() -> ThresholdArtifact:
     return ThresholdArtifact.load(THRESHOLD_PATH)
 
 
+RESULT_HASH_MODE = "canonical_json_sha256_v1"
+
+
+def canonical_result_hash(result: dict[str, Any]) -> str:
+    """Hash over canonical JSON, computed BEFORE the hash field is added."""
+    payload = json.dumps(result, sort_keys=True, separators=(",", ":"),
+                         allow_nan=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def write_scored_result_once(result: dict[str, Any], result_path: Path) -> Path:
+    """Commit a SCORED result exactly once, crash-atomically. Returns the marker path.
+
+    Extracted from main() so the decision can be tested DIRECTLY. The previous regression test
+    drove this through the CLI with no threshold artifact present, so it exited at the earlier
+    Refused branch and never reached the status guard at all - it passed without exercising the
+    mechanism it named.
+
+    O_EXCL alone is exclusive but NOT crash-atomic: a process dying mid-write leaves a
+    truncated file at the final path, and every later attempt then refuses because a file
+    exists. The one-time experiment would be spent by a partial write. So the result is staged,
+    fsynced, READ BACK and verified, atomically renamed to a content-addressed name, and only
+    then does an exclusive marker record the spend. A crash before the marker leaves a
+    recoverable candidate, not a spent experiment."""
+    if result.get("status") != "SCORED":
+        raise Refused(
+            "status=" + str(result.get("status")) + " is a refusal, not a verdict; "
+            "only SCORED may spend M0. Fix the blockers and re-run.")
+    directory = result_path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / "COMPLETE_TRADE_M0_V2_SPENT"
+    digest = canonical_result_hash(result)
+    final = directory / ("result_" + digest + ".json")
+    payload = json.dumps({**result, "result_sha256": digest,
+                          "result_hash_mode": RESULT_HASH_MODE},
+                         indent=2, sort_keys=True, default=str)
+    staging = directory / ("." + digest + ".staging")
+    with open(staging, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    # Read back before committing: a silently truncated stage must not become the record.
+    if staging.read_text(encoding="utf-8") != payload:
+        staging.unlink(missing_ok=True)
+        raise Refused("staged result did not verify on read-back; nothing was spent")
+    staging.replace(final)
+    try:
+        fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise Refused("M0 V2 is already spent: " + str(marker)) from None
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(digest + chr(10))
+        handle.flush()
+        os.fsync(handle.fileno())
+    if hasattr(os, "O_DIRECTORY"):
+        try:
+            dir_fd = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY)
+            os.fsync(dir_fd)
+            os.close(dir_fd)
+        except OSError:
+            pass
+    return marker
+
+
 def causal_selection(rows: list[dict[str, Any]], threshold: float) -> list[dict[str, Any]]:
     """First checkpoint per round whose score clears the FROZEN threshold, earliest -> latest.
 
@@ -334,27 +398,12 @@ def main() -> int:
     if args.dry_run:
         print("\nDRY RUN - nothing written. The scoring run is spent only with --score-once.")
         return 0
-    # SPENDING THE RUN IS RESERVED FOR A REAL SCORE. A refusal is something to fix, not a
-    # verdict; burning the one-time result on INADMISSIBLE / NOT_READY / IDENTITY_MISMATCH
-    # would close the lane over a missing outcome or a stale ledger row.
-    if result.get("status") != "SCORED":
-        print("NOT SPENT: status=" + str(result.get("status")) + " is a refusal, not a "
-              "verdict. Fix the blockers and re-run; the scoring run remains available.")
-        return 1
-    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(result, indent=2, default=str)
-    result_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    final = json.dumps({**result, "result_sha256": result_hash}, indent=2, default=str)
     try:
-        # Exclusive creation: exists()-then-write is raceable and not immutable.
-        fd = os.open(str(RESULT_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        print("REFUSED: " + str(RESULT_PATH) + " exists. M0 V2 is scored ONCE.")
+        marker = write_scored_result_once(result, RESULT_PATH)
+    except Refused as exc:
+        print("NOT SPENT: " + str(exc))
         return 1
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(final)
-        handle.flush()
-        os.fsync(handle.fileno())
+    print("result committed: " + str(marker))
     print(f"\nresult written (immutable): {RESULT_PATH}")
     print("PASS" if result.get("passed") else
           "FAIL -> COMPLETE_TRADE_M0_V2 CLOSED. MODELS FITTED = NONE.")

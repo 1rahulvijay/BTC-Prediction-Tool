@@ -193,21 +193,52 @@ def run() -> int:
     chk(evaluate(rows, empty_pool, artifact)["status"] == "NOT_READY",
         "an EMPTY candidate pool is refused, not turned into a self-comparison")
 
+    # DIRECT test of the write decision. The previous version drove main() with no threshold
+    # artifact present, so it exited at the earlier Refused branch and never reached the status
+    # guard - it passed without exercising the mechanism its assertion named.
     import tempfile as _tf
     from pathlib import Path as _P
-    from . import evaluate_complete_trade_m0_v2_forward as EV
-    original = EV.RESULT_PATH
+    from .evaluate_complete_trade_m0_v2_forward import (
+        Refused, canonical_result_hash, write_scored_result_once)
+
+    for status in ("NOT_READY", "INADMISSIBLE", "IDENTITY_MISMATCH", "NO_RESOLVED_TRADES"):
+        target = _P(_tf.mkdtemp()) / "r.json"
+        try:
+            write_scored_result_once({"status": status, "passed": False}, target)
+            chk(False, status + " must be refused")
+        except Refused:
+            chk(not list(target.parent.iterdir()),
+                status + " -> REFUSED and NOTHING written")
+
+    target = _P(_tf.mkdtemp()) / "r.json"
+    scored = {"status": "SCORED", "passed": True, "mean_net": 0.02}
+    marker = write_scored_result_once(scored, target)
+    chk(marker.exists(), "SCORED commits a spend marker")
+    files = list(target.parent.glob("result_*.json"))
+    chk(len(files) == 1, "exactly one content-addressed result file")
+    stored = json.loads(files[0].read_text(encoding="utf-8"))
+    chk(stored["result_sha256"] == canonical_result_hash(scored),
+        "recorded hash is the canonical hash of the pre-hash result")
+    chk(marker.read_text(encoding="utf-8").strip() == stored["result_sha256"],
+        "the marker records the result hash")
     try:
-        EV.RESULT_PATH = _P(_tf.mkdtemp()) / "res.json"
-        import sys as _s
-        argv = _s.argv
-        _s.argv = ["x", "--score-once"]
-        EV.main()
-        _s.argv = argv
-        chk(not EV.RESULT_PATH.exists(),
-            "--score-once on a NOT-SCORED run writes NO result file (M0 is not spent)")
-    finally:
-        EV.RESULT_PATH = original
+        write_scored_result_once(scored, target)
+        chk(False, "a second spend must be refused")
+    except Refused:
+        chk(True, "a SECOND SCORED write is refused - spent once")
+
+    target = _P(_tf.mkdtemp()) / "r.json"
+    marker2 = write_scored_result_once(
+        {"status": "SCORED", "passed": False, "mean_net": -0.05}, target)
+    chk(marker2.exists(), "SCORED+FAILED still writes - a negative verdict IS a result")
+
+    # CRASH RECOVERY: a truncated file at the final path must not spend the experiment.
+    target = _P(_tf.mkdtemp()) / "r.json"
+    (target.parent / "result_deadbeef.json").write_text("{trunc", encoding="utf-8")
+    recovered = write_scored_result_once(
+        {"status": "SCORED", "passed": True, "mean_net": 0.01}, target)
+    chk(recovered.exists(),
+        "a leftover truncated result does NOT block a later genuine commit")
 
     print("\nLEDGER V2 END-TO-END", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
