@@ -33,7 +33,10 @@ OUT = os.path.join(DATA_DIR, "saved_models", "signed_quantile_model.pkl")
 
 MOVE_FEATS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio"]
 HORIZONS = [5, 15]   # pruned 2026-06-21: band only for the tradeable markets
-HEAD_VERSION = "2026-06-21-cqr-recency-h5-15"   # train_heads.py retrains when this changes
+TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
+                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+
+HEAD_VERSION = f"2026-06-21-cqr-recency-h5-15-{TRAIN_DAYS_TAG}d"   # train_heads.py retrains when this changes
 
 
 def _fit_q(X, y, q):

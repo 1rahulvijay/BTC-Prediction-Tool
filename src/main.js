@@ -3132,21 +3132,37 @@ function renderRuleStatusTile(rs) {
       📜 <strong>LATE_LEADER_30S_V1</strong> (frozen paper rule) — collecting: no rounds evaluated yet · ${rec}
       <span style="color:var(--text-secondary)">· needs n≥${t.n||500} settled entries to rule promote/kill</span></div>`;
   }
+  // 2026-07-25: the GATE-BEARING numbers are EV / block-bootstrap LB / PF. Win rate is
+  // deliberately DEMOTED to a de-emphasised context line: 20 days of live data returned
+  // 84.8% win with PF 1.08 and a NEGATIVE lower bound. A tile that headlines win rate
+  // teaches the exact error the 💀 panel below it exists to warn against.
   const ok = v => v ? '#00e676' : '#ffb74d';
+  const lbVal = (s.ev_lb_block_c != null) ? s.ev_lb_block_c : s.ev_lb_c;
+  const lbIsBlock = s.ev_lb_block_c != null;
   const evOk = s.ev_c != null && s.ev_c >= (t.ev_c ?? 2);
-  const lbOk = s.ev_lb_c != null && s.ev_lb_c > (t.lb_c ?? 0);
+  const lbOk = lbVal != null && lbVal > (t.lb_c ?? 0);
   const pfOk = s.pf != null && s.pf >= (t.pf ?? 1.2);
+  const nOk = (s.n_settled || 0) >= (t.n || 500);
+  const gatesMet = [nOk, evOk, lbOk, pfOk].filter(Boolean).length;
+  const verdict = gatesMet === 4
+    ? '<span style="color:#00e676;font-weight:800">ALL GATES MET</span>'
+    : `<span style="color:${nOk ? '#ff5252' : '#ffb74d'};font-weight:800">${
+        nOk ? `FAILS GATE (${4 - gatesMet}/4 unmet)` : `COLLECTING (${gatesMet}/4)`}</span>`;
+  // Negative skew: win-small-often / lose-big-rarely. |median| >> |mean| with a high win rate.
+  const skew = (s.median_c != null && s.ev_c != null && s.win_rate != null
+                && s.win_rate > 60 && Math.abs(s.median_c) > 3 * Math.abs(s.ev_c))
+    ? `<span title="You win small very often and lose big rarely. A high win rate here does NOT mean a profitable rule." style="color:#ffb74d"> ⚠ negative skew: median ${s.median_c>=0?'+':''}${s.median_c}c vs mean ${s.ev_c>=0?'+':''}${s.ev_c}c</span>` : '';
   const prog = Math.min(100, Math.round(100 * (s.n_settled || 0) / (t.n || 500)));
   return `<div style="margin:.4rem 0;padding:.5rem .8rem;border-radius:8px;border:1px solid #64b5f6;background:rgba(100,181,246,.07);font-size:.85em">
-    📜 <strong style="color:#64b5f6">LATE_LEADER_30S_V1</strong> <span style="color:var(--text-secondary)">(frozen paper rule — live validation)</span>
+    📜 <strong style="color:#64b5f6">LATE_LEADER_30S_V1</strong> <span style="color:var(--text-secondary)">(frozen paper rule — live validation)</span> ${verdict}
     &nbsp; n=<strong>${s.n_settled||0}</strong>/${t.n||500} <span style="color:var(--text-secondary)">(${prog}%)</span>
     &nbsp; EV <strong style="color:${ok(evOk)}">${s.ev_c!=null?(s.ev_c>=0?'+':'')+s.ev_c+'c':'--'}</strong>
-    &nbsp; LB <strong style="color:${ok(lbOk)}">${s.ev_lb_c!=null?(s.ev_lb_c>=0?'+':'')+s.ev_lb_c+'c':'--'}</strong>
+    &nbsp; <span title="${lbIsBlock?'Day-block bootstrap: trades inside one day share a regime, so days are resampled, not trades. The naive figure is systematically over-confident.':'Normal-approx — too few days for a block bootstrap yet.'}">LB${lbIsBlock?'<sub>blk</sub>':'<sub>approx</sub>'}</span> <strong style="color:${ok(lbOk)}">${lbVal!=null?(lbVal>=0?'+':'')+lbVal+'c':'--'}</strong>
     &nbsp; PF <strong style="color:${ok(pfOk)}">${s.pf??'--'}</strong>
-    &nbsp; win <strong>${s.win_rate??'--'}%</strong>
     &nbsp; weeks+ <strong>${s.weeks_positive}/${s.weeks_total}</strong>
     &nbsp; total <strong style="color:${(s.total_pnl_c||0)>=0?'#00e676':'#ff5252'}">${s.total_pnl_c!=null?(s.total_pnl_c>=0?'+':'')+s.total_pnl_c+'c':'--'}</strong>
-    &nbsp;·&nbsp; ${rec}
+    <div style="color:var(--text-secondary);font-size:.85em;margin-top:.1rem">context (NOT gate criteria): win ${s.win_rate??'--'}%${s.n_days?` · ${s.n_days} days`:''}${skew}</div>
+    <div style="margin-top:.1rem">${rec}</div>
     ${(s.ask_buckets&&s.ask_buckets.length)?`<div style="margin-top:.2rem;font-size:.85em;color:var(--text-secondary)">by ask: ${s.ask_buckets.map(b=>`<span style="margin-right:.8rem">${b.bucket} <strong style="color:${(b.ev_c||0)>=0?'#00e676':'#ff5252'}">${b.ev_c>=0?'+':''}${b.ev_c}c</strong>×${b.n}</span>`).join('')} <span style="color:#8892a6">— offline the EV lived in mid asks; 90c+ added ≈0. Diagnostic only, not a tuning input.</span></div>`:''}
     <div style="color:var(--text-secondary);font-size:.88em;margin-top:.15rem">Buy the leader at its ask in the final ~30s (skip ask&lt;60c), hold to settle, 1 share paper. Promotion needs ALL targets green at n≥${t.n||500} — the rule passes or dies as written; no re-tuning. Skips: ${s.n_evaluated-(s.n_entered||0)} of ${s.n_evaluated} evaluated (incl. ${s.n_noquote} no-quote).</div>
   </div>`;
@@ -3220,7 +3236,7 @@ function renderTradesBlotter(d) {
       Every entry (buy at ask), every exit (sell at bid / settlement), fees, and P/L will appear here automatically.</div>`;
     return;
   }
-  const ruleName = r => ({MID_SCALP_LIVE_V1:'Mid-round scalp',TP_OR_SETTLE_LIVE_V1:'Early profit-take',STRADDLE_LIVE_V1:'Straddle (blind)',MODEL_FADE_LIVE_V1:'🧠 Model fade',MODEL_STRADDLE_LIVE_V1:'🧠 Model straddle',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠 Sequential reversal',MODEL_RIDE_LIVE_V1:'🧠 Model ride',LATE_LEADER_30S_V1:'📜 LATE_LEADER_30S (frozen rule)',LATE_LEADER_15M_SHADOW_V1:'📜 Late-leader 15m (shadow)',LATE_LEADER_15S_V1:'⏱ Late-leader @15s',LATE_LEADER_60S_V1:'⏱ Late-leader @60s',LATE_LEADER_MAKER_V1:'🪑 Maker (rest at bid)',CHEAP_SAFE_EARLY_V1:'💰 Cheap-SAFE early',SHOCK_SNIPER_LIVE_V1:'⚡ Shock sniper'}[r]||r);
+  const ruleName = r => ({MID_SCALP_LIVE_V1:'Mid-round scalp',TP_OR_SETTLE_LIVE_V1:'Early profit-take',STRADDLE_LIVE_V1:'Straddle (blind)',MODEL_FADE_LIVE_V1:'🧠 Model fade',MODEL_STRADDLE_LIVE_V1:'🧠 Model straddle',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠 Sequential reversal',MODEL_RIDE_LIVE_V1:'🧠 Model ride',LATE_LEADER_30S_V1:'📜 LATE_LEADER_30S (frozen rule)',LATE_LEADER_15M_SHADOW_V1:'📜 Late-leader 15m (shadow)',LATE_LEADER_15S_V1:'⏱ Late-leader @15s',LATE_LEADER_60S_V1:'⏱ Late-leader @60s',LATE_LEADER_MAKER_V1:'🪑 Maker (rest at bid)',CHEAP_SAFE_EARLY_V1:'💰 Cheap-SAFE early',SHOCK_SNIPER_LIVE_V1:'⚡ Shock sniper',MODEL_CROSSFLIP_L1_V1:'🔀 Cross-flip leg 1',MODEL_CROSSFLIP_L2_V1:'🔀 Cross-flip leg 2'}[r]||r);
   const pl = v => v==null ? '<span style="color:#ffb74d">open</span>'
     : `<span style="color:${v>=0?'#00e676':'#ff5252'};font-weight:700">${v>=0?'+':''}${v}c</span>`;
   const o = d.overall;
@@ -3354,11 +3370,22 @@ function renderDeadStrategiesPanel(ruleStatus) {
   // round (both horizons — including the 15m variants no archive could test). The live EV lands
   // right next to the historical verdict, so the kills stay continuously falsifiable.
   const shadows = (ruleStatus && ruleStatus.shadows) || {};
+  // 2026-07-25: a rule that fires too rarely is not "collecting", it is UNMEASURABLE — it can
+  // never reach a gate-qualifying n no matter how long it runs. Measured over 20.6 live days,
+  // MODEL_RIDE fired once and MODEL_FADE never fired at all. Say so instead of implying a
+  // verdict is pending. The rate is observed, so this label self-corrects if a trigger revives.
   const live = rule => {
     const s = shadows[rule];
-    if (!s || !s.n_settled) return '<span style="color:var(--text-secondary)">collecting…</span>';
+    if (!s) return '<span style="color:var(--text-secondary)">collecting…</span>';
+    const m = s.measurability;
+    if (m === 'NEVER_FIRES' || (m === 'UNMEASURABLE' && (s.n_settled || 0) < 20)) {
+      return `<span title="Observed firing rate ${s.entries_per_day ?? 0}/day. At this rate a gate-qualifying sample (n=500) would take ${s.days_to_gate ? s.days_to_gate.toLocaleString()+' days' : 'forever'}. This is not a pending verdict — the trigger cannot accumulate evidence." style="color:#8892a6">⊘ UNMEASURABLE <span style="font-size:.85em">(${s.n_entered||0} fires in ${s.n_days||0}d)</span></span>`;
+    }
+    if (!s.n_settled) return '<span style="color:var(--text-secondary)">collecting…</span>';
     const c = (s.ev_c||0) >= 0 ? '#00e676' : '#ff5252';
-    return `n=${s.n_settled} · EV <strong style="color:${c}">${s.ev_c>=0?'+':''}${s.ev_c}c</strong>${s.pf!=null?` · PF ${s.pf}`:''}`;
+    const slow = (m === 'SLOW' || m === 'UNMEASURABLE')
+      ? `<span title="At ${s.entries_per_day}/day this needs ~${s.days_to_gate} days to reach n=500 — longer than the 8-week gate window." style="color:#ffb74d"> · slow (${s.days_to_gate}d to n=500)</span>` : '';
+    return `n=${s.n_settled} · EV <strong style="color:${c}">${s.ev_c>=0?'+':''}${s.ev_c}c</strong>${s.pf!=null?` · PF ${s.pf}`:''}${slow}`;
   };
   const rows = [
     ['Mid-round scalp', 'buy leader early, TP +5c / SL −3c', 'win 36.8%', '−4.1c/share · PF 0.28 · 0/9 weeks', 'MID_SCALP_LIVE_V1', 'The win rate IS the coin-flip expectation (3/8). No drift mid-window — you just pay the spread + fees twice.'],
@@ -3374,9 +3401,11 @@ function renderDeadStrategiesPanel(ruleStatus) {
     ['🪑 Maker (rest at bid)', 'at ~30s REST at leader bid; filled only if the ask trades down to it; maker fee 0', 'untested Lever 3', 'spread saved ≈ half the edge', 'LATE_LEADER_MAKER_V1', 'Conservative fill model (ask must cross our price). NO_FILL rows keep the denominator honest — fill RATE is the question.'],
     ['💰 Cheap-SAFE early', 'leader ask 0.42–0.58 + dist/vol ≥1.5, early-mid window, hold to settle', 'nulls: gates priced in', 'expectation LOW', 'CHEAP_SAFE_EARLY_V1', 'Closes the cheap-leader question on live asks. The shuffled-gate nulls predict ≈0 — if it confirms, the book is efficient early, full stop.'],
     ['⚡ Shock sniper', 'BTC jumps ≥$20 in ~3–8s and the target ask did NOT move → buy the stale ask', '1s approximation', 'true test = offline L2 replay (queued)', 'SHOCK_SNIPER_LIVE_V1', 'The 1s bridge understates the sub-second opportunity — a positive here is strong; a zero is NOT conclusive.'],
+    ['🔀 Cross-flip leg 1', 'path head says two-sided (round-trip ≥30%) → buy leader mid-window, hold', 'model-gated', 'sequential straddle, leg 1', 'MODEL_CROSSFLIP_L1_V1', 'Leg 1 of the operator\'s sequential play. Alone it is a mid-window leader hold — expected weak; its value is being the first half of the pair.'],
+    ['🔀 Cross-flip leg 2', 'ONLY if the anchor is then crossed → buy the NEW leader too', 'model-gated', 'the actual hypothesis', 'MODEL_CROSSFLIP_L2_V1', 'Fires only when the predicted cross really happens, so quiet/trend rounds cost ONE leg not two (vs the straddle). Read L1+L2 TOGETHER — the sum is the strategy.'],
   ];
   const recent = (ruleStatus && ruleStatus.recent) || [];
-  const shortName = r => ({MID_SCALP_LIVE_V1:'SCALP',TP_OR_SETTLE_LIVE_V1:'TP-SET',STRADDLE_LIVE_V1:'STRAD',MODEL_FADE_LIVE_V1:'🧠FADE',MODEL_STRADDLE_LIVE_V1:'🧠STRAD',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠SEQ',MODEL_RIDE_LIVE_V1:'🧠RIDE',LATE_LEADER_30S_V1:'📜LL30',LATE_LEADER_15M_SHADOW_V1:'📜LL15m',LATE_LEADER_15S_V1:'⏱LL15s',LATE_LEADER_60S_V1:'⏱LL60s',LATE_LEADER_MAKER_V1:'🪑MAKER',CHEAP_SAFE_EARLY_V1:'💰CHEAP',SHOCK_SNIPER_LIVE_V1:'⚡SNIPE'}[r]||r);
+  const shortName = r => ({MID_SCALP_LIVE_V1:'SCALP',TP_OR_SETTLE_LIVE_V1:'TP-SET',STRADDLE_LIVE_V1:'STRAD',MODEL_FADE_LIVE_V1:'🧠FADE',MODEL_STRADDLE_LIVE_V1:'🧠STRAD',MODEL_SEQUENTIAL_REVERSAL_V1:'🧠SEQ',MODEL_RIDE_LIVE_V1:'🧠RIDE',LATE_LEADER_30S_V1:'📜LL30',LATE_LEADER_15M_SHADOW_V1:'📜LL15m',LATE_LEADER_15S_V1:'⏱LL15s',LATE_LEADER_60S_V1:'⏱LL60s',LATE_LEADER_MAKER_V1:'🪑MAKER',CHEAP_SAFE_EARLY_V1:'💰CHEAP',SHOCK_SNIPER_LIVE_V1:'⚡SNIPE',MODEL_CROSSFLIP_L1_V1:'🔀XF1',MODEL_CROSSFLIP_L2_V1:'🔀XF2'}[r]||r);
   const feed = recent.length ? `
       <div style="margin-top:.45rem;color:var(--text-secondary);font-size:.9em"><strong>Live action feed</strong> (every shadow entry/exit, newest first):</div>
       <table style="width:100%;border-collapse:collapse;margin-top:.15rem">

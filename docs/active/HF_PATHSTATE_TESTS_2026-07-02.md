@@ -8,20 +8,20 @@ Round-level. Archetype from the BTC distance trajectory (causal, up to the last 
 ### 5m  (n=4,336 rounds)
 | archetype | share | late-leader hold |
 |---|---|---|
-| QUIET | 13% | n=549 | 69.6% (LB 65.6%) |
-| TREND | 39% | n=1,682 | 95.5% (LB 94.4%) |
-| ACTIVE | 15% | n=664 | 80.6% (LB 77.4%) |
-| CHOP | 33% | n=1,441 | 81.5% (LB 79.4%) |
+| QUIET | 13% | 69.6% (LB 65.6%, n=549) |
+| TREND | 39% | 95.5% (LB 94.4%, n=1,682) |
+| ACTIVE | 15% | 80.6% (LB 77.4%, n=664) |
+| CHOP | 33% | 81.5% (LB 79.4%, n=1,441) |
 
 **TREND − CHOP hold gap: +14.1pp** (archetype separates outcomes → useful).
 
 ### 15m  (n=1,557 rounds)
 | archetype | share | late-leader hold |
 |---|---|---|
-| QUIET | 12% | n=189 | 78.8% (LB 72.5%) |
-| TREND | 36% | n=566 | 100.0% (LB 99.3%) |
-| ACTIVE | 15% | n=227 | 91.6% (LB 87.3%) |
-| CHOP | 37% | n=575 | 92.5% (LB 90.1%) |
+| QUIET | 12% | 78.8% (LB 72.5%, n=189) |
+| TREND | 36% | 100.0% (LB 99.3%, n=566) |
+| ACTIVE | 15% | 91.6% (LB 87.3%, n=227) |
+| CHOP | 37% | 92.5% (LB 90.1%, n=575) |
 
 **TREND − CHOP hold gap: +7.5pp** (archetype separates outcomes → useful).
 

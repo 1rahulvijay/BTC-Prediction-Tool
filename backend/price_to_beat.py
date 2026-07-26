@@ -1015,8 +1015,8 @@ class PriceToBeatTracker:
         self.persist = persist
         self.source = source
         self.pending: list[dict] = []
-        self.history = {h: deque(maxlen=500) for h in self.horizons}
-        self.recent_rounds = deque(maxlen=250)        # resolved rounds for the UI feed
+        self.history = {h: deque(maxlen=1000) for h in self.horizons}
+        self.recent_rounds = deque(maxlen=1000)        # resolved rounds for the UI feed
         # (250: with 6 mirror horizons, 1m floods the buffer — 250 keeps ~25+ of each
         # slower timeframe visible/scrollable in the per-TF log tabs)
         self.latest_round = {}                        # horizon -> current/most-recent round
@@ -2024,6 +2024,44 @@ class PriceToBeatTracker:
                                                       _q["ask"], _q["bid"], _q["fee"],
                                                       _q["spread"], _q["depth"], "ENTER",
                                                       btc_entry=rnd.get("current_price"))
+                # 4. MODEL CROSS-FLIP (operator 2026-07-04): SEQUENTIAL two-leg play. Buy the
+                #    leader when the path head predicts a two-sided/choppy round (a cross is
+                #    likely); THEN, only if the anchor is actually crossed and the leader flips,
+                #    buy the NEW leader as well. Each leg is its own honest ledger row (L1/L2)
+                #    entered at its own ask and settled independently — the strategy's result is
+                #    the SUM of both rows. Differs from the straddle: legs are staggered at
+                #    different prices, and leg 2 fires ONLY when the predicted cross happens, so
+                #    quiet/trend rounds cost one leg instead of two.
+                if (_paper_entries_allowed and "xf1" not in _sh
+                        and _plx.get("style") == "two_sided"
+                        and (_plx.get("p_roundtrip") or 0) >= 0.30
+                        and _dur * 0.25 < secs_left <= _dur * 0.85):
+                    _qx = _leader_quote(rnd, now_ms)
+                    # Require the MARKET leader (higher bid) and the BTC leader (price vs anchor)
+                    # to AGREE at entry. They are different definitions; without this the leg-2
+                    # "cross" test (cur_pos != leg-1 side) could fire instantly on a disagreement
+                    # instead of on a real anchor cross.
+                    if (_qx and _qx["side"] == cur_pos
+                            and 0.50 <= _qx["ask"] <= 0.85 and _qx["spread"] <= 0.03
+                            and _qx["depth"] >= 1.0):
+                        _sh["xf1"] = {"side": _qx["side"]}
+                        database.log_rule_paper_trade(rnd["id"], "MODEL_CROSSFLIP_L1_V1",
+                                                      int(now_ms), int(rnd.get("horizon") or 5),
+                                                      _qx["side"], _qx["ask"], _qx["bid"],
+                                                      _qx["fee"], _qx["spread"], _qx["depth"],
+                                                      "ENTER", btc_entry=rnd.get("current_price"))
+                _xf = _sh.get("xf1")
+                if (_paper_entries_allowed and _xf and "xf2" not in _sh
+                        and cur_pos in ("UP", "DOWN") and cur_pos != _xf["side"]
+                        and secs_left > 20):
+                    _qx2 = _side_quote(rnd, now_ms, cur_pos)
+                    if _qx2 and _qx2["ask"] <= 0.85:
+                        _sh["xf2"] = True
+                        database.log_rule_paper_trade(rnd["id"], "MODEL_CROSSFLIP_L2_V1",
+                                                      int(now_ms), int(rnd.get("horizon") or 5),
+                                                      cur_pos, _qx2["ask"], _qx2["bid"],
+                                                      _qx2["fee_in"], _qx2["spread"], 0.0,
+                                                      "ENTER", btc_entry=rnd.get("current_price"))
                 # ── EDGE-CANDIDATE shadows (operator 2026-07-04, frozen specs — no re-tuning) ──
                 # 1+2. LATE_LEADER ladder: 60s and 15s checkpoints (5m, same gates as the frozen
                 # 30s rule). Measures the EV-vs-expiry gradient LIVE: calibration showed

@@ -137,18 +137,48 @@ def discover_rounds():
     return out
 
 
+LADDER_LEVELS = 12          # kept per side; 133-deep books are ~all dust past this
+_JSON = __import__("json")
+
+
 def get_book(tid):
+    """One /book snapshot -> top-of-book, depth bands, FULL ladders and timing provenance.
+
+    Provenance added 2026-07-25 so that later research can reconstruct *what was knowable when*:
+      recv_ms   round-trip latency of this fetch (local)
+      book_ts   the venue's own timestamp for the book, when it supplies one
+      book_hash the venue's book hash, for dedupe / gap detection
+      ladder    full bid+ask ladders (JSON, top LADDER_LEVELS per side)
+    Without the ladders every exit study had to assume one share; without the timestamps the
+    age of a quote at decision time was unknowable.
+    """
     try:
+        t0 = time.time()
         b = HTTP.get(CLOB_BOOK.format(tid=tid), timeout=6).json()
+        recv_ms = (time.time() - t0) * 1000.0
         bids = sorted(((float(x["price"]), float(x["size"])) for x in b.get("bids", [])), reverse=True)
         asks = sorted((float(x["price"]), float(x["size"])) for x in b.get("asks", []))
         if not bids or not asks:
             return None
         bb, ba = bids[0][0], asks[0][0]
         dband = lambda lad, ref, c: sum(sz for p, sz in lad if abs(p - ref) <= c)
+        # BID-side bands added 2026-07-25: without them every historical exit had to assume
+        # 1 share, so EXIT capacity (and therefore any early-exit strategy's real size) was
+        # unmeasurable. b1/b2/b5 mirror d1/d2/d5: cumulative size within 1c/2c/5c of the top.
+        try:                                   # venue timestamp is ms in some responses, s in others
+            _bts = float(b.get("timestamp") or 0.0)
+            book_ts = _bts / 1000.0 if _bts > 1e11 else _bts
+        except Exception:
+            book_ts = 0.0
         return {"bid": bb, "ask": ba, "mid": (bb + ba) / 2, "spread": ba - bb,
                 "top_bid_size": bids[0][1], "top_ask_size": asks[0][1],
-                "d1": dband(asks, ba, 0.01), "d2": dband(asks, ba, 0.02), "d5": dband(asks, ba, 0.05)}
+                "d1": dband(asks, ba, 0.01), "d2": dband(asks, ba, 0.02), "d5": dband(asks, ba, 0.05),
+                "b1": dband(bids, bb, 0.01), "b2": dband(bids, bb, 0.02), "b5": dband(bids, bb, 0.05),
+                "recv_ms": round(recv_ms, 1), "book_ts": book_ts,
+                "book_hash": str(b.get("hash") or "")[:32],
+                "ladder": _JSON.dumps({"b": [[round(p, 4), round(s, 2)] for p, s in bids[:LADDER_LEVELS]],
+                                       "a": [[round(p, 4), round(s, 2)] for p, s in asks[:LADDER_LEVELS]]},
+                                      separators=(",", ":"))}
     except Exception:
         return None
 
@@ -256,7 +286,72 @@ COLS = ("ts slug condition_id horizon anchor_ts seconds_left seconds_elapsed anc
         "decision_tier no_trade_reason up_bid up_ask up_mid up_spread up_top_ask_size up_d1 up_d2 up_d5 "
         "down_bid down_ask down_mid down_spread down_top_ask_size down_d1 down_d2 down_d5 "
         "edge_up_1c edge_up_2c edge_up_3c edge_down_1c edge_down_2c edge_down_3c shadow_label "
-        "price_source").split()
+        "price_source "
+        # Exit-capacity columns (2026-07-25). Every study before this date had to assume a
+        # 1-share exit because only ASK-side depth was stored; these make exit VWAP - and
+        # therefore the real capacity of any early-exit strategy - measurable for the first time.
+        "up_top_bid_size up_b1 up_b2 up_b5 down_top_bid_size down_b1 down_b2 down_b5 "
+        # Provenance + full ladders (2026-07-25). decision_ts is when the row was assembled;
+        # book_age_s is how stale the older of the two books already was at that moment. Together
+        # with the ladders these let a replay answer "what was actually knowable, and at what
+        # price, at decision time" instead of assuming a fresh top-of-book fill.
+        "decision_ts book_age_s up_recv_ms down_recv_ms up_book_ts down_book_ts "
+        "up_book_hash down_book_hash up_ladder down_ladder artifact_hash").split()
+
+# Text columns beyond the original set (ladders are JSON strings, hashes are hex).
+_TEXT_COLS = {"slug", "condition_id", "model_version", "decision_tier", "no_trade_reason",
+              "shadow_label", "price_source", "up_book_hash", "down_book_hash",
+              "up_ladder", "down_ladder", "artifact_hash"}
+
+
+def _artifact_hash() -> str:
+    """Short content hash of the served model bundle, so every row is attributable to weights.
+
+    Version STRINGS collided across boxes on 2026-07-25 (same string, different weights), which
+    made live results unattributable. A content hash cannot collide that way. Computed once.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data = os.environ.get("BTC_DATA_DIR") or os.path.join(os.path.dirname(root), "data")
+    for name in ("persistence_model.pkl", "round_state_heads.pkl"):
+        p = os.path.join(data, "saved_models", name)
+        try:
+            with open(p, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    h.update(chunk)
+        except Exception:
+            h.update(b"missing:" + name.encode())
+    return h.hexdigest()[:12]
+
+
+_ARTIFACT_HASH = None
+
+
+def selftest_schema() -> int:
+    """Guard the highest-risk invariant in this file: len(row literal) == len(COLS).
+
+    A mismatch breaks EVERY insert at runtime, silently ending evidence collection. Verified by
+    parsing the row literal with ast - an earlier ad-hoc comma counter miscounted a ternary and
+    reported a false mismatch, so this must not be done with string heuristics.
+    """
+    import ast
+    src = open(os.path.abspath(__file__), encoding="utf-8").read()
+    n = None
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "row" and isinstance(node.value, ast.List)):
+            n = len(node.value.elts)
+    ok = n == len(COLS)
+    print(f"  {'OK  ' if ok else 'FAIL'} row literal {n} == COLS {len(COLS)}")
+    txt_ok = _TEXT_COLS <= set(COLS)
+    print(f"  {'OK  ' if txt_ok else 'FAIL'} every text column is declared in COLS")
+    h = _artifact_hash()
+    h_ok = len(h) == 12 and h == _artifact_hash()
+    print(f"  {'OK  ' if h_ok else 'FAIL'} artifact hash deterministic ({h})")
+    good = bool(ok and txt_ok and h_ok)
+    print("\nSELFTEST", "PASS" if good else "FAIL")
+    return 0 if good else 1
 
 
 def init_db(path=None):
@@ -267,10 +362,13 @@ def init_db(path=None):
         raise SystemExit(f"[recorder] cannot open {DB_PATH} ({e}). Set BTC_EXEC_DB to a free path "
                          f"(the live app or shadow_store may hold it).")
     con.execute("CREATE TABLE IF NOT EXISTS pm_round_snapshots(" + ", ".join(
-        c + (" VARCHAR" if c in ("slug", "condition_id", "model_version", "decision_tier",
-                                 "no_trade_reason", "shadow_label", "price_source") else " DOUBLE")
-        for c in COLS) + ")")
+        c + (" VARCHAR" if c in _TEXT_COLS else " DOUBLE") for c in COLS) + ")")
     con.execute("ALTER TABLE pm_round_snapshots ADD COLUMN IF NOT EXISTS price_source VARCHAR")
+    # Additive migration so an existing recorder DB gains the new columns without a rebuild;
+    # pre-2026-07-25 rows keep NULL (correctly: that data was never observed).
+    for _c in COLS:
+        _t = "VARCHAR" if _c in _TEXT_COLS else "DOUBLE"
+        con.execute(f"ALTER TABLE pm_round_snapshots ADD COLUMN IF NOT EXISTS {_c} {_t}")
     con.execute("""CREATE TABLE IF NOT EXISTS pm_round_meta(slug VARCHAR PRIMARY KEY, condition_id VARCHAR,
         horizon INT, anchor_ts BIGINT, start_ts BIGINT, end_ts BIGINT, up_token VARCHAR, down_token VARCHAR,
         discovered_ts DOUBLE)""")
@@ -350,9 +448,14 @@ def vol60(buf, reference_price=None):
 # --------------------------------------------------------------------------- run
 def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
     # A smoke run must never write synthetic/future-round snapshots into the production evidence DB.
+    global _ARTIFACT_HASH
     con = init_db(":memory:" if smoke else None)
     model = load_phold()
     mver = (model or {}).get("version", "unknown") if isinstance(model, dict) else "unknown"
+    # Content hash of the served weights, stamped on every row (version strings collided across
+    # boxes on 2026-07-25, making live results unattributable to specific weights).
+    _ARTIFACT_HASH = _artifact_hash()
+    print(f"[recorder] model={mver} artifact={_ARTIFACT_HASH}")
     buf = deque(maxlen=200)
     rounds = {}
     last_disc = 0.0
@@ -403,6 +506,7 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                 pd = pc if side == 0 else (1 - pc if pc is not None else None)
                 tier, reason = decide(pc, dist, sl)
                 ub, dbk = get_book(r["up"]), get_book(r["down"])
+                _dec_ts = time.time()          # both books in hand: the decision instant
                 if ub and dbk:
                     fair_up = min(pu, ENTRY_FAIR_CAP) if pu is not None else None
                     fair_down = min(pd, ENTRY_FAIR_CAP) if pd is not None else None
@@ -416,7 +520,17 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                            btc, dist, dist * 100, side, v, mver, pc, pu, pd, tier, reason,
                            ub["bid"], ub["ask"], ub["mid"], ub["spread"], ub["top_ask_size"], ub["d1"], ub["d2"], ub["d5"],
                            dbk["bid"], dbk["ask"], dbk["mid"], dbk["spread"], dbk["top_ask_size"], dbk["d1"], dbk["d2"], dbk["d5"],
-                           eu[0], eu[1], eu[2], ed[0], ed[1], ed[2], lab, price_source]
+                           eu[0], eu[1], eu[2], ed[0], ed[1], ed[2], lab, price_source,
+                           ub["top_bid_size"], ub["b1"], ub["b2"], ub["b5"],
+                           dbk["top_bid_size"], dbk["b1"], dbk["b2"], dbk["b5"],
+                           # provenance: when this decision row was assembled, and how stale the
+                           # OLDER of the two books already was at that instant
+                           _dec_ts,
+                           (max(_dec_ts - ub["book_ts"], _dec_ts - dbk["book_ts"])
+                            if ub["book_ts"] and dbk["book_ts"] else None),
+                           ub["recv_ms"], dbk["recv_ms"], ub["book_ts"] or None,
+                           dbk["book_ts"] or None, ub["book_hash"], dbk["book_hash"],
+                           ub["ladder"], dbk["ladder"], _ARTIFACT_HASH]
                     con.execute("INSERT INTO pm_round_snapshots (" + ",".join(COLS) + ") VALUES (" +
                                 ",".join("?" * len(COLS)) + ")", row)
                     live_quotes[str(int(r["horizon"]))] = {
@@ -426,6 +540,10 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                         "up_spread": ub["spread"], "up_top_ask_size": ub["top_ask_size"],
                         "down_bid": dbk["bid"], "down_ask": dbk["ask"],
                         "down_spread": dbk["spread"], "down_top_ask_size": dbk["top_ask_size"],
+                        # exit-side depth on the bridge too, so the live app can size an exit
+                        "up_top_bid_size": ub["top_bid_size"], "up_b1": ub["b1"], "up_b5": ub["b5"],
+                        "down_top_bid_size": dbk["top_bid_size"], "down_b1": dbk["b1"],
+                        "down_b5": dbk["b5"],
                         "fees_enabled": True, "fee_rate": CRYPTO_TAKER_FEE_RATE,
                     }
                     n += 1
@@ -548,6 +666,7 @@ def main():
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
+        selftest_schema()          # row/COLS invariant: a mismatch breaks every insert
         selftest()
     elif a.report:
         report()

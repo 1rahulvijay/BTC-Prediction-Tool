@@ -16,7 +16,7 @@ Companions: [PATH_FORECASTER_TRADE_PLAN_HEAD](PATH_FORECASTER_TRADE_PLAN_HEAD_20
 | 1b | Vol expansion | next range > previous range | AUC 0.635 / 0.680 | `probe_range_expansion.py` |
 | 2 | **Structure** | CHOP vs TREND (round-trip both ±$50) | round-trip AUC **0.84 / 0.78**; CHOP round-trips **24% / 48%** vs quiet **0.5% / 1.7%** | path head (`_predict_path_plan`) |
 | 3 | **Activity / speed** | P(touch ±$50) — *will price move $50 at all* | touch AUC **0.85 / 0.91** (magnitude; calibrated below) | `probe_first_touch_timing.py` |
-| 4 | ⚠️ ~~Fade / round-trip~~ **RETRACTED — leaked** | early touch that reaches anchor | the "$30 top-10% **77%**" was a **1m touch-candle look-ahead leak** (80.6% resolve in-candle). **Causal = ~42% win, below 50% breakeven, NOT deployable**; fade disabled live. See `ANCHOR_ROUNDTRIP_180D_RESULTS`, `PROFITABILITY_AND_BETTING_VALIDATION` |
+| 4 | ⚠️ ~~Fade / round-trip~~ **RETRACTED — leaked** | early touch that reaches anchor | the "$30 top-10% **77%**" was a **1m touch-candle look-ahead leak** (80.6% resolve in-candle). **Causal = ~42% win, below 50% breakeven, NOT deployable**; fade disabled live. | `ANCHOR_ROUNDTRIP_180D_RESULTS`, `PROFITABILITY_AND_BETTING_VALIDATION` |
 | 5 | **Risk / hold** | big-drop downside path · P(Hold) late-entry | big-drop gated AUC ~0.75; P(Hold)≥0.93 → ~95% realized | live keeper heads |
 
 > **⚠️ RETRACTION (2026-07-01).** The former Layer 4 — "post-touch reversal AUC 0.63/0.59, early touches revert

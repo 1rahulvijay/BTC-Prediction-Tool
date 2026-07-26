@@ -31,7 +31,10 @@ STATE_DIR = DATA / "research" / "round_state_stopping_180d_30s"
 MATRIX = DATA / "research_matrix_1m.parquet"
 OUT = DATA / "saved_models" / "round_state_heads.pkl"
 METRICS_OUT = DATA / "research" / "round_state_live" / "metrics.csv"
-VERSION = "2026-07-02-round-state-shadow-v1"
+TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
+                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+
+VERSION = f"2026-07-02-round-state-shadow-v1-{TRAIN_DAYS_TAG}d"
 HEAD_VERSION = VERSION
 
 KEEPERS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio", "shock_magnitude"]

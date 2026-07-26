@@ -98,7 +98,14 @@ def test_archetype(df, L):
         for a in ("QUIET", "TREND", "ACTIVE", "CHOP"):
             ga = sub[sub["arch"] == a]
             share = f"{100*len(ga)/max(1,len(sub)):.0f}%"
-            L.append(hline(ga, a).replace("| n=", f"| {share} | n=").replace(" | ", " | ", 1))
+            # Build the row directly to match the 3-column header. (A previous version did string
+            # surgery on hline() and emitted 4 cells under a 3-cell header - malformed markdown.)
+            if len(ga) < 30:
+                L.append(f"| {a} | {share} | n={len(ga)} (too few) |")
+            else:
+                hh = ga["held"].mean()
+                lb = wilson(int(ga["held"].sum()), len(ga))
+                L.append(f"| {a} | {share} | {100*hh:.1f}% (LB {100*lb:.1f}%, n={len(ga):,}) |")
         # explicit: TREND vs CHOP separation
         tr, ch = sub[sub["arch"] == "TREND"], sub[sub["arch"] == "CHOP"]
         if len(tr) >= 30 and len(ch) >= 30:

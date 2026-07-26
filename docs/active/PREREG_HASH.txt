@@ -1,0 +1,38 @@
+PREREG_CONDITIONAL_STOPPING_V1.md
+sha256 = 5fcae7b6aa069141d0c44f6c54bfac1d87a4e81e2fdba35b7f76f362dfa1a35c
+frozen = 2026-07-25
+bytes  = 7989
+
+Verify before scoring:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_CONDITIONAL_STOPPING_V1.md','rb').read()).hexdigest())"
+A different hash at scoring time means the protocol was edited after freezing,
+which invalidates the experiment.
+
+======================================================================
+PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md
+sha256 = 0973744b73651e8287b44309c976530f72a3964ceb082703c6b49400564c72f7
+frozen = 2026-07-26
+bytes  = 11219
+
+Verify before scoring M0:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md','rb').read()).hexdigest())"
+
+======================================================================
+PREREG_BINANCE_V1_CLARIFICATION_001.md
+sha256 = 12bf5e1e5829d320b4d6bbe9a7c3b94af23b33e433b7bdc6782bcb8f7a7db7d6
+frozen = 2026-07-26
+bytes  = 2862
+
+Completes a parameter the preregistration named but left unvalued.
+The preregistration itself is UNCHANGED - verify both:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_V1_CLARIFICATION_001.md','rb').read()).hexdigest())"
+
+======================================================================
+PREREG_BINANCE_V1_CLARIFICATION_002.md
+sha256 = 320631b2a83aaaca5b21e888d5fcfdf51e416bb1f4429c1bdb988207e3700d3f
+frozen = 2026-07-26
+bytes  = 3056
+
+Completes a parameter the preregistration named but left unvalued.
+The preregistration itself is UNCHANGED - verify both:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_V1_CLARIFICATION_002.md','rb').read()).hexdigest())"

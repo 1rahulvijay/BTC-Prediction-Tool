@@ -1,6 +1,121 @@
 # Documentation Index
 
+## Frozen preregistration — Binance lane (M0 not yet runnable)
+- **[PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md](active/PREREG_BINANCE_VOLATILITY_MOMENTUM_V1.md)** —
+  frozen 2026-07-26, sha256 `0973744b7365…` (in `PREREG_HASH.txt`). One instrument, one cadence,
+  one horizon: can a causal volatility-expansion + cross-venue-flow state select 5-minute BTCUSDT
+  perp longs/shorts that are positive **after** spread, fees, latency and slippage?
+  **Section 0 is a binding data-admissibility contract: a feature is available at `recv_ts`, never
+  `exch_ts`.** Binance perp WS serves only `bookTicker` from this host — `aggTrade`/`markPrice`
+  deliver nothing — so perp trade flow, basis, OI and funding arrive by REST with ~54s lag and are
+  **Class B (slow state only, never lead-lag)**. M0 is a single predeclared composite mechanism with
+  frozen thresholds (Q5−Q3 ≥ 2.0 bps, 4-cell BH family, explicit chance-monotonicity control
+  inherited from the conditional-stopping closure). **M0 requires ≥4 weeks of collector uptime and
+  cannot run today** (0 rows collected); an optional backfill pre-screen has **kill-only** authority
+  and can never be cited as a pass.
+- **Collector:** `backend/venues/multi_venue_recorder.py` — synchronized event-time capture across
+  Binance spot/perp, Bybit, Coinbase with `exch_ts`/`recv_ts`/`seq`, per-venue reconnect isolation,
+  measured clock drift (push streams only), 8/8 stream-health check, and an offline `--selftest`
+  (18 checks). Enforces the admissibility contract **in the data, not by convention**: every row
+  carries `source_mode` (`WS`/`REST_POLL`) and REST rows carry `poll_id`, so Class A and Class B are
+  separable in SQL alone. Per-5-minute-episode health is persisted to `venue_episodes`
+  (`stream_counts`, `streams_live`, `max_ws_age_ms`, `max_rest_age_ms`, `reconnects`, `qualifying`,
+  `exclusion_reason`); stalls **materialise as excluded rows** rather than vanishing, and WS/REST
+  feature ages are tracked separately so a ~54s poll lag cannot mask a healthy 20ms feed.
+  `--report` states **uptime and qualifying coverage as different numbers** — only the second
+  advances the promotion contract. Two measured venue facts are locked in: perp `aggTrade`/
+  `markPrice` are REST-only (Class B), and Binance **spot** `bookTicker` carries no exchange
+  timestamp at all, so its `exch_ts` is NULL and `recv_ts` is its only honest time.
+- **Admissibility gate:** `backend/venues/venue_admissibility.py` — **the only sanctioned path from
+  `venue_events` to a decision feature** (`--selftest`: 22 checks). Enforces two invariants that
+  prose cannot: (1) **REST backlog is prohibited, not merely filterable** — `poll_id <= 1` is a
+  reconnect backfill of up to 1,000 trades with measured ages of **255–334s**, which aggregated
+  naively would collapse minutes of history into the first live decision window as a fictitious
+  flow impulse; a REST event is eligible only at `poll_id >= 2`, on its *first* observation of that
+  `seq`, with `recv_ts <= decision_ts` and age `<= CLASS_B_MAX_AGE_S` (**frozen at 60s on
+  2026-07-26, before any production row existed**). (2) **Timestamp bases may not be mixed in
+  lead-lag** — every row carries a derived `timestamp_basis` (`EXCHANGE_TIME` / `RECEIVE_TIME` /
+  `RECEIVE_ONLY` / `POLL_RECEIVE_TIME`) and `require_leadlag()` raises `InadmissiblePairing` on any
+  pair without a shared basis, so comparing Binance spot's `recv_ts` against Bybit's `exch_ts` —
+  network latency dressed as market leadership — is impossible rather than merely discouraged.
+  `POLL_RECEIVE_TIME` maps to the empty set: a polled stream can carry slow state, never leadership.
+  Also enforces **stable natural event identity**: `event_key` comes from the venue (trade id /
+  update id / publication time), never a poll-local counter, which would restart at 1 in a fresh
+  process and fail to recognise a re-fetched observation; a polled row without one is recorded but
+  barred from features. And **receive-basis lead-lag features may not be named `venue_lead`** —
+  `leadlag_feature_name()` permits only `observer_time_lead` / `collector_arrival_lead`, because
+  receive order also contains routing, publication latency, batching, scheduling and reconnect
+  state. Gates live in SQL so they cannot be bypassed by post-filtering a DataFrame.
+- **Clarification records** (separately hashed, protocol file untouched):
+  [`PREREG_BINANCE_V1_CLARIFICATION_001.md`](active/PREREG_BINANCE_V1_CLARIFICATION_001.md)
+  `12bf5e1e5829d320…` completes `CLASS_B_MAX_AGE_S = 60.0`, the limit section 10 names but leaves
+  unvalued; [`PREREG_BINANCE_V1_CLARIFICATION_002.md`](active/PREREG_BINANCE_V1_CLARIFICATION_002.md)
+  `320631b2a83aaaca…` binds the receive-basis interpretation rule. Both declared 2026-07-26 with
+  **0 production rows and no analysis run**, so they complete rather than amend. Revising either
+  after an M0 result invalidates the experiment.
+- **[COLLECTOR_DEPLOYMENT_RUNBOOK_2026-07-26.md](active/COLLECTOR_DEPLOYMENT_RUNBOOK_2026-07-26.md)** —
+  executable handoff for whoever holds Oracle shell access: admin-token security procedure
+  (generate, `.env` at `chmod 600`, `EnvironmentFile=`, **verify the token is absent from
+  `journalctl`**), the 62-column recorder restart, the `btc-venues.service` unit with a
+  `--selftest` `ExecStartPre` gate, per-step pass/fail checks, and a completion record that captures
+  the `collection_start_ts` where the evidence clock actually starts. **It starts the clock; it does
+  not shorten it.**
+
+## CLOSED — dynamic-exit lane (do not reopen without new information)
+- **[CONDITIONAL_STOPPING_V1_CLOSED_2026-07-26.md](archive/CONDITIONAL_STOPPING_V1_CLOSED_2026-07-26.md)** —
+  closure record. The one permitted conditional-stopping experiment was **frozen, run to its M0
+  gate, and closed without fitting a single model.** M0 required observable state to stratify; the
+  only strict pass came in **1 of 28** searches, exactly the chance rate (P(≥1 by chance) = 37.5%),
+  and the analysis script's automated PASS was **overturned** before any decision. The one real
+  effect (`net_pnl`, +12–21pp in 4/4 cells) points *toward holding* — it endorses the incumbent.
+  Protocol integrity verified at closure: the frozen prereg's SHA-256 is unchanged, and the file was
+  deliberately left unedited (not even a banner) to preserve it. Artifacts:
+  `active/PREREG_CONDITIONAL_STOPPING_V1.md`, `active/PREREG_HASH.txt`,
+  `active/COND_STOPPING_M0_2026-07-26.md`, `backend/research/cond_stopping_m0.py`.
+  **The distinction it establishes:** a temporary profitable exit frequently exists *in hindsight*;
+  no causally observable stopping state has shown that taking it beats holding.
+
 ## Latest completed strategy test
+- **[STOPPING_BASELINES_2026-07-25.md](active/STOPPING_BASELINES_2026-07-25.md)** -
+  the pre-declared gate in front of the dynamic-exit lane: does ANY frozen causal stopping policy
+  beat holding to settlement? Seven policies (first +1c/+2c, persist-2, momentum-reversal,
+  timeouts, random control), causal execution (decision at quote i fills at i+1), entry at ask +
+  fee, exits at bid - fee. **Every policy at both entry checkpoints is WORSE than HOLD, all with
+  negative lower bounds and 0/4 positive weeks.** Meanwhile the hindsight ceiling is +19.0c /
+  +10.7c - which is exactly what the "90% of rounds have a profitable exit" statistic measures.
+  **The lane stops here: no ML, no survival model, no RL.** The phenomenon lives in the path, not
+  in any observable state available beforehand.
+- **[HEAD_CALIBRATION_2026-07-25.md](active/HEAD_CALIBRATION_2026-07-25.md)** -
+  Priority-1 test: are the app's DEPLOYED probabilities calibrated live? (21d Oracle, one row per
+  round, n=6,727). **P(Hold) is over-confident by 6.7pp** (predicted 96.1% vs realized 89.3%; its
+  95-100% band holds 82% of all rounds and realizes 93.4%) - a ~6.7c bias in fair value, about
+  **seven times the frozen rule's entire +0.90c edge**, always in the optimistic direction.
+  **Champion action tiers are INVERTED** (PAPER held 69.4% vs WAIT 89.6%) - they rank cheapness,
+  not confidence, and fail the monotone stratifier rule. **Flip risk (BSS +0.002) and the $20 shock
+  head (BSS -0.013) carry no usable information.** Recalibrate before any head is used in a policy.
+  Also documents a measurement bug found and fixed inside the test itself.
+- **[LATE_LEADER_RECONCILIATION_2026-07-25.md](active/LATE_LEADER_RECONCILIATION_2026-07-25.md)** -
+  settles the ledger (+0.90c) vs replay (-0.07c) discrepancy round by round. Verdict: **neither
+  implementation is buggy - the rule is latency-fragile.** ~0.41c of the gap is round selection (the
+  live rule only fires when a <=5s bridge quote exists; the 532 rounds it declined average -2.76c);
+  ~0.56c is **entry timing** - the ledger enters 0.8s earlier at an ask 0.64c cheaper, because the
+  leader's ask climbs toward $1 as the clock runs out. Leader definition agrees 99.6% of the time.
+  **The rule loses ~0.6-0.8c per second of delay against a total edge of +0.90c: one second of
+  latency consumes all of it.** Explains the offline->live decay, the maker loss (-9.53c = resting
+  is maximum delay), and why the 90%-profitable-exit is uncapturable.
+- **[ORACLE_CAPACITY_TEST_2026-07-25.md](active/ORACLE_CAPACITY_TEST_2026-07-25.md)** -
+  answers the capacity question: **there is no size at which the rule is a business.** EV falls
+  monotonically with size (1sh ~0c, 25sh -0.26c, 250sh -1.48c / -$8,071) because the first depth
+  band beyond the top level costs ~1c while the entire gross edge is under 1c.
+- **[STRUCTURAL_EDGE_HUNT_2026-07-25.md](active/STRUCTURAL_EDGE_HUNT_2026-07-25.md)** -
+  two STRUCTURAL (non-conditional) hunts on 14,226 settled 5m rounds / 3.78M executable ticks.
+  **(1) Complement arbitrage: NO EDGE** — the book crosses into guaranteed profit in 0.0006% of ticks
+  (21 of 3.78M, 3 rounds), and the ~36c mean "locked profit" proves those hits are **stale/collapsed
+  book artifacts, not fillable prints** (a real arb would be many small 0.5–2c crossings, not 20 of 21
+  implausibly huge ones) — independent evidence for why the ≤5s freshness + complement-sanity gates
+  matter. **(2) Next-round opening drift: CLEAN KILL** — continuation −2.74c, reversal −2.08c, random
+  −1.98c (n=13,018 pairs); all three land at ≈ minus the spread+fee, the signature of an efficient
+  book. The boundary-lag species does NOT generalize from the expiry boundary to the round open.
 - **[POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md](active/POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md)** -
   fee-aware complement-arbitrage and next-round drift tests, five-model OOS straddle selectors, and the
   restart-safe sequential opposite-side paper strategy. The full replay is queued behind the active
@@ -279,3 +394,17 @@ active docs.
 | SIGNAL_BASELINE_2026-06-09.md | signal baseline snapshot |
 | CLAUDE_ANTIGRAVITY_IMPORT.md / implementation_plan.md / task.md | imported plans/tasks from other assistants |
 | crash_log.txt | an old crash log |
+
+### 2026-07-25 — Oracle deployment evidence
+- **[EXECUTABLE_EVIDENCE_AND_ENHANCEMENTS_2026-07-25.md](active/EXECUTABLE_EVIDENCE_AND_ENHANCEMENTS_2026-07-25.md)**
+  — CANONICAL. 21 days of live data: `LATE_LEADER_30S_V1` fails its own gate (+0.90c, block-LB
+  -0.60c, PF 1.08); 15m static TP-before-SL killed (0 of 2,880 cells positive); the
+  opportunity-vs-capturability paradox; four implemented enhancements; ranked backlog.
+- **[ORACLE_DATA_TEST_HANDOFF_2026-07-25.md](active/ORACLE_DATA_TEST_HANDOFF_2026-07-25.md)**
+  — handoff for a fresh session: what is closed, how to run the tooling, and the ranked list of
+  heads/models still worth testing (Tier A = score the 186,985 live head snapshots against
+  outcomes; none of it has been done).
+- Both docs cover, in one place: the live gate verdict, the 15m kill + null battery, the six
+  implemented enhancements (block-bootstrap gate, win-rate demotion, unmeasurable-trigger labels,
+  research infrastructure, the Oracle production merge incl. admin auth, and the version-string
+  collision fix), the deployment topology, and the ranked Tier A/B/C test plan for new work.

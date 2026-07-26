@@ -193,7 +193,7 @@ def run():
         if te.sum() < 100 or tr.sum() < 300:
             continue
         Xtr_raw, Xte_raw = df.loc[tr, base].to_numpy(float), df.loc[te, base].to_numpy(float)
-        ytr, yte = y_all[tr.to_numpy()], y_all[te.to_numpy()]
+        ytr = y_all[tr.to_numpy()]          # test-fold y is never needed: scoring uses ask/win
         ask_te, win_te = df.loc[te, "ask"].to_numpy(float), df.loc[te, "win"].to_numpy(int)
         base_all["ask"].append(ask_te); base_all["win"].append(win_te)
         sc = StandardScaler().fit(Xtr_raw)

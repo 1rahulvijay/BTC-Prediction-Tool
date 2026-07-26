@@ -14,7 +14,7 @@ import os
 import uuid
 import hashlib
 from types import SimpleNamespace
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 from contextlib import asynccontextmanager
@@ -135,6 +135,18 @@ MODEL_BOOT_BACKTEST = os.getenv("BTC_RUN_STARTUP_BACKTEST", "1") != "0"
 # (POST /api/relearn) still works. This default means a stray/missing env var can't silently
 # kick off a 4-hour retrain again.
 MODEL_FROZEN = os.getenv("BTC_FREEZE_MODEL", "1") != "0"
+
+# Admin passcode gate for expensive/mutating actions (relearn, backtest, replay).
+# Ported from the Oracle deployment 2026-07-25: a publicly reachable dashboard MUST NOT let a
+# viewer trigger a multi-hour retrain or a CPU-bound replay by accident. When BTC_ADMIN_TOKEN is
+# set those endpoints require a matching X-Admin-Token header; unset (local dev) = no gate, so
+# existing local behaviour is preserved exactly.
+ADMIN_TOKEN = (os.getenv("BTC_ADMIN_TOKEN") or "").strip()
+
+
+def _require_admin(token: str | None) -> None:
+    if ADMIN_TOKEN and (token or "").strip() != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin passcode required for this action.")
 FORCE_MAIN_RETRAIN = (
     os.getenv("BTC_FORCE_MAIN_RETRAIN", "0") == "1"
     or os.getenv("BTC_OVERNIGHT_TRAIN_ALL", "0") == "1"
@@ -955,6 +967,42 @@ def _set_status(key: str, **updates) -> dict:
 _PAPER_RULE_CACHE = {"ts": 0.0, "val": None}
 
 
+_PTB_ALLTIME_CACHE = {"ts": 0.0, "val": {}}
+
+
+def _ptb_alltime_accuracy():
+    """All-time price-to-beat accuracy straight from DuckDB, cached 60s."""
+    now = time.time()
+    if now - _PTB_ALLTIME_CACHE["ts"] < 60.0:
+        return _PTB_ALLTIME_CACHE["val"]
+    _PTB_ALLTIME_CACHE["ts"] = now
+    try:
+        import database
+        _PTB_ALLTIME_CACHE["val"] = database.fetch_price_to_beat_accuracy() or {}
+    except Exception:
+        pass  # keep last good value; never break serving
+    return _PTB_ALLTIME_CACHE["val"]
+
+
+def _accuracy_alltime(tracker) -> dict:
+    """tracker.accuracy() with total/hits/accuracy overridden by the ALL-TIME DB counts.
+
+    Ported from the Oracle deployment 2026-07-25. The tracker keeps a capped in-memory ring
+    buffer, so on a long-running box the headline win rate silently becomes "accuracy over the
+    last N rounds" while presenting itself as the overall figure. The DB has every resolved
+    round; use it for the headline and keep the tracker's richer per-horizon structure.
+    """
+    acc = tracker.accuracy()
+    alltime = _ptb_alltime_accuracy()
+    for _h, _a in acc.items():
+        at = alltime.get(int(_h)) if isinstance(alltime, dict) else None
+        if at and at.get("total"):
+            _a["total"] = int(at["total"])
+            _a["hits"] = int(at["hits"])
+            _a["accuracy"] = at["accuracy"]
+    return acc
+
+
 def _paper_rule_status_cached():
     """RULE STATUS for the UI tile: forward paper-ledger summary of the frozen LATE_LEADER_30S_V1
     rule + recorder liveness (quote-bridge file age). Cached 30s; crash-safe (None on failure)."""
@@ -1007,7 +1055,8 @@ def _paper_rule_status_cached():
                             "MODEL_SEQUENTIAL_REVERSAL_V1",
                             "LATE_LEADER_15M_SHADOW_V1", "LATE_LEADER_15S_V1",
                             "LATE_LEADER_60S_V1", "LATE_LEADER_MAKER_V1",
-                            "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1")},
+                            "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1",
+                            "MODEL_CROSSFLIP_L1_V1", "MODEL_CROSSFLIP_L2_V1")},
                # live action feed: every shadow/rule entry+exit, newest first (UI table)
                "recent": database.rule_paper_recent(14)}
         _PAPER_RULE_CACHE["val"] = val
@@ -4113,7 +4162,7 @@ async def main_loop():
                 "fsr_ppo_summary": fsr_ppo_summary,
                 "price_to_beat": {
                     "latest": price_to_beat_tracker.latest(),
-                    "accuracy": price_to_beat_tracker.accuracy(),
+                    "accuracy": _accuracy_alltime(price_to_beat_tracker),
                     "p_hold_status": persistence_model_status(),
                     "round_state_status": round_state_panel.status(),
                     # RULE STATUS tile: forward paper ledger of the frozen LATE_LEADER_30S_V1 rule
@@ -4210,7 +4259,8 @@ async def api_round_state():
 
 
 @app.post("/api/relearn")
-async def api_relearn():
+async def api_relearn(x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
     scheduled = schedule_relearn("manual-ui")
     return {
         "scheduled": scheduled,
@@ -4219,7 +4269,8 @@ async def api_relearn():
 
 
 @app.post("/api/backtest")
-async def api_backtest():
+async def api_backtest(x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
     scheduled = schedule_backtest("manual-ui")
     return {
         "scheduled": scheduled,
@@ -4230,7 +4281,9 @@ async def api_backtest():
 @app.post("/api/historical-replay/run")
 async def api_historical_replay_run(days: int = 7, max_samples: int = 1000,
                                     step: int = 1, stateful: bool = False,
-                                    horizons: str = "5,15"):
+                                    horizons: str = "5,15",
+                                    x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
     try:
         parsed_horizons = [
             int(x.strip()) for x in str(horizons).replace(";", ",").split(",")

@@ -793,6 +793,15 @@ def similar_setup_stats(horizon: int, seconds_left: float, p_hold: float,
             conn.close()
 
 
+# Operational kill-switch for paper rules (ported from the Oracle deployment 2026-07-25).
+# Comma-separated rule names in BTC_DISABLED_PAPER_RULES stop being logged entirely. This is the
+# ONLY sanctioned way to silence a rule: it changes no threshold, so it cannot re-tune a frozen
+# spec, and the disabling is visible in the environment rather than buried in a diff.
+DISABLED_PAPER_RULES = frozenset(
+    r.strip() for r in (os.getenv("BTC_DISABLED_PAPER_RULES") or "").split(",") if r.strip()
+)
+
+
 def log_rule_paper_trade(round_id: str, rule: str, ts: int, horizon: int, side: str,
                          ask: float, bid: float, fee: float, spread: float, depth: float,
                          action: str, pnl=None, outcome=None, settled_ts=None, btc_entry=None,
@@ -802,6 +811,8 @@ def log_rule_paper_trade(round_id: str, rule: str, ts: int, horizon: int, side: 
     evaluation of a round wins (one entry per round). Rows may arrive PRE-SETTLED (pnl +
     settled_ts set) for shadow strategies that exit mid-round; the generic round-resolve
     settle only touches rows whose settled_ts is NULL. Crash-safe."""
+    if rule in DISABLED_PAPER_RULES:
+        return
     conn = None
     try:
         conn = _connect()
@@ -940,6 +951,8 @@ def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int
                            settlement_source: str | None = None):
     """Close an OPEN shadow-rule row mid-round (TP/SL/time-stop exit at the live bid). Only rows
     not yet settled are touched; the later round-resolve settle then skips them. Crash-safe."""
+    if rule in DISABLED_PAPER_RULES:
+        return
     conn = None
     try:
         conn = _connect()
@@ -1255,6 +1268,39 @@ def rule_paper_summary(rule: str = "LATE_LEADER_30S_V1"):
         lb = None
         if n_set >= 2 and ev is not None and sd is not None:
             lb = float(ev) - 1.96 * float(sd) / math.sqrt(n_set)
+        # DAY-BLOCK BOOTSTRAP (2026-07-25). The normal-approx LB above assumes independent
+        # trades. They are not: every trade inside a day shares one volatility/liquidity regime,
+        # so the effective sample is closer to the number of DAYS than the number of trades.
+        # Measured on 2,145 live LATE_LEADER_30S_V1 trades the naive LB read -0.56c while the
+        # day-block LB read -0.81c -- the naive figure is systematically over-confident, which
+        # is the exact direction that gets a dead rule promoted. Resample whole days.
+        lb_block = None
+        n_days = 0
+        try:
+            days = conn.execute("""
+                SELECT CAST(ts / 86400000 AS BIGINT) AS d, AVG(pnl) AS m, COUNT(*) AS c
+                FROM rule_paper_trades
+                WHERE rule = ? AND action = 'ENTER' AND pnl IS NOT NULL
+                GROUP BY 1 ORDER BY 1
+            """, (rule,)).fetchall()
+            n_days = len(days)
+            if n_days >= 5:
+                import random as _rnd
+                means = [float(d[1]) for d in days]
+                wts = [float(d[2]) for d in days]
+                rng = _rnd.Random(20260725)          # fixed seed -> reproducible tile
+                draws = []
+                for _ in range(2000):
+                    idx = [rng.randrange(n_days) for _ in range(n_days)]
+                    num = sum(means[i] * wts[i] for i in idx)
+                    den = sum(wts[i] for i in idx)
+                    if den > 0:
+                        draws.append(num / den)
+                draws.sort()
+                if draws:
+                    lb_block = draws[int(0.025 * len(draws))]
+        except Exception as _bbe:
+            print(f"block-bootstrap skipped: {_bbe}")
         wk = conn.execute("""
             SELECT COUNT(DISTINCT wk) FILTER (WHERE wpnl > 0), COUNT(DISTINCT wk) FROM (
                 SELECT DATE_TRUNC('week', TO_TIMESTAMP(ts / 1000)) wk, SUM(pnl) wpnl
@@ -1277,10 +1323,53 @@ def rule_paper_summary(rule: str = "LATE_LEADER_30S_V1"):
                         "ev_c": round(float(b[3]) * 100, 2) if b[3] is not None else None,
                         "total_c": round(float(b[4]) * 100, 1) if b[4] is not None else None}
                        for b in bk]
+        # Skew: a high win rate with a much larger median than mean is the "pick up pennies"
+        # signature (win small often, lose big rarely). Surfaced so the tile cannot report a
+        # flattering win rate without the shape that explains why PF is still near 1.
+        med = conn.execute("""
+            SELECT MEDIAN(pnl) FROM rule_paper_trades
+            WHERE rule = ? AND action = 'ENTER' AND pnl IS NOT NULL
+        """, (rule,)).fetchone()
+        median_c = round(float(med[0]) * 100, 2) if med and med[0] is not None else None
+        # MEASURABILITY (2026-07-25). A strategy that fires too rarely can never accumulate
+        # gate-qualifying evidence, no matter how long it runs -- it is not "pending", it is
+        # unmeasurable, and presenting it as a live candidate is misleading. Measured over 20.6
+        # live days: MODEL_RIDE fired ONCE (=> ~10,300 days to n=500) and MODEL_FADE fired ZERO
+        # times. Derived from the observed rate so it self-corrects; nothing is hardcoded.
+        # Denominator must be the OBSERVATION WINDOW (how long the ledger has been recording),
+        # not days-on-which-this-rule-fired -- otherwise a rule that fires on 1 day out of 20
+        # reports a high daily rate and looks measurable. Span is taken across the whole ledger.
+        span_days = None
+        try:
+            sp = conn.execute("SELECT MIN(ts), MAX(ts) FROM rule_paper_trades").fetchone()
+            if sp and sp[0] and sp[1]:
+                span_days = max((float(sp[1]) - float(sp[0])) / 86400000.0, 1.0 / 24.0)
+        except Exception:
+            span_days = None
+        per_day = (float(n_ent or 0) / span_days) if span_days else None
+        days_to_gate = (500.0 / per_day) if (per_day and per_day > 0) else None
+        if days_to_gate is None:
+            measurability = "NEVER_FIRES"
+        elif days_to_gate <= 56:
+            measurability = "OK"
+        elif days_to_gate <= 365:
+            measurability = "SLOW"
+        else:
+            measurability = "UNMEASURABLE"
         return {"rule": rule, "n_entered": int(n_ent or 0), "n_settled": n_set,
+                "entries_per_day": round(per_day, 2) if per_day is not None else 0.0,
+                "days_to_gate": round(days_to_gate) if days_to_gate is not None else None,
+                "measurability": measurability,
                 "n_evaluated": int(n_eval or 0), "n_noquote": int(n_nq or 0),
                 "ev_c": round(float(ev) * 100, 2) if ev is not None else None,
                 "ev_lb_c": round(lb * 100, 2) if lb is not None else None,
+                # ev_lb_block_c is the GATE-BEARING number. ev_lb_c is kept only so the two can
+                # be compared; never gate on the naive one.
+                "ev_lb_block_c": round(lb_block * 100, 2) if lb_block is not None else None,
+                "lb_method": "day-block bootstrap (2000 resamples)" if lb_block is not None
+                             else "normal-approx (insufficient days for block bootstrap)",
+                "n_days": n_days,
+                "median_c": median_c,
                 "pf": round(pf, 2) if pf is not None else None,
                 "win_rate": round(float(wr) * 100, 1) if wr is not None else None,
                 "total_pnl_c": round(float(tot) * 100, 1) if tot is not None else None,
@@ -1710,7 +1799,15 @@ def fetch_historical_replay_summary(limit: int = 50) -> dict:
             ORDER BY timestamp DESC
             LIMIT ?
         """, (int(limit),)).df()
-        out["recent"] = df.to_dict("records")
+        recent = df.to_dict("records")
+        # SQL NULL floats become NaN via pandas; NaN/Inf is not JSON-compliant and crashes
+        # response rendering OUTSIDE the endpoint's try/except -- a 500 on a fresh install with
+        # zero resolved rows. Sanitize to None. (Ported from the Oracle deployment 2026-07-25.)
+        for _row in recent:
+            for _k, _v in _row.items():
+                if isinstance(_v, float) and (_v != _v or _v in (float("inf"), float("-inf"))):
+                    _row[_k] = None
+        out["recent"] = recent
     except Exception as e:
         out["error"] = str(e)
     finally:
@@ -1889,7 +1986,15 @@ def fetch_forward_ev_summary(limit: int = 50) -> dict:
             ORDER BY timestamp DESC
             LIMIT ?
         """, (int(limit),)).df()
-        out["recent"] = df.to_dict("records")
+        recent = df.to_dict("records")
+        # SQL NULL floats become NaN via pandas; NaN/Inf is not JSON-compliant and crashes
+        # response rendering OUTSIDE the endpoint's try/except -- a 500 on a fresh install with
+        # zero resolved rows. Sanitize to None. (Ported from the Oracle deployment 2026-07-25.)
+        for _row in recent:
+            for _k, _v in _row.items():
+                if isinstance(_v, float) and (_v != _v or _v in (float("inf"), float("-inf"))):
+                    _row[_k] = None
+        out["recent"] = recent
     except Exception as e:
         out["error"] = str(e)
     finally:

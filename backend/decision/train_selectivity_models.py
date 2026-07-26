@@ -41,7 +41,10 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
 OUT = os.path.join(DATA_DIR, "saved_models", "selectivity_models.pkl")
-HEAD_VERSION = "2026-06-15-lr+rf-ensemble"   # train_heads.py retrains when this changes
+TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
+                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+
+HEAD_VERSION = f"2026-06-15-lr+rf-ensemble-{TRAIN_DAYS_TAG}d"   # train_heads.py retrains when this changes
 
 # Feature sets — IDENTICAL to probe_rule_composed_scorecard.py (do not drift).
 SELECTIVITY_FEATURES = ["rv_15m", "rv_30m", "log_count", "vpin_15m", "compression_ratio", "shock_magnitude"]
