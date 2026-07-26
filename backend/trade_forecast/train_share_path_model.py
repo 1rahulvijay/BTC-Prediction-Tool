@@ -70,6 +70,22 @@ def _day_block_lower_bound(values: pd.DataFrame, seed: int = 20260726) -> float 
     return float(np.percentile(samples, 2.5))
 
 
+# ALIGNED M0 OBJECTIVE (frozen pair). The ranking head and the realized outcome must describe the
+# SAME trade, or the gate measures skill at a question nobody trades.
+#
+#   score    P(+3c before -3c)          -> the success EVENT of the plan below
+#   realized plan_take_3c_or_stop_3c_net -> the PnL of that same plan
+#
+# `label_ever_profitable` is retained as a DIAGNOSTIC column only: a trade can tick +0.1c and still
+# lose under +3c/-3c, so a head ranking on it can be genuinely skilful and economically useless.
+M0_SCORE_LABEL = "plan_take_3c_or_stop_3c_profitable"
+M0_REALIZED_COLUMN = "plan_take_3c_or_stop_3c_net"
+# The independent unit. NOT the checkpoint: four checkpoints inside one round share the same
+# settlement outcome and overlapping price path, so scoring each as its own trade would still
+# inflate n and understate variance even after the side/quantity collapse.
+M0_INDEPENDENT_UNIT = "round_id"
+
+
 def evaluate_m0(
     frame: pd.DataFrame,
     test_mask: np.ndarray,
@@ -82,29 +98,72 @@ def evaluate_m0(
         "buckets": [],
     }
     if not event_head or not event_head.get("supported"):
-        result["reasons"].append("p_ever_profitable_head_unavailable")
+        result["reasons"].append(f"m0_score_head_unavailable:{M0_SCORE_LABEL}")
         return result
     required = [
         *FEATURE_COLUMNS,
         "entry_complete",
         "label_ever_profitable",
-        "plan_take_3c_or_stop_3c_net",
+        M0_REALIZED_COLUMN,
         "plan_hold_to_settlement_net",
         "stress_1000ms_take_3c_or_stop_3c_net",
         "round_start_ts",
+        "exposure_id",
+        M0_INDEPENDENT_UNIT,
     ]
-    selected = frame.loc[test_mask].dropna(subset=required).copy()
-    selected = selected[selected["entry_complete"] == 1]
-    if len(selected) < 100:
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        # An older dataset predates exposure_id. Scoring it would silently reproduce the
+        # candidate-counting error, so refuse rather than degrade.
+        result["reasons"].append(f"dataset_missing_columns:{','.join(missing)}")
+        return result
+    candidates = frame.loc[test_mask].dropna(subset=required).copy()
+    candidates = candidates[candidates["entry_complete"] == 1]
+    if len(candidates) < 100:
         result["reasons"].append("fewer_than_100_test_candidates")
         return result
-    x = selected.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
+    x = candidates.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
     finite = np.isfinite(x).all(axis=1)
-    selected = selected.loc[finite].copy()
+    candidates = candidates.loc[finite].copy()
     x = x[finite]
-    score = predict_classifier(event_head["members"], event_head["calibrator"], x)
-    selected["score"] = score
-    selected["realized_net"] = selected["plan_take_3c_or_stop_3c_net"].astype(float)
+    candidates["score"] = predict_classifier(
+        event_head["members"], event_head["calibrator"], x
+    )
+    # ONE TRADE PER ROUND. Collapsing to one action per EXPOSURE removes the side x quantity
+    # duplication, but leaves 4-10 checkpoints per round that all settle on the SAME outcome and
+    # share overlapping price paths - correlated observations counted as independent trades.
+    #
+    # The policy therefore chooses, per round: checkpoint + side + quantity, or NO_TRADE. That is
+    # what a deployable one-position-at-a-time policy actually does, and it is much harder to fool
+    # than per-checkpoint scoring. The portfolio alternative (multiple entries with an exposure
+    # cap and same-round correlation modelled explicitly) is a separate, larger design; it is not
+    # what is being scored here.
+    selected = (
+        candidates.sort_values("score", ascending=False)
+        .groupby(M0_INDEPENDENT_UNIT, sort=False, as_index=False)
+        .head(1)
+        .copy()
+    )
+    result["candidates_considered"] = int(len(candidates))
+    result["independent_units"] = int(len(selected))
+    result["independent_unit"] = M0_INDEPENDENT_UNIT
+    result["distinct_exposures_available"] = int(candidates["exposure_id"].nunique())
+    result["candidates_per_unit"] = round(len(candidates) / max(1, len(selected)), 2)
+    # Reported so the collapse is auditable: how many checkpoints were available per round, and
+    # which one the policy actually picked.
+    result["chosen_checkpoint_mix"] = {
+        str(int(k)): int(v)
+        for k, v in selected["seconds_left"].value_counts().sort_index().items()
+    }
+    if len(selected) < 100:
+        result["reasons"].append("fewer_than_100_independent_rounds")
+        return result
+    # EXACT ECONOMIC ALIGNMENT. The score is P(this plan's realized net PnL > 0) and the realized
+    # column is that same plan's net PnL - the same question in probability and in dollars.
+    # Ranking on the barrier EVENT (`label_take_3c_before_stop_3c`) was closer than
+    # P(ever profitable) but still not identical: it ignores no-barrier settlement outcomes,
+    # overshoot, entry price, fees and quantity impact. Both remain as diagnostics only.
+    selected["realized_net"] = selected[M0_REALIZED_COLUMN].astype(float)
     selected["hold_net"] = selected["plan_hold_to_settlement_net"].astype(float)
     selected["stress_net"] = selected[
         "stress_1000ms_take_3c_or_stop_3c_net"
@@ -198,6 +257,9 @@ def evaluate_m0(
             "q5_hold_to_settlement_ev": q5_hold_ev,
             "q5_profit_factor": q5_profit_factor,
             "q5_max_single_hour_share": max_hour_share,
+            "m0_score_label": M0_SCORE_LABEL,
+            "m0_realized_column": M0_REALIZED_COLUMN,
+            "m0_independent_unit": M0_INDEPENDENT_UNIT,
         }
     )
     if q5_lb is None:
@@ -520,7 +582,7 @@ def train(
         m0_by_horizon[str(horizon)] = evaluate_m0(
             frame,
             split["test"] & horizon_mask,
-            horizon_bundle["events"].get("label_ever_profitable"),
+            horizon_bundle["events"].get(M0_SCORE_LABEL),
         )
 
     evidence_gate = bool(dataset_manifest.get("promotable"))

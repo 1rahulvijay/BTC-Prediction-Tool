@@ -15,6 +15,7 @@ from .trade_schema import (
     CONFIG_VERSION,
     FEATURE_COLUMNS,
     FUTURE_OFFSETS_S,
+    target_offset_valid,
     MODE,
     QUANTILES,
 )
@@ -24,11 +25,15 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
 MODEL_PATH = DATA / "saved_models" / "complete_trade_share_path.pkl"
 
+from .freeze_guard import ArtifactPin
+
+
 _BUNDLE: dict[str, Any] | None = None
 _MTIME = -1.0
 _CHECKED = 0.0
 _ERROR = ""
 _MANIFEST: dict[str, Any] = {}
+_PIN = ArtifactPin("share")
 
 
 def load_model(force: bool = False) -> dict[str, Any] | None:
@@ -46,6 +51,10 @@ def load_model(force: bool = False) -> dict[str, Any] | None:
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
             return None
+        # Under BTC_FREEZE_MODEL the evidence clock describes ONE bundle. A changed artifact is
+        # refused and the pinned one kept, rather than silently spliced into the middle of a run.
+        if not _PIN.check(manifest.get("artifact_sha256")):
+            return _BUNDLE
         bundle = joblib.load(MODEL_PATH)
         if bundle.get("version") != CONFIG_VERSION or bundle.get("mode") != MODE:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "bundle version/mode mismatch"
@@ -69,6 +78,7 @@ def status() -> dict[str, Any]:
         "artifact": str(MODEL_PATH),
         "artifact_hash": _MANIFEST.get("artifact_sha256"),
         "policy_hash": _MANIFEST.get("policy_hash"),
+        **_PIN.status(),
     }
 
 
@@ -106,7 +116,13 @@ def score_candidate(horizon: int, values: dict[str, Any]) -> dict[str, Any]:
         base["reason_codes"].append("unsupported_horizon")
         return base
     current_bid = float(values["own_bid"])
+    # Same validity rule as the dataset builder, from the same function. A 120s path point at a
+    # 30s-left checkpoint is not a forecast - the contract settles first, and after the label fix
+    # the model has no training signal there at all.
+    seconds_left = float(values.get("seconds_left") or 0.0)
     for offset in FUTURE_OFFSETS_S:
+        if not target_offset_valid(offset, seconds_left):
+            continue
         models = (horizon_bundle.get("quantiles") or {}).get(int(offset)) or {}
         transformed: list[float] = []
         labels: list[float] = []

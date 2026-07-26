@@ -152,6 +152,16 @@ REM   The 1265d run writes real manifests; AFTER it completes, set this back to 
 REM   becomes meaningful instead of merely fatal. Verify with:
 REM     python backend/verify_artifact_identity.py
 if not defined BTC_STRICT_ARTIFACT_IDENTITY set "BTC_STRICT_ARTIFACT_IDENTITY=0"
+REM === HEAD-HEALTH ENFORCEMENT (Blueprint 31.2) ==========================
+REM A head that live outcomes say cannot price is not allowed to price. Specifically:
+REM BTC_ENABLE_PAPER_BET=1 used to be enough on its own to re-enable betting on P(hold) even
+REM when the head-health report had already measured P(hold) as CALIBRATION_ONLY -- i.e. the
+REM override could overrule the evidence. It now ALSO requires the head to measure USABLE.
+REM Missing report = permissive but says "not measured"; a report older than 14d = STALE.
+REM The gate re-opens by itself when the next report returns the head to USABLE.
+REM Set to 0 for observe-only (permissions logged, not enforced). Must be set BEFORE launch.
+REM   python backend\head_permissions.py          (print current permissions)
+if not defined BTC_ENFORCE_HEAD_HEALTH set "BTC_ENFORCE_HEAD_HEALTH=1"
 REM Retrain at most ~once a day so each retrain learns from a meaningful chunk of NEW data
 REM (and the UI isn't freezing every few hours). 86400s = 24h.
 if not defined BTC_AUTO_RELEARN_COOLDOWN_SEC set "BTC_AUTO_RELEARN_COOLDOWN_SEC=86400"
@@ -205,10 +215,18 @@ REM A first long build needs the full 300GB margin. Once >=1000 daily source fil
 REM a retry is a RESUME, not a first build; requiring 300GB free again would reject the run simply
 REM because completed downloads now occupy disk. Resumes retain a hard 80GB floor for the sequence
 REM memmap, staged candidate/full-refit bundles and DuckDB/parquet rewrites.
-powershell -NoProfile -Command "$days=[int]'%BTC_HISTORICAL_DAYS%'; $free=[int]'%BTC_FREE_DISK_GB%'; $cached=[int]'%BTC_BACKFILL_CACHE_FILES%'; if ($days -ge 1200 -and (($cached -lt 1000 -and $free -lt 300) -or ($cached -ge 1000 -and $free -lt 80))) { exit 2 }"
+REM Disk/readiness classification now lives in a TESTED module rather than this one-liner.
+REM The CSV count alone is the wrong question: this machine's derived sources
+REM (trade_features_backfill 1288d, crossvenue_flow 1286d) already cover the window, so a matrix
+REM rebuild needs NO bulk download even with an empty cache. Three modes, each with its own floor:
+REM   REBUILD     derived parquets already span the window  -> 80GB
+REM   RESUME      >=1000 daily CSVs cached                  -> 80GB
+REM   FIRST_BUILD neither                                   -> 300GB
+REM   python backend\preflight_longwindow.py --days 1265     (explain the current verdict)
+REM   python backend\preflight_longwindow.py --selftest
+python backend\preflight_longwindow.py --days %BTC_HISTORICAL_DAYS%
 if errorlevel 2 (
-    echo [preflight] ERROR: insufficient free disk for this long run.
-    echo             First build requires 300GB; a cached resume requires at least 80GB.
+    echo [preflight] ERROR: insufficient free disk for this long run - see the mode above.
     exit /b 1
 )
 
@@ -223,6 +241,85 @@ if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not exist "%BTC_DATA_DIR%\saved_models_pr
     )
     echo [preflight] Model rollback snapshot ready: data\saved_models_pre1500d_backup
 )
+
+REM === INVARIANT SELFTESTS (fast, offline, no network) ===================
+REM These guard the failures that are SILENT: the app keeps running, the report looks healthy,
+REM and the corruption only shows up as apparent edge that dies on contact with real money.
+REM Each suite is pure-python and runs in well under a second.
+REM
+REM NOTE ON THE STRUCTURE: each check exits immediately on failure rather than accumulating into
+REM a flag. start.bat has no `setlocal enabledelayedexpansion`, so a %VAR% set inside a
+REM parenthesised block is expanded at PARSE time and would always read its pre-block value -
+REM i.e. an accumulator here would silently never fire, which is exactly the class of bug these
+REM selftests exist to catch.
+REM
+REM Set BTC_SKIP_SELFTESTS=1 to bypass (NEVER for an evidence run).
+if "%BTC_SKIP_SELFTESTS%"=="1" goto :selftests_done
+echo [selftest] a. Complete-trade audit regressions - label/M0/execution correctness:
+python -m backend.trade_forecast.test_audit_fixes >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] b. Frozen-artifact pinning - no model swap mid-evidence-run:
+python backend\trade_forecast\freeze_guard.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
+echo [selftest] c. Head permissions - a head that cannot price may not price:
+python backend\head_permissions.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+echo [selftest] d. Long-window preflight classification:
+python backend\preflight_longwindow.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_d
+echo [selftest] e. Multi-venue collector schema + episode accounting:
+python backend\venues\multi_venue_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_e
+echo [selftest] f. Venue admissibility - backlog/lead-lag/identity gates:
+python backend\venues\venue_admissibility.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+echo [selftest] g. Collector evidence integrity - D1-D5:
+python backend\venues\test_collector_integrity.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_g
+echo [selftest] h. Strategy registry consistency:
+python backend\research\audit_strategy_registry.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_h
+echo [selftest] i. Challenger promotion gates - no ungated model replacement:
+python backend\promote_challenger.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_i
+echo [selftest] All invariant selftests passed.
+goto :selftests_done
+
+:selftest_failed_a
+echo [selftest] FAILED: python -m backend.trade_forecast.test_audit_fixes
+goto :selftest_abort
+:selftest_failed_b
+echo [selftest] FAILED: python backend\trade_forecast\freeze_guard.py --selftest
+goto :selftest_abort
+:selftest_failed_c
+echo [selftest] FAILED: python backend\head_permissions.py --selftest
+goto :selftest_abort
+:selftest_failed_d
+echo [selftest] FAILED: python backend\preflight_longwindow.py --selftest
+goto :selftest_abort
+:selftest_failed_e
+echo [selftest] FAILED: python backend\venues\multi_venue_recorder.py --selftest
+goto :selftest_abort
+:selftest_failed_f
+echo [selftest] FAILED: python backend\venues\venue_admissibility.py --selftest
+goto :selftest_abort
+:selftest_failed_g
+echo [selftest] FAILED: python backend\venues\test_collector_integrity.py
+goto :selftest_abort
+:selftest_failed_h
+echo [selftest] FAILED: python backend\research\audit_strategy_registry.py
+goto :selftest_abort
+
+:selftest_failed_i
+echo [selftest] FAILED: python backend\promote_challenger.py --selftest
+goto :selftest_abort
+
+:selftest_abort
+echo [selftest] ERROR: an invariant selftest failed. Startup stopped.
+echo             Re-run the command above WITHOUT ^>nul to see which check broke.
+exit /b 1
+
+:selftests_done
 
 echo Starting BTC Quantum Trader...
 
@@ -270,6 +367,20 @@ if errorlevel 1 (
     echo [0/3c2] Research-matrix build failed or coverage is too low.
     echo          Skipping specialist-head training to avoid stamping stale data as fresh.
 ) else (
+    REM CHALLENGER-ONLY for long windows. A build finishing is NOT a reason to replace the models
+    REM currently driving decisions. For >=1200d runs heads train into a challenger directory and
+    REM the incumbent bundle is untouched; promotion is a separate GATED step that verifies every
+    REM artifact manifest, the matrix monthly-quality gate, the admitted training window, and head
+    REM health:
+    REM   python backend\promote_challenger.py --challenger data\saved_models_challenger_1265d --days 1265
+    REM   (add --apply to promote; the incumbent is snapshotted first)
+    REM Set BTC_LONG_WINDOW_CHALLENGER=0 to train straight into saved_models (not advised).
+    if not defined BTC_LONG_WINDOW_CHALLENGER set "BTC_LONG_WINDOW_CHALLENGER=1"
+    if %BTC_HISTORICAL_DAYS% GEQ 1200 if "%BTC_LONG_WINDOW_CHALLENGER%"=="1" (
+        set "BTC_MODEL_OUTPUT_DIR=%BTC_DATA_DIR%\saved_models_challenger_%BTC_HISTORICAL_DAYS%d"
+        echo [0/3d] CHALLENGER MODE - heads train into saved_models_challenger_%BTC_HISTORICAL_DAYS%d
+        echo         The live bundle is NOT modified. Promote explicitly via promote_challenger.py.
+    )
     echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
     echo          HEAD_VERSION changed. Set BTC_FORCE_HEAD_RETRAIN=1 to train every head one by one:
     if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (

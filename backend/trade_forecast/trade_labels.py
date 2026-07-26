@@ -179,6 +179,13 @@ def summarize_realized_path(
         labels[f"{key}_net"] = result["net"]
         labels[f"{key}_holding_s"] = result["holding_s"]
         labels[f"{key}_exit_kind"] = result["exit_kind"]
+        # THE EXACT ECONOMIC TARGET for this plan. `label_take_3c_before_stop_3c` is the barrier
+        # EVENT, which is not the same question: it ignores rounds where neither barrier is hit
+        # and settlement decides, target/stop overshoot, the entry price actually paid, fees, and
+        # quantity-dependent impact. A trade can miss +3c and still settle positive, or dodge the
+        # stop and still lose. Only the sign of the plan's realized net PnL answers "did this
+        # plan make money", so that is what a head ranking the plan must be trained on.
+        labels[f"{key}_profitable"] = int(float(result["net"]) > 0.0)
     return labels
 
 

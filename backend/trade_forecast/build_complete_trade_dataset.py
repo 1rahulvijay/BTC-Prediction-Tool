@@ -55,6 +55,8 @@ from trade_forecast.trade_schema import (
     ENTRY_LATENCY_MS,
     FEATURE_COLUMNS,
     FUTURE_OFFSETS_S,
+    OFFICIAL_RESOLUTION_SOURCES,
+    target_offset_valid,
     HORIZONS,
     MAX_BTC_OBSERVATION_AGE_S,
     MAX_DECISION_BOOK_AGE_S,
@@ -63,6 +65,7 @@ from trade_forecast.trade_schema import (
     MODE,
     PROMOTION_GATE,
     QUANTITIES,
+    QUOTE_SURVIVAL_TOLERANCE,
     policy_hash,
     validate_candidate,
 )
@@ -128,6 +131,9 @@ def load_rounds(
 ) -> list[dict[str, Any]]:
     sql_path = settlements_path.as_posix().replace("'", "''")
     placeholders = ",".join("?" for _ in horizons)
+    sources = ",".join(
+        "'" + s.replace("'", "''") + "'" for s in OFFICIAL_RESOLUTION_SOURCES
+    )
     rows = conn.execute(
         f"""
         WITH markets AS (
@@ -146,6 +152,9 @@ def load_rounds(
         WHERE m.up_asset IS NOT NULL AND m.down_asset IS NOT NULL
           AND s.settled_side IN (0,1)
           AND s.anchor_price > 0 AND s.expiry_btc > 0
+          -- Official settlement only. An unofficial or inferred outcome is not ground truth,
+          -- and a mislabelled settlement silently inverts the sign of every label built on it.
+          AND s.resolution_source IN ({sources})
         ORDER BY m.start_ts, m.horizon
         """,
         list(horizons),
@@ -163,6 +172,18 @@ def load_rounds(
         "settled_side",
         "resolution_source",
     )
+    if not rows:
+        # An empty result here is indistinguishable from "no data yet" downstream, and a dataset
+        # built from zero rounds still produces a well-formed parquet and a confident-looking
+        # manifest. Fail loudly instead, and say which gate emptied it.
+        available = conn.execute(
+            f"SELECT DISTINCT resolution_source FROM read_parquet('{sql_path}')"
+        ).fetchall()
+        raise RuntimeError(
+            "no settled rounds passed the load gate. "
+            f"allowed resolution_source={list(OFFICIAL_RESOLUTION_SOURCES)}; "
+            f"present in {settlements_path.name}={[r[0] for r in available]}"
+        )
     return [dict(zip(columns, row)) for row in rows]
 
 
@@ -341,6 +362,14 @@ def _candidate_features(
     return {
         "round_id": str(round_data["condition_id"]),
         "slug": str(round_data["slug"]),
+        # THE INDEPENDENT UNIT. One market moment = one decision opportunity, at which a deployable
+        # policy emits exactly one action (BUY UP at one qty / BUY DOWN at one qty / NO_TRADE).
+        # Every row sharing an exposure_id is a CANDIDATE for that single decision, not a separate
+        # trade. Counting candidates as trades inflates n, profit factor, weekly coverage and Q5
+        # occupancy all at once - the July pilot has 395 rounds but 24,996 rows, so treating rows
+        # as independent overstates the sample by ~63x and lets BUY UP and BUY DOWN on the same
+        # instant both land in Q5.
+        "exposure_id": f"{round_data['condition_id']}@{int(seconds_left)}",
         "round_start_ts": int(round_data["start_ts"]),
         "round_end_ts": int(round_data["end_ts"]),
         "decision_ts_ns": int(decision_ns),
@@ -399,7 +428,17 @@ def _attach_btc_targets(
     round_end_s: float,
 ) -> None:
     current = float(row["current_btc"])
+    # A future offset that runs past this round's expiry is NOT a prediction target: the contract
+    # has already settled, so any BTC price there is information the trade could never have used.
+    # Entry checkpoints go down to 30s and 60s while FUTURE_OFFSETS_S reaches 120s, so without
+    # this guard a 30s-left decision carried 60s and 120s post-settlement BTC information.
+    # Invalid targets are NULL (unknown), never 0.0 (a confident "no move").
+    seconds_left = float(row["seconds_left"])
     for offset in FUTURE_OFFSETS_S:
+        if not target_offset_valid(offset, seconds_left):
+            row[f"btc_price_{offset}s"] = None
+            row[f"btc_delta_{offset}s"] = None
+            continue
         _, future, _ = _btc_at(
             timeline,
             decision_s + offset,
@@ -469,6 +508,12 @@ def _attach_execution_labels(
             "max_book_staleness_s": MAX_DECISION_BOOK_AGE_S,
         },
     )
+    # The price the decision was actually made at, for the size actually requested. `own_ask` is
+    # top-of-book and says nothing about filling 25 or 100 shares, so quote survival cannot be
+    # defined against it - a quote can "survive" at the top while the size behind it evaporates.
+    decision_ask_vwap, decision_ask_fill = ladder_vwap(own_book.asks, requested)
+    row["decision_ask_vwap"] = decision_ask_vwap
+    row["decision_ask_fillable"] = int(decision_ask_fill >= requested - 1e-9)
     row.update(
         {
             "entry_eligible": int(path.eligible),
@@ -518,6 +563,29 @@ def _attach_execution_labels(
     entry_book = books[entry_book_index] if entry_book_index >= 0 else None
     row["entry_top_ask"] = entry_book.best_ask if entry_book else None
     row["entry_arrival_slippage"] = path.entry_vwap - float(row["own_ask"])
+    # QUOTE SURVIVAL, measured against the size-aware decision price. Survival means BOTH that the
+    # full quantity is still fillable on arrival AND that it is not materially worse than what was
+    # quoted at the decision. "Some entry existed after latency" is a much weaker claim and is
+    # what `entry_eligible` already says.
+    decision_vwap = row.get("decision_ask_vwap")
+    row["entry_vwap_slippage"] = (
+        path.entry_vwap - float(decision_vwap) if decision_vwap is not None else None
+    )
+    row["entry_quote_survived"] = (
+        int(
+            bool(row["entry_complete"])
+            and decision_vwap is not None
+            and path.entry_vwap <= float(decision_vwap) + QUOTE_SURVIVAL_TOLERANCE
+        )
+        if decision_vwap is not None
+        else None
+    )
+    for cents in (1, 2):
+        row[f"entry_worse_by_{cents}c"] = (
+            int(path.entry_vwap >= float(decision_vwap) + cents / 100.0)
+            if decision_vwap is not None
+            else None
+        )
     row["break_even_bid"] = required_exit_bid(path.entry_vwap, 0.0)
     row["target_1c_bid"] = required_exit_bid(path.entry_vwap, 0.01)
     row["target_3c_bid"] = required_exit_bid(path.entry_vwap, 0.03)
@@ -536,27 +604,66 @@ def _attach_execution_labels(
         exit_vwaps.append(float(vwap))
 
     row.update(summarize_realized_path(path.ts, path.net, path.settle_net))
+    seconds_left = float(row["seconds_left"])
     for offset in FUTURE_OFFSETS_S:
         observed = [
             float(value)
             for elapsed, value in zip(path.ts, path.net)
             if float(elapsed) <= float(offset)
         ]
-        row[f"label_break_even_by_{offset}s"] = int(
+        # SETTLEMENT IS A TERMINAL COMPETING EVENT, NOT CENSORING.
+        #
+        # An earlier version of this code marked non-crossing late-checkpoint cases NULL, reasoning
+        # that we "cannot know" what the missing seconds would have done. That was WRONG, and
+        # wrong in the dangerous direction. The position cannot exist past settlement, so
+        # "did +3c occur within 120s of entry?" is fully answered by the contract's own lifetime:
+        # if it did not cross before the contract terminated, it did not cross. Answer 0.
+        #
+        # Marking those NULL drops DEFINITE FAILURES while retaining early successes - a textbook
+        # upward selection bias that would have made every crossing head look better than it is.
+        #
+        # Three states, kept distinct:
+        #   1     the event occurred before terminal settlement
+        #   0     the event did not occur before terminal settlement (terminal, not unknown)
+        #   NULL  evidence was genuinely missing or corrupt BEFORE the terminal boundary
+        #
+        # NULL is reserved for the exact future-PRICE targets (btc_price_120s,
+        # share_bid_vwap_120s): there is no executable price 120s out when the contract settled
+        # at 30s, so those really are undefined. An EVENT over the position's life is not.
+        terminal = not target_offset_valid(offset, seconds_left)
+        evidence_ok = bool(path.ts)          # a path was observed at all before termination
+
+        def _label(hit: bool) -> int | None:
+            if hit:
+                return 1
+            return 0 if evidence_ok else None
+
+        row[f"label_break_even_by_{offset}s"] = _label(
             any(value > 0.0 for value in observed)
         )
-        row[f"label_target_3c_by_{offset}s"] = int(
+        row[f"label_target_3c_by_{offset}s"] = _label(
             any(value >= 0.03 for value in observed)
         )
-        row[f"label_stop_3c_by_{offset}s"] = int(
+        row[f"label_stop_3c_by_{offset}s"] = _label(
             any(value <= -0.03 for value in observed)
         )
+        # Records that the horizon outran the contract. The LABEL is still a real 0/1; this flag
+        # exists so an analyst can stratify on it, not so anyone can drop the row.
+        row[f"horizon_terminated_early_{offset}s"] = int(terminal)
     row["label_settlement_win"] = int(settle_value == 1.0)
     row["settlement_net"] = path.settle_net
     row["actual_exit_observations"] = len(path.net)
     current_bid = float(row["own_bid"])
     for offset in FUTURE_OFFSETS_S:
         wanted = float(offset)
+        # Past expiry the contract is resolved; a "future share price" there is not a price the
+        # position could have been exited at. NULL, never a stale carried-forward quote.
+        if not target_offset_valid(offset, seconds_left):
+            row[f"share_bid_vwap_{offset}s"] = None
+            row[f"share_bid_logit_delta_{offset}s"] = None
+            row[f"share_ask_vwap_{offset}s"] = None
+            row[f"share_ask_logit_delta_{offset}s"] = None
+            continue
         index = next((i for i, elapsed in enumerate(path.ts) if elapsed >= wanted), -1)
         if index < 0 or path.ts[index] - wanted > MAX_FUTURE_OBSERVATION_LAG_S:
             bid = None
@@ -749,6 +856,10 @@ def build_dataset(
         }
     )
     independent_rounds = int(frame["round_id"].nunique())
+    # Rows are CANDIDATES; exposures are DECISIONS. Publishing both makes the inflation factor
+    # impossible to miss - the July pilot is 395 rounds / ~25k rows, and any metric quoted per row
+    # overstates the evidence by that ratio.
+    independent_exposures = int(frame["exposure_id"].nunique())
     promotable = (
         independent_rounds >= PROMOTION_GATE["min_independent_rounds"]
         and weeks >= PROMOTION_GATE["min_calendar_weeks"]
@@ -761,6 +872,8 @@ def build_dataset(
         "created_at": time.time(),
         "rows": int(len(frame)),
         "independent_rounds": independent_rounds,
+        "independent_exposures": independent_exposures,
+        "candidates_per_exposure": round(len(frame) / max(1, independent_exposures), 2),
         "calendar_weeks": weeks,
         "horizons": sorted(int(value) for value in frame["horizon"].unique()),
         "min_round_start_ts": int(frame["round_start_ts"].min()),
@@ -797,7 +910,8 @@ def build_dataset(
     }
     atomic_write_json(output_path.with_suffix(".manifest.json"), manifest)
     print(
-        f"[dataset] wrote {len(frame):,} rows / {independent_rounds:,} rounds / "
+        f"[dataset] wrote {len(frame):,} rows (candidates) / "
+        f"{independent_exposures:,} exposures (decisions) / {independent_rounds:,} rounds / "
         f"{weeks} weeks -> {output_path}",
         flush=True,
     )

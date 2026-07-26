@@ -466,6 +466,27 @@ def champion_decision(
             # Until a calibrated probability exists and wins on Brier/log-loss/ECE against raw,
             # this branch DISPLAYS the candidate and REFUSES to authorize it. Re-enable only with
             # BTC_ENABLE_PAPER_BET=1, which is an explicit operator override, not a default.
+            # Blueprint §31.2: head health is ENFORCED here, not merely reported. Even with the
+            # operator override on, a head measured as unable to price may not price. Without
+            # this, BTC_ENABLE_PAPER_BET=1 would re-enable betting on exactly the probability the
+            # live data says cannot supply a fair value - overruling the evidence with a flag.
+            try:
+                from head_permissions import may_price as _may_price
+                _ph_ok, _ph_why = _may_price("p_hold")
+            except Exception:
+                _ph_ok, _ph_why = True, ""      # never let this check take serving down
+            if PAPER_BET_ENABLED and not _ph_ok:
+                return out(
+                    "NO_EDGE",
+                    f"CANDIDATE {position} - p_hold may not price",
+                    min(70.0, confidence),
+                    f"The override is on, but live head health says P(hold) may rank and may NOT "
+                    f"supply a fair value ({_ph_why}). The edge below is therefore computed from "
+                    f"a probability that is not permitted to price it: {edge_line}. Recalibrate "
+                    f"the head, or set BTC_ENFORCE_HEAD_HEALTH=0 to observe only.",
+                    edge=net_edge,
+                    invalidate="P(hold) returns to USABLE in the head-health report.",
+                )
             if not PAPER_BET_ENABLED:
                 return out(
                     "NO_EDGE",

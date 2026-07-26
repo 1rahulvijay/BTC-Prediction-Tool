@@ -46,3 +46,16 @@ bytes  = 2800
 Completes the required-stream denominator and stale-stream interpretation before collection.
 The preregistration itself is UNCHANGED - verify both:
   python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_BINANCE_V1_CLARIFICATION_003.md','rb').read()).hexdigest())"
+
+======================================================================
+PREREG_COMPLETE_TRADE_M0_V2.md
+sha256 = 138616d3893c5034bddd29be562f73c452e16f570af67ffcb1adda209df793a5
+frozen = 2026-07-26
+bytes  = 7682
+
+Supersedes the V1 complete-trade gate. The V1 gate was never executed, but its selection unit,
+target, label semantics, settlement filter, capacity rule and logging contract have all changed,
+and the 395-round July pilot was used to DESIGN those changes - so that dataset is development
+data with kill-only authority. The promotion test uses forward evidence collected after this
+freeze. Verify:
+  python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_COMPLETE_TRADE_M0_V2.md','rb').read()).hexdigest())"

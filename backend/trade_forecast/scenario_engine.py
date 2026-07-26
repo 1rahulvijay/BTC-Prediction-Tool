@@ -1,4 +1,21 @@
-"""Evaluate only the frozen causal exit plans over forecast quantile scenarios."""
+"""Evaluate the frozen causal exit plans over forecast quantile scenarios.
+
+DIAGNOSTIC ONLY. Every number this module produces is an APPROXIMATION and none of it may back a
+promotion decision. Five artificial paths are formed by joining q10 with q10 at every future
+timestamp, q25 with q25, and so on, then each is combined with settlement win/loss independently.
+Marginal quantiles do not identify a joint path distribution, so:
+
+  * path dependence is unrealistic (a real path crosses quantiles);
+  * settlement and pre-settlement outcomes are treated as more independent than they are;
+  * barrier touches BETWEEN the six sparse timestamps are invisible, so `p_profit` and the
+    take/stop plans are optimistic about hitting a barrier and blind to hitting it early;
+  * `cvar_05` computed over five weighted points is not a 5% CVaR in any meaningful sense;
+  * `maximum_safe_entry_ask` inherits all of the above.
+
+The replacement for V1 is DIRECT per-plan models (expected plan PnL, plan PnL quantiles,
+P(plan profit), expected holding time) trained against the realized `plan_*_net` labels, which are
+already produced by the dataset builder. Until those exist, these outputs may inform display and
+ranking, and may never be cited as evidence."""
 from __future__ import annotations
 
 import math
@@ -111,6 +128,14 @@ def evaluate_plans(
             ),
             "scenario_count": len(outcomes),
             "method": "QUANTILE_PATH_APPROXIMATION_SHADOW_ONLY",
+            # Machine-readable so a promotion path cannot consume these numbers by accident.
+            "diagnostic_only": True,
+            "promotable": False,
+            "approximation": (
+                "marginal quantile paths do not identify a joint path distribution; "
+                "cvar_05 and p_profit are approximations over 5 weighted points and "
+                "barrier touches between sparse timestamps are not observed"
+            ),
         }
     return results
 

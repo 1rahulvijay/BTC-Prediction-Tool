@@ -1,0 +1,77 @@
+name: invariants
+
+# Proves, on every push and PR, the invariants that start.bat enforces at launch. These guard
+# failures that are SILENT locally: the app keeps running, reports look healthy, and the damage
+# only surfaces as apparent edge that dies on contact with real money.
+#
+# Every job here is offline and deterministic - no network, no market data, no trained artifacts.
+# A red build means an invariant the evidence depends on has been broken.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install runtime dependencies
+        run: python -m pip install --quiet --upgrade pip duckdb pandas numpy pyarrow
+
+      # --- complete-trade correctness -------------------------------------------------------
+      - name: Audit regressions (labels / M0 unit / execution / logging)
+        run: python -m backend.trade_forecast.test_audit_fixes
+
+      - name: Frozen-artifact pinning
+        run: python backend/trade_forecast/freeze_guard.py --selftest
+
+      - name: Exit-plan and scenario-engine selftests
+        run: |
+          python -c "import sys; sys.path.insert(0,'backend'); \
+            from trade_forecast.trade_labels import selftest as a; \
+            from trade_forecast.scenario_engine import selftest as b; a(); b()"
+
+      # --- decision + deployment gates ------------------------------------------------------
+      - name: Head permissions
+        run: python backend/head_permissions.py --selftest
+
+      - name: Challenger promotion gates
+        run: python backend/promote_challenger.py --selftest
+
+      - name: Long-window preflight classification
+        run: python backend/preflight_longwindow.py --selftest
+
+      # --- evidence collection --------------------------------------------------------------
+      - name: Multi-venue collector schema + episode accounting
+        run: python backend/venues/multi_venue_recorder.py --selftest
+
+      - name: Venue admissibility (backlog / lead-lag / identity)
+        run: python backend/venues/venue_admissibility.py --selftest
+
+      - name: Collector evidence integrity (D1-D5)
+        run: python backend/venues/test_collector_integrity.py
+
+      # --- repo-wide consistency ------------------------------------------------------------
+      - name: Strategy registry consistency
+        run: python backend/research/audit_strategy_registry.py
+
+      - name: Documentation table well-formedness
+        run: python backend/research/check_doc_tables.py
+
+      # --- preregistration integrity --------------------------------------------------------
+      # A frozen protocol whose bytes changed is not a frozen protocol. This recomputes every
+      # recorded hash and fails if any drifted, so an edit cannot pass review unnoticed.
+      - name: Preregistration hashes unchanged
+        run: python backend/research/verify_prereg_hashes.py
+
+      - name: Every python file compiles
+        run: python -m compileall -q backend

@@ -15,9 +15,41 @@ ENTRY_CHECKPOINTS_S = {
     15: (720, 600, 480, 360, 240, 180, 120, 90, 60, 30),
 }
 FUTURE_OFFSETS_S = (5, 10, 15, 30, 60, 120)
+
+# Entry checkpoints go down to 30s while FUTURE_OFFSETS_S reaches 120s, so most offsets are
+# unreachable at the late checkpoints. A target beyond expiry is not a hard target - the contract
+# has settled and the information could never have been traded on.
+MAX_ENTRY_CHECKPOINT_S = max(max(v) for v in ENTRY_CHECKPOINTS_S.values())
+
+
+def target_offset_valid(offset_seconds: float, seconds_left: float) -> bool:
+    """True when a future target at `offset_seconds` lands before this round expires.
+
+    The single definition of target validity, shared by the dataset builder (which NULLs invalid
+    targets) and by serving (which must not display or act on an offset the round cannot reach).
+    Keeping one function means the two can never drift apart, which is the failure that let
+    post-expiry BTC information into training in the first place."""
+    return float(offset_seconds) <= float(seconds_left)
+
+
+# Settlement provenance. FROZEN ALLOWLIST rather than a `LIKE 'official:%'` prefix match: the
+# settlement parquet stores bare venue values ('polymarket_clob', 'polymarket_gamma') and the
+# `official:` prefix is applied downstream in database.py, so a prefix match silently selects
+# ZERO rows and yields an empty dataset that still looks well-formed. Both forms are accepted so
+# the same gate works against either source.
+OFFICIAL_RESOLUTION_SOURCES = (
+    "polymarket_clob",
+    "polymarket_gamma",
+    "official:polymarket_clob",
+    "official:polymarket_gamma",
+)
 QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90)
 QUANTITIES = (1, 5, 10, 25, 50, 100)
 ENTRY_LATENCY_MS = 500
+# A quote "survived" if arrival is no worse than the decision VWAP plus this tolerance. One tick.
+# Anything looser would let a materially worse fill count as survival; anything tighter would call
+# ordinary sub-tick rounding a failure.
+QUOTE_SURVIVAL_TOLERANCE = 0.01
 M0_STRESS_LATENCY_MS = 1000
 MAX_DECISION_BOOK_AGE_S = 5.0
 MAX_BTC_OBSERVATION_AGE_S = 10.0
@@ -134,6 +166,10 @@ CLASSIFICATION_TARGETS = (
     "label_take_3c_before_stop_3c",
     "label_take_5c_before_stop_5c",
     "label_settlement_win",
+    # Exact per-plan economics: sign of the plan's realized net PnL. This is the head M0 ranks on;
+    # the barrier-event labels above remain available as diagnostics.
+    "plan_take_3c_or_stop_3c_profitable",
+    "plan_hold_to_settlement_profitable",
 )
 CROSSING_TARGETS = tuple(
     f"label_{event}_by_{offset}s"

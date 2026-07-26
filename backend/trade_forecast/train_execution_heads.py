@@ -51,7 +51,16 @@ def train(
 ) -> dict[str, Any]:
     started = time.time()
     frame, dataset_manifest = load_verified_dataset(dataset_path)
-    frame["entry_quote_survived"] = frame["entry_eligible"].astype(int)
+    # `entry_quote_survived` is now a REAL label computed in the dataset builder against the
+    # size-aware decision VWAP. The previous definition here was `entry_eligible`, i.e. merely
+    # "some entry existed after latency" - which is true even when the size vanished and the price
+    # moved two cents against us, so the head was trained to predict a much easier event than the
+    # one its name promised.
+    if "entry_quote_survived" not in frame.columns:
+        raise RuntimeError(
+            "dataset predates real quote-survival labels; rebuild with "
+            "build_complete_trade_dataset.py before training execution heads"
+        )
     group_columns = ["round_id", "horizon", "seconds_left", "side"]
     complete_capacity = (
         frame.loc[frame["entry_complete"] == 1]
@@ -135,7 +144,12 @@ def train(
                 gc.collect()
             horizon_bundle["quantiles"][target] = target_bundle
             horizon_metrics["quantiles"][target] = target_metrics
-        for target in ("entry_complete", "entry_quote_survived"):
+        for target in (
+            "entry_complete",
+            "entry_quote_survived",
+            "entry_worse_by_1c",
+            "entry_worse_by_2c",
+        ):
             sets = {}
             for split_name in ("train", "calibration", "test"):
                 sets[split_name] = clean_xy(frame, split[split_name] & mask, target)

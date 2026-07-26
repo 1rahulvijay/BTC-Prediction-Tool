@@ -11,6 +11,7 @@ import numpy as np
 
 from .model_common import artifact_issues, predict_classifier, predict_member_mean
 from .trade_schema import CONFIG_VERSION, FEATURE_COLUMNS, MODE
+from .freeze_guard import ArtifactPin
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,7 @@ QUANTILES = (0.50, 0.80, 0.95)
 
 _BUNDLE = None
 _MANIFEST: dict[str, Any] = {}
+_PIN = ArtifactPin("execution")
 _ERROR = ""
 _MTIME = -1.0
 _CHECKED = 0.0
@@ -40,6 +42,10 @@ def load_model(force: bool = False):
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
             return None
+        # Under BTC_FREEZE_MODEL the evidence clock describes ONE bundle. A changed artifact is
+        # refused and the pinned one kept, rather than silently spliced into the middle of a run.
+        if not _PIN.check(manifest.get("artifact_sha256")):
+            return _BUNDLE
         bundle = joblib.load(MODEL_PATH)
         if bundle.get("version") != CONFIG_VERSION or bundle.get("mode") != MODE:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "bundle version/mode mismatch"
@@ -59,6 +65,7 @@ def status() -> dict[str, Any]:
         "error": _ERROR or None,
         "artifact_hash": _MANIFEST.get("artifact_sha256"),
         "policy_hash": _MANIFEST.get("policy_hash"),
+        **_PIN.status(),
     }
 
 

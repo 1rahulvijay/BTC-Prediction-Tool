@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -204,7 +206,7 @@ def log_forecast(
         ]
         conn.execute("BEGIN TRANSACTION")
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_forecasts "
+            f"INSERT INTO complete_trade_forecasts "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             values,
         )
@@ -228,7 +230,7 @@ def log_forecast(
         for path in paths or []:
             row = {**path, "forecast_id": forecast["forecast_id"]}
             conn.execute(
-                f"INSERT OR REPLACE INTO complete_trade_path_predictions "
+                f"INSERT INTO complete_trade_path_predictions "
                 f"({','.join(path_columns)}) VALUES ({','.join('?' for _ in path_columns)})",
                 [row.get(column) for column in path_columns],
             )
@@ -242,6 +244,101 @@ def log_forecast(
     finally:
         if own:
             conn.close()
+
+
+class LogHealth:
+    """Observable state for the evidence writer.
+
+    A logging failure is never invisible. The ticker may continue - a forecast that fails to
+    persist must not take the price feed down - but the failure is counted, timestamped, kept in a
+    dead-letter buffer and exposed, because silently losing evidence looks exactly like a healthy
+    run that happened to produce fewer forecasts."""
+
+    MAX_DEAD_LETTERS = 200
+
+    def __init__(self) -> None:
+        self.attempted = 0
+        self.written = 0
+        self.failed = 0
+        self.duplicates = 0
+        self.last_success_ts: float | None = None
+        self.last_error: str | None = None
+        self.last_error_ts: float | None = None
+        self.dead_letters: deque = deque(maxlen=self.MAX_DEAD_LETTERS)
+
+    def record_success(self) -> None:
+        self.attempted += 1
+        self.written += 1
+        self.last_success_ts = time.time()
+
+    def record_failure(self, exc: BaseException, payload: dict[str, Any]) -> None:
+        self.attempted += 1
+        self.failed += 1
+        text = f"{type(exc).__name__}: {exc}"
+        if any(t in text.lower() for t in ("duplicate", "primary key", "unique")):
+            self.duplicates += 1
+        self.last_error = text
+        self.last_error_ts = time.time()
+        self.dead_letters.append(
+            {"ts": self.last_error_ts, "error": text,
+             "forecast_id": payload.get("forecast_id")}
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        stale_s = (
+            round(time.time() - self.last_success_ts, 1)
+            if self.last_success_ts is not None
+            else None
+        )
+        return {
+            "attempted": self.attempted,
+            "written": self.written,
+            "failed": self.failed,
+            "duplicate_rejections": self.duplicates,
+            "last_success_ts": self.last_success_ts,
+            "seconds_since_last_write": stale_s,
+            "last_error": self.last_error,
+            "dead_letters": len(self.dead_letters),
+            "healthy": self.failed == 0,
+            "alert": (
+                None if self.failed == 0
+                else f"{self.failed} forecast write(s) failed; last: {self.last_error}"
+            ),
+        }
+
+
+LOG_HEALTH = LogHealth()
+
+
+def log_forecast_monitored(
+    forecast: dict[str, Any],
+    paths: list[dict[str, Any]] | None = None,
+    conn: Any = None,
+) -> bool:
+    """Append-only write with retry. Returns True on success; never raises into the ticker.
+
+    The previous call site swallowed every exception with `pass`, so a broken evidence table
+    produced a perfectly normal-looking run that simply contained no forecasts."""
+    for attempt in range(3):
+        try:
+            log_forecast(forecast, paths, conn)
+            LOG_HEALTH.record_success()
+            return True
+        except Exception as exc:                       # noqa: BLE001 - reported, never hidden
+            text = f"{type(exc).__name__}: {exc}"
+            duplicate = any(
+                token in text.lower() for token in ("duplicate", "primary key", "unique")
+            )
+            if duplicate or attempt == 2:
+                LOG_HEALTH.record_failure(exc, forecast)
+                print(
+                    "[trade-forecast] EVIDENCE WRITE FAILED "
+                    f"({'duplicate' if duplicate else 'retries exhausted'}): {text}",
+                    flush=True,
+                )
+                return False
+            time.sleep(0.05 * (attempt + 1))
+    return False
 
 
 def log_checkpoint(
@@ -267,7 +364,7 @@ def log_checkpoint(
             "change_reason",
         ]
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_checkpoints "
+            f"INSERT INTO complete_trade_checkpoints "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             [checkpoint.get(column) for column in columns],
         )
@@ -312,7 +409,7 @@ def log_outcome(
             for column in columns
         ]
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_outcomes "
+            f"INSERT INTO complete_trade_outcomes "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             values,
         )
