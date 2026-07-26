@@ -267,6 +267,9 @@ python backend/trade_forecast/forward_evidence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
 python backend/trade_forecast/m0_gates.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a5. Serving integration - EXECUTES loaders + pointer swaps:
+python -m backend.trade_forecast.test_serving_integration >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
 echo [selftest] a4. Champion resolver - promotion reaches serving:
 python backend/trade_forecast/champion_resolver.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a

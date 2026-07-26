@@ -28,7 +28,11 @@ from .trade_schema import (
 # cover a 60s lookback depending on market activity. HISTORY_WINDOW_S is what the lookbacks
 # actually need; the generous maxlen only caps memory.
 HISTORY_WINDOW_S = 180.0
-_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=4000))
+# The emergency cap is memory protection ONLY and must never be the thing that decides coverage.
+# If it ever engages, the lookback window is no longer guaranteed, so it warns rather than
+# silently truncating.
+HISTORY_HARD_CAP = 20_000
+_HISTORY: dict[str, deque] = defaultdict(deque)
 _CACHE: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
 _LOGGED: set[str] = set()
 INFERENCE_INTERVAL_S = 5.0
@@ -228,6 +232,26 @@ def _sensitivity_30s(velocity, current_btc, return_bps):
         return None
     delta = float(current_btc) * float(return_bps) / 10_000.0
     return _safe_div(float(velocity), delta)
+
+
+def _prune_history(history: deque, now_s: float) -> None:
+    """Drop observations older than HISTORY_WINDOW_S.
+
+    The window was previously enforced by `deque(maxlen=240)`, i.e. by COUNT. At a fast update
+    rate 240 observations span a few seconds - not enough for a 60s lookback - and at a slow rate
+    they span many minutes. HISTORY_WINDOW_S existed as a constant but nothing pruned by it, so
+    the intended time bound was never actually applied."""
+    cutoff = float(now_s) - HISTORY_WINDOW_S
+    while history and float(history[0]["ts"]) < cutoff:
+        history.popleft()
+    if len(history) > HISTORY_HARD_CAP:
+        print(
+            f"[trade-forecast] history hard cap hit ({len(history)} obs in "
+            f"{HISTORY_WINDOW_S:.0f}s); lookback coverage is NOT guaranteed",
+            flush=True,
+        )
+        while len(history) > HISTORY_HARD_CAP:
+            history.popleft()
 
 
 def _is_finite(value: Any) -> bool:
@@ -466,6 +490,7 @@ def score_round(
     }
     if not history or observation["ts"] > history[-1]["ts"]:
         history.append(observation)
+        _prune_history(history, observation["ts"])
     cached = _CACHE.get(round_id)
     seconds_left = float(round_data.get("seconds_left") or 0.0)
     checkpoints = ENTRY_CHECKPOINTS_S.get(int(round_data.get("horizon") or 0), ())

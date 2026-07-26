@@ -192,7 +192,15 @@ def clean_xy(
     rejected rows. It is underscore-prefixed and keyword-only so it cannot be passed by accident.
     """
     selected = frame.loc[mask].copy()
-    if not _allow_invalid_candidates and "candidate_valid" in selected.columns:
+    if not _allow_invalid_candidates:
+        # FAIL CLOSED on absence. "Filter it if the column happens to exist" meant a stale
+        # dataset predating the column trained completely unfiltered - the exact fail-open this
+        # was meant to remove.
+        if "candidate_valid" not in selected.columns:
+            raise RuntimeError(
+                "dataset is missing the mandatory candidate_valid column; rebuild with "
+                "build_complete_trade_dataset.py before training"
+            )
         selected = selected[selected["candidate_valid"] == 1]
     if require_complete_entry:
         selected = selected[selected["entry_complete"] == 1]

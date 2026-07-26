@@ -1,6 +1,15 @@
 """Verify every preregistration hash recorded in PREREG_HASH.txt still matches its file.
 
-A frozen protocol whose bytes changed is not a frozen protocol. The hash file is the integrity
+HASH CONTRACT: sha256 of the LF-canonicalised TEXT, not of the raw file bytes.
+
+Recorded value = sha256( file_bytes.replace(CRLF, LF) )
+
+An external auditor must not assume `sha256sum <file>` reproduces the recorded value on a
+Windows checkout - it will not, because git rewrites .md to CRLF. Canonicalising means the hash
+identifies the protocol's CONTENT rather than the checkout that produced it, while any real edit
+to the text still changes it.
+
+A frozen protocol whose TEXT changed is not a frozen protocol. The hash file is the integrity
 record for every experiment in this repository; if a protocol is edited after freezing, every
 result scored under it is invalid. Running this in CI means such an edit cannot pass review
 unnoticed - which is the entire point of recording the hash in the first place.

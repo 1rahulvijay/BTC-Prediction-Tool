@@ -65,13 +65,31 @@ def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
         blockers.append("challenger directory contains no model artifacts")
 
     # 2. every artifact must carry a manifest - unmanifested bytes have no provenance at all.
-    unmanifested = [
-        p.name for p in artifacts
-        if not (p.with_suffix(p.suffix + ".manifest.json").is_file()
-                or p.with_suffix(".manifest.json").is_file())
-    ]
+    # TWO CONVENTIONS EXIST IN THIS REPO and accepting either silently hides a real mismatch:
+    #   model_common.artifact_issues()          -> x.manifest.json      (suffix REPLACED)
+    #   artifact_identity.artifact_manifest_path -> x.pkl.manifest.json (suffix APPENDED)
+    # An artifact whose manifest uses the convention its own LOADER does not read is
+    # effectively unmanifested at serving time, so the mix is reported, not smoothed over.
+    unmanifested, appended, replaced = [], [], []
+    for p in artifacts:
+        has_appended = p.with_suffix(p.suffix + ".manifest.json").is_file()
+        has_replaced = p.with_suffix(".manifest.json").is_file()
+        if has_appended:
+            appended.append(p.name)
+        if has_replaced:
+            replaced.append(p.name)
+        if not (has_appended or has_replaced):
+            unmanifested.append(p.name)
     if unmanifested:
         blockers.append(f"artifacts without a manifest: {sorted(unmanifested)}")
+    if appended and replaced:
+        blockers.append(
+            f"MIXED manifest naming in one bundle - appended={sorted(appended)} "
+            f"replaced={sorted(replaced)}. A loader reads only one convention, so part of this "
+            f"bundle would serve unmanifested."
+        )
+    if appended:
+        notes.append(f"manifest naming (appended .pkl.manifest.json): {sorted(appended)}")
 
     # 3/4. the matrix must have passed its own monthly gate, and match the claimed window.
     quality = _load_json(MATRIX_QUALITY)

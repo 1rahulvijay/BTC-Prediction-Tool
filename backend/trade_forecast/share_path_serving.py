@@ -39,6 +39,8 @@ _MTIME = -1.0
 _CHECKED = 0.0
 _ERROR = ""
 _MANIFEST: dict[str, Any] = {}
+_RESOLUTION: dict = {}
+_TOKEN = None
 _PIN = ArtifactPin("share")
 
 
@@ -48,7 +50,22 @@ def load_model(force: bool = False) -> dict[str, Any] | None:
     now = time.time()
     if not force and _CHECKED and now - _CHECKED < 30.0:
         return _BUNDLE
+    global _RESOLUTION, _TOKEN
     resolved, _resolution = resolve_artifact(ARTIFACT_NAME, LEGACY_PATH)
+    _RESOLUTION = _resolution
+    # CACHE ON IDENTITY, NOT TIME. mtime is not model identity: two bundles can carry the same
+    # mtime, so a champion swap could leave the OLD bundle loaded while MODEL_PATH claimed the
+    # new one. The token also forces a reload after an evidence-mode refusal, which previously
+    # left _MTIME stale and could pin a None result.
+    token = (
+        _resolution.get("bundle_hash"),
+        _resolution.get("source"),
+        str(resolved) if resolved else None,
+    )
+    if token != _TOKEN:
+        _TOKEN = token
+        _MTIME = -1.0
+        force = True
     if resolved is None:
         # Evidence mode with no verified bundle: serve NO model rather than unverified bytes.
         _BUNDLE, _MANIFEST, _ERROR = None, {}, str(_resolution.get("note") or "no verified bundle")
@@ -92,6 +109,13 @@ def status() -> dict[str, Any]:
         "artifact": str(MODEL_PATH),
         "artifact_hash": _MANIFEST.get("artifact_sha256"),
         "policy_hash": _MANIFEST.get("policy_hash"),
+        # Resolution provenance, so a legacy fallback is visible through the status API rather
+        # than only in a log line nobody reads.
+        "resolution_source": _RESOLUTION.get("source"),
+        "bundle_verified": _RESOLUTION.get("verified"),
+        "bundle_hash": _RESOLUTION.get("bundle_hash"),
+        "evidence_mode": _RESOLUTION.get("evidence_mode"),
+        "resolution_note": _RESOLUTION.get("note"),
         **_PIN.status(),
     }
 

@@ -46,6 +46,9 @@ jobs:
       - name: M0 gates (matched-random, BH, profit concentration)
         run: python backend/trade_forecast/m0_gates.py --selftest
 
+      - name: Serving integration (EXECUTES loaders, real pointer swaps)
+        run: python -m backend.trade_forecast.test_serving_integration
+
       - name: Champion resolver (atomic promotion actually reaches serving)
         run: python backend/trade_forecast/champion_resolver.py --selftest
 
@@ -127,6 +130,7 @@ jobs:
           python -m backend.trade_forecast.test_builder_integration || exit /b 1
           python backend/trade_forecast/forward_evidence.py --selftest || exit /b 1
           python backend/trade_forecast/m0_gates.py --selftest || exit /b 1
+          python -m backend.trade_forecast.test_serving_integration || exit /b 1
           python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
