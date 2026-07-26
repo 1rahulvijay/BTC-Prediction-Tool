@@ -9,10 +9,15 @@ from collections import defaultdict, deque
 from typing import Any
 
 from . import btc_path_serving, execution_serving, share_path_serving
-from .trade_forecast_logger import LOG_HEALTH, log_forecast_monitored
+from .trade_forecast_logger import (
+    LOG_HEALTH,
+    log_forecast_monitored,
+    log_forward_prediction_v2,
+)
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
 from .trade_schema import (
+    M0_V2 as _M0_V2,
     FEATURE_COLUMNS,
     MAX_LOOKBACK_ERROR_S,
     PROMOTION_GATE,
@@ -234,6 +239,58 @@ def _sensitivity_30s(velocity, current_btc, return_bps):
     return _safe_div(float(velocity), delta)
 
 
+# The frozen identity every V2 evidence row must carry. Singleton across an evidence set by
+# construction: all four come from the loaded bundle / frozen config / frozen threshold artifact,
+# so if any of them changes mid-run the manifest's singleton check will refuse the whole set -
+# which is the intended behaviour, not a nuisance.
+OWN_FORWARD_RECORDER_SOURCE = "l2_recorder"
+_THRESHOLD_CACHE: dict[str, Any] = {}
+
+
+def _frozen_identity() -> dict[str, Any]:
+    from .trade_schema import M0_V2
+
+    bundle = share_path_serving.status().get("bundle_hash") or ""
+    threshold_hash, threshold_value, frozen_at = "", None, None
+    if not _THRESHOLD_CACHE:
+        import os as _os
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[2]
+        data = _Path(_os.environ.get("BTC_DATA_DIR") or root / "data")
+        path = data / "research" / "complete_trade_forecast" / "entry_threshold.json"
+        try:
+            from .forward_evidence import ThresholdArtifact
+
+            artifact = ThresholdArtifact.load(path)
+            _THRESHOLD_CACHE.update({
+                "hash": artifact.threshold_hash(),
+                "value": artifact.threshold,
+                "created_at": artifact.created_at,
+            })
+        except Exception:
+            # No frozen threshold yet. The row still records that fact honestly; the forward
+            # manifest will refuse an evidence set whose threshold hash is empty.
+            _THRESHOLD_CACHE.update({"hash": "", "value": None, "created_at": None})
+    threshold_hash = _THRESHOLD_CACHE.get("hash") or ""
+    threshold_value = _THRESHOLD_CACHE.get("value")
+    frozen_at = _THRESHOLD_CACHE.get("created_at")
+    return {
+        "model_bundle_sha256": bundle,
+        # SCHEMA hash, not values: identical for every row under one frozen feature contract.
+        "feature_schema_sha256": hashlib.sha256(
+            json.dumps(list(FEATURE_COLUMNS), separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "policy_sha256": policy_hash(),
+        "threshold_sha256": threshold_hash,
+        "prereg_sha256": M0_V2["prereg_sha256"],
+        "prereg_frozen_at_s": M0_V2.get("frozen_at_s"),
+        "model_frozen_at_s": share_path_serving.status().get("pinned_at"),
+        "threshold_frozen_at_s": frozen_at,
+        "_entry_threshold": threshold_value,
+    }
+
+
 def _prune_history(history: deque, now_s: float) -> None:
     """Drop observations older than HISTORY_WINDOW_S.
 
@@ -370,7 +427,19 @@ def _logger_rows(
         # NOTE: the de-duplication key is marked ONLY AFTER a confirmed write (see the end of
         # this block). Marking it here meant a failed insert permanently suppressed every later
         # retry for that checkpoint - the evidence was gone, and the run looked merely quiet.
-        forecast_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        # The identity must include the FROZEN POLICY, not just the market moment. Keyed on
+        # round/checkpoint/side/qty alone, a deliberate model or threshold change re-scoring the
+        # same checkpoint collides with the earlier forecast and the append-only insert rejects
+        # the new evidence as a duplicate.
+        identity = _frozen_identity()
+        forecast_id = hashlib.sha256(
+            "|".join([
+                key,
+                identity["model_bundle_sha256"],
+                identity["policy_sha256"],
+                identity["threshold_sha256"],
+            ]).encode("utf-8")
+        ).hexdigest()[:32]
         share = candidate.get("share_forecast") or {}
         events = share.get("events") or {}
         summary = share.get("summary") or {}
@@ -456,7 +525,34 @@ def _logger_rows(
         # invisible either, and it must never be PERMANENT. The de-dup key is committed only on a
         # confirmed write, so a transient failure is retried on the next tick instead of silently
         # deleting that checkpoint from the evidence set forever.
-        if log_forecast_monitored(forecast, paths):
+        v2_row = {
+            "forecast_id": forecast_id,
+            "round_id": round_data.get("id"),
+            "exposure_id": f"{round_data.get('id')}@{int(seconds_left)}",
+            "seconds_left": int(seconds_left),
+            "side": candidate["side"],
+            "requested_qty": float(candidate["requested_qty"]),
+            # Units in the name; both stored, neither inferred from the other.
+            "prediction_ts_ms": int(now_ms),
+            "prediction_ts_s": float(now_ms) / 1000.0,
+            **identity,
+            # Per-row by design: the VALUES this prediction was computed from. Never a singleton.
+            "feature_values_sha256": hashlib.sha256(
+                json.dumps(
+                    {k: v for k, v in candidate["features"].items()
+                     if not k.startswith("_")},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "entry_threshold": identity.pop("_entry_threshold", None),
+            "score": (share.get("events") or {}).get(_M0_V2["score_label"]),
+            "action": evaluation.get("action"),
+            "predicted_entry_vwap": candidate.get("predicted_entry_vwap"),
+            "exit_plan": evaluation.get("recommended_exit_plan"),
+            "reason_codes_json": json.dumps(evaluation.get("reason_codes") or []),
+            "evidence_source": OWN_FORWARD_RECORDER_SOURCE,
+        }
+        if log_forward_prediction_v2(v2_row, paths, legacy_forecast=forecast):
             _LOGGED.add(key)
         else:
             _LOGGED.discard(key)
