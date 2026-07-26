@@ -124,35 +124,93 @@ def causal_selection(rows: list[dict[str, Any]], threshold: float) -> list[dict[
 def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
              threshold: ThresholdArtifact) -> dict[str, Any]:
     """Score the frozen policy. Pure over its inputs so it is testable without a database."""
+    # The REAL boundary, not the prereg date twice over. Evidence must post-date every freeze
+    # that defines the policy, and the latest of them is what binds.
+    def _max_field(name: str, fallback: float) -> float:
+        values = [float(r[name]) for r in rows if r.get(name) is not None]
+        return max(values) if values else fallback
+    prereg_at = float(M0_V2["frozen_at_s"])
+    model_at = _max_field("model_frozen_at_s", prereg_at)
+    threshold_at = _max_field("threshold_frozen_at_s", threshold.created_at)
+    boundary = max(prereg_at, model_at, threshold_at)
     manifest = build_forward_manifest(
         rows,
         prereg_sha256=M0_V2["prereg_sha256"],
-        prereg_frozen_at=float(M0_V2["frozen_at_s"]),
-        model_frozen_at=float(M0_V2["frozen_at_s"]),
+        prereg_frozen_at=boundary,
+        model_frozen_at=boundary,
         min_rounds=int(M0_V2["min_forward_rounds"]),
         min_weeks=int(M0_V2["min_forward_weeks"]),
     )
     if not manifest.get("admissible"):
         return {"status": "INADMISSIBLE", "passed": False, "manifest": manifest}
 
-    # Every selected prediction must carry the threshold that actually selected it.
-    mismatched = [
-        r for r in rows if str(r.get("threshold_sha256")) != threshold.threshold_hash()
-    ]
-    if mismatched:
-        return {
-            "status": "INADMISSIBLE", "passed": False, "manifest": manifest,
-            "blockers": [
-                f"{len(mismatched)} rows were produced under a DIFFERENT threshold than the "
-                f"frozen artifact ({threshold.threshold_hash()[:16]})"
-            ],
-        }
+    # IDENTITY RELATIONSHIPS. Each of these is a way the evidence can look internally
+    # consistent while describing a different experiment than the one being claimed.
+    problems: list[str] = []
+    digest = threshold.threshold_hash()
+    if [r for r in rows if str(r.get("threshold_sha256")) != digest]:
+        problems.append(
+            f"rows were produced under a DIFFERENT threshold than the frozen artifact "
+            f"({digest[:16]})")
+    models = {str(r.get("model_sha256")) for r in rows}
+    policies = {str(r.get("policy_sha256")) for r in rows}
+    if len(models) == 1 and threshold.model_sha256 not in models:
+        problems.append(
+            f"the threshold was derived from model {threshold.model_sha256[:16]} but the "
+            f"evidence was produced by {list(models)[0][:16]} - the threshold does not "
+            f"belong to this model")
+    if len(policies) == 1 and threshold.policy_sha256 not in policies:
+        problems.append(
+            f"the threshold was derived under policy {threshold.policy_sha256[:16]} but the "
+            f"evidence ran under {list(policies)[0][:16]}")
+    preregs = {str(r.get("prereg_sha256")) for r in rows}
+    if preregs != {M0_V2["prereg_sha256"]}:
+        problems.append(f"rows do not all carry the frozen preregistration hash ({preregs})")
+    runs = {r.get("evidence_run_id") for r in rows}
+    if len(runs) != 1 or None in runs:
+        problems.append(f"evidence spans {len(runs)} run id(s) {runs} - exactly one is required")
+    if problems:
+        return {"status": "IDENTITY_MISMATCH", "passed": False,
+                "manifest": manifest, "blockers": problems}
 
     selected = causal_selection(rows, threshold.threshold)
-    resolved = [r for r in selected if r.get("forecast_id") in outcomes]
-    unresolved = len(selected) - len(resolved)
-    if not resolved:
+    if not selected:
         return {"status": "NO_RESOLVED_TRADES", "passed": False, "manifest": manifest}
+    # COMPLETE RESOLUTION OR NOTHING. Evaluating only the trades that happen to have resolved is
+    # outcome-availability bias: the quickest or cleanest trades resolve first, and the sample
+    # silently becomes the easy half. Missing values are also never defaulted - a missing
+    # plan_net is not 0.0, a missing stress result is not the unstressed one, and a missing
+    # candidate pool is not "the trade competed against itself".
+    missing = [r["forecast_id"] for r in selected if r.get("forecast_id") not in outcomes]
+    incomplete = []
+    for row in selected:
+        outcome = outcomes.get(row.get("forecast_id"))
+        if not outcome:
+            continue
+        for field in ("plan_net", "stress_1000ms_plan_net", "candidate_pnls_json"):
+            value = outcome.get(field)
+            if value is None or (
+                field != "candidate_pnls_json" and not np.isfinite(float(value))
+            ):
+                incomplete.append(f"{row['forecast_id']}:{field}")
+    if missing or incomplete:
+        return {
+            "status": "NOT_READY", "passed": False, "manifest": manifest,
+            "selected_trades": len(selected),
+            "unresolved": len(missing), "incomplete": len(incomplete),
+            "blockers": [
+                f"{len(missing)} selected trade(s) have no official outcome and "
+                f"{len(incomplete)} have incomplete outcome fields; a definitive result "
+                f"requires EVERY selected trade resolved"
+            ][:1] + [f"example: {x}" for x in (missing[:2] + incomplete[:2])],
+        }
+    if len(selected) < int(M0_V2.get("min_selected_trades", 100)):
+        return {"status": "NOT_READY", "passed": False, "manifest": manifest,
+                "selected_trades": len(selected),
+                "blockers": [f"{len(selected)} selected trades < "
+                             f"{M0_V2.get('min_selected_trades', 100)} required"]}
+    resolved = selected
+    unresolved = 0
 
     pnl, hours, weeks, days, by_round = [], [], [], [], {}
     stress = []
@@ -185,6 +243,12 @@ def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
     family = {"matched_random": control.get("p_value")}
     p_values = [v for v in family.values() if v is not None]
     correction = benjamini_hochberg(p_values, q=float(M0_V2["multiplicity_q"]))
+    # A FAMILY OF ONE IS NOT A CORRECTION. Reporting "survives BH" over a single p-value implies
+    # multiplicity protection that was never applied. Clarification 001 requires the family size
+    # to be stated with the result.
+    correction["family_size"] = len(p_values)
+    correction["family"] = {k: v for k, v in family.items()}
+    correction["multiplicity_protection"] = len(p_values) > 1
 
     gates = {
         "admissible": True,
@@ -213,6 +277,7 @@ def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
         "profit_factor": factor,
         "matched_random": control,
         "multiplicity": correction,
+        "clarification_001_sha256": M0_V2.get("clarification_001_sha256"),
         "hour_profit_share": hour_share,
         "week_profit_share": week_share,
         "positive_weeks": positive_weeks,
@@ -354,6 +419,8 @@ def selftest() -> int:
         dataset_sha256="d" * 64, model_sha256="m" * 64,
         policy_sha256="p" * 64, code_sha256="c" * 64)
     digest = art.threshold_hash()
+    # The fixture must satisfy the identity RELATIONSHIPS too: the threshold records the model
+    # and policy it was derived from, and the evidence must have been produced by those.
     freeze = float(M0_V2["frozen_at_s"])
 
     def synth(n=1200, span_days=63, pnl=lambda i: 0.03 if i % 3 else -0.01):
@@ -366,7 +433,11 @@ def selftest() -> int:
                     "forecast_id": fid, "round_id": f"r{i}", "seconds_left": left,
                     "prediction_ts": stamp, "score": score, "model_sha256": "m" * 64,
                     "feature_schema_sha256": "f" * 64, "policy_sha256": "p" * 64,
-                    "threshold_sha256": digest, "evidence_source": "l2_recorder"})
+                    "threshold_sha256": digest, "evidence_source": "l2_recorder",
+                    "prereg_sha256": M0_V2["prereg_sha256"],
+                    "evidence_run_id": "unit_run",
+                    "model_frozen_at_s": freeze,
+                    "threshold_frozen_at_s": art.created_at})
                 outs[fid] = {"plan_net": pnl(i), "stress_1000ms_plan_net": pnl(i) * 0.9,
                              "candidate_pnls_json": json.dumps([pnl(i), -0.02, 0.01, -0.01])}
         return rows, outs
@@ -383,8 +454,18 @@ def selftest() -> int:
     chk(evaluate(leaked, outs, art)["status"] == "INADMISSIBLE",
         "ONE pre-freeze row makes the whole evidence set inadmissible")
     other = [dict(r, threshold_sha256="0" * 64) for r in rows]
-    chk(evaluate(other, outs, art)["status"] == "INADMISSIBLE",
-        "rows produced under a DIFFERENT threshold are refused")
+    # IDENTITY_MISMATCH, not the generic INADMISSIBLE: the set is well-formed evidence of a
+    # DIFFERENT experiment, and saying so precisely tells an operator what to fix.
+    chk(evaluate(other, outs, art)["status"] == "IDENTITY_MISMATCH",
+        "rows produced under a DIFFERENT threshold are refused as an identity mismatch")
+    foreign_model = ThresholdArtifact(
+        threshold=0.70, objective="x", target_entry_rate=0.2,
+        calibration_start_ts=1.0, calibration_end_ts=2.0, calibration_rows=5000,
+        dataset_sha256="d" * 64, model_sha256="z" * 64,
+        policy_sha256="p" * 64, code_sha256="c" * 64)
+    chk(evaluate([dict(r, threshold_sha256=foreign_model.threshold_hash()) for r in rows],
+                 outs, foreign_model)["status"] == "IDENTITY_MISMATCH",
+        "a threshold derived from a model that did not produce the evidence is refused")
     third = [dict(r, evidence_source="pmxt") for r in rows]
     chk(evaluate(third, outs, art)["status"] == "INADMISSIBLE",
         "third-party historical rows cannot support promotion")

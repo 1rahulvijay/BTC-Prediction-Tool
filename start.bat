@@ -267,6 +267,9 @@ python backend/trade_forecast/forward_evidence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
 python backend/trade_forecast/m0_gates.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a7. Ledger V2 end-to-end - real DuckDB round trip:
+python -m backend.trade_forecast.test_ledger_v2_end_to_end >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
 echo [selftest] a6. Forward M0 V2 evaluator + import boundary:
 python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a

@@ -1,489 +1,559 @@
 hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
     python backend/research/verify_prereg_hashes.py
 =hash_mode = lf_canonical_text_v1
 Every sha256 below is computed over the file's LF-canonicalised text:
-    sha256( file_bytes.replace(b'
+    sha256( file_bytes.replace(b'
+
 ', b'
 ') )
 A plain `sha256sum` will NOT match on a CRLF checkout. Verify with:
@@ -551,3 +621,15 @@ and the 395-round July pilot was used to DESIGN those changes - so that dataset 
 data with kill-only authority. The promotion test uses forward evidence collected after this
 freeze. Verify:
   python -c "import hashlib;print(hashlib.sha256(open('docs/active/PREREG_COMPLETE_TRADE_M0_V2.md','rb').read()).hexdigest())"
+
+======================================================================
+PREREG_COMPLETE_TRADE_M0_V2_CLARIFICATION_001.md
+sha256 = 920352412cb715d1786e45f97eec5460d1fc09b216015507eb9a200221107996
+frozen = 2026-07-26
+bytes  = 5067
+
+Completes the V2 decision procedure in executable terms: threshold derivation, 20% calibration
+entry rate, causal first-qualifying checkpoint rule, candidate gates, bucket role (DIAGNOSTIC
+ONLY), matched-random construction from same-checkpoint candidates, multiplicity family, and
+minimum counts. Declared with 0 forward rows and no threshold artifact in existence.
+

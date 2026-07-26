@@ -275,7 +275,21 @@ def _frozen_identity() -> dict[str, Any]:
     threshold_hash = _THRESHOLD_CACHE.get("hash") or ""
     threshold_value = _THRESHOLD_CACHE.get("value")
     frozen_at = _THRESHOLD_CACHE.get("created_at")
+    # EVIDENCE RUN GATE. A row is promotion-authoritative only when every freeze already exists.
+    # Writing V2 rows with an empty threshold/model identity before the freeze permanently
+    # poisons the singleton checks: old and new rows mix and the set can never be admissible
+    # again. Before all of it exists we still record V1 diagnostics; we do NOT mint V2 evidence.
+    complete = bool(bundle) and bool(threshold_hash) and frozen_at is not None
+    run_id = (
+        hashlib.sha256(
+            "|".join([bundle, policy_hash(), threshold_hash, M0_V2["prereg_sha256"]])
+            .encode("utf-8")
+        ).hexdigest()[:24]
+        if complete else None
+    )
     return {
+        "_evidence_complete": complete,
+        "evidence_run_id": run_id,
         "model_bundle_sha256": bundle,
         # SCHEMA hash, not values: identical for every row under one frozen feature contract.
         "feature_schema_sha256": hashlib.sha256(
@@ -422,8 +436,7 @@ def _logger_rows(
             f"{round_data.get('id')}|{nearest}|{candidate['side']}|"
             f"{candidate['requested_qty']}"
         )
-        if key in _LOGGED:
-            continue
+        # NOTE: the de-dup check moves below, keyed on forecast_id - see the comment there.
         # NOTE: the de-duplication key is marked ONLY AFTER a confirmed write (see the end of
         # this block). Marking it here meant a failed insert permanently suppressed every later
         # retry for that checkpoint - the evidence was gone, and the run looked merely quiet.
@@ -440,6 +453,11 @@ def _logger_rows(
                 identity["threshold_sha256"],
             ]).encode("utf-8")
         ).hexdigest()[:32]
+        # Keyed on the COLLISION-PROOF id, not round/checkpoint/side/qty. With the old key a
+        # legitimate model or threshold change was suppressed in memory before its new
+        # forecast_id was ever considered - the very re-score the new id exists to allow.
+        if forecast_id in _LOGGED:
+            continue
         share = candidate.get("share_forecast") or {}
         events = share.get("events") or {}
         summary = share.get("summary") or {}
@@ -525,6 +543,13 @@ def _logger_rows(
         # invisible either, and it must never be PERMANENT. The de-dup key is committed only on a
         # confirmed write, so a transient failure is retried on the next tick instead of silently
         # deleting that checkpoint from the evidence set forever.
+        # Refuse to mint promotion evidence until the run identity is complete.
+        if not identity.get("_evidence_complete"):
+            if log_forecast_monitored(forecast, paths):
+                _LOGGED.add(forecast_id)
+            else:
+                _LOGGED.discard(forecast_id)
+            continue
         v2_row = {
             "forecast_id": forecast_id,
             "round_id": round_data.get("id"),
@@ -535,7 +560,7 @@ def _logger_rows(
             # Units in the name; both stored, neither inferred from the other.
             "prediction_ts_ms": int(now_ms),
             "prediction_ts_s": float(now_ms) / 1000.0,
-            **identity,
+            **{k: v for k, v in identity.items() if not k.startswith("_")},
             # Per-row by design: the VALUES this prediction was computed from. Never a singleton.
             "feature_values_sha256": hashlib.sha256(
                 json.dumps(
@@ -553,9 +578,9 @@ def _logger_rows(
             "evidence_source": OWN_FORWARD_RECORDER_SOURCE,
         }
         if log_forward_prediction_v2(v2_row, paths, legacy_forecast=forecast):
-            _LOGGED.add(key)
+            _LOGGED.add(forecast_id)
         else:
-            _LOGGED.discard(key)
+            _LOGGED.discard(forecast_id)
 
 
 def score_round(

@@ -157,3 +157,76 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# ===================================================================================
+# V2 RESOLVER - the only writer of complete_trade_outcomes_v2
+# ===================================================================================
+# The legacy resolver reads complete_trade_forecasts and writes complete_trade_outcomes, so the
+# V2 outcome table would have stayed empty forever and the forward evaluator would have had
+# nothing to score. This resolver reads V2 predictions and writes V2 outcomes, and it refuses
+# anything whose settlement is not officially sourced.
+
+
+def resolve_v2(
+    settled_rounds: dict[str, dict[str, Any]],
+    conn: Any = None,
+    *,
+    evidence_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Resolve V2 predictions against OFFICIAL settlements.
+
+    `settled_rounds` maps round_id -> {resolution_source, settled_side, plan_net,
+    stress_1000ms_plan_net, candidate_pnls, entry_filled, entry_vwap, plan_exit_kind,
+    plan_holding_s}. Rounds whose resolution_source is not on the frozen allowlist are SKIPPED
+    with a reason rather than written, because an unofficial outcome is not ground truth."""
+    from .trade_forecast_logger import (
+        FORECASTS_V2_DDL,
+        connect,
+        log_outcome_v2,
+        read_forward_rows,
+        read_resolved_outcomes,
+    )
+    from .trade_schema import OFFICIAL_RESOLUTION_SOURCES
+
+    own = conn is None
+    conn = conn or connect()
+    written, skipped = 0, []
+    try:
+        conn.execute(FORECASTS_V2_DDL)
+        rows = read_forward_rows(conn, evidence_run_id)
+        already = set(read_resolved_outcomes(conn))
+        for row in rows:
+            fid = row["forecast_id"]
+            if fid in already:
+                continue
+            settled = settled_rounds.get(row.get("round_id"))
+            if not settled:
+                skipped.append((fid, "no_settlement"))
+                continue
+            source = str(settled.get("resolution_source") or "")
+            if source not in OFFICIAL_RESOLUTION_SOURCES:
+                skipped.append((fid, f"unofficial_source:{source or 'missing'}"))
+                continue
+            log_outcome_v2({
+                "forecast_id": fid,
+                "round_id": row.get("round_id"),
+                "resolved_at_s": float(settled.get("resolved_at_s") or time.time()),
+                "resolution_source": source,
+                "settled_side": settled.get("settled_side"),
+                "entry_filled": settled.get("entry_filled"),
+                "entry_vwap": settled.get("entry_vwap"),
+                "plan_net": settled.get("plan_net"),
+                "plan_exit_kind": settled.get("plan_exit_kind"),
+                "plan_holding_s": settled.get("plan_holding_s"),
+                "stress_1000ms_plan_net": settled.get("stress_1000ms_plan_net"),
+                # The matched-random control needs the SAME-CHECKPOINT alternatives the policy
+                # could have taken. A pool containing later checkpoints would hand the random
+                # control opportunities that did not exist when the trade was made.
+                "candidate_pnls_json": json.dumps(settled.get("candidate_pnls") or []),
+            }, conn)
+            written += 1
+        return {"written": written, "skipped": len(skipped),
+                "skip_reasons": skipped[:10], "predictions": len(rows)}
+    finally:
+        if own:
+            conn.close()

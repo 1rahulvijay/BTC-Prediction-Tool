@@ -11,6 +11,8 @@ from typing import Any
 
 import duckdb
 
+from .trade_schema import OFFICIAL_RESOLUTION_SOURCES
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
@@ -197,6 +199,10 @@ CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
     exit_plan VARCHAR,
     reason_codes_json VARCHAR,
 
+    -- One immutable evidence run. Rows written before every freeze existed carry NULL and can
+    -- never join a promotion set; the evaluator selects exactly ONE run id.
+    evidence_run_id VARCHAR,
+
     -- Provenance class. Third-party historical archives (PMXT, Resolved Markets, Polyfun, HF)
     -- are genuinely useful for development but cannot carry THIS host's recv_ts, gaps or
     -- outages, so they have kill-only authority. Stamped per row so a mixed set is detectable
@@ -212,7 +218,7 @@ FORECASTS_V2_COLUMNS = (
     "prereg_sha256", "feature_values_sha256",
     "prereg_frozen_at_s", "model_frozen_at_s", "threshold_frozen_at_s",
     "entry_threshold", "score", "action", "predicted_entry_vwap", "exit_plan",
-    "reason_codes_json", "evidence_source",
+    "reason_codes_json", "evidence_source", "evidence_run_id",
 )
 
 
@@ -262,13 +268,20 @@ def log_outcome_v2(row: dict[str, Any], conn: Any = None) -> None:
 
 
 def read_resolved_outcomes(conn: Any = None) -> dict[str, dict[str, Any]]:
-    """Resolved outcomes keyed by forecast_id."""
+    """Resolved outcomes keyed by forecast_id. OFFICIAL provenance only.
+
+    The evaluator claims to read official outcomes, so the filter belongs here rather than in a
+    caller that might forget it. Anything whose resolution_source is not on the frozen allowlist
+    is not ground truth and is excluded."""
     own = conn is None
     conn = conn or connect()
     try:
         conn.execute(OUTCOMES_V2_DDL)
         cursor = conn.execute(
-            "SELECT " + ",".join(OUTCOMES_V2_COLUMNS) + " FROM complete_trade_outcomes_v2"
+            "SELECT " + ",".join(OUTCOMES_V2_COLUMNS)
+            + " FROM complete_trade_outcomes_v2 WHERE resolution_source IN ("
+            + ",".join("?" * len(OFFICIAL_RESOLUTION_SOURCES)) + ")",
+            list(OFFICIAL_RESOLUTION_SOURCES),
         )
         names = [d[0] for d in cursor.description]
         return {r[0]: dict(zip(names, r)) for r in cursor.fetchall()}
@@ -281,12 +294,16 @@ def log_forward_prediction_v2(
     v2_row: dict[str, Any],
     paths: list[dict[str, Any]] | None = None,
     legacy_forecast: dict[str, Any] | None = None,
+    conn: Any = None,
 ) -> bool:
     """ONE transactional write of the immutable V2 prediction plus its path diagnostics.
 
     Returns True only when the V2 row is durably written. The legacy V1 row is best-effort and
     its failure never masks a V2 success or failure - V2 is the evidence, V1 is compatibility."""
-    conn = connect()
+    # A caller may supply a connection - bulk paths open thousands of writes and one connection
+    # per row is pathologically slow. The live path still passes None and gets its own.
+    own = conn is None
+    conn = conn or connect()
     try:
         conn.execute(FORECASTS_V2_DDL)
         conn.execute("BEGIN TRANSACTION")
@@ -313,7 +330,8 @@ def log_forward_prediction_v2(
               flush=True)
         return False
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def log_forecast_v2(row: dict[str, Any], conn: Any = None) -> None:
@@ -336,20 +354,28 @@ def log_forecast_v2(row: dict[str, Any], conn: Any = None) -> None:
             conn.close()
 
 
-def read_forward_rows(conn: Any = None) -> list[dict[str, Any]]:
+def read_forward_rows(conn: Any = None, evidence_run_id: str | None = None) -> list[dict[str, Any]]:
     """Rows in the shape build_forward_manifest() expects. Seconds, schema hash, no aliasing."""
     own = conn is None
     conn = conn or connect()
     try:
         conn.execute(FORECASTS_V2_DDL)
+        # EVERY field the policy executes on. The first version returned only hashes and
+        # timestamps, so causal_selection() read seconds_left/score as missing, defaulted them
+        # to 0, and no database-loaded row could ever clear a positive threshold. The synthetic
+        # selftest hid it by hand-building complete dictionaries instead of reading this.
         cursor = conn.execute(
-            "SELECT forecast_id, round_id, evidence_source, "
-            "prediction_ts_s AS prediction_ts, "
+            "SELECT forecast_id, round_id, exposure_id, seconds_left, side, requested_qty, "
+            "prediction_ts_s AS prediction_ts, prediction_ts_ms, "
+            "score, action, entry_threshold, predicted_entry_vwap, exit_plan, "
             "model_bundle_sha256 AS model_sha256, feature_schema_sha256, "
-            "policy_sha256, threshold_sha256, prereg_sha256, "
-            "prereg_frozen_at_s, model_frozen_at_s "
-            "FROM complete_trade_forecasts_v2 ORDER BY prediction_ts_s"
-        )
+            "feature_values_sha256, policy_sha256, threshold_sha256, prereg_sha256, "
+            "prereg_frozen_at_s, model_frozen_at_s, threshold_frozen_at_s, "
+            "evidence_source, evidence_run_id "
+            "FROM complete_trade_forecasts_v2 "
+            "WHERE evidence_run_id = COALESCE(?, evidence_run_id) "
+            "ORDER BY prediction_ts_s"
+        , [evidence_run_id])
         names = [d[0] for d in cursor.description]
         return [dict(zip(names, r)) for r in cursor.fetchall()]
     finally:
