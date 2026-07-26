@@ -195,7 +195,13 @@ CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
     action VARCHAR,
     predicted_entry_vwap DOUBLE,
     exit_plan VARCHAR,
-    reason_codes_json VARCHAR
+    reason_codes_json VARCHAR,
+
+    -- Provenance class. Third-party historical archives (PMXT, Resolved Markets, Polyfun, HF)
+    -- are genuinely useful for development but cannot carry THIS host's recv_ts, gaps or
+    -- outages, so they have kill-only authority. Stamped per row so a mixed set is detectable
+    -- rather than merely discouraged; see forward_evidence.classify_source.
+    evidence_source VARCHAR
 )
 """
 
@@ -206,7 +212,7 @@ FORECASTS_V2_COLUMNS = (
     "prereg_sha256", "feature_values_sha256",
     "prereg_frozen_at_s", "model_frozen_at_s", "threshold_frozen_at_s",
     "entry_threshold", "score", "action", "predicted_entry_vwap", "exit_plan",
-    "reason_codes_json",
+    "reason_codes_json", "evidence_source",
 )
 
 
@@ -237,7 +243,8 @@ def read_forward_rows(conn: Any = None) -> list[dict[str, Any]]:
     try:
         conn.execute(FORECASTS_V2_DDL)
         cursor = conn.execute(
-            "SELECT forecast_id, round_id, prediction_ts_s AS prediction_ts, "
+            "SELECT forecast_id, round_id, evidence_source, "
+            "prediction_ts_s AS prediction_ts, "
             "model_bundle_sha256 AS model_sha256, feature_schema_sha256, "
             "policy_sha256, threshold_sha256, prereg_sha256, "
             "prereg_frozen_at_s, model_frozen_at_s "
