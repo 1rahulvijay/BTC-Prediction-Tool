@@ -39,6 +39,8 @@ import hashlib
 import json
 import os
 import sys
+import uuid
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -108,58 +110,84 @@ def canonical_result_hash(result: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def write_scored_result_once(result: dict[str, Any], result_path: Path) -> Path:
-    """Commit a SCORED result exactly once, crash-atomically. Returns the marker path.
+SPENT_DIRNAME = "COMPLETE_TRADE_M0_V2_SPENT"
 
-    Extracted from main() so the decision can be tested DIRECTLY. The previous regression test
-    drove this through the CLI with no threshold artifact present, so it exited at the earlier
-    Refused branch and never reached the status guard at all - it passed without exercising the
-    mechanism it named.
 
-    O_EXCL alone is exclusive but NOT crash-atomic: a process dying mid-write leaves a
-    truncated file at the final path, and every later attempt then refuses because a file
-    exists. The one-time experiment would be spent by a partial write. So the result is staged,
-    fsynced, READ BACK and verified, atomically renamed to a content-addressed name, and only
-    then does an exclusive marker record the spend. A crash before the marker leaves a
-    recoverable candidate, not a spent experiment."""
+def write_scored_result_once(result: dict[str, Any], result_path: Path) -> dict[str, Any]:
+    """Commit a SCORED result exactly once, as an ATOMIC DIRECTORY.
+
+    Extracted from main() so the decision can be tested directly - the earlier regression test
+    drove this through the CLI with no threshold artifact, exited at that Refused branch, and
+    never reached the status guard at all.
+
+    Why a directory rather than a file plus a marker: a separately written marker has its own
+    crash window. os.open(O_EXCL) creates the marker path BEFORE the digest is written, so a
+    crash in between leaves an empty marker - the experiment reads as spent while identifying
+    no winning result, and if two scorers raced, no way to tell which result won.
+
+    Here everything is assembled in a uniquely named staging directory, fsynced and verified,
+    and then ONE atomic rename publishes it. The spending event is the existence of the
+    directory, and the directory cannot exist without its complete contents inside it.
+
+        absent  -> unspent
+        present -> the complete result and its hash are necessarily within
+    """
     if result.get("status") != "SCORED":
         raise Refused(
             "status=" + str(result.get("status")) + " is a refusal, not a verdict; "
             "only SCORED may spend M0. Fix the blockers and re-run.")
-    directory = result_path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    marker = directory / "COMPLETE_TRADE_M0_V2_SPENT"
+    base = result_path.parent
+    base.mkdir(parents=True, exist_ok=True)
+    spent = base / SPENT_DIRNAME
+    if spent.exists():
+        raise Refused("M0 V2 is already spent: " + str(spent))
     digest = canonical_result_hash(result)
-    final = directory / ("result_" + digest + ".json")
     payload = json.dumps({**result, "result_sha256": digest,
                           "result_hash_mode": RESULT_HASH_MODE},
                          indent=2, sort_keys=True, default=str)
-    staging = directory / ("." + digest + ".staging")
-    with open(staging, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    # Read back before committing: a silently truncated stage must not become the record.
-    if staging.read_text(encoding="utf-8") != payload:
-        staging.unlink(missing_ok=True)
-        raise Refused("staged result did not verify on read-back; nothing was spent")
-    staging.replace(final)
+    # Unique per process AND per attempt: two concurrent identical scorers must not share a
+    # staging path and corrupt each other before either publishes.
+    staging = base / ("." + SPENT_DIRNAME + ".staging-" + str(os.getpid())
+                      + "-" + uuid.uuid4().hex[:12])
+    staging.mkdir(parents=True)
+    files = {"result.json": payload, "RESULT_SHA256": digest + chr(10)}
+    for name, content in files.items():
+        target = staging / name
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    # Verify from disk before publishing: a silently truncated stage must never be committed.
+    for name, content in files.items():
+        if (staging / name).read_text(encoding="utf-8") != content:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise Refused("staged " + name + " did not verify on read-back; nothing spent")
     try:
-        fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise Refused("M0 V2 is already spent: " + str(marker)) from None
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(digest + chr(10))
-        handle.flush()
-        os.fsync(handle.fileno())
-    if hasattr(os, "O_DIRECTORY"):
-        try:
-            dir_fd = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY)
-            os.fsync(dir_fd)
-            os.close(dir_fd)
-        except OSError:
-            pass
-    return marker
+        # Atomic publish. Renaming onto an existing directory fails on Windows always and on
+        # POSIX when non-empty, so a racing scorer loses here rather than overwriting.
+        os.rename(str(staging), str(spent))
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise Refused("M0 V2 was spent concurrently: " + str(spent)) from None
+    return {"spent_dir": spent, "result_path": spent / "result.json",
+            "result_sha256": digest}
+
+
+def read_spent_result(base: Path) -> dict[str, Any]:
+    """Load a committed result, verifying its hash. Raises if the spend is incomplete."""
+    spent = base / SPENT_DIRNAME
+    if not spent.is_dir():
+        raise Refused("not spent: " + str(spent))
+    result_file = spent / "result.json"
+    digest_file = spent / "RESULT_SHA256"
+    if not (result_file.is_file() and digest_file.is_file()):
+        # Only reachable if something outside this writer created the directory.
+        raise Refused("INTEGRITY FAILURE: spend directory is incomplete: " + str(spent))
+    stored = json.loads(result_file.read_text(encoding="utf-8"))
+    recorded = digest_file.read_text(encoding="utf-8").strip()
+    if stored.get("result_sha256") != recorded:
+        raise Refused("INTEGRITY FAILURE: result hash disagrees with the spend marker")
+    return stored
 
 
 def causal_selection(rows: list[dict[str, Any]], threshold: float) -> list[dict[str, Any]]:
@@ -399,12 +427,15 @@ def main() -> int:
         print("\nDRY RUN - nothing written. The scoring run is spent only with --score-once.")
         return 0
     try:
-        marker = write_scored_result_once(result, RESULT_PATH)
+        commit = write_scored_result_once(result, RESULT_PATH)
     except Refused as exc:
         print("NOT SPENT: " + str(exc))
         return 1
-    print("result committed: " + str(marker))
-    print(f"\nresult written (immutable): {RESULT_PATH}")
+    # Print what was ACTUALLY created. RESULT_PATH is the fixed name the writer no longer uses;
+    # reporting it would send an operator looking for a file that does not exist.
+    print("spent      : " + str(commit["spent_dir"]))
+    print("result     : " + str(commit["result_path"]))
+    print("result hash: " + commit["result_sha256"])
     print("PASS" if result.get("passed") else
           "FAIL -> COMPLETE_TRADE_M0_V2 CLOSED. MODELS FITTED = NONE.")
     return 0

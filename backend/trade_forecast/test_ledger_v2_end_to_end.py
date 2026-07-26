@@ -193,13 +193,14 @@ def run() -> int:
     chk(evaluate(rows, empty_pool, artifact)["status"] == "NOT_READY",
         "an EMPTY candidate pool is refused, not turned into a self-comparison")
 
-    # DIRECT test of the write decision. The previous version drove main() with no threshold
-    # artifact present, so it exited at the earlier Refused branch and never reached the status
-    # guard - it passed without exercising the mechanism its assertion named.
+    # DIRECT test of the write decision. An earlier version drove main() with no threshold
+    # artifact, exited at that Refused branch, and never reached the status guard - passing
+    # without exercising the mechanism its assertion named.
     import tempfile as _tf
     from pathlib import Path as _P
     from .evaluate_complete_trade_m0_v2_forward import (
-        Refused, canonical_result_hash, write_scored_result_once)
+        SPENT_DIRNAME, Refused, canonical_result_hash, read_spent_result,
+        write_scored_result_once)
 
     for status in ("NOT_READY", "INADMISSIBLE", "IDENTITY_MISMATCH", "NO_RESOLVED_TRADES"):
         target = _P(_tf.mkdtemp()) / "r.json"
@@ -207,38 +208,56 @@ def run() -> int:
             write_scored_result_once({"status": status, "passed": False}, target)
             chk(False, status + " must be refused")
         except Refused:
-            chk(not list(target.parent.iterdir()),
-                status + " -> REFUSED and NOTHING written")
+            present = list(target.parent.iterdir()) if target.parent.exists() else []
+            chk(not present, status + " -> REFUSED and NOTHING written")
 
-    target = _P(_tf.mkdtemp()) / "r.json"
     scored = {"status": "SCORED", "passed": True, "mean_net": 0.02}
-    marker = write_scored_result_once(scored, target)
-    chk(marker.exists(), "SCORED commits a spend marker")
-    files = list(target.parent.glob("result_*.json"))
-    chk(len(files) == 1, "exactly one content-addressed result file")
-    stored = json.loads(files[0].read_text(encoding="utf-8"))
-    chk(stored["result_sha256"] == canonical_result_hash(scored),
-        "recorded hash is the canonical hash of the pre-hash result")
-    chk(marker.read_text(encoding="utf-8").strip() == stored["result_sha256"],
-        "the marker records the result hash")
+    target = _P(_tf.mkdtemp()) / "r.json"
+    commit = write_scored_result_once(scored, target)
+    chk(commit["spent_dir"].is_dir(), "SCORED publishes an atomic spend directory")
+    chk(sorted(x.name for x in commit["spent_dir"].iterdir())
+        == ["RESULT_SHA256", "result.json"],
+        "the published directory holds exactly its contents - it cannot exist half-built")
+    chk(read_spent_result(target.parent)["result_sha256"] == canonical_result_hash(scored),
+        "the committed result verifies against the canonical hash")
     try:
         write_scored_result_once(scored, target)
         chk(False, "a second spend must be refused")
     except Refused:
-        chk(True, "a SECOND SCORED write is refused - spent once")
+        chk(True, "a SECOND spend is refused - spent once")
 
     target = _P(_tf.mkdtemp()) / "r.json"
     marker2 = write_scored_result_once(
         {"status": "SCORED", "passed": False, "mean_net": -0.05}, target)
-    chk(marker2.exists(), "SCORED+FAILED still writes - a negative verdict IS a result")
+    chk(marker2["spent_dir"].is_dir(),
+        "SCORED+FAILED still commits - a negative verdict IS a result")
 
-    # CRASH RECOVERY: a truncated file at the final path must not spend the experiment.
+    # FAULT INJECTION at each boundary.
     target = _P(_tf.mkdtemp()) / "r.json"
-    (target.parent / "result_deadbeef.json").write_text("{trunc", encoding="utf-8")
-    recovered = write_scored_result_once(
-        {"status": "SCORED", "passed": True, "mean_net": 0.01}, target)
-    chk(recovered.exists(),
-        "a leftover truncated result does NOT block a later genuine commit")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    (target.parent / ("." + SPENT_DIRNAME + ".staging-999-orphan")).mkdir()
+    chk(write_scored_result_once(scored, target)["spent_dir"].is_dir(),
+        "crash after staging leaves an orphan dir; a later score still commits")
+
+    target = _P(_tf.mkdtemp()) / "r.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    (target.parent / SPENT_DIRNAME).mkdir()
+    try:
+        read_spent_result(target.parent)
+        chk(False, "an empty spend dir must be an integrity failure")
+    except Refused as exc:
+        chk("INTEGRITY FAILURE" in str(exc),
+            "an EMPTY spend directory is an INTEGRITY FAILURE, not ordinary already-spent")
+
+    target = _P(_tf.mkdtemp()) / "r.json"
+    tampered = write_scored_result_once(scored, target)
+    (tampered["spent_dir"] / "RESULT_SHA256").write_text("0" * 64, encoding="utf-8")
+    try:
+        read_spent_result(target.parent)
+        chk(False, "a hash disagreement must be detected")
+    except Refused as exc:
+        chk("INTEGRITY FAILURE" in str(exc),
+            "result/marker hash disagreement is an INTEGRITY FAILURE")
 
     print("\nLEDGER V2 END-TO-END", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
