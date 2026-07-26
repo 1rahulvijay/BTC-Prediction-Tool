@@ -97,15 +97,26 @@ def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
             notes.append(f"admitted matrix window = {admitted}d")
 
     # 5. a head live outcomes call skill-less must not be promoted into the live bundle.
+    # head_health.py writes the verdict under "state". Reading "status" silently found nothing,
+    # so a DISABLED_NO_SKILL head would never have blocked promotion - a fail-open in the exact
+    # gate meant to be fail-closed. Both keys are read now so a future rename cannot re-open it.
     health = _load_json(HEAD_HEALTH)
+    heads = health.get("heads") or {}
     disabled = [
-        name for name, entry in (health.get("heads") or {}).items()
-        if str((entry or {}).get("status") or "") == "DISABLED_NO_SKILL"
+        name for name, entry in heads.items()
+        if "DISABLED_NO_SKILL" in {
+            str((entry or {}).get("state") or ""),
+            str((entry or {}).get("status") or ""),
+        }
     ]
     if disabled:
         blockers.append(f"heads measured DISABLED_NO_SKILL: {sorted(disabled)}")
-    if not health:
-        notes.append("no head-health report found (not blocking; nothing measured yet)")
+    # A MISSING report is a blocker for promotion. Nothing measured is not evidence of health,
+    # and promotion is exactly the moment where absence of evidence must not read as a pass.
+    if not heads:
+        blockers.append(
+            "no head-health report (promotion requires measured health; absence is not a pass)"
+        )
 
     return {
         "challenger": str(challenger),
@@ -174,6 +185,46 @@ def selftest() -> int:
             not any("without a manifest" in b for b in r["blockers"]),
             "a manifested artifact clears the manifest gate",
         )
+
+    # The wrong-key fail-open, pinned. head_health writes "state"; reading "status" found
+    # nothing, so DISABLED_NO_SKILL never blocked promotion.
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as tmp2:
+        root2 = Path(tmp2)
+        chal2 = root2 / "c"
+        chal2.mkdir()
+        (chal2 / "m.pkl").write_bytes(b"x")
+        (chal2 / "m.pkl.manifest.json").write_text("{}", encoding="utf-8")
+        global HEAD_HEALTH
+        original = HEAD_HEALTH
+        try:
+            hh = root2 / "hh.json"
+            hh.write_text(
+                json.dumps({"heads": {"p_hold": {"state": "DISABLED_NO_SKILL"}}}),
+                encoding="utf-8",
+            )
+            HEAD_HEALTH = hh
+            r = gate_report(chal2)
+            chk(
+                any("DISABLED_NO_SKILL" in b for b in r["blockers"]),
+                'a head disabled under the "state" key BLOCKS promotion (was silently ignored)',
+            )
+            hh.write_text(json.dumps({"heads": {}}), encoding="utf-8")
+            r = gate_report(chal2)
+            chk(
+                any("no head-health report" in b for b in r["blockers"]),
+                "a MISSING health report blocks promotion (absence is not a pass)",
+            )
+            hh.write_text(
+                json.dumps({"heads": {"p_hold": {"state": "USABLE"}}}), encoding="utf-8"
+            )
+            r = gate_report(chal2)
+            chk(
+                not any("DISABLED" in b or "no head-health" in b for b in r["blockers"]),
+                "a measured-USABLE head clears the health gate",
+            )
+        finally:
+            HEAD_HEALTH = original
 
     # Live state: the real 1265d attempt FAILED its monthly gate on 2023-03, so a bundle claiming
     # that window must be refused right now. This is the gate doing its job, not a bug.

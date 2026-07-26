@@ -86,11 +86,67 @@ M0_REALIZED_COLUMN = "plan_take_3c_or_stop_3c_net"
 M0_INDEPENDENT_UNIT = "round_id"
 
 
+def derive_entry_threshold(
+    frame: pd.DataFrame,
+    calibration_mask: np.ndarray,
+    event_head: dict[str, Any],
+    *,
+    target_entry_rate: float = 0.20,
+) -> float | None:
+    """Absolute action threshold, computed ONLY on calibration data.
+
+    Returns the score at which roughly `target_entry_rate` of calibration rounds would have been
+    entered. The value is then FROZEN: the evaluation period never recomputes it, so the policy
+    is executable live, where the future score distribution is unknown.
+
+    Returning None (insufficient calibration data) is correct and makes M0 refuse to score -
+    better than a threshold borrowed from the period being measured."""
+    rows = frame.loc[calibration_mask]
+    rows = rows[rows.get("entry_complete", 0) == 1] if "entry_complete" in rows else rows
+    if len(rows) < 100:
+        return None
+    x = rows.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
+    finite = np.isfinite(x).all(axis=1)
+    if finite.sum() < 100:
+        return None
+    scores = predict_classifier(event_head["members"], event_head["calibrator"], x[finite])
+    return float(np.quantile(scores, 1.0 - float(target_entry_rate)))
+
+
+def _causal_round_entries(
+    candidates: pd.DataFrame,
+    *,
+    threshold: float,
+    unit: str = "round_id",
+) -> pd.DataFrame:
+    """First qualifying entry per round, walking checkpoints earliest -> latest.
+
+    This is the executable policy: at each checkpoint, look only at candidates available AT that
+    checkpoint, take the best side/quantity among them, and enter if it clears `threshold`.
+    Nothing later in the round can influence the decision, which is precisely what taking a
+    round-wide maximum would do."""
+    if candidates.empty:
+        return candidates.head(0).copy()
+    qualifying = candidates[candidates["score"] >= float(threshold)]
+    if qualifying.empty:
+        return candidates.head(0).copy()
+    # Earliest checkpoint first = LARGEST seconds_left. Within a checkpoint, the best-scoring
+    # side/quantity is the one the policy would take at that instant.
+    ordered = qualifying.sort_values(
+        ["seconds_left", "score"], ascending=[False, False]
+    )
+    return ordered.groupby(unit, sort=False, as_index=False).head(1).copy()
+
+
 def evaluate_m0(
     frame: pd.DataFrame,
     test_mask: np.ndarray,
     event_head: dict[str, Any] | None,
+    entry_threshold: float | None = None,
+    calibration_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
+    """`entry_threshold` is the frozen absolute action threshold. It must come from development or
+    calibration data - never from the evaluation period's own score distribution."""
     result: dict[str, Any] = {
         "status": "NOT_EVALUABLE",
         "passed": False,
@@ -129,21 +185,28 @@ def evaluate_m0(
     candidates["score"] = predict_classifier(
         event_head["members"], event_head["calibrator"], x
     )
-    # ONE TRADE PER ROUND. Collapsing to one action per EXPOSURE removes the side x quantity
-    # duplication, but leaves 4-10 checkpoints per round that all settle on the SAME outcome and
-    # share overlapping price paths - correlated observations counted as independent trades.
+    # ONE TRADE PER ROUND, CHOSEN CAUSALLY.
     #
-    # The policy therefore chooses, per round: checkpoint + side + quantity, or NO_TRADE. That is
-    # what a deployable one-position-at-a-time policy actually does, and it is much harder to fool
-    # than per-checkpoint scoring. The portfolio alternative (multiple entries with an exposure
-    # cap and same-round correlation modelled explicitly) is a separate, larger design; it is not
-    # what is being scored here.
-    selected = (
-        candidates.sort_values("score", ascending=False)
-        .groupby(M0_INDEPENDENT_UNIT, sort=False, as_index=False)
-        .head(1)
-        .copy()
-    )
+    # Taking the max-scoring candidate across a whole round is NOT a policy - it is hindsight.
+    # At 120s left the live app cannot know a better score will appear at 60s, so "enter at the
+    # round's best checkpoint" cannot be executed and every statistic built on it is inflated.
+    #
+    # The causal rule walks checkpoints EARLIEST -> LATEST and takes the first candidate whose
+    # score clears an absolute threshold frozen BEFORE the evidence period. First qualifying
+    # entry wins; if none qualifies, the round is NO_TRADE. That is executable tick by tick.
+    #
+    # The threshold is absolute and frozen. It may NOT be a quantile of the evaluation period's
+    # own score distribution: qcut over the test set is a ranking diagnostic, not a deployable
+    # rule, because a live system has no access to the future distribution it would need.
+    if entry_threshold is None:
+        # No frozen threshold supplied. Refuse rather than silently inventing one from the
+        # evaluation period - that is precisely the leak this rewrite removes.
+        result["reasons"].append("no_frozen_entry_threshold_supplied")
+        result["status"] = "NOT_EVALUABLE"
+        return result
+    result["entry_threshold"] = float(entry_threshold)
+    result["entry_threshold_source"] = "frozen_before_evaluation"
+    selected = _causal_round_entries(candidates, threshold=entry_threshold)
     result["candidates_considered"] = int(len(candidates))
     result["independent_units"] = int(len(selected))
     result["independent_unit"] = M0_INDEPENDENT_UNIT

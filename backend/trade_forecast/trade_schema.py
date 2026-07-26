@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 
-CONFIG_VERSION = "2026-07-26-complete-trade-forecast-v1"
+CONFIG_VERSION = "2026-07-26-complete-trade-m0-v2"
 MODE = "SHADOW_PILOT_ONLY"
 
 HORIZONS = (5, 15)
@@ -70,18 +70,63 @@ EXIT_PLANS = (
     "BREAK_EVEN_LOCK_AFTER_3C",
 )
 
+# ===================================================================================
+# COMPLETE_TRADE_M0_V2 - THE SINGLE SOURCE OF TRUTH
+# ===================================================================================
+# Every executable gate is generated from this object and folded into policy_hash(), so the code
+# and PREREG_COMPLETE_TRADE_M0_V2.md cannot drift apart. Previously the prereg demanded 1,000
+# forward rounds and 8 forward weeks while the code enforced 500 rounds and 2 test weeks - the
+# document and the gate disagreed, and the gate is what actually runs.
+M0_V2 = {
+    "prereg": "PREREG_COMPLETE_TRADE_M0_V2.md",
+    "prereg_sha256": "138616d3893c5034bddd29be562f73c452e16f570af67ffcb1adda209df793a5",
+    "frozen_at": "2026-07-26",
+    "primary_plan": "TAKE_3C_OR_STOP_3C",
+    "score_label": "plan_take_3c_or_stop_3c_profitable",
+    "realized_column": "plan_take_3c_or_stop_3c_net",
+    "independent_unit": "round_id",
+    # Causal: walk checkpoints earliest -> latest, take the FIRST candidate clearing an absolute
+    # threshold frozen before the evidence period. Never the round-wide maximum (hindsight), and
+    # never a quantile of the evaluation period's own score distribution.
+    "checkpoint_policy": "FIRST_QUALIFYING_EARLIEST_TO_LATEST",
+    "threshold_source": "CALIBRATION_ONLY_FROZEN_BEFORE_EVIDENCE",
+    "target_entry_rate": 0.20,
+    # Promotion thresholds - these are the numbers the preregistration states.
+    "min_forward_rounds": 1000,
+    "min_forward_weeks": 8,
+    "min_profit_factor": 1.20,
+    "day_block_lb_min": 0.0,
+    "max_hour_profit_share": 0.50,
+    "max_week_profit_share": 0.50,
+    "matched_random_control": True,
+    "multiplicity_procedure": "benjamini_hochberg",
+    "multiplicity_q": 0.10,
+    "require_latency_stress_survival": True,
+    "stress_latency_ms": 1000,
+    "buckets": 5,
+    # Forward isolation: promotion evidence must post-date BOTH freezes.
+    "require_zero_pre_freeze_rows": True,
+    "require_single_model_hash": True,
+    "require_single_policy_hash": True,
+}
+
+# Executable gate, generated from M0_V2 so the two can never disagree.
 PROMOTION_GATE = {
-    "min_independent_rounds": 500,
-    "min_calendar_weeks": 8,
-    "m0_quantiles": 5,
-    "m0_q5_day_block_lb_min": 0.0,
+    "min_independent_rounds": M0_V2["min_forward_rounds"],
+    "min_calendar_weeks": M0_V2["min_forward_weeks"],
+    "m0_quantiles": M0_V2["buckets"],
+    "m0_q5_day_block_lb_min": M0_V2["day_block_lb_min"],
     "m0_q5_minus_q3_min": 0.005,
     "m0_require_broad_monotonicity": True,
     "m0_require_week_stability": True,
-    "m0_require_fee_and_latency_survival": True,
-    "m0_min_test_weeks": 2,
-    "m0_max_single_hour_share": 0.50,
-    "m0_min_profit_factor": 1.20,
+    "m0_require_fee_and_latency_survival": M0_V2["require_latency_stress_survival"],
+    "m0_min_test_weeks": M0_V2["min_forward_weeks"],
+    "m0_max_single_hour_share": M0_V2["max_hour_profit_share"],
+    "m0_max_single_week_share": M0_V2["max_week_profit_share"],
+    "m0_min_profit_factor": M0_V2["min_profit_factor"],
+    "m0_require_matched_random_control": M0_V2["matched_random_control"],
+    "m0_multiplicity_procedure": M0_V2["multiplicity_procedure"],
+    "m0_multiplicity_q": M0_V2["multiplicity_q"],
 }
 
 FEATURE_COLUMNS = (
@@ -203,6 +248,7 @@ def frozen_config() -> dict[str, Any]:
         "btc_touch_bps": {str(key): value for key, value in BTC_TOUCH_BPS.items()},
         "exit_plans": list(EXIT_PLANS),
         "promotion_gate": PROMOTION_GATE,
+        "m0_v2": M0_V2,
         "feature_columns": list(FEATURE_COLUMNS),
         "btc_feature_columns": list(BTC_FEATURE_COLUMNS),
         "classification_targets": list(CLASSIFICATION_TARGETS),

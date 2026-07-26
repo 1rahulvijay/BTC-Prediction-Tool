@@ -473,8 +473,11 @@ def champion_decision(
             try:
                 from head_permissions import may_price as _may_price
                 _ph_ok, _ph_why = _may_price("p_hold")
-            except Exception:
-                _ph_ok, _ph_why = True, ""      # never let this check take serving down
+            except Exception as exc:        # noqa: BLE001
+                # FAIL CLOSED. A permission check that cannot run has not granted permission.
+                # Assuming True here meant a broken or missing health reader silently restored
+                # the exact authority the lockdown exists to withhold.
+                _ph_ok, _ph_why = False, f"permission_check_failed:{type(exc).__name__}"
             if PAPER_BET_ENABLED and not _ph_ok:
                 return out(
                     "NO_EDGE",

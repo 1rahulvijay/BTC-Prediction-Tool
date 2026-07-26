@@ -491,7 +491,11 @@ def _attach_execution_labels(
     row: dict[str, Any],
     books: list[BookState],
     settle_value: float,
+    decision_book: BookState,
 ) -> None:
+    """`decision_book` is the last synchronized book at/before the decision - the book the
+    decision was actually made against. Quote survival compares arrival to THAT book's size-aware
+    VWAP, so it must be passed in explicitly rather than re-derived here."""
     decision_ns = int(row["decision_ts_ns"])
     requested = float(row["requested_qty"])
     path = net_path(
@@ -511,7 +515,7 @@ def _attach_execution_labels(
     # The price the decision was actually made at, for the size actually requested. `own_ask` is
     # top-of-book and says nothing about filling 25 or 100 shares, so quote survival cannot be
     # defined against it - a quote can "survive" at the top while the size behind it evaporates.
-    decision_ask_vwap, decision_ask_fill = ladder_vwap(own_book.asks, requested)
+    decision_ask_vwap, decision_ask_fill = ladder_vwap(decision_book.asks, requested)
     row["decision_ask_vwap"] = decision_ask_vwap
     row["decision_ask_fillable"] = int(decision_ask_fill >= requested - 1e-9)
     row.update(
@@ -797,7 +801,9 @@ def build_dataset(
                             _attach_btc_targets(
                                 row, timeline, decision_s, float(round_data["end_ts"])
                             )
-                            _attach_execution_labels(row, side_books[side], settle_value)
+                            _attach_execution_labels(
+                                row, side_books[side], settle_value, own_book
+                            )
                             output_rows.append(row)
                             rounds_used.add(str(round_data["condition_id"]))
             del books_by_asset
