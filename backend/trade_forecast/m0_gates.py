@@ -67,32 +67,68 @@ def day_block_lower_bound(
 
 
 def matched_random_difference(
-    selected_pnl: Sequence[float],
-    candidate_pool: Sequence[Sequence[float]],
+    by_round: dict[Any, dict[str, Any]],
     *,
     seed: int = 20260726,
     draws: int = 2000,
-) -> dict[str, float]:
-    """Selected mean PnL vs randomly choosing one candidate per round from the same pool.
+) -> dict[str, Any]:
+    """Selected PnL vs randomly picking one candidate per round from the SAME opportunity set.
 
-    This is the control the preregistration names. Beating zero is not the test; beating a random
-    pick from the SAME opportunity set is, because it removes any edge that came from the rounds
-    being tradeable at all rather than from the selection."""
-    selected = float(np.mean(np.asarray(list(selected_pnl), dtype=float)))
+    Takes a per-round structure rather than parallel arrays:
+
+        {round_id: {"selected_pnl": float, "candidate_pnls": [float, ...]}}
+
+    Parallel lists silently mis-align. If pools were filtered for emptiness while the selected
+    list was not, the comparison averaged a different number of rounds on each side and the
+    "difference" meant nothing. Keying by round makes that impossible to express.
+
+    Returns an empirical p-value so the result can enter the preregistered BH family:
+
+        p = (1 + #{random_mean >= selected_mean}) / (draws + 1)
+
+    The +1 is the standard finite-sample correction; it keeps p strictly positive, so a lucky
+    permutation can never report p = 0."""
+    problems = []
+    usable: dict[Any, dict[str, Any]] = {}
+    for key, entry in by_round.items():
+        pool = [float(v) for v in (entry.get("candidate_pnls") or [])]
+        selected = entry.get("selected_pnl")
+        if selected is None:
+            problems.append(f"{key}: no selected_pnl")
+            continue
+        if not pool:
+            problems.append(f"{key}: empty candidate pool")
+            continue
+        usable[key] = {"selected_pnl": float(selected), "candidate_pnls": pool}
+    if problems:
+        # Refuse rather than quietly comparing different round sets on each side.
+        return {
+            "valid": False,
+            "problems": problems[:10],
+            "rounds": len(usable),
+            "p_value": None,
+            "beats_random": False,
+        }
+    if not usable:
+        return {"valid": False, "problems": ["no rounds"], "rounds": 0,
+                "p_value": None, "beats_random": False}
+
+    selected_mean = float(np.mean([e["selected_pnl"] for e in usable.values()]))
+    pools = [np.asarray(e["candidate_pnls"], dtype=float) for e in usable.values()]
     rng = np.random.default_rng(seed)
-    pools = [np.asarray(p, dtype=float) for p in candidate_pool if len(p)]
-    if not pools:
-        return {"selected_mean": selected, "random_mean": float("nan"), "difference": float("nan")}
     means = np.empty(draws, dtype=float)
     for i in range(draws):
         means[i] = np.mean([p[rng.integers(0, len(p))] for p in pools])
-    random_mean = float(means.mean())
+    p_value = float((1 + np.sum(means >= selected_mean)) / (draws + 1))
     return {
-        "selected_mean": selected,
-        "random_mean": random_mean,
-        "difference": selected - random_mean,
+        "valid": True,
+        "rounds": len(usable),
+        "selected_mean": selected_mean,
+        "random_mean": float(means.mean()),
+        "difference": selected_mean - float(means.mean()),
         "random_p95": float(np.percentile(means, 95)),
-        "beats_random": bool(selected > float(np.percentile(means, 95))),
+        "p_value": p_value,
+        "beats_random": bool(selected_mean > float(np.percentile(means, 95))),
     }
 
 
@@ -162,17 +198,28 @@ def selftest() -> int:
 
     print("matched-random control")
     rng = np.random.default_rng(7)
-    pools = [list(rng.normal(0.0, 0.05, size=8)) for _ in range(200)]
-    picked_best = [max(p) for p in pools]
-    res = matched_random_difference(picked_best, pools)
-    chk(res["difference"] > 0 and res["beats_random"],
+    pools = {i: list(rng.normal(0.0, 0.05, size=8)) for i in range(200)}
+    best = {i: {"selected_pnl": max(p), "candidate_pnls": p} for i, p in pools.items()}
+    res = matched_random_difference(best)
+    chk(res["valid"] and res["difference"] > 0 and res["beats_random"],
         f"an oracle-best selection beats matched-random ({res['difference']:+.4f})")
-    picked_random = [p[0] for p in pools]
-    res = matched_random_difference(picked_random, pools)
-    chk(
-        not res["beats_random"],
-        "a selection with NO skill does NOT beat its own matched-random control",
-    )
+    chk(res["p_value"] is not None and res["p_value"] < 0.05,
+        f"it also yields a usable p-value for BH ({res['p_value']:.4f})")
+    chk(res["p_value"] > 0, "the +1 correction keeps p strictly positive")
+
+    noskill = {i: {"selected_pnl": p[0], "candidate_pnls": p} for i, p in pools.items()}
+    res = matched_random_difference(noskill)
+    chk(not res["beats_random"], "a no-skill selection does NOT beat its matched-random control")
+    chk(res["p_value"] > 0.05, f"and its p-value is not significant ({res['p_value']:.3f})")
+
+    # Mis-alignment must be refused, not silently averaged over different round sets.
+    broken = {1: {"selected_pnl": 0.5, "candidate_pnls": []},
+              2: {"selected_pnl": 0.1, "candidate_pnls": [0.1, 0.2]}}
+    res = matched_random_difference(broken)
+    chk(not res["valid"] and res["p_value"] is None,
+        "an empty candidate pool invalidates the comparison instead of skewing it")
+    res = matched_random_difference({1: {"candidate_pnls": [0.1]}})
+    chk(not res["valid"], "a round with no selected trade invalidates the comparison")
 
     print("Benjamini-Hochberg")
     res = benjamini_hochberg([0.001, 0.20, 0.60, 0.90], q=0.10)

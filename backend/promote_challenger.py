@@ -161,11 +161,18 @@ def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
 
     source_hash = _bundle_hash(challenger)
     bundles = DATA / "saved_model_bundles"
-    target = bundles / f"bundle_{source_hash[:16]}"
+    target = bundles / f"bundle_{source_hash}"
     if target.exists():
-        print(f"[promote] bundle already materialised: {target}")
+        # A pre-existing directory is NOT proof of correct content. Re-hash it; a truncated or
+        # tampered bundle from an earlier interrupted run must not be adopted silently.
+        existing = _bundle_hash(target)
+        if existing != source_hash:
+            print(f"[promote] ABORT: existing bundle content {existing[:16]} != "
+                  f"expected {source_hash[:16]}")
+            return 1
+        print(f"[promote] bundle already materialised and re-verified: {target}")
     else:
-        staging = bundles / f".staging_{source_hash[:16]}_{os.getpid()}"
+        staging = bundles / f".staging_{source_hash}_{os.getpid()}"
         if staging.exists():
             shutil.rmtree(staging)
         shutil.copytree(challenger, staging)

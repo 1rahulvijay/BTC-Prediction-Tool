@@ -54,6 +54,10 @@ M0_STRESS_LATENCY_MS = 1000
 MAX_DECISION_BOOK_AGE_S = 5.0
 MAX_BTC_OBSERVATION_AGE_S = 10.0
 MAX_FUTURE_OBSERVATION_LAG_S = 10.0
+# How far a lookback observation may sit from its intended point before the derived value stops
+# being what its name says. A "30s return" computed against a 6-minute-old print is mislabelled,
+# not merely noisy, so it becomes NULL and invalidates the candidate.
+MAX_LOOKBACK_ERROR_S = 5.0
 # Relative barriers keep the event definition stable as BTC's dollar price changes.
 # Approximately $30 at $60k for 5m and $60 at $60k for 15m.
 BTC_TOUCH_BPS = {5: 5.0, 15: 10.0}

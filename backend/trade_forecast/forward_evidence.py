@@ -67,7 +67,25 @@ class ThresholdArtifact:
     def to_json(self) -> dict[str, Any]:
         return {**asdict(self), "threshold_sha256": self.threshold_hash()}
 
+    def validate(self) -> None:
+        """Reject a structurally impossible artifact before it can be frozen."""
+        import math as _math
+
+        if not _math.isfinite(self.threshold) or not 0.0 <= self.threshold <= 1.0:
+            raise ValueError(f"threshold must be finite in [0,1], got {self.threshold}")
+        if self.calibration_end_ts <= self.calibration_start_ts:
+            raise ValueError("calibration_end_ts must be after calibration_start_ts")
+        if self.calibration_rows <= 0:
+            raise ValueError("calibration_rows must be positive")
+        if not 0.0 < self.target_entry_rate <= 1.0:
+            raise ValueError(f"target_entry_rate out of range: {self.target_entry_rate}")
+        for name in ("dataset_sha256", "model_sha256", "policy_sha256", "code_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or len(value) != 64:
+                raise ValueError(f"{name} must be a 64-character sha256, got {value!r}")
+
     def save(self, path: Path) -> Path:
+        self.validate()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             # Immutable. Silently overwriting a frozen threshold would invalidate every forward
@@ -75,15 +93,29 @@ class ThresholdArtifact:
             raise FileExistsError(
                 f"threshold artifact already exists and is immutable: {path}"
             )
-        path.write_text(json.dumps(self.to_json(), indent=2), encoding="utf-8")
+        # Atomic write: a crash mid-save must not leave a truncated threshold artifact that
+        # later loads as valid-looking JSON.
+        import os as _os
+
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(self.to_json(), indent=2))
+            handle.flush()
+            _os.fsync(handle.fileno())
+        temporary.replace(path)
         return path
 
     @staticmethod
     def load(path: Path) -> "ThresholdArtifact":
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         recorded = data.pop("threshold_sha256", None)
+        if not recorded:
+            # An artifact with no recorded hash cannot be verified, so it is not an artifact.
+            # Accepting it would let a hand-written file bypass integrity entirely.
+            raise ValueError("threshold artifact missing threshold_sha256")
         artifact = ThresholdArtifact(**data)
-        if recorded and recorded != artifact.threshold_hash():
+        artifact.validate()
+        if recorded != artifact.threshold_hash():
             raise ValueError(
                 f"threshold artifact hash mismatch: recorded {recorded}, "
                 f"computed {artifact.threshold_hash()} - the artifact was edited"
@@ -149,7 +181,35 @@ def build_forward_manifest(
     if len(rounds) < int(min_rounds):
         blockers.append(f"{len(rounds)} independent rounds < {min_rounds} required")
     if span_weeks < float(min_weeks):
-        blockers.append(f"{span_weeks:.2f} calendar weeks < {min_weeks} required")
+        blockers.append(f"{span_weeks:.2f} weeks elapsed < {min_weeks} required")
+
+    # ELAPSED SPAN IS NOT COVERAGE. 500 rounds on day 1 and 500 on day 57 span eight weeks while
+    # observing almost none of it - the strategy would be scored on two bursts and credited with
+    # two months of stability. Require real occupancy of distinct ISO weeks, and surface the
+    # largest internal silence so a burst pattern is visible rather than averaged away.
+    from collections import Counter
+
+    weeks = Counter(
+        time.strftime("%G-%V", time.gmtime(float(r["prediction_ts"]))) for r in rows
+    )
+    ordered = sorted(ts)
+    gaps = [b - a for a, b in zip(ordered, ordered[1:])] or [0.0]
+    longest_gap_days = max(gaps) / 86400.0
+    # Weeks inside the span that contain no evidence at all.
+    first_week = time.gmtime(min(ts))
+    empty_internal = 0
+    if len(weeks) >= 1:
+        expected_weeks = int(span_weeks) + 1
+        empty_internal = max(0, expected_weeks - len(weeks))
+    if len(weeks) < int(min_weeks):
+        blockers.append(
+            f"{len(weeks)} distinct calendar weeks contain evidence < {min_weeks} required "
+            f"(elapsed span was {span_weeks:.2f}w - elapsed time is not coverage)"
+        )
+    if empty_internal > 0:
+        blockers.append(
+            f"{empty_internal} calendar week(s) inside the evidence span contain no forecasts"
+        )
 
     return {
         "admissible": not blockers,
@@ -163,7 +223,11 @@ def build_forward_manifest(
         "first_forward_prediction_ts": min(ts),
         "last_forward_prediction_ts": max(ts),
         "independent_rounds": len(rounds),
-        "calendar_weeks": round(span_weeks, 2),
+        "elapsed_weeks": round(span_weeks, 2),
+        "distinct_calendar_weeks": len(weeks),
+        "rounds_by_week": dict(sorted(weeks.items())),
+        "empty_internal_weeks": empty_internal,
+        "longest_gap_between_forecasts_days": round(longest_gap_days, 3),
         **{k: (v[0] if len(v) == 1 else v) for k, v in singletons.items()},
     }
 
@@ -262,6 +326,62 @@ def selftest() -> int:
     m = build_forward_manifest([], prereg_sha256="a" * 64, prereg_frozen_at=freeze,
                                model_frozen_at=freeze, min_rounds=1, min_weeks=0)
     chk(not m["admissible"], "an empty evidence set is inadmissible, never vacuously true")
+
+    # SPARSE BURSTS: 500 rounds on day 1 and 500 on day 57 span eight weeks while observing
+    # almost none of it. Elapsed time is not coverage.
+    burst = (
+        [{**base, "forecast_id": f"e{i}", "round_id": f"e{i}",
+          "prediction_ts": freeze + 100 + i * 60.0} for i in range(500)]
+        + [{**base, "forecast_id": f"l{i}", "round_id": f"l{i}",
+            "prediction_ts": freeze + 57 * 86400 + i * 60.0} for i in range(500)]
+    )
+    m = build_forward_manifest(burst, prereg_sha256="a" * 64, prereg_frozen_at=freeze,
+                               model_frozen_at=freeze - 10, min_rounds=1000, min_weeks=8)
+    chk(m["elapsed_weeks"] >= 8.0, f"the burst set DOES span 8 weeks ({m['elapsed_weeks']}w)")
+    chk(m["independent_rounds"] == 1000, "and it DOES have 1,000 rounds")
+    chk(
+        not m["admissible"],
+        "yet it is INADMISSIBLE - elapsed span alone cannot pass the gate",
+    )
+    chk(m["distinct_calendar_weeks"] < 8,
+        f"only {m['distinct_calendar_weeks']} calendar weeks actually contain evidence")
+    chk(m["empty_internal_weeks"] > 0,
+        f"{m['empty_internal_weeks']} internal weeks are empty and are reported")
+    chk(m["longest_gap_between_forecasts_days"] > 50,
+        f"the {m['longest_gap_between_forecasts_days']:.0f}-day silence is surfaced")
+
+    # A genuinely continuous set with the same round count DOES pass.
+    steady = [{**base, "forecast_id": f"s{i}", "round_id": f"s{i}",
+               "prediction_ts": freeze + 100 + i * (60 * 86400 / 1200)} for i in range(1200)]
+    m = build_forward_manifest(steady, prereg_sha256="a" * 64, prereg_frozen_at=freeze,
+                               model_frozen_at=freeze - 10, min_rounds=1000, min_weeks=8)
+    chk(m["admissible"], f"continuous coverage passes ({m['blockers']})")
+    chk(m["distinct_calendar_weeks"] >= 8, "and it occupies at least 8 distinct weeks")
+
+    print("threshold artifact hardening")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "t2.json"
+        art.save(path)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw.pop("threshold_sha256")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        try:
+            ThresholdArtifact.load(path)
+            chk(False, "an artifact with NO recorded hash is refused")
+        except ValueError:
+            chk(True, "an artifact with NO recorded hash is refused")
+    for bad, why in (
+        ({"threshold": 1.5}, "threshold above 1"),
+        ({"threshold": float("nan")}, "non-finite threshold"),
+        ({"calibration_end_ts": 500.0}, "calibration end before start"),
+        ({"calibration_rows": 0}, "zero calibration rows"),
+        ({"model_sha256": "short"}, "a malformed sha256"),
+    ):
+        try:
+            ThresholdArtifact(**{**asdict(art), **bad}).validate()
+            chk(False, f"{why} is rejected")
+        except ValueError:
+            chk(True, f"{why} is rejected")
 
     print("\nSELFTEST", "PASS" if ok else "FAIL")
     return 0 if ok else 1

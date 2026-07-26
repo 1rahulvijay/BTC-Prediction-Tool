@@ -61,6 +61,7 @@ from trade_forecast.trade_schema import (
     MAX_BTC_OBSERVATION_AGE_S,
     MAX_DECISION_BOOK_AGE_S,
     MAX_FUTURE_OBSERVATION_LAG_S,
+    MAX_LOOKBACK_ERROR_S,
     M0_STRESS_LATENCY_MS,
     MODE,
     PROMOTION_GATE,
@@ -291,6 +292,11 @@ def _book_velocity(
     prior_index = bisect.bisect_right(timestamps, target_ns) - 1
     if prior_index < 0:
         return None
+    # A "30-second velocity" measured against a book from six minutes ago is not a 30-second
+    # velocity. The nearest prior observation must actually be near the intended lookback.
+    actual_lag_s = (current.recv_ts_ns - books[prior_index].recv_ts_ns) / NS
+    if abs(actual_lag_s - seconds) > MAX_LOOKBACK_ERROR_S:
+        return None
     return float(current.best_bid) - float(books[prior_index].best_bid)
 
 
@@ -323,6 +329,10 @@ def _historical_btc_return(
     target = timestamps[current_index] - seconds
     prior = _last_index_at_or_before(timestamps, target)
     if prior < 0:
+        return None
+    # Same rule as _book_velocity: the observation must sit near the requested lookback, or the
+    # returned number is mislabelled as an N-second return.
+    if abs(float(timestamps[prior]) - float(target)) > MAX_LOOKBACK_ERROR_S:
         return None
     now_price = float(timeline["btc"][current_index])
     prior_price = float(timeline["btc"][prior])
@@ -442,11 +452,35 @@ def _candidate_features(
 #
 # `feature_missing` names exactly which inputs were absent, and `feature_missing_count` allows a
 # quick scan for systematic gaps, so the missingness is auditable rather than merely fatal.
+def _is_missing_feature(value: Any) -> bool:
+    """None, NaN, +inf and -inf are ALL missing.
+
+    Checking only `is None` let NaN and infinity through as though present. A NaN feature reaches
+    training as a real value; most tree implementations route it down a default branch and the
+    model learns that branch as a genuine market state."""
+    if value is None:
+        return True
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return True
+
+
 def _missingness_reasons(row: dict[str, Any]) -> list[str]:
-    missing = [name for name in FEATURE_COLUMNS if row.get(name) is None]
+    missing, nonfinite = [], []
+    for name in FEATURE_COLUMNS:
+        value = row.get(name)
+        if value is None:
+            missing.append(name)
+        elif _is_missing_feature(value):
+            nonfinite.append(name)
+    # Kept distinct for audit: absent input and corrupt arithmetic are different failures with
+    # different fixes, even though both invalidate the candidate.
     row["feature_missing"] = ",".join(missing)
-    row["feature_missing_count"] = len(missing)
-    return [f"missing_required_feature:{name}" for name in missing]
+    row["feature_nonfinite"] = ",".join(nonfinite)
+    row["feature_missing_count"] = len(missing) + len(nonfinite)
+    return ([f"missing_required_feature:{n}" for n in missing]
+            + [f"nonfinite_required_feature:{n}" for n in nonfinite])
 
 
 def _attach_btc_targets(

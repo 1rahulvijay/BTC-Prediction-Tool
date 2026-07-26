@@ -13,6 +13,7 @@ from .trade_forecast_logger import LOG_HEALTH, log_forecast_monitored
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
 from .trade_schema import (
+    PROMOTION_GATE,
     ENTRY_CHECKPOINTS_S,
     MODE,
     QUANTITIES,
@@ -297,7 +298,9 @@ def _logger_rows(
         )
         if key in _LOGGED:
             continue
-        _LOGGED.add(key)
+        # NOTE: the de-duplication key is marked ONLY AFTER a confirmed write (see the end of
+        # this block). Marking it here meant a failed insert permanently suppressed every later
+        # retry for that checkpoint - the evidence was gone, and the run looked merely quiet.
         forecast_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
         share = candidate.get("share_forecast") or {}
         events = share.get("events") or {}
@@ -381,8 +384,13 @@ def _logger_rows(
                 }
             )
         # Logging must never interrupt the price-to-beat ticker - but a failure must never be
-        # invisible either. The monitored writer retries, counts, dead-letters and alerts.
-        log_forecast_monitored(forecast, paths)
+        # invisible either, and it must never be PERMANENT. The de-dup key is committed only on a
+        # confirmed write, so a transient failure is retried on the next tick instead of silently
+        # deleting that checkpoint from the evidence set forever.
+        if log_forecast_monitored(forecast, paths):
+            _LOGGED.add(key)
+        else:
+            _LOGGED.discard(key)
 
 
 def score_round(
@@ -487,8 +495,11 @@ def score_round(
         },
         "champion_unchanged": True,
         "plain_reason": (
-            "No trade: the complete-trade models do not yet have the required "
-            "500 independent rounds and eight calendar weeks of forward L2 evidence."
+            # Generated from M0_V2, never a duplicated literal: the gate said 500 while the
+            # protocol required 1,000, so the app told the operator the wrong number.
+            f"No trade: the complete-trade models do not yet have the required "
+            f"{PROMOTION_GATE['min_independent_rounds']:,} independent rounds and "
+            f"{PROMOTION_GATE['min_calendar_weeks']} calendar weeks of forward L2 evidence."
             if not evidence_promotable
             else "Shadow estimate only; the production Champion remains unchanged."
         ),

@@ -148,6 +148,108 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+# ===================================================================================
+# LEDGER V2 - the immutable evidence table the forward evaluator reads
+# ===================================================================================
+# V1 could not support a forward-evidence manifest:
+#   * `decision_ts` is written from now_ms (MILLISECONDS) but read as seconds, so a 2-hour
+#     evidence set would measure as 8 weeks;
+#   * `feature_hash` is a hash of each prediction's feature VALUES, so it differs on every row -
+#     it can never satisfy a singleton check, and it is not the schema hash the contract means;
+#   * there is no threshold hash, no prereg hash and no freeze timestamps at all.
+#
+# V2 is a SEPARATE table. The V1 columns keep their existing meaning; nothing is silently
+# redefined underneath rows that were already written. Units are in the column names, and the
+# two different feature hashes have two different names.
+FORECASTS_V2_DDL = """
+CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
+    forecast_id VARCHAR PRIMARY KEY,
+    round_id VARCHAR,
+    exposure_id VARCHAR,
+    seconds_left INTEGER,
+    side VARCHAR,
+    requested_qty DOUBLE,
+
+    -- Units are explicit in the name. Both are stored; neither is inferred from the other.
+    prediction_ts_ms BIGINT,
+    prediction_ts_s DOUBLE,
+
+    -- Identity of the frozen policy. Each of these MUST be a singleton across an evidence set.
+    model_bundle_sha256 VARCHAR,
+    feature_schema_sha256 VARCHAR,
+    policy_sha256 VARCHAR,
+    threshold_sha256 VARCHAR,
+    prereg_sha256 VARCHAR,
+
+    -- Per-row, deliberately NOT a singleton: the values this one prediction was computed from.
+    feature_values_sha256 VARCHAR,
+
+    -- Freeze boundaries, so admissibility is checkable from the row alone.
+    prereg_frozen_at_s DOUBLE,
+    model_frozen_at_s DOUBLE,
+    threshold_frozen_at_s DOUBLE,
+
+    -- The decision itself.
+    entry_threshold DOUBLE,
+    score DOUBLE,
+    action VARCHAR,
+    predicted_entry_vwap DOUBLE,
+    exit_plan VARCHAR,
+    reason_codes_json VARCHAR
+)
+"""
+
+FORECASTS_V2_COLUMNS = (
+    "forecast_id", "round_id", "exposure_id", "seconds_left", "side", "requested_qty",
+    "prediction_ts_ms", "prediction_ts_s",
+    "model_bundle_sha256", "feature_schema_sha256", "policy_sha256", "threshold_sha256",
+    "prereg_sha256", "feature_values_sha256",
+    "prereg_frozen_at_s", "model_frozen_at_s", "threshold_frozen_at_s",
+    "entry_threshold", "score", "action", "predicted_entry_vwap", "exit_plan",
+    "reason_codes_json",
+)
+
+
+def log_forecast_v2(row: dict[str, Any], conn: Any = None) -> None:
+    """Append one immutable V2 evidence row. INSERT only - a duplicate raises."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute(FORECASTS_V2_DDL)
+        missing = [c for c in FORECASTS_V2_COLUMNS if c not in row]
+        if missing:
+            raise ValueError(f"ledger v2 row missing required columns: {missing}")
+        conn.execute(
+            "INSERT INTO complete_trade_forecasts_v2 ("
+            + ",".join(FORECASTS_V2_COLUMNS) + ") VALUES ("
+            + ",".join("?" * len(FORECASTS_V2_COLUMNS)) + ")",
+            [row[c] for c in FORECASTS_V2_COLUMNS],
+        )
+    finally:
+        if own:
+            conn.close()
+
+
+def read_forward_rows(conn: Any = None) -> list[dict[str, Any]]:
+    """Rows in the shape build_forward_manifest() expects. Seconds, schema hash, no aliasing."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute(FORECASTS_V2_DDL)
+        cursor = conn.execute(
+            "SELECT forecast_id, round_id, prediction_ts_s AS prediction_ts, "
+            "model_bundle_sha256 AS model_sha256, feature_schema_sha256, "
+            "policy_sha256, threshold_sha256, prereg_sha256, "
+            "prereg_frozen_at_s, model_frozen_at_s "
+            "FROM complete_trade_forecasts_v2 ORDER BY prediction_ts_s"
+        )
+        names = [d[0] for d in cursor.description]
+        return [dict(zip(names, r)) for r in cursor.fetchall()]
+    finally:
+        if own:
+            conn.close()
+
+
 def log_forecast(
     forecast: dict[str, Any],
     paths: list[dict[str, Any]] | None = None,
