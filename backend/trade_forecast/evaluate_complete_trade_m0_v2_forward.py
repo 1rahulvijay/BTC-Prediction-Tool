@@ -216,18 +216,29 @@ def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
     stress = []
     for row in resolved:
         outcome = outcomes[row["forecast_id"]]
-        net = float(outcome.get("plan_net") or 0.0)
+        # NEVER truthiness on numeric evidence. `or net` substituted the UNSTRESSED PnL
+        # whenever the stress result was exactly 0.0, so a trade that earned +0.03 normally and
+        # 0.00 under 1000ms latency was scored as +0.03 - inverting the latency gate on exactly
+        # the trades it exists to catch. Same for an empty pool becoming a self-comparison.
+        net = float(outcome["plan_net"])
+        stress_net = float(outcome["stress_1000ms_plan_net"])
+        pool = json.loads(outcome["candidate_pnls_json"])
+        if not isinstance(pool, list) or not pool:
+            return {"status": "NOT_READY", "passed": False, "manifest": manifest,
+                    "blockers": ["empty or malformed candidate pool for "
+                                 + str(row["forecast_id"])]}
+        pool = [float(v) for v in pool]
+        if not all(np.isfinite(v) for v in pool + [net, stress_net]):
+            return {"status": "NOT_READY", "passed": False, "manifest": manifest,
+                    "blockers": ["non-finite outcome value for "
+                                 + str(row["forecast_id"])]}
         pnl.append(net)
+        stress.append(stress_net)
         stamp = time.gmtime(float(row["prediction_ts"]))
         hours.append(stamp.tm_hour)
         weeks.append(time.strftime("%G-%V", stamp))
         days.append(time.strftime("%F", stamp))
-        stress.append(float(outcome.get("stress_1000ms_plan_net") or net))
-        pool = outcome.get("candidate_pnls_json")
-        by_round[row["round_id"]] = {
-            "selected_pnl": net,
-            "candidate_pnls": json.loads(pool) if pool else [net],
-        }
+        by_round[row["round_id"]] = {"selected_pnl": net, "candidate_pnls": pool}
 
     control = matched_random_difference(by_round)
     lower_bound = day_block_lower_bound(pnl, days)
@@ -323,11 +334,27 @@ def main() -> int:
     if args.dry_run:
         print("\nDRY RUN - nothing written. The scoring run is spent only with --score-once.")
         return 0
-    if RESULT_PATH.exists():
-        print(f"\nREFUSED: {RESULT_PATH} already exists. M0 V2 is scored ONCE.")
+    # SPENDING THE RUN IS RESERVED FOR A REAL SCORE. A refusal is something to fix, not a
+    # verdict; burning the one-time result on INADMISSIBLE / NOT_READY / IDENTITY_MISMATCH
+    # would close the lane over a missing outcome or a stale ledger row.
+    if result.get("status") != "SCORED":
+        print("NOT SPENT: status=" + str(result.get("status")) + " is a refusal, not a "
+              "verdict. Fix the blockers and re-run; the scoring run remains available.")
         return 1
     RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RESULT_PATH.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    payload = json.dumps(result, indent=2, default=str)
+    result_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    final = json.dumps({**result, "result_sha256": result_hash}, indent=2, default=str)
+    try:
+        # Exclusive creation: exists()-then-write is raceable and not immutable.
+        fd = os.open(str(RESULT_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        print("REFUSED: " + str(RESULT_PATH) + " exists. M0 V2 is scored ONCE.")
+        return 1
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(final)
+        handle.flush()
+        os.fsync(handle.fileno())
     print(f"\nresult written (immutable): {RESULT_PATH}")
     print("PASS" if result.get("passed") else
           "FAIL -> COMPLETE_TRADE_M0_V2 CLOSED. MODELS FITTED = NONE.")

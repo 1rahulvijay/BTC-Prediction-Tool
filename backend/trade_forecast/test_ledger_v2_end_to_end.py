@@ -175,6 +175,40 @@ def run() -> int:
     chk(evaluate(mixed, outcomes, artifact)["status"] == "IDENTITY_MISMATCH",
         "evidence spanning two run ids is refused")
 
+    print("zero-value and spend guards")
+    # A stress PnL of exactly 0.00 was replaced by the UNSTRESSED PnL through `or net`, so a
+    # trade earning +0.03 normally and nothing under latency scored as +0.03.
+    zeroed = {k: dict(v) for k, v in outcomes.items()}
+    for fid in [p["forecast_id"] for p in picked]:
+        zeroed[fid]["stress_1000ms_plan_net"] = 0.0
+    z = evaluate(rows, zeroed, artifact)
+    chk(z["status"] == "SCORED", "a zero stress PnL still scores (it is real data)")
+    chk(abs(float(z["stress_1000ms_mean"])) < 1e-9,
+        "stress mean is 0.0, NOT silently replaced by the unstressed PnL")
+    chk(z["gates"]["survives_latency_stress"] is False,
+        "and the latency gate correctly FAILS - the bug inverted exactly this")
+
+    empty_pool = {k: dict(v) for k, v in outcomes.items()}
+    empty_pool[picked[0]["forecast_id"]]["candidate_pnls_json"] = "[]"
+    chk(evaluate(rows, empty_pool, artifact)["status"] == "NOT_READY",
+        "an EMPTY candidate pool is refused, not turned into a self-comparison")
+
+    import tempfile as _tf
+    from pathlib import Path as _P
+    from . import evaluate_complete_trade_m0_v2_forward as EV
+    original = EV.RESULT_PATH
+    try:
+        EV.RESULT_PATH = _P(_tf.mkdtemp()) / "res.json"
+        import sys as _s
+        argv = _s.argv
+        _s.argv = ["x", "--score-once"]
+        EV.main()
+        _s.argv = argv
+        chk(not EV.RESULT_PATH.exists(),
+            "--score-once on a NOT-SCORED run writes NO result file (M0 is not spent)")
+    finally:
+        EV.RESULT_PATH = original
+
     print("\nLEDGER V2 END-TO-END", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

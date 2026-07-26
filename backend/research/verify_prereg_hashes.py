@@ -48,6 +48,7 @@ def _canonical_bytes(path: Path) -> bytes:
     return path.read_bytes().replace(b"\r\n", b"\n")
 
 
+NL = chr(10)
 ROOT = Path(__file__).resolve().parents[2]
 HASH_FILE = ROOT / "docs" / "active" / "PREREG_HASH.txt"
 DOCS = ROOT / "docs" / "active"
@@ -67,7 +68,30 @@ def verify(hash_file: Path = HASH_FILE, docs: Path = DOCS) -> int:
     if not hash_file.is_file():
         print(f"MISSING hash record: {hash_file}")
         return 1
-    entries = parse_entries(hash_file.read_text(encoding="utf-8"))
+    text = hash_file.read_text(encoding="utf-8")
+    # STRUCTURAL VALIDATION. The registry was silently corrupted to 635 lines with 69 malformed
+    # headers while this verifier stayed green, because the regex simply found the 7 good entries
+    # among the noise. A registry that can rot undetected is not an integrity record.
+    structural: list[str] = []
+    headers = [ln for ln in text.splitlines() if ln.strip().startswith("hash_mode")]
+    if len(headers) != 1:
+        structural.append(f"expected exactly 1 hash_mode header, found {len(headers)}")
+    if any("=hash_mode" in ln for ln in text.splitlines()):
+        structural.append("malformed '=hash_mode' line(s) present")
+    names = [n for n, _ in parse_entries(text)]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        structural.append(f"duplicate protocol entries: {duplicates}")
+    sha_lines = len([ln for ln in text.splitlines() if ln.strip().startswith("sha256 = ")])
+    if sha_lines != len(names):
+        structural.append(f"{sha_lines} sha256 lines but {len(names)} parsed entries")
+    if structural:
+        for problem in structural:
+            print(f"  REGISTRY  {problem}")
+        print("\nREGISTRY MALFORMED - rebuild it before trusting any hash below.")
+        return 1
+
+    entries = parse_entries(text)
     if not entries:
         print(f"no hash entries parsed from {hash_file} - the record is unusable")
         return 1
@@ -116,7 +140,9 @@ def selftest() -> int:
         digest = hashlib.sha256(_canonical_bytes(good)).hexdigest()
         record = root / "HASH.txt"
 
-        record.write_text(f"PREREG_GOOD.md\nsha256 = {digest}\n", encoding="utf-8")
+        record.write_text(
+            NL.join(["hash_mode = lf_canonical_text_v1", "PREREG_GOOD.md",
+                     "sha256 = " + digest]) + NL, encoding="utf-8")
         chk(verify(record, docs) == 0, "an unmodified protocol verifies clean")
 
         # THE FALSE ALARM THIS PREVENTS: git autocrlf rewrites .md on Windows checkout, which
@@ -138,6 +164,19 @@ def selftest() -> int:
         chk(verify(record, docs) == 1, "an unparseable hash record fails rather than passing")
 
         chk(verify(root / "absent.txt", docs) == 1, "a missing hash record fails")
+        good.write_bytes(b"frozen content" + bytes([10]))
+        def registry(*body: str) -> None:
+            record.write_text(NL.join(body) + NL, encoding="utf-8")
+        entry = ["PREREG_GOOD.md", "sha256 = " + digest]
+        registry("hash_mode = lf_canonical_text_v1", *entry)
+        chk(verify(record, docs) == 0, "a well-formed registry with one header verifies")
+        registry("hash_mode = x", "hash_mode = x", *entry)
+        chk(verify(record, docs) == 1, "a DUPLICATED header is rejected as malformed")
+        registry("hash_mode = x", "=hash_mode = x", *entry)
+        chk(verify(record, docs) == 1, "a MALFORMED =hash_mode line is rejected")
+        registry("hash_mode = x", *entry, *entry)
+        chk(verify(record, docs) == 1, "a DUPLICATE protocol entry is rejected")
+
 
     entries = parse_entries(HASH_FILE.read_text(encoding="utf-8")) if HASH_FILE.is_file() else []
     chk(len(entries) >= 4, f"LIVE: parsed {len(entries)} recorded prereg hashes from the repo")
