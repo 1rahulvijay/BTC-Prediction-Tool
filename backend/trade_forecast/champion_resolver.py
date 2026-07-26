@@ -34,6 +34,42 @@ LEGACY = DATA / "saved_models"
 _PINNED: dict[str, Any] = {}
 
 
+def evidence_mode() -> bool:
+    """BTC_EVIDENCE_MODE=1 forbids every unverified path.
+
+    During an evidence run the legacy `saved_models/` fallback is PROHIBITED: serving artifacts
+    with no proven bundle identity would make the whole collection unattributable. The app stays
+    online and shows market data; the models simply report unavailable and actions become
+    NO_DATA."""
+    return str(os.environ.get("BTC_EVIDENCE_MODE") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def resolve_artifact(artifact_name: str, legacy_path: Path) -> tuple[Path | None, dict]:
+    """Resolve ONE artifact through the champion bundle.
+
+    Returns (path_or_None, status). A None path means NO MODEL - the caller must serve nothing
+    rather than fall back to unverified bytes. Outside evidence mode the legacy path is returned
+    with `verified: False` so migration is possible, but the status always says which happened."""
+    active = active_model_bundle()
+    if active.get("verified"):
+        candidate = Path(active["path"]) / artifact_name
+        if candidate.is_file():
+            return candidate, {**active, "artifact": artifact_name}
+        status = {**active, "verified": False,
+                  "note": f"{artifact_name} missing from bundle {active['path']}"}
+    else:
+        status = dict(active)
+
+    if evidence_mode():
+        # Fail closed: no verified bundle means no model, full stop.
+        return None, {**status, "evidence_mode": True,
+                      "note": f"EVIDENCE MODE: refusing unverified artifact ({status.get('note')})"}
+    return legacy_path, {**status, "evidence_mode": False,
+                         "note": f"migration fallback to legacy path ({status.get('note')})"}
+
+
 def _freeze_enabled() -> bool:
     return str(os.environ.get("BTC_FREEZE_MODEL") or "").strip().lower() in (
         "1", "true", "yes", "on",

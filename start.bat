@@ -157,8 +157,9 @@ REM A head that live outcomes say cannot price is not allowed to price. Specific
 REM BTC_ENABLE_PAPER_BET=1 used to be enough on its own to re-enable betting on P(hold) even
 REM when the head-health report had already measured P(hold) as CALIBRATION_ONLY -- i.e. the
 REM override could overrule the evidence. It now ALSO requires the head to measure USABLE.
-REM Missing report = permissive but says "not measured"; a report older than 14d = STALE.
-REM The gate re-opens by itself when the next report returns the head to USABLE.
+REM FAILS CLOSED: a missing, stale, unknown or corrupt report DENIES both pricing and
+REM ranking. The app stays online and still displays diagnostics; only ACTION authority is
+REM withheld. The gate re-opens by itself when the next report returns the head to USABLE.
 REM Set to 0 for observe-only (permissions logged, not enforced). Must be set BEFORE launch.
 REM   python backend\head_permissions.py          (print current permissions)
 if not defined BTC_ENFORCE_HEAD_HEALTH set "BTC_ENFORCE_HEAD_HEALTH=1"

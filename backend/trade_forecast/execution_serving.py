@@ -11,12 +11,18 @@ import numpy as np
 
 from .model_common import artifact_issues, predict_classifier, predict_member_mean
 from .trade_schema import CONFIG_VERSION, FEATURE_COLUMNS, MODE
+from .champion_resolver import resolve_artifact
 from .freeze_guard import ArtifactPin
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
-MODEL_PATH = DATA / "saved_models" / "complete_trade_execution_heads.pkl"
+ARTIFACT_NAME = "complete_trade_execution_heads.pkl"
+LEGACY_PATH = DATA / "saved_models" / ARTIFACT_NAME
+# Resolved through the champion bundle on every load. A promotion that swaps
+# champion.json must actually reach serving, or the atomic pointer is decorative.
+MODEL_PATH = LEGACY_PATH          # rebound by _resolve() below
+
 QUANTILES = (0.50, 0.80, 0.95)
 
 _BUNDLE = None
@@ -29,9 +35,17 @@ _CHECKED = 0.0
 
 def load_model(force: bool = False):
     global _BUNDLE, _MANIFEST, _ERROR, _MTIME, _CHECKED
+    global MODEL_PATH
     now = time.time()
     if not force and _CHECKED and now - _CHECKED < 30.0:
         return _BUNDLE
+    resolved, _resolution = resolve_artifact(ARTIFACT_NAME, LEGACY_PATH)
+    if resolved is None:
+        # Evidence mode with no verified bundle: serve NO model rather than unverified bytes.
+        _BUNDLE, _MANIFEST, _ERROR = None, {}, str(_resolution.get("note") or "no verified bundle")
+        _CHECKED = now
+        return None
+    MODEL_PATH = resolved
     _CHECKED = now
     try:
         mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.is_file() else -1.0

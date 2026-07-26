@@ -13,6 +13,8 @@ from .trade_forecast_logger import LOG_HEALTH, log_forecast_monitored
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
 from .trade_schema import (
+    FEATURE_COLUMNS,
+    MAX_LOOKBACK_ERROR_S,
     PROMOTION_GATE,
     ENTRY_CHECKPOINTS_S,
     MODE,
@@ -21,7 +23,12 @@ from .trade_schema import (
 )
 
 
-_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=240))
+# TIME-bounded, not count-bounded. maxlen=240 means "240 observations", which at a fast update
+# rate is a few seconds and at a slow one is many minutes - the same deque could or could not
+# cover a 60s lookback depending on market activity. HISTORY_WINDOW_S is what the lookbacks
+# actually need; the generous maxlen only caps memory.
+HISTORY_WINDOW_S = 180.0
+_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=4000))
 _CACHE: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
 _LOGGED: set[str] = set()
 INFERENCE_INTERVAL_S = 5.0
@@ -46,6 +53,12 @@ def _ladder_vwap(levels: list, quantity: float) -> tuple[float | None, float]:
 
 
 def _history_value(history: deque, now_s: float, seconds: int, key: str) -> float | None:
+    """Observation nearest the requested lookback, or None.
+
+    The previous version accepted ANY older observation, so a "30s return" could be measured
+    against a print from six minutes ago and still be reported as a 30s return. Same rule and
+    same tolerance as the historical builder (MAX_LOOKBACK_ERROR_S), because a live feature that
+    means something different from its training counterpart is training-serving skew."""
     target = now_s - seconds
     selected = None
     for item in history:
@@ -53,7 +66,11 @@ def _history_value(history: deque, now_s: float, seconds: int, key: str) -> floa
             selected = item
         else:
             break
-    return float(selected[key]) if selected and selected.get(key) is not None else None
+    if not selected or selected.get(key) is None:
+        return None
+    if abs(float(selected["ts"]) - target) > MAX_LOOKBACK_ERROR_S:
+        return None
+    return float(selected[key])
 
 
 def _safe_div(a: float, b: float) -> float:
@@ -126,10 +143,12 @@ def _feature_values(
         previous = _history_value(history, now_s, seconds, "btc")
         value = _finite(previous)
         if not value:
-            # Not yet enough history to measure this return. That is a real gap in the feature
-            # vector, not a zero return.
+            # A REQUIRED feature with no data. Returning 0.0 told the model "perfectly flat
+            # market" with full confidence, while the historical builder invalidates the same
+            # candidate - textbook training-serving skew. `_missing_optional` cannot repair it
+            # because it is not in FEATURE_COLUMNS and the model never sees it.
             missing.append(f"btc_return_{seconds}s_bps")
-            return 0.0
+            return None
         return _safe_div(current_btc - value, value) * 10_000.0
 
     def bid_velocity(seconds: int) -> float:
@@ -137,7 +156,7 @@ def _feature_values(
         value = _finite(previous)
         if value is None:
             missing.append(f"contract_bid_velocity_{seconds}s")
-            return 0.0
+            return None
         return own_bid - value
 
     values: dict[str, Any] = {
@@ -176,9 +195,11 @@ def _feature_values(
         "contract_bid_velocity_5s": bid_velocity(5),
         "contract_bid_velocity_15s": bid_velocity(15),
         "contract_bid_velocity_30s": bid_velocity(30),
-        "btc_share_sensitivity_30s": _safe_div(
-            bid_velocity(30),
-            current_btc * btc_return(30) / 10_000.0,
+        # Derived from two nullable inputs, so it is nullable too. Computing it eagerly crashed
+        # once btc_return started returning None; the required-feature gate below turns a None
+        # here into NO FORECAST, which is the intended behaviour.
+        "btc_share_sensitivity_30s": _sensitivity_30s(
+            bid_velocity(30), current_btc, btc_return(30)
         ),
         "top_imbalance": _safe_div(bid_size - ask_size, bid_size + ask_size),
         "depth_imbalance": _safe_div(bid_depth - ask_depth, bid_depth + ask_depth),
@@ -189,7 +210,31 @@ def _feature_values(
     # forecast records which inputs were absent and how stale the quote was.
     values["_missing_optional"] = sorted(set(missing))
     values["_quote_age_s"] = float(share_prices.get("age_seconds") or 0.0)
+    # SAME CONTRACT AS THE BUILDER. Every FEATURE_COLUMNS entry must be present and finite, or
+    # there is no forecast - the caller surfaces MISSING_REQUIRED_FEATURE / NO_DATA.
+    absent = [
+        name for name in FEATURE_COLUMNS
+        if values.get(name) is None or not _is_finite(values.get(name))
+    ]
+    if absent:
+        values["_missing_required"] = absent
+        return None
     return values
+
+
+def _sensitivity_30s(velocity, current_btc, return_bps):
+    """Share move per dollar of BTC move. None if either input is unavailable."""
+    if velocity is None or return_bps is None:
+        return None
+    delta = float(current_btc) * float(return_bps) / 10_000.0
+    return _safe_div(float(velocity), delta)
+
+
+def _is_finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _capacity_table(share_prices: dict[str, Any], side: str) -> list[dict[str, Any]]:

@@ -1,0 +1,5 @@
+# Preregistration and documentation must hash identically on every platform.
+# Git autocrlf rewriting .md to CRLF once produced a false "protocol was edited" alarm.
+*.md text eol=lf
+*.py text eol=lf
+*.yml text eol=lf

@@ -23,6 +23,22 @@ try:
 except Exception:
     pass
 
+def _canonical_bytes(path: Path) -> bytes:
+    """File bytes with line endings normalised to LF.
+
+    A preregistration hash must identify its CONTENT, not the checkout that produced it. Git's
+    autocrlf rewrites .md files to CRLF on Windows, so hashing raw bytes reported
+    PREREG_COMPLETE_TRADE_M0_V2 as "edited after freezing" purely because the branch had been
+    checked out again - a false integrity alarm, which is corrosive precisely because this check
+    is supposed to be the thing you trust.
+
+    This does NOT weaken the guarantee: any real change to the text still changes the hash. It
+    only removes a platform artifact. Recorded hashes were computed on LF content and continue
+    to verify unchanged.
+    """
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 ROOT = Path(__file__).resolve().parents[2]
 HASH_FILE = ROOT / "docs" / "active" / "PREREG_HASH.txt"
 DOCS = ROOT / "docs" / "active"
@@ -53,7 +69,7 @@ def verify(hash_file: Path = HASH_FILE, docs: Path = DOCS) -> int:
             print(f"  MISSING  {name}  (recorded {recorded[:12]}...)")
             failures += 1
             continue
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual = hashlib.sha256(_canonical_bytes(path)).hexdigest()
         if actual == recorded:
             print(f"  MATCH    {name}  {recorded[:12]}...")
         else:
@@ -86,11 +102,22 @@ def selftest() -> int:
         docs.mkdir()
         good = docs / "PREREG_GOOD.md"
         good.write_text("frozen content\n", encoding="utf-8")
-        digest = hashlib.sha256(good.read_bytes()).hexdigest()
+        # Compute the expected digest the SAME way verify() does, or the fixture is
+        # testing a different rule than the code implements.
+        digest = hashlib.sha256(_canonical_bytes(good)).hexdigest()
         record = root / "HASH.txt"
 
         record.write_text(f"PREREG_GOOD.md\nsha256 = {digest}\n", encoding="utf-8")
         chk(verify(record, docs) == 0, "an unmodified protocol verifies clean")
+
+        # THE FALSE ALARM THIS PREVENTS: git autocrlf rewrites .md on Windows checkout, which
+        # reported PREREG_COMPLETE_TRADE_M0_V2 as "edited after freezing" when its text was
+        # byte-identical. A hash record nobody trusts is worse than none.
+        good.write_bytes(b"frozen content" + bytes([13, 10]))
+        chk(verify(record, docs) == 0,
+            "a CRLF checkout of IDENTICAL text still verifies (no platform false alarm)")
+        good.write_bytes(b"frozen content" + bytes([10]))
+        chk(verify(record, docs) == 0, "and the LF original still verifies")
 
         good.write_text("frozen content EDITED\n", encoding="utf-8")
         chk(verify(record, docs) == 1, "an EDITED protocol fails verification")

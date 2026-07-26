@@ -228,8 +228,12 @@ def choose_trade(
             from head_permissions import may_rank as _may_rank
 
             _ok, _why = _may_rank("p_hold")
-        except Exception:
-            _ok, _why = True, ""          # never let the permission check take serving down
+        except Exception as exc:        # noqa: BLE001
+            # FAIL CLOSED. A permission check that cannot run has not granted permission.
+            # This instance was missed when the same pattern was fixed in decision_champion:
+            # it is currently masked because scenario economics force NO_TRADE anyway, but it
+            # becomes a live action-authority bug the moment direct plan heads are promotable.
+            _ok, _why = False, f"permission_check_failed:{type(exc).__name__}"
         if not _ok:
             return {
                 "action": "NO_TRADE",
