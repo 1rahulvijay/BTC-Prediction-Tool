@@ -40,6 +40,12 @@ jobs:
       - name: Builder integration (EXECUTES the label path)
         run: python -m backend.trade_forecast.test_builder_integration
 
+      - name: Forward evidence isolation + frozen threshold artifact
+        run: python backend/trade_forecast/forward_evidence.py --selftest
+
+      - name: M0 gates (matched-random, BH, profit concentration)
+        run: python backend/trade_forecast/m0_gates.py --selftest
+
       - name: Frozen-artifact pinning
         run: python backend/trade_forecast/freeze_guard.py --selftest
 
@@ -116,6 +122,8 @@ jobs:
         run: |
           python -m backend.trade_forecast.test_audit_fixes || exit /b 1
           python -m backend.trade_forecast.test_builder_integration || exit /b 1
+          python backend/trade_forecast/forward_evidence.py --selftest || exit /b 1
+          python backend/trade_forecast/m0_gates.py --selftest || exit /b 1
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1

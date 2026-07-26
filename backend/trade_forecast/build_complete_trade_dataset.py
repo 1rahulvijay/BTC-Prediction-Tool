@@ -276,15 +276,21 @@ def _book_before(books: list[BookState], decision_ns: int) -> tuple[int, BookSta
     return (index, books[index] if index >= 0 else None)
 
 
-def _book_velocity(books: list[BookState], decision_index: int, seconds: int) -> float:
+def _book_velocity(
+    books: list[BookState], decision_index: int, seconds: int
+) -> float | None:
+    """None when there is not enough book history to measure the change.
+
+    NOT 0.0. A zero velocity is a real, informative reading - "the bid did not move" - and using
+    it as a missing-value code teaches the model that absent history looks like a calm book."""
     if decision_index < 0:
-        return 0.0
+        return None
     current = books[decision_index]
     target_ns = current.recv_ts_ns - int(seconds * NS)
     timestamps = [book.recv_ts_ns for book in books]
     prior_index = bisect.bisect_right(timestamps, target_ns) - 1
     if prior_index < 0:
-        return 0.0
+        return None
     return float(current.best_bid) - float(books[prior_index].best_bid)
 
 
@@ -309,14 +315,15 @@ def _btc_at(
 
 def _historical_btc_return(
     timeline: dict[str, Any], current_index: int, seconds: int
-) -> float:
+) -> float | None:
+    """None when the lookback window is not covered. NOT 0.0 - a flat market is a real reading."""
     if current_index < 0:
-        return 0.0
+        return None
     timestamps = timeline["ts"]
     target = timestamps[current_index] - seconds
     prior = _last_index_at_or_before(timestamps, target)
     if prior < 0:
-        return 0.0
+        return None
     now_price = float(timeline["btc"][current_index])
     prior_price = float(timeline["btc"][prior])
     return _safe_div(now_price - prior_price, prior_price) * 10_000.0
@@ -358,7 +365,9 @@ def _candidate_features(
     top_imbalance, depth_imbalance = _depth_imbalance(own_book)
     velocity_30 = _book_velocity(own_books, own_index, 30)
     btc_return_30 = _historical_btc_return(btc_timeline, btc_index, 30)
-    btc_delta_30 = current_btc * btc_return_30 / 10_000.0
+    btc_delta_30 = (
+        current_btc * btc_return_30 / 10_000.0 if btc_return_30 is not None else None
+    )
     return {
         "round_id": str(round_data["condition_id"]),
         "slug": str(round_data["slug"]),
@@ -390,8 +399,10 @@ def _candidate_features(
         "btc_return_15s_bps": _historical_btc_return(btc_timeline, btc_index, 15),
         "btc_return_30s_bps": btc_return_30,
         "btc_return_60s_bps": _historical_btc_return(btc_timeline, btc_index, 60),
-        "btc_vol_60s_pct": float(btc_row.get("vol_60s_pct") or 0.0),
-        "p_hold_side": float(p_hold) if p_hold is not None else 0.5,
+        "btc_vol_60s_pct": _finite(btc_row.get("vol_60s_pct")),
+        # NEVER 0.5. That is a confident "the market is a coin flip", not an absence of
+        # information, and the model - trained on real values - would treat it with full weight.
+        "p_hold_side": float(p_hold) if p_hold is not None else None,
         "own_bid": own_book.best_bid,
         "own_ask": own_book.best_ask,
         "own_spread": own_book.spread,
@@ -409,7 +420,11 @@ def _candidate_features(
         "contract_bid_velocity_5s": _book_velocity(own_books, own_index, 5),
         "contract_bid_velocity_15s": _book_velocity(own_books, own_index, 15),
         "contract_bid_velocity_30s": velocity_30,
-        "btc_share_sensitivity_30s": _safe_div(velocity_30, btc_delta_30),
+        "btc_share_sensitivity_30s": (
+            _safe_div(velocity_30, btc_delta_30)
+            if velocity_30 is not None and btc_delta_30 is not None
+            else None
+        ),
         "top_imbalance": top_imbalance,
         "depth_imbalance": depth_imbalance,
         "decision_quote_age_s": (decision_ns - own_book.recv_ts_ns) / NS,
@@ -419,6 +434,19 @@ def _candidate_features(
         "config_version": CONFIG_VERSION,
         "policy_hash": policy_hash(),
     }
+
+
+# Every FEATURE_COLUMNS entry is a required model input. A missing one makes the candidate
+# invalid; it is never replaced by a neutral stand-in, because the model cannot distinguish a
+# fabricated 0.5/0.0 from a real reading and will weight it with full confidence.
+#
+# `feature_missing` names exactly which inputs were absent, and `feature_missing_count` allows a
+# quick scan for systematic gaps, so the missingness is auditable rather than merely fatal.
+def _missingness_reasons(row: dict[str, Any]) -> list[str]:
+    missing = [name for name in FEATURE_COLUMNS if row.get(name) is None]
+    row["feature_missing"] = ",".join(missing)
+    row["feature_missing_count"] = len(missing)
+    return [f"missing_required_feature:{name}" for name in missing]
 
 
 def _attach_btc_targets(
@@ -796,6 +824,7 @@ def build_dataset(
                                 btc_row=btc_row,
                             )
                             reasons = validate_candidate(row)
+                            reasons += _missingness_reasons(row)
                             row["candidate_valid"] = int(not reasons)
                             row["candidate_reasons"] = ",".join(reasons)
                             _attach_btc_targets(

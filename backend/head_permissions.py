@@ -57,30 +57,65 @@ def _load():
     return _CACHE["val"]
 
 
-def head_state(head: str) -> tuple[str, dict]:
-    """(state, permissions) for a head. Unknown/missing/stale -> UNKNOWN, permissive.
+# FAIL CLOSED. Action authority is DENIED unless a current report affirmatively grants it.
+#
+# The previous default granted may_price/may_rank on a missing, stale or unknown head, on the
+# reasoning that this module must not be able to disable the app. That conflated two different
+# things: the app staying ONLINE, and a head being AUTHORIZED to move money. Deleting or ageing
+# the report restored exactly the authority the lockdown exists to withhold - absence of
+# measurement was read as a pass.
+#
+# The app stays online regardless; only ACTION authority is withheld. Diagnostics may still be
+# displayed, which is why may_display_confidence is separated from the two action permissions.
+DENIED = {
+    "may_price": False,
+    "may_rank": False,
+    "may_display_confidence": False,
+}
 
-    Permissive on absence is deliberate: this module must not be able to disable the app by
-    failing to find a file. The reason string carries WHY it is permissive so the caller can
-    surface it rather than treating it as a pass.
-    """
+# States that never carry action authority, whatever the report's own permissions block says.
+NO_ACTION_STATES = frozenset({
+    "SHADOW", "INSUFFICIENT_DATA", "DISABLED_NO_SKILL", "UNKNOWN", "STALE", "MISSING",
+})
+
+
+def _denied(reason: str) -> dict:
+    return {**DENIED, "reason": reason}
+
+
+def head_state(head: str) -> tuple[str, dict]:
+    """(state, permissions) for a head. Missing / stale / unknown / corrupt -> DENIED.
+
+    The app remains online in every one of these cases; what is withheld is the authority to
+    price or rank, never the ability to serve or display."""
     rep = _load()
     if not rep:
-        return "UNKNOWN", {"may_price": True, "may_rank": True,
-                           "may_display_confidence": True,
-                           "reason": "no head-health report; permissions not measured"}
+        return "MISSING", _denied(
+            "no head-health report; action authority denied until health is measured"
+        )
     if rep.get("_stale"):
-        return "STALE", {"may_price": True, "may_rank": True,
-                         "may_display_confidence": True,
-                         "reason": f"head-health report is {rep['_age_s']/86400:.0f}d old"}
+        return "STALE", _denied(
+            f"head-health report is {rep['_age_s'] / 86400:.0f}d old; "
+            f"stale measurement carries no action authority"
+        )
     h = (rep.get("heads") or {}).get(head)
     if not h:
-        return "UNKNOWN", {"may_price": True, "may_rank": True,
-                           "may_display_confidence": True,
-                           "reason": f"'{head}' absent from the head-health report"}
+        return "UNKNOWN", _denied(
+            f"'{head}' absent from the head-health report; unmeasured heads cannot act"
+        )
+    state = str(h.get("state") or h.get("status") or "UNKNOWN")
     perms = dict(h.get("permissions") or {})
-    perms["reason"] = h.get("reason", "")
-    return h.get("state", "UNKNOWN"), perms
+    if state in NO_ACTION_STATES:
+        # A report that grants permission to a no-action state is self-contradictory; the STATE
+        # wins, so a malformed or hand-edited report cannot re-open the gate.
+        return state, _denied(h.get("reason") or f"state {state} carries no action authority")
+    perms = {
+        "may_price": bool(perms.get("may_price", False)),
+        "may_rank": bool(perms.get("may_rank", False)),
+        "may_display_confidence": bool(perms.get("may_display_confidence", False)),
+        "reason": h.get("reason", ""),
+    }
+    return state, perms
 
 
 def may_price(head: str) -> tuple[bool, str]:
@@ -88,7 +123,7 @@ def may_price(head: str) -> tuple[bool, str]:
     state, perms = head_state(head)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
-    ok = bool(perms.get("may_price", True))
+    ok = bool(perms.get("may_price", False))      # default DENY, never allow
     return ok, f"{head}={state}: {perms.get('reason', '')}"
 
 
@@ -97,7 +132,7 @@ def may_rank(head: str) -> tuple[bool, str]:
     state, perms = head_state(head)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
-    return bool(perms.get("may_rank", True)), f"{head}={state}"
+    return bool(perms.get("may_rank", False)), f"{head}={state}: {perms.get('reason', '')}"
 
 
 def selftest() -> int:
@@ -106,57 +141,84 @@ def selftest() -> int:
     def chk(c, m):
         nonlocal ok
         print(f"  {'PASS' if c else 'FAIL'}  {m}")
-        ok = ok and c
+        ok = ok and bool(c)
 
-    print("head_permissions selftest")
+    print("head_permissions selftest (FAIL-CLOSED)")
     import tempfile
     global REPORT, _CACHE
     tmp = tempfile.mkdtemp()
     REPORT = os.path.join(tmp, "head_health.json")
 
-    # missing report -> permissive, but says so
-    _CACHE = {"ts": 0.0, "val": None}
+    def reset():
+        global _CACHE
+        _CACHE = {"ts": 0.0, "val": None}
+
+    def write(payload, age_days=0.0):
+        with open(REPORT, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        if age_days:
+            old = time.time() - age_days * 86400
+            os.utime(REPORT, (old, old))
+        reset()
+
+    # --- the four denial paths -------------------------------------------------------------
+    if os.path.exists(REPORT):
+        os.remove(REPORT)
+    reset()
     st, p = head_state("p_hold")
-    chk(st == "UNKNOWN" and p["may_price"] and "not measured" in p["reason"],
-        "missing report -> permissive WITH a reason (never a silent pass)")
+    chk(st == "MISSING" and not p["may_price"] and not p["may_rank"],
+        f"MISSING report -> denied ({st})")
+    chk(not may_price("p_hold")[0] and not may_rank("p_hold")[0],
+        "missing report denies BOTH price and rank")
 
-    # a CALIBRATION_ONLY head may rank but may not price
-    with open(REPORT, "w", encoding="utf-8") as fh:
-        json.dump({"heads": {"p_hold": {
-            "state": "CALIBRATION_ONLY", "reason": "ECE 0.0678 > 0.05",
-            "permissions": {"may_price": False, "may_rank": True,
-                            "may_display_confidence": False}}}}, fh)
-    _CACHE = {"ts": 0.0, "val": None}
-    can_price, why = may_price("p_hold")
-    can_rank, _ = may_rank("p_hold")
-    chk(not can_price, f"CALIBRATION_ONLY head may NOT price  ({why})")
-    chk(can_rank, "CALIBRATION_ONLY head MAY still rank")
-
-    # DISABLED_NO_SKILL may do neither
-    with open(REPORT, "w", encoding="utf-8") as fh:
-        json.dump({"heads": {"flip_risk": {
-            "state": "DISABLED_NO_SKILL", "reason": "BSS -0.0130 <= 0",
-            "permissions": {"may_price": False, "may_rank": False,
-                            "may_display_confidence": False}}}}, fh)
-    _CACHE = {"ts": 0.0, "val": None}
-    chk(not may_price("flip_risk")[0] and not may_rank("flip_risk")[0],
-        "DISABLED_NO_SKILL head may neither price nor rank")
-
-    # a USABLE head is unrestricted
-    with open(REPORT, "w", encoding="utf-8") as fh:
-        json.dump({"heads": {"p_hold": {
-            "state": "USABLE", "reason": "BSS +0.10, ECE 0.01",
-            "permissions": {"may_price": True, "may_rank": True,
-                            "may_display_confidence": True}}}}, fh)
-    _CACHE = {"ts": 0.0, "val": None}
-    chk(may_price("p_hold")[0], "USABLE head may price again (the gate re-opens on its own)")
-
-    # a stale report is not evidence about today's models
-    old = time.time() - (MAX_REPORT_AGE_S + 3600)
-    os.utime(REPORT, (old, old))
-    _CACHE = {"ts": 0.0, "val": None}
+    write({"heads": {"p_hold": {"state": "USABLE",
+                               "permissions": {"may_price": True, "may_rank": True}}}},
+          age_days=30)
     st, p = head_state("p_hold")
-    chk(st == "STALE" and "old" in p["reason"], "an aged report is reported STALE, not trusted")
+    chk(st == "STALE" and not p["may_price"] and not p["may_rank"],
+        "STALE report -> denied even though it says USABLE")
+
+    write({"heads": {"other": {"state": "USABLE",
+                              "permissions": {"may_price": True, "may_rank": True}}}})
+    st, p = head_state("p_hold")
+    chk(st == "UNKNOWN" and not p["may_price"] and not p["may_rank"],
+        "head ABSENT from the report -> denied")
+
+    with open(REPORT, "w", encoding="utf-8") as fh:
+        fh.write("{ this is not json")
+    reset()
+    st, p = head_state("p_hold")
+    chk(st == "MISSING" and not p["may_price"], "CORRUPT json -> denied, never a crash")
+
+    # --- states that must never carry action authority --------------------------------------
+    for state in ("SHADOW", "INSUFFICIENT_DATA", "DISABLED_NO_SKILL"):
+        write({"heads": {"p_hold": {"state": state,
+                                    # a self-contradictory report must not re-open the gate
+                                    "permissions": {"may_price": True, "may_rank": True}}}})
+        _, p = head_state("p_hold")
+        chk(not p["may_price"] and not p["may_rank"],
+            f"{state} denied even when the report grants permission")
+
+    # --- the graded permissions that SHOULD be honoured --------------------------------------
+    write({"heads": {"p_hold": {"state": "CALIBRATION_ONLY", "reason": "ECE 0.07",
+                                "permissions": {"may_price": False, "may_rank": True}}}})
+    _, p = head_state("p_hold")
+    chk(not p["may_price"] and p["may_rank"], "CALIBRATION_ONLY may rank, may NOT price")
+
+    write({"heads": {"p_hold": {"state": "USABLE",
+                                "permissions": {"may_price": True, "may_rank": True,
+                                                "may_display_confidence": True}}}})
+    _, p = head_state("p_hold")
+    chk(p["may_price"] and p["may_rank"], "USABLE may price and rank (the gate re-opens)")
+    chk(may_price("p_hold")[0], "may_price() honours a measured USABLE head")
+
+    # --- defaults are DENY, not ALLOW --------------------------------------------------------
+    write({"heads": {"p_hold": {"state": "USABLE", "permissions": {}}}})
+    _, p = head_state("p_hold")
+    chk(not p["may_price"] and not p["may_rank"],
+        "an empty permissions block defaults to DENY, not ALLOW")
+    chk(DENIED == {"may_price": False, "may_rank": False, "may_display_confidence": False},
+        "the module-level default is total denial")
 
     print("head-permissions:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

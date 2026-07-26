@@ -258,6 +258,14 @@ if "%BTC_SKIP_SELFTESTS%"=="1" goto :selftests_done
 echo [selftest] a. Complete-trade audit regressions - label/M0/execution correctness:
 python -m backend.trade_forecast.test_audit_fixes >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a2. Builder integration - EXECUTES the label path:
+python -m backend.trade_forecast.test_builder_integration >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a3. Forward evidence isolation + M0 gates:
+python backend/trade_forecast/forward_evidence.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+python backend/trade_forecast/m0_gates.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
 echo [selftest] b. Frozen-artifact pinning - no model swap mid-evidence-run:
 python backend\trade_forecast\freeze_guard.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
