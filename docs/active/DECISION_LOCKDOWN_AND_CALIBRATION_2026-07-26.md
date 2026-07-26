@@ -207,8 +207,9 @@ Both times the code was right and the **test** was wrong; both are now permanent
 
 - It does **not** apply the calibrator. `PAPER_BET` stays disabled until a calibrated probability
   is served *and* wins forward on rounds it never saw.
-- It does **not** consume `head_health`. The permissions are computed and written; nothing reads
-  them yet. `may_display_confidence=False` on the champion tiers is currently advisory.
+- It does not yet consume `head_health` *everywhere*. As of 2026-07-26 the **pricing** permission is
+  enforced in the champion (§5b below); `may_rank` and `may_display_confidence` are still advisory,
+  so a `CALIBRATION_ONLY` head can still shape ordering and the displayed tier.
 - `DEFAULT_ENTRY_FAIR_CAP = 0.91` still derives from a **raw** P(hold) lower bound, so any research
   reading `fair_value` inherits the bias even with betting disabled. Fixing that belongs with the
   calibrator's adoption, not as a separate patch — two competing corrections would be worse than
@@ -218,11 +219,59 @@ Both times the code was right and the **test** was wrong; both are now permanent
 
 ---
 
+## 5b. Head-health enforcement (Blueprint §31.2) — added 2026-07-26
+
+`backend/head_permissions.py` is the reader that was missing. `monitoring/head_health.py` had been
+computing per-head permissions from live outcomes and writing them to
+`data/research/head_health/head_health.json`, and **nothing consumed them** — so a head measured as
+unable to price could still price.
+
+**What is enforced.** In `decision_champion.py`, the `PAPER_BET` branch now additionally requires
+`may_price("p_hold")`. The point is narrow and specific:
+
+> `BTC_ENABLE_PAPER_BET=1` is an operator override. Before this change, that one flag also
+> re-enabled betting on exactly the probability the live data says cannot supply a fair value.
+> The switch was a way to overrule the evidence. Now it can only act on a head that currently
+> measures as `USABLE`.
+
+Measured today, against the real report, the override is inert — which is the correct outcome:
+
+```
+p_hold        CALIBRATION_ONLY    price=False  rank=True   ECE 0.0678 > 0.05
+flip_risk     CALIBRATION_ONLY    price=False  rank=True   ECE 0.0655 > 0.05
+```
+
+| scenario | result |
+|---|---|
+| default (override off) | `NO_EDGE` — "CANDIDATE UP - uncalibrated, not authorized" |
+| override **on**, `p_hold=CALIBRATION_ONLY` | `NO_EDGE` — "CANDIDATE UP - **p_hold may not price**" |
+| override on + `BTC_ENFORCE_HEAD_HEALTH=0` | `PAPER_BET`, qty 1 (deliberate observe-only escape hatch) |
+
+**Design choices worth keeping.**
+
+- *Fail-open with a reason.* A missing or unreadable report returns permissive **plus** a reason
+  string ("permissions not measured"). This module must never be able to take serving down by
+  failing to find a file — but a missing measurement must never read as a passing grade either.
+- *Stale is not evidence.* A report older than 14 days reports `STALE` rather than being trusted.
+- *The gate re-opens by itself.* Nothing has to be un-done by hand: when a head returns to `USABLE`
+  in the next report, pricing is permitted again. That is why enforcement is safe to leave on.
+- *The check cannot crash the decision path.* The import and call are wrapped; on any exception the
+  champion proceeds as before.
+- `ENFORCED` is read at import time, matching `PAPER_BET_ENABLED`. Set the env var in `start.bat`
+  before launch — toggling it inside a running process has no effect.
+
+Verified: `head_permissions --selftest` 6/6, `test_paper_trading_integrity` PASS,
+`test_collector_integrity` PASS, `executable_fill_engine --selftest` PASS,
+`venue_admissibility --selftest` PASS, compile sweep clean.
+
+---
+
 ## 6. Operating notes
 
 | switch | default | meaning |
 |---|---|---|
-| `BTC_ENABLE_PAPER_BET` | `0` | champion may authorize a paper bet from raw P(hold) |
+| `BTC_ENABLE_PAPER_BET` | `0` | champion may authorize a paper bet from raw P(hold) — now *also* requires `p_hold` to be permitted to price |
+| `BTC_ENFORCE_HEAD_HEALTH` | `1` | a head measured as unable to price may not price. `0` = observe only |
 | `BTC_ENABLE_KELLY_SIZING` | `0` | Kelly stake fraction instead of fixed quantity 1 |
 | `BTC_FREEZE_MODEL` | `1` | artifacts pinned at first load; changes refused and alerted |
 | `BTC_DEPLOYMENT_ENV` | `development` | set `production` on an exposed host |

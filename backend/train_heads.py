@@ -37,7 +37,13 @@ from artifact_identity import (
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
-SM = os.path.join(DATA_DIR, "saved_models")
+# CHALLENGER-ONLY TRAINING. A completed long-window build must NOT overwrite the models that are
+# currently driving decisions just because it finished. Set BTC_MODEL_OUTPUT_DIR to train into a
+# challenger directory; the incumbent bundle stays untouched and is promoted only by an explicit,
+# gated step (backend/promote_challenger.py) after every artifact manifest and head-health check
+# passes. Unset = the historical behaviour, writing directly to saved_models.
+SM = os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models")
+os.makedirs(SM, exist_ok=True)
 PY = sys.executable
 DAYS = os.environ.get("BTC_BACKFILL_DAYS") or os.environ.get("BTC_HISTORICAL_DAYS") or "60"
 TRAIN_LEGACY_MISSING = os.environ.get("BTC_TRAIN_LEGACY_HEADS", "0") == "1"

@@ -14,10 +14,12 @@ from .trade_schema import (
     BTC_FEATURE_COLUMNS,
     CONFIG_VERSION,
     FUTURE_OFFSETS_S,
+    target_offset_valid,
     MODE,
     QUANTILES,
 )
 from .train_btc_path_model import EVENT_CLASSES
+from .freeze_guard import ArtifactPin
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +28,7 @@ MODEL_PATH = DATA / "saved_models" / "complete_trade_btc_path.pkl"
 
 _BUNDLE = None
 _MANIFEST: dict[str, Any] = {}
+_PIN = ArtifactPin("btc")
 _ERROR = ""
 _MTIME = -1.0
 _CHECKED = 0.0
@@ -50,6 +53,10 @@ def load_model(force: bool = False):
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
             return None
+        # Under BTC_FREEZE_MODEL the evidence clock describes ONE bundle. A changed artifact is
+        # refused and the pinned one kept, rather than silently spliced into the middle of a run.
+        if not _PIN.check(manifest.get("artifact_sha256")):
+            return _BUNDLE
         bundle = joblib.load(MODEL_PATH)
         if bundle.get("version") != CONFIG_VERSION or bundle.get("mode") != MODE:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "bundle version/mode mismatch"
@@ -71,6 +78,7 @@ def status() -> dict[str, Any]:
         "error": _ERROR or None,
         "artifact_hash": _MANIFEST.get("artifact_sha256"),
         "policy_hash": _MANIFEST.get("policy_hash"),
+        **_PIN.status(),
     }
 
 
@@ -127,7 +135,11 @@ def score(horizon: int, values: dict[str, Any]) -> dict[str, Any]:
         base["reason_codes"].append("unsupported_horizon")
         return base
     current = float(values["current_btc"])
+    seconds_left = float(values.get("seconds_left") or 0.0)
     for offset in (*FUTURE_OFFSETS_S, "settlement"):
+        # "settlement" is always reachable; a numeric offset past expiry is not.
+        if offset != "settlement" and not target_offset_valid(offset, seconds_left):
+            continue
         key = f"{offset}s" if isinstance(offset, int) else str(offset)
         models = (horizon_bundle.get("quantiles") or {}).get(key) or {}
         predictions = []

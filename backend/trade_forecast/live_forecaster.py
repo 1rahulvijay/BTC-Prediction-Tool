@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections import defaultdict, deque
 from typing import Any
 
 from . import btc_path_serving, execution_serving, share_path_serving
-from .trade_forecast_logger import log_forecast
+from .trade_forecast_logger import LOG_HEALTH, log_forecast_monitored
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
 from .trade_schema import (
+    PROMOTION_GATE,
     ENTRY_CHECKPOINTS_S,
     MODE,
     QUANTITIES,
@@ -58,6 +60,17 @@ def _safe_div(a: float, b: float) -> float:
     return float(a) / float(b) if abs(float(b)) > 1e-12 else 0.0
 
 
+def _finite(value: Any) -> float | None:
+    """None for anything that is not a real number. Never a neutral stand-in."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _feature_values(
     round_data: dict[str, Any],
     share_prices: dict[str, Any],
@@ -84,26 +97,50 @@ def _feature_values(
     ask_depth = sum(float(level[1]) for level in own["ask_ladder"] if len(level) >= 2)
     bid_size = float(own["bid_size"])
     ask_size = float(own["ask_size"])
+    # NO SILENT NEUTRAL IMPUTATION. A missing P(Hold) is not a 50/50 market, a missing return is
+    # not a flat market, and a missing history is not a calm one. Substituting the neutral value
+    # makes a data failure indistinguishable from a genuine reading - and the model, trained on
+    # real values, treats the fabricated one with full confidence. Missing required input means
+    # NO FORECAST, which the caller surfaces as NO_DATA / NO_TRADE.
     p_hold_current = round_data.get("p_hold")
     current_position = round_data.get("current_position")
-    if p_hold_current is None:
-        p_hold_side = 0.5
-    else:
-        p_hold_side = (
-            float(p_hold_current)
-            if side == current_position
-            else 1.0 - float(p_hold_current)
-        )
+    if p_hold_current is None or current_position is None:
+        return None
+    p_hold_value = _finite(p_hold_current)
+    if p_hold_value is None:
+        return None
+    p_hold_side = p_hold_value if side == current_position else 1.0 - p_hold_value
+
+    # The opposite-side book is a REQUIRED input (opp_bid/ask/spread/sizes are all in
+    # FEATURE_COLUMNS). Defaulting it to zero states "the other side is worthless", which is a
+    # strong and usually false claim, not an absence of information.
+    if any(opp.get(field) is None for field in ("bid", "ask", "bid_size", "ask_size")):
+        return None
+    vol_60s = _finite(round_data.get("vol_60s_pct"))
+    if vol_60s is None:
+        return None
+
+    missing: list[str] = []
 
     def btc_return(seconds: int) -> float:
         previous = _history_value(history, now_s, seconds, "btc")
-        return _safe_div(current_btc - previous, previous) * 10_000.0 if previous else 0.0
+        value = _finite(previous)
+        if not value:
+            # Not yet enough history to measure this return. That is a real gap in the feature
+            # vector, not a zero return.
+            missing.append(f"btc_return_{seconds}s_bps")
+            return 0.0
+        return _safe_div(current_btc - value, value) * 10_000.0
 
     def bid_velocity(seconds: int) -> float:
         previous = _history_value(history, now_s, seconds, f"{side.lower()}_bid")
-        return own_bid - previous if previous is not None else 0.0
+        value = _finite(previous)
+        if value is None:
+            missing.append(f"contract_bid_velocity_{seconds}s")
+            return 0.0
+        return own_bid - value
 
-    return {
+    values: dict[str, Any] = {
         "horizon": float(round_data.get("horizon") or 0),
         "seconds_left": float(round_data.get("seconds_left") or 0.0),
         "seconds_elapsed": float(round_data.get("horizon") or 0) * 60.0
@@ -120,7 +157,7 @@ def _feature_values(
         "btc_return_15s_bps": btc_return(15),
         "btc_return_30s_bps": btc_return(30),
         "btc_return_60s_bps": btc_return(60),
-        "btc_vol_60s_pct": float(round_data.get("vol_60s_pct") or 0.0),
+        "btc_vol_60s_pct": vol_60s,
         "p_hold_side": p_hold_side,
         "own_bid": own_bid,
         "own_ask": own_ask,
@@ -131,11 +168,11 @@ def _feature_values(
         "own_ask_depth": ask_depth,
         "own_bid_levels": float(len(own["bid_ladder"])),
         "own_ask_levels": float(len(own["ask_ladder"])),
-        "opp_bid": float(opp.get("bid") or 0.0),
-        "opp_ask": float(opp.get("ask") or 0.0),
-        "opp_spread": float(opp.get("spread") or 0.0),
-        "opp_bid_size": float(opp.get("bid_size") or 0.0),
-        "opp_ask_size": float(opp.get("ask_size") or 0.0),
+        "opp_bid": float(opp["bid"]),
+        "opp_ask": float(opp["ask"]),
+        "opp_spread": float(opp.get("spread") or float(opp["ask"]) - float(opp["bid"])),
+        "opp_bid_size": float(opp["bid_size"]),
+        "opp_ask_size": float(opp["ask_size"]),
         "contract_bid_velocity_5s": bid_velocity(5),
         "contract_bid_velocity_15s": bid_velocity(15),
         "contract_bid_velocity_30s": bid_velocity(30),
@@ -147,6 +184,12 @@ def _feature_values(
         "depth_imbalance": _safe_div(bid_depth - ask_depth, bid_depth + ask_depth),
         "decision_quote_age_s": float(share_prices.get("age_seconds") or 0.0),
     }
+    # OPTIONAL features that were unavailable are reported, not hidden. `missing` is populated by
+    # the history-dependent helpers above; a caller may still forecast without them, but the
+    # forecast records which inputs were absent and how stale the quote was.
+    values["_missing_optional"] = sorted(set(missing))
+    values["_quote_age_s"] = float(share_prices.get("age_seconds") or 0.0)
+    return values
 
 
 def _capacity_table(share_prices: dict[str, Any], side: str) -> list[dict[str, Any]]:
@@ -255,7 +298,9 @@ def _logger_rows(
         )
         if key in _LOGGED:
             continue
-        _LOGGED.add(key)
+        # NOTE: the de-duplication key is marked ONLY AFTER a confirmed write (see the end of
+        # this block). Marking it here meant a failed insert permanently suppressed every later
+        # retry for that checkpoint - the evidence was gone, and the run looked merely quiet.
         forecast_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
         share = candidate.get("share_forecast") or {}
         events = share.get("events") or {}
@@ -338,11 +383,14 @@ def _logger_rows(
                     "p_stop_cross": crossing.get("stop_3c"),
                 }
             )
-        try:
-            log_forecast(forecast, paths)
-        except Exception:
-            # Logging must never interrupt the price-to-beat ticker.
-            pass
+        # Logging must never interrupt the price-to-beat ticker - but a failure must never be
+        # invisible either, and it must never be PERMANENT. The de-dup key is committed only on a
+        # confirmed write, so a transient failure is retried on the next tick instead of silently
+        # deleting that checkpoint from the evidence set forever.
+        if log_forecast_monitored(forecast, paths):
+            _LOGGED.add(key)
+        else:
+            _LOGGED.discard(key)
 
 
 def score_round(
@@ -447,8 +495,11 @@ def score_round(
         },
         "champion_unchanged": True,
         "plain_reason": (
-            "No trade: the complete-trade models do not yet have the required "
-            "500 independent rounds and eight calendar weeks of forward L2 evidence."
+            # Generated from M0_V2, never a duplicated literal: the gate said 500 while the
+            # protocol required 1,000, so the app told the operator the wrong number.
+            f"No trade: the complete-trade models do not yet have the required "
+            f"{PROMOTION_GATE['min_independent_rounds']:,} independent rounds and "
+            f"{PROMOTION_GATE['min_calendar_weeks']} calendar weeks of forward L2 evidence."
             if not evidence_promotable
             else "Shadow estimate only; the production Champion remains unchanged."
         ),

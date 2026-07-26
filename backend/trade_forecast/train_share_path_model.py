@@ -70,11 +70,83 @@ def _day_block_lower_bound(values: pd.DataFrame, seed: int = 20260726) -> float 
     return float(np.percentile(samples, 2.5))
 
 
+# ALIGNED M0 OBJECTIVE (frozen pair). The ranking head and the realized outcome must describe the
+# SAME trade, or the gate measures skill at a question nobody trades.
+#
+#   score    P(+3c before -3c)          -> the success EVENT of the plan below
+#   realized plan_take_3c_or_stop_3c_net -> the PnL of that same plan
+#
+# `label_ever_profitable` is retained as a DIAGNOSTIC column only: a trade can tick +0.1c and still
+# lose under +3c/-3c, so a head ranking on it can be genuinely skilful and economically useless.
+M0_SCORE_LABEL = "plan_take_3c_or_stop_3c_profitable"
+M0_REALIZED_COLUMN = "plan_take_3c_or_stop_3c_net"
+# The independent unit. NOT the checkpoint: four checkpoints inside one round share the same
+# settlement outcome and overlapping price path, so scoring each as its own trade would still
+# inflate n and understate variance even after the side/quantity collapse.
+M0_INDEPENDENT_UNIT = "round_id"
+
+
+def derive_entry_threshold(
+    frame: pd.DataFrame,
+    calibration_mask: np.ndarray,
+    event_head: dict[str, Any],
+    *,
+    target_entry_rate: float = 0.20,
+) -> float | None:
+    """Absolute action threshold, computed ONLY on calibration data.
+
+    Returns the score at which roughly `target_entry_rate` of calibration rounds would have been
+    entered. The value is then FROZEN: the evaluation period never recomputes it, so the policy
+    is executable live, where the future score distribution is unknown.
+
+    Returning None (insufficient calibration data) is correct and makes M0 refuse to score -
+    better than a threshold borrowed from the period being measured."""
+    rows = frame.loc[calibration_mask]
+    rows = rows[rows.get("entry_complete", 0) == 1] if "entry_complete" in rows else rows
+    if len(rows) < 100:
+        return None
+    x = rows.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
+    finite = np.isfinite(x).all(axis=1)
+    if finite.sum() < 100:
+        return None
+    scores = predict_classifier(event_head["members"], event_head["calibrator"], x[finite])
+    return float(np.quantile(scores, 1.0 - float(target_entry_rate)))
+
+
+def _causal_round_entries(
+    candidates: pd.DataFrame,
+    *,
+    threshold: float,
+    unit: str = "round_id",
+) -> pd.DataFrame:
+    """First qualifying entry per round, walking checkpoints earliest -> latest.
+
+    This is the executable policy: at each checkpoint, look only at candidates available AT that
+    checkpoint, take the best side/quantity among them, and enter if it clears `threshold`.
+    Nothing later in the round can influence the decision, which is precisely what taking a
+    round-wide maximum would do."""
+    if candidates.empty:
+        return candidates.head(0).copy()
+    qualifying = candidates[candidates["score"] >= float(threshold)]
+    if qualifying.empty:
+        return candidates.head(0).copy()
+    # Earliest checkpoint first = LARGEST seconds_left. Within a checkpoint, the best-scoring
+    # side/quantity is the one the policy would take at that instant.
+    ordered = qualifying.sort_values(
+        ["seconds_left", "score"], ascending=[False, False]
+    )
+    return ordered.groupby(unit, sort=False, as_index=False).head(1).copy()
+
+
 def evaluate_m0(
     frame: pd.DataFrame,
     test_mask: np.ndarray,
     event_head: dict[str, Any] | None,
+    entry_threshold: float | None = None,
+    calibration_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
+    """`entry_threshold` is the frozen absolute action threshold. It must come from development or
+    calibration data - never from the evaluation period's own score distribution."""
     result: dict[str, Any] = {
         "status": "NOT_EVALUABLE",
         "passed": False,
@@ -82,29 +154,79 @@ def evaluate_m0(
         "buckets": [],
     }
     if not event_head or not event_head.get("supported"):
-        result["reasons"].append("p_ever_profitable_head_unavailable")
+        result["reasons"].append(f"m0_score_head_unavailable:{M0_SCORE_LABEL}")
         return result
     required = [
         *FEATURE_COLUMNS,
         "entry_complete",
         "label_ever_profitable",
-        "plan_take_3c_or_stop_3c_net",
+        M0_REALIZED_COLUMN,
         "plan_hold_to_settlement_net",
         "stress_1000ms_take_3c_or_stop_3c_net",
         "round_start_ts",
+        "exposure_id",
+        M0_INDEPENDENT_UNIT,
     ]
-    selected = frame.loc[test_mask].dropna(subset=required).copy()
-    selected = selected[selected["entry_complete"] == 1]
-    if len(selected) < 100:
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        # An older dataset predates exposure_id. Scoring it would silently reproduce the
+        # candidate-counting error, so refuse rather than degrade.
+        result["reasons"].append(f"dataset_missing_columns:{','.join(missing)}")
+        return result
+    candidates = frame.loc[test_mask].dropna(subset=required).copy()
+    candidates = candidates[candidates["entry_complete"] == 1]
+    if len(candidates) < 100:
         result["reasons"].append("fewer_than_100_test_candidates")
         return result
-    x = selected.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
+    x = candidates.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
     finite = np.isfinite(x).all(axis=1)
-    selected = selected.loc[finite].copy()
+    candidates = candidates.loc[finite].copy()
     x = x[finite]
-    score = predict_classifier(event_head["members"], event_head["calibrator"], x)
-    selected["score"] = score
-    selected["realized_net"] = selected["plan_take_3c_or_stop_3c_net"].astype(float)
+    candidates["score"] = predict_classifier(
+        event_head["members"], event_head["calibrator"], x
+    )
+    # ONE TRADE PER ROUND, CHOSEN CAUSALLY.
+    #
+    # Taking the max-scoring candidate across a whole round is NOT a policy - it is hindsight.
+    # At 120s left the live app cannot know a better score will appear at 60s, so "enter at the
+    # round's best checkpoint" cannot be executed and every statistic built on it is inflated.
+    #
+    # The causal rule walks checkpoints EARLIEST -> LATEST and takes the first candidate whose
+    # score clears an absolute threshold frozen BEFORE the evidence period. First qualifying
+    # entry wins; if none qualifies, the round is NO_TRADE. That is executable tick by tick.
+    #
+    # The threshold is absolute and frozen. It may NOT be a quantile of the evaluation period's
+    # own score distribution: qcut over the test set is a ranking diagnostic, not a deployable
+    # rule, because a live system has no access to the future distribution it would need.
+    if entry_threshold is None:
+        # No frozen threshold supplied. Refuse rather than silently inventing one from the
+        # evaluation period - that is precisely the leak this rewrite removes.
+        result["reasons"].append("no_frozen_entry_threshold_supplied")
+        result["status"] = "NOT_EVALUABLE"
+        return result
+    result["entry_threshold"] = float(entry_threshold)
+    result["entry_threshold_source"] = "frozen_before_evaluation"
+    selected = _causal_round_entries(candidates, threshold=entry_threshold)
+    result["candidates_considered"] = int(len(candidates))
+    result["independent_units"] = int(len(selected))
+    result["independent_unit"] = M0_INDEPENDENT_UNIT
+    result["distinct_exposures_available"] = int(candidates["exposure_id"].nunique())
+    result["candidates_per_unit"] = round(len(candidates) / max(1, len(selected)), 2)
+    # Reported so the collapse is auditable: how many checkpoints were available per round, and
+    # which one the policy actually picked.
+    result["chosen_checkpoint_mix"] = {
+        str(int(k)): int(v)
+        for k, v in selected["seconds_left"].value_counts().sort_index().items()
+    }
+    if len(selected) < 100:
+        result["reasons"].append("fewer_than_100_independent_rounds")
+        return result
+    # EXACT ECONOMIC ALIGNMENT. The score is P(this plan's realized net PnL > 0) and the realized
+    # column is that same plan's net PnL - the same question in probability and in dollars.
+    # Ranking on the barrier EVENT (`label_take_3c_before_stop_3c`) was closer than
+    # P(ever profitable) but still not identical: it ignores no-barrier settlement outcomes,
+    # overshoot, entry price, fees and quantity impact. Both remain as diagnostics only.
+    selected["realized_net"] = selected[M0_REALIZED_COLUMN].astype(float)
     selected["hold_net"] = selected["plan_hold_to_settlement_net"].astype(float)
     selected["stress_net"] = selected[
         "stress_1000ms_take_3c_or_stop_3c_net"
@@ -198,6 +320,9 @@ def evaluate_m0(
             "q5_hold_to_settlement_ev": q5_hold_ev,
             "q5_profit_factor": q5_profit_factor,
             "q5_max_single_hour_share": max_hour_share,
+            "m0_score_label": M0_SCORE_LABEL,
+            "m0_realized_column": M0_REALIZED_COLUMN,
+            "m0_independent_unit": M0_INDEPENDENT_UNIT,
         }
     )
     if q5_lb is None:
@@ -520,7 +645,7 @@ def train(
         m0_by_horizon[str(horizon)] = evaluate_m0(
             frame,
             split["test"] & horizon_mask,
-            horizon_bundle["events"].get("label_ever_profitable"),
+            horizon_bundle["events"].get(M0_SCORE_LABEL),
         )
 
     evidence_gate = bool(dataset_manifest.get("promotable"))

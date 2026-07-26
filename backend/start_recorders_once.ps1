@@ -56,3 +56,21 @@ if ($env:BTC_SKIP_MICROSTRUCTURE_RECORDER -eq "1") {
         @("-u", "backend\microstructure_recorder.py", "--interval", "1.0") `
         "microstructure_recorder.stdout.log" "microstructure_recorder.stderr.log"
 }
+
+# Multi-venue event-time collector (Binance spot/perp, Bybit, Coinbase). Public read-only market
+# data only - this process holds no credentials and CANNOT trade. It captures the one thing that
+# cannot be reconstructed later: the event-time cross-venue picture with honest recv_ts.
+#
+# NOTE ON THE EVIDENCE CLOCK: BINANCE_VOLATILITY_MOMENTUM_V1 needs >= 4 CONTINUOUS weeks at full
+# stream health. A laptop that sleeps will produce mostly NON-QUALIFYING episodes, and the episode
+# ledger records that honestly rather than hiding it. Local collection is therefore useful for
+# mechanics and monitoring; the qualifying run belongs on the always-on box (see
+# docs/active/COLLECTOR_DEPLOYMENT_RUNBOOK_2026-07-26.md).
+#   python backend\venues\multi_venue_recorder.py --report    (uptime vs qualifying coverage)
+if ($env:BTC_SKIP_VENUE_COLLECTOR -eq "1") {
+    Write-Host "[recorder] Multi-venue event-time collector skipped."
+} else {
+    Start-Recorder "Multi-venue event-time collector" "multi_venue_recorder\.py" `
+        @("-u", "backend\venues\multi_venue_recorder.py") `
+        "multi_venue_recorder.stdout.log" "multi_venue_recorder.stderr.log"
+}

@@ -98,12 +98,13 @@ def optimize_candidate(
     )
     ranked = []
     requested = float(candidate.get("requested_qty") or 0.0)
-    capacity_q50 = float(
-        ((execution.get("capacity") or {}).get("q50") or 0.0)
-    )
+    # CONSERVATIVE CAPACITY. q50 is the MEDIAN outcome, so sizing on it means the book fails to
+    # absorb the quantity roughly half the time - and the shortfall concentrates in exactly the
+    # stressed books where the exit matters most. Gate on a low capacity quantile instead.
+    capacity_q = _low_quantile(execution.get("capacity"), ("q10", "q20", "q25", "q50"))
     for name, plan in plans.items():
         uncertainty = max(0.0, float(plan["pnl_q90"]) - float(plan["pnl_q10"]))
-        liquidity_shortfall = max(0.0, requested - capacity_q50) / max(1.0, requested)
+        liquidity_shortfall = max(0.0, requested - capacity_q) / max(1.0, requested)
         score = (
             float(plan["expected_pnl"])
             - TAIL_RISK_PENALTY * abs(min(0.0, float(plan["cvar_05"])))
@@ -122,6 +123,14 @@ def optimize_candidate(
         }
     score, plan_name, plan = ranked[0]
     gate_reasons = []
+    # HARD ENFORCEMENT: scenario-derived economics may inform DISPLAY and RANKING, and may never
+    # authorize an action. The scenario engine builds five artificial paths from marginal
+    # quantiles, so its expected_pnl / cvar_05 / p_profit are approximations - useful for ordering
+    # candidates, not for asserting an edge exists. A tag-check here means removing the tag is the
+    # only way to promote on these numbers, and that is a visible, reviewable code change rather
+    # than an accident. Direct per-plan PnL heads are what will lift this.
+    if not plan.get("promotable", False):
+        gate_reasons.append("plan_economics_are_diagnostic_only")
     if float(plan["expected_pnl"]) <= 0.0:
         gate_reasons.append("expected_net_pnl_not_positive")
     if float(plan["pnl_q10"]) <= 0.0:
@@ -130,8 +139,8 @@ def optimize_candidate(
         gate_reasons.append("profit_probability_below_gate")
     if float(full_fill) < MIN_FULL_FILL_PROBABILITY:
         gate_reasons.append("full_fill_probability_below_gate")
-    if capacity_q50 + 1e-9 < requested:
-        gate_reasons.append("median_capacity_below_requested_quantity")
+    if capacity_q + 1e-9 < requested:
+        gate_reasons.append("conservative_capacity_below_requested_quantity")
     if score <= 0.0:
         gate_reasons.append("robust_utility_does_not_beat_no_trade")
     action = f"BUY_{candidate['side']}" if not gate_reasons else "NO_TRADE"
@@ -173,6 +182,22 @@ def optimize_candidate(
     }
 
 
+def _low_quantile(table: dict | None, order: tuple[str, ...]) -> float:
+    """First available quantile in `order`, treating an absent estimate as ZERO capacity.
+
+    Falling back to a higher quantile only happens when the conservative one was not modelled at
+    all; the order is deliberately pessimistic-first. Absent capacity means "cannot size", not
+    "unlimited" - the missing-data direction that keeps a quantity from being taken."""
+    for key in order:
+        value = (table or {}).get(key)
+        if value is not None:
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
 def choose_trade(
     candidates: list[dict[str, Any]],
     *,
@@ -188,6 +213,30 @@ def choose_trade(
         for candidate in candidates
     ]
     actionable = [item for item in evaluated if item["action"].startswith("BUY_")]
+    # ONE permission registry, consulted by every lane. `p_hold_side` is a FEATURE_COLUMNS input to
+    # every complete-trade head, so a P(Hold) measured as unable to price must be mechanically
+    # unable to influence a complete-trade action either - not merely unable to influence the
+    # champion. A head marked DISABLED_NO_SKILL has to be inert everywhere or it is inert nowhere.
+    if actionable:
+        try:
+            import sys as _sys
+            from pathlib import Path as _Path
+
+            _backend = str(_Path(__file__).resolve().parents[1])
+            if _backend not in _sys.path:
+                _sys.path.insert(0, _backend)
+            from head_permissions import may_rank as _may_rank
+
+            _ok, _why = _may_rank("p_hold")
+        except Exception:
+            _ok, _why = True, ""          # never let the permission check take serving down
+        if not _ok:
+            return {
+                "action": "NO_TRADE",
+                "mode": "SHADOW_ONLY",
+                "reason_codes": [f"p_hold_not_permitted_to_rank:{_why}"],
+                "candidates": evaluated,
+            }
     if not actionable:
         reasons = sorted(
             {reason for item in evaluated for reason in item.get("reason_codes", [])}

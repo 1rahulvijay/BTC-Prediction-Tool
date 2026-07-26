@@ -1,0 +1,137 @@
+name: invariants
+
+# Proves, on every push and PR, the invariants that start.bat enforces at launch. These guard
+# failures that are SILENT locally: the app keeps running, reports look healthy, and the damage
+# only surfaces as apparent edge that dies on contact with real money.
+#
+# Every job here is offline and deterministic - no network, no market data, no trained artifacts.
+# A red build means an invariant the evidence depends on has been broken.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The audit suite imports train_share_path_model, whose shared model code pulls in joblib
+      # and scikit-learn (and the ensemble families pull lightgbm/catboost). Installing only
+      # duckdb/pandas/numpy/pyarrow made the workflow fail on import, not on an invariant.
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet -r backend/requirements.txt
+          pip install --quiet joblib scikit-learn lightgbm catboost
+
+      # --- complete-trade correctness -------------------------------------------------------
+      - name: Audit regressions (labels / M0 unit / execution / logging)
+        run: python -m backend.trade_forecast.test_audit_fixes
+
+      - name: Builder integration (EXECUTES the label path)
+        run: python -m backend.trade_forecast.test_builder_integration
+
+      - name: Forward evidence isolation + frozen threshold artifact
+        run: python backend/trade_forecast/forward_evidence.py --selftest
+
+      - name: M0 gates (matched-random, BH, profit concentration)
+        run: python backend/trade_forecast/m0_gates.py --selftest
+
+      - name: Champion resolver (atomic promotion actually reaches serving)
+        run: python backend/trade_forecast/champion_resolver.py --selftest
+
+      - name: Frozen-artifact pinning
+        run: python backend/trade_forecast/freeze_guard.py --selftest
+
+      - name: Exit-plan and scenario-engine selftests
+        run: |
+          python -c "import sys; sys.path.insert(0,'backend'); \
+            from trade_forecast.trade_labels import selftest as a; \
+            from trade_forecast.scenario_engine import selftest as b; a(); b()"
+
+      # --- decision + deployment gates ------------------------------------------------------
+      - name: Head permissions
+        run: python backend/head_permissions.py --selftest
+
+      - name: Challenger promotion gates
+        run: python backend/promote_challenger.py --selftest
+
+      - name: Long-window preflight classification
+        run: python backend/preflight_longwindow.py --selftest
+
+      # --- evidence collection --------------------------------------------------------------
+      - name: Multi-venue collector schema + episode accounting
+        run: python backend/venues/multi_venue_recorder.py --selftest
+
+      - name: Venue admissibility (backlog / lead-lag / identity)
+        run: python backend/venues/venue_admissibility.py --selftest
+
+      - name: Collector evidence integrity (D1-D5)
+        run: python backend/venues/test_collector_integrity.py
+
+      # --- repo-wide consistency ------------------------------------------------------------
+      - name: Strategy registry consistency
+        run: python backend/research/audit_strategy_registry.py
+
+      - name: Documentation table well-formedness
+        run: python backend/research/check_doc_tables.py
+
+      # --- preregistration integrity --------------------------------------------------------
+      # A frozen protocol whose bytes changed is not a frozen protocol. This recomputes every
+      # recorded hash and fails if any drifted, so an edit cannot pass review unnoticed.
+      - name: Preregistration hashes unchanged
+        run: python backend/research/verify_prereg_hashes.py
+
+      - name: Every python file compiles
+        run: python -m compileall -q backend
+
+  # Ubuntu module tests cannot verify Batch parsing, label targets, escaping or goto behaviour.
+  # start.bat is the launch gate for every evidence run, so it is validated on the OS that runs it.
+  startbat:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet -r backend/requirements.txt
+          pip install --quiet joblib scikit-learn lightgbm catboost
+
+      # Parses the whole file and prints the resolved configuration without launching servers.
+      - name: start.bat parses and resolves configuration
+        shell: cmd
+        run: |
+          set BTC_VALIDATE_STARTUP=1
+          call start.bat
+          if errorlevel 1 exit /b 1
+
+      - name: Every invariant selftest passes on Windows
+        shell: cmd
+        run: |
+          python -m backend.trade_forecast.test_audit_fixes || exit /b 1
+          python -m backend.trade_forecast.test_builder_integration || exit /b 1
+          python backend/trade_forecast/forward_evidence.py --selftest || exit /b 1
+          python backend/trade_forecast/m0_gates.py --selftest || exit /b 1
+          python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1
+          python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
+          python backend/head_permissions.py --selftest || exit /b 1
+          python backend/promote_challenger.py --selftest || exit /b 1
+          python backend/preflight_longwindow.py --selftest || exit /b 1
+          python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
+          python backend/venues/venue_admissibility.py --selftest || exit /b 1
+          python backend/research/verify_prereg_hashes.py || exit /b 1

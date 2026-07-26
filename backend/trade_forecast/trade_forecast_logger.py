@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +148,108 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+# ===================================================================================
+# LEDGER V2 - the immutable evidence table the forward evaluator reads
+# ===================================================================================
+# V1 could not support a forward-evidence manifest:
+#   * `decision_ts` is written from now_ms (MILLISECONDS) but read as seconds, so a 2-hour
+#     evidence set would measure as 8 weeks;
+#   * `feature_hash` is a hash of each prediction's feature VALUES, so it differs on every row -
+#     it can never satisfy a singleton check, and it is not the schema hash the contract means;
+#   * there is no threshold hash, no prereg hash and no freeze timestamps at all.
+#
+# V2 is a SEPARATE table. The V1 columns keep their existing meaning; nothing is silently
+# redefined underneath rows that were already written. Units are in the column names, and the
+# two different feature hashes have two different names.
+FORECASTS_V2_DDL = """
+CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
+    forecast_id VARCHAR PRIMARY KEY,
+    round_id VARCHAR,
+    exposure_id VARCHAR,
+    seconds_left INTEGER,
+    side VARCHAR,
+    requested_qty DOUBLE,
+
+    -- Units are explicit in the name. Both are stored; neither is inferred from the other.
+    prediction_ts_ms BIGINT,
+    prediction_ts_s DOUBLE,
+
+    -- Identity of the frozen policy. Each of these MUST be a singleton across an evidence set.
+    model_bundle_sha256 VARCHAR,
+    feature_schema_sha256 VARCHAR,
+    policy_sha256 VARCHAR,
+    threshold_sha256 VARCHAR,
+    prereg_sha256 VARCHAR,
+
+    -- Per-row, deliberately NOT a singleton: the values this one prediction was computed from.
+    feature_values_sha256 VARCHAR,
+
+    -- Freeze boundaries, so admissibility is checkable from the row alone.
+    prereg_frozen_at_s DOUBLE,
+    model_frozen_at_s DOUBLE,
+    threshold_frozen_at_s DOUBLE,
+
+    -- The decision itself.
+    entry_threshold DOUBLE,
+    score DOUBLE,
+    action VARCHAR,
+    predicted_entry_vwap DOUBLE,
+    exit_plan VARCHAR,
+    reason_codes_json VARCHAR
+)
+"""
+
+FORECASTS_V2_COLUMNS = (
+    "forecast_id", "round_id", "exposure_id", "seconds_left", "side", "requested_qty",
+    "prediction_ts_ms", "prediction_ts_s",
+    "model_bundle_sha256", "feature_schema_sha256", "policy_sha256", "threshold_sha256",
+    "prereg_sha256", "feature_values_sha256",
+    "prereg_frozen_at_s", "model_frozen_at_s", "threshold_frozen_at_s",
+    "entry_threshold", "score", "action", "predicted_entry_vwap", "exit_plan",
+    "reason_codes_json",
+)
+
+
+def log_forecast_v2(row: dict[str, Any], conn: Any = None) -> None:
+    """Append one immutable V2 evidence row. INSERT only - a duplicate raises."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute(FORECASTS_V2_DDL)
+        missing = [c for c in FORECASTS_V2_COLUMNS if c not in row]
+        if missing:
+            raise ValueError(f"ledger v2 row missing required columns: {missing}")
+        conn.execute(
+            "INSERT INTO complete_trade_forecasts_v2 ("
+            + ",".join(FORECASTS_V2_COLUMNS) + ") VALUES ("
+            + ",".join("?" * len(FORECASTS_V2_COLUMNS)) + ")",
+            [row[c] for c in FORECASTS_V2_COLUMNS],
+        )
+    finally:
+        if own:
+            conn.close()
+
+
+def read_forward_rows(conn: Any = None) -> list[dict[str, Any]]:
+    """Rows in the shape build_forward_manifest() expects. Seconds, schema hash, no aliasing."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        conn.execute(FORECASTS_V2_DDL)
+        cursor = conn.execute(
+            "SELECT forecast_id, round_id, prediction_ts_s AS prediction_ts, "
+            "model_bundle_sha256 AS model_sha256, feature_schema_sha256, "
+            "policy_sha256, threshold_sha256, prereg_sha256, "
+            "prereg_frozen_at_s, model_frozen_at_s "
+            "FROM complete_trade_forecasts_v2 ORDER BY prediction_ts_s"
+        )
+        names = [d[0] for d in cursor.description]
+        return [dict(zip(names, r)) for r in cursor.fetchall()]
+    finally:
+        if own:
+            conn.close()
+
+
 def log_forecast(
     forecast: dict[str, Any],
     paths: list[dict[str, Any]] | None = None,
@@ -204,7 +308,7 @@ def log_forecast(
         ]
         conn.execute("BEGIN TRANSACTION")
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_forecasts "
+            f"INSERT INTO complete_trade_forecasts "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             values,
         )
@@ -228,7 +332,7 @@ def log_forecast(
         for path in paths or []:
             row = {**path, "forecast_id": forecast["forecast_id"]}
             conn.execute(
-                f"INSERT OR REPLACE INTO complete_trade_path_predictions "
+                f"INSERT INTO complete_trade_path_predictions "
                 f"({','.join(path_columns)}) VALUES ({','.join('?' for _ in path_columns)})",
                 [row.get(column) for column in path_columns],
             )
@@ -242,6 +346,101 @@ def log_forecast(
     finally:
         if own:
             conn.close()
+
+
+class LogHealth:
+    """Observable state for the evidence writer.
+
+    A logging failure is never invisible. The ticker may continue - a forecast that fails to
+    persist must not take the price feed down - but the failure is counted, timestamped, kept in a
+    dead-letter buffer and exposed, because silently losing evidence looks exactly like a healthy
+    run that happened to produce fewer forecasts."""
+
+    MAX_DEAD_LETTERS = 200
+
+    def __init__(self) -> None:
+        self.attempted = 0
+        self.written = 0
+        self.failed = 0
+        self.duplicates = 0
+        self.last_success_ts: float | None = None
+        self.last_error: str | None = None
+        self.last_error_ts: float | None = None
+        self.dead_letters: deque = deque(maxlen=self.MAX_DEAD_LETTERS)
+
+    def record_success(self) -> None:
+        self.attempted += 1
+        self.written += 1
+        self.last_success_ts = time.time()
+
+    def record_failure(self, exc: BaseException, payload: dict[str, Any]) -> None:
+        self.attempted += 1
+        self.failed += 1
+        text = f"{type(exc).__name__}: {exc}"
+        if any(t in text.lower() for t in ("duplicate", "primary key", "unique")):
+            self.duplicates += 1
+        self.last_error = text
+        self.last_error_ts = time.time()
+        self.dead_letters.append(
+            {"ts": self.last_error_ts, "error": text,
+             "forecast_id": payload.get("forecast_id")}
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        stale_s = (
+            round(time.time() - self.last_success_ts, 1)
+            if self.last_success_ts is not None
+            else None
+        )
+        return {
+            "attempted": self.attempted,
+            "written": self.written,
+            "failed": self.failed,
+            "duplicate_rejections": self.duplicates,
+            "last_success_ts": self.last_success_ts,
+            "seconds_since_last_write": stale_s,
+            "last_error": self.last_error,
+            "dead_letters": len(self.dead_letters),
+            "healthy": self.failed == 0,
+            "alert": (
+                None if self.failed == 0
+                else f"{self.failed} forecast write(s) failed; last: {self.last_error}"
+            ),
+        }
+
+
+LOG_HEALTH = LogHealth()
+
+
+def log_forecast_monitored(
+    forecast: dict[str, Any],
+    paths: list[dict[str, Any]] | None = None,
+    conn: Any = None,
+) -> bool:
+    """Append-only write with retry. Returns True on success; never raises into the ticker.
+
+    The previous call site swallowed every exception with `pass`, so a broken evidence table
+    produced a perfectly normal-looking run that simply contained no forecasts."""
+    for attempt in range(3):
+        try:
+            log_forecast(forecast, paths, conn)
+            LOG_HEALTH.record_success()
+            return True
+        except Exception as exc:                       # noqa: BLE001 - reported, never hidden
+            text = f"{type(exc).__name__}: {exc}"
+            duplicate = any(
+                token in text.lower() for token in ("duplicate", "primary key", "unique")
+            )
+            if duplicate or attempt == 2:
+                LOG_HEALTH.record_failure(exc, forecast)
+                print(
+                    "[trade-forecast] EVIDENCE WRITE FAILED "
+                    f"({'duplicate' if duplicate else 'retries exhausted'}): {text}",
+                    flush=True,
+                )
+                return False
+            time.sleep(0.05 * (attempt + 1))
+    return False
 
 
 def log_checkpoint(
@@ -267,7 +466,7 @@ def log_checkpoint(
             "change_reason",
         ]
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_checkpoints "
+            f"INSERT INTO complete_trade_checkpoints "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             [checkpoint.get(column) for column in columns],
         )
@@ -312,7 +511,7 @@ def log_outcome(
             for column in columns
         ]
         conn.execute(
-            f"INSERT OR REPLACE INTO complete_trade_outcomes "
+            f"INSERT INTO complete_trade_outcomes "
             f"({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
             values,
         )

@@ -1,5 +1,22 @@
 # Documentation Index
 
+## Audit remediation — COMPLETE_TRADE_FORECAST_V1 (rebuild required before any M0)
+- **[AUDIT_REMEDIATION_2026-07-26.md](active/AUDIT_REMEDIATION_2026-07-26.md)** — external audit of
+  `b7306cb` found 14 defects letting the Complete Trade Forecaster manufacture apparent
+  selectivity. **10 fixed, 1 contained, 3 explicitly deferred**, with a regression test per defect
+  (`python -m backend.trade_forecast.test_audit_fixes`, 60 checks). Headline fixes: future targets
+  no longer run past contract expiry (a 30s-left decision was carrying BTC prices from 90s AFTER
+  settlement); `exposure_id` makes M0 score one deployable action per market moment instead of
+  every side x quantity candidate (395 rounds vs 24,996 rows); the M0 ranking label and realized
+  column now describe the SAME plan; quote survival is size-aware; missing live features yield NO
+  FORECAST instead of a neutral value; evidence logging is append-only and monitored; loaders pin
+  their artifact under `BTC_FREEZE_MODEL`; sizing gates on q10 capacity, not the median.
+  **One correction to the audit:** its proposed `resolution_source LIKE 'official:%'` filter would
+  have matched ZERO rows (the export stores bare venue values; the prefix is added downstream), so
+  the frozen-allowlist alternative was used plus a fail-loud guard. **The dataset must be rebuilt
+  before any number from this lane means anything** - `load_verified_dataset` already refuses the
+  stale one.
+
 - [Complete Trade Forecaster V1 (2026-07-26)](active/COMPLETE_TRADE_FORECAST_V1_IMPLEMENTATION_2026-07-26.md) - executable entry, BTC/share path distributions, full-depth capacity, causal plan optimizer, strict M0 gates, dedicated DuckDB ledger, shadow UI, commands and validation evidence.
 - [1,265-Day Multi-Window Expert Implementation (2026-07-26)](active/LONG_WINDOW_1265D_EXPERT_IMPLEMENTATION_2026-07-26.md) - true OHLC, monthly data gates, artifact identity, W90/W400/W1265 experts, purged OOF, sample-budget experiments, TCN sampling, forward shadow scoring, run order, and remaining evidence-gated work.
 
