@@ -18,6 +18,7 @@ survive contact with real money.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -206,33 +207,45 @@ def test_a7_no_neutral_imputation() -> None:
     }
     from collections import deque
 
-    healthy = _feature_values(base, prices, "UP", 5, deque())
-    chk(healthy is not None, "a complete snapshot still produces a forecast")
+    # A COMPLETE snapshot now needs real history: the lookback features are required, so an empty
+    # deque legitimately yields no forecast (see S3). Build a history that covers 5/15/30/60s.
+    now = 1000.0
+    history = deque(
+        {"ts": now - age, "btc": 60_000.0 - age, "up_bid": 0.59, "down_bid": 0.40}
+        for age in (61.0, 31.0, 16.0, 6.0, 1.0)
+    )
+    healthy = _feature_values(base, prices, "UP", 5, history)
+    chk(healthy is not None, "a complete snapshot WITH history still produces a forecast")
 
     missing_phold = {**base, "p_hold": None}
     chk(
-        _feature_values(missing_phold, prices, "UP", 5, deque()) is None,
+        _feature_values(missing_phold, prices, "UP", 5, history) is None,
         "missing P(Hold) -> NO FORECAST (never 0.5)",
     )
     missing_vol = {**base, "vol_60s_pct": None}
     chk(
-        _feature_values(missing_vol, prices, "UP", 5, deque()) is None,
+        _feature_values(missing_vol, prices, "UP", 5, history) is None,
         "missing volatility -> NO FORECAST (never 0.0)",
     )
     no_opp = {"up": dict(quote), "down": {}, "ts": 1000.0, "age_seconds": 0.5}
     chk(
-        _feature_values(base, no_opp, "UP", 5, deque()) is None,
+        _feature_values(base, no_opp, "UP", 5, history) is None,
         "missing opposite-side book -> NO FORECAST (never a 0.0 bid)",
     )
     if healthy is not None:
         chk(
             "_missing_optional" in healthy,
-            "optional gaps are reported alongside the vector, not hidden",
+            "gaps are reported alongside the vector, not hidden",
         )
         chk(
-            "btc_return_5s_bps" in healthy["_missing_optional"],
-            "an empty history is flagged as missing, not recorded as a flat return",
+            healthy["_missing_optional"] == [],
+            "a fully covered history reports no gaps",
         )
+    thin = deque([{"ts": now - 1.0, "btc": 60_000.0, "up_bid": 0.59}])
+    chk(
+        _feature_values(base, prices, "UP", 5, thin) is None,
+        "a history too short for the 60s lookback yields NO FORECAST, not a flat return",
+    )
 
 
 def test_a8_durable_logging() -> None:
@@ -346,6 +359,89 @@ def test_a4_scenario_engine_is_diagnostic() -> None:
     )
 
 
+def test_serving_integration() -> None:
+    print("S1  serving integration: promotion reaches the loaders")
+    from . import btc_path_serving, execution_serving, share_path_serving
+    from .champion_resolver import evidence_mode, resolve_artifact
+
+    for mod in (share_path_serving, btc_path_serving, execution_serving):
+        text = open(mod.__file__, encoding="utf-8").read()
+        name = mod.__name__.rsplit(".", 1)[-1]
+        chk("resolve_artifact" in text, f"{name} resolves through the champion bundle")
+        chk(hasattr(mod, "ARTIFACT_NAME"), f"{name} declares its artifact name")
+
+    import os
+    previous = os.environ.get("BTC_EVIDENCE_MODE")
+    try:
+        os.environ["BTC_EVIDENCE_MODE"] = "0"
+        path, status = resolve_artifact("nope.pkl", Path("legacy/nope.pkl"))
+        chk(path is not None and not status["verified"],
+            "outside evidence mode an unverified legacy path is returned, but REPORTED")
+        os.environ["BTC_EVIDENCE_MODE"] = "1"
+        chk(evidence_mode(), "evidence mode is readable from the environment")
+        path, status = resolve_artifact("nope.pkl", Path("legacy/nope.pkl"))
+        chk(path is None, "EVIDENCE MODE: no verified bundle -> NO MODEL, not legacy bytes")
+        chk("EVIDENCE MODE" in (status.get("note") or ""), "and the refusal says why")
+    finally:
+        if previous is None:
+            os.environ.pop("BTC_EVIDENCE_MODE", None)
+        else:
+            os.environ["BTC_EVIDENCE_MODE"] = previous
+
+
+def test_candidate_valid_is_mandatory() -> None:
+    print("S2  invalid-but-finite rows cannot reach training")
+    from .model_common import clean_xy
+    from .trade_schema import FEATURE_COLUMNS as FC
+
+    n = 6
+    frame = pd.DataFrame({c: np.linspace(1.0, 2.0, n) for c in FC})
+    frame["target"] = np.arange(n, dtype=float)
+    frame["round_start_ts"] = np.arange(n)
+    frame["candidate_valid"] = [1, 1, 1, 0, 0, 0]
+    x, _, _ = clean_xy(frame, np.ones(n, dtype=bool), "target")
+    chk(len(x) == 3, f"only candidate_valid==1 rows train ({len(x)} of {n})")
+    chk(
+        np.isfinite(frame.loc[3:, list(FC)].to_numpy()).all(),
+        "the rejected rows were perfectly FINITE - finiteness is not validity",
+    )
+    xd, _, _ = clean_xy(frame, np.ones(n, dtype=bool), "target",
+                        _allow_invalid_candidates=True)
+    chk(len(xd) == n, "the diagnostics override is explicit and keyword-only")
+
+
+def test_live_matches_builder_missingness() -> None:
+    print("S3  live and historical missingness agree (no training-serving skew)")
+    from collections import deque
+
+    from .live_forecaster import _feature_values, _history_value
+    from .trade_schema import MAX_LOOKBACK_ERROR_S as TOL
+
+    hist = deque([{"ts": 1000.0 - 300.0, "btc": 59_000.0}])
+    chk(
+        _history_value(hist, 1000.0, 30, "btc") is None,
+        f"a 300s-old print is NOT accepted as a 30s lookback (tol {TOL}s)",
+    )
+    hist = deque([{"ts": 1000.0 - 31.0, "btc": 59_000.0}])
+    chk(
+        _history_value(hist, 1000.0, 30, "btc") == 59_000.0,
+        "an observation near the requested lookback IS accepted",
+    )
+
+    ladder = [[0.60, 100], [0.61, 100]]
+    quote = {"bid": 0.59, "ask": 0.60, "bid_size": 100, "ask_size": 100,
+             "bid_ladder": ladder, "ask_ladder": ladder, "spread": 0.01}
+    prices = {"up": dict(quote), "down": dict(quote), "ts": 1000.0, "age_seconds": 0.5}
+    base = {"current_price": 60_000.0, "price_to_beat": 59_990.0, "horizon": 5,
+            "seconds_left": 60.0, "vol_60s_pct": 0.4, "p_hold": 0.62,
+            "current_position": "UP"}
+    # Empty history = no BTC returns available. The builder invalidates such a candidate.
+    chk(
+        _feature_values(base, prices, "UP", 5, deque()) is None,
+        "live: an empty history yields NO FORECAST, matching the builder's invalidation",
+    )
+
+
 def run() -> int:
     for test in (
         test_a1_post_expiry_targets,
@@ -359,6 +455,9 @@ def run() -> int:
         test_a10_freeze_pinning,
         test_a12_settlement_provenance,
         test_a13_conservative_capacity,
+        test_serving_integration,
+        test_candidate_valid_is_mandatory,
+        test_live_matches_builder_missingness,
     ):
         test()
     print("\nAUDIT REGRESSION SUITE", "PASS" if _OK else "FAIL")

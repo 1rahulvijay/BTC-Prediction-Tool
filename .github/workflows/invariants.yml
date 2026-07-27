@@ -46,6 +46,15 @@ jobs:
       - name: M0 gates (matched-random, BH, profit concentration)
         run: python backend/trade_forecast/m0_gates.py --selftest
 
+      - name: Ledger V2 end-to-end (real DuckDB write/read/resolve/evaluate)
+        run: python -m backend.trade_forecast.test_ledger_v2_end_to_end
+
+      - name: Forward M0 V2 evaluator (incl. import boundary)
+        run: python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest
+
+      - name: Serving integration (EXECUTES loaders, real pointer swaps)
+        run: python -m backend.trade_forecast.test_serving_integration
+
       - name: Champion resolver (atomic promotion actually reaches serving)
         run: python backend/trade_forecast/champion_resolver.py --selftest
 
@@ -127,6 +136,9 @@ jobs:
           python -m backend.trade_forecast.test_builder_integration || exit /b 1
           python backend/trade_forecast/forward_evidence.py --selftest || exit /b 1
           python backend/trade_forecast/m0_gates.py --selftest || exit /b 1
+          python -m backend.trade_forecast.test_ledger_v2_end_to_end || exit /b 1
+          python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest || exit /b 1
+          python -m backend.trade_forecast.test_serving_integration || exit /b 1
           python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1

@@ -23,8 +23,14 @@ from .trade_schema import (
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
-MODEL_PATH = DATA / "saved_models" / "complete_trade_share_path.pkl"
+ARTIFACT_NAME = "complete_trade_share_path.pkl"
+LEGACY_PATH = DATA / "saved_models" / ARTIFACT_NAME
+# Resolved through the champion bundle on every load. A promotion that swaps
+# champion.json must actually reach serving, or the atomic pointer is decorative.
+MODEL_PATH = LEGACY_PATH          # rebound by _resolve() below
 
+
+from .champion_resolver import resolve_artifact
 from .freeze_guard import ArtifactPin
 
 
@@ -33,14 +39,39 @@ _MTIME = -1.0
 _CHECKED = 0.0
 _ERROR = ""
 _MANIFEST: dict[str, Any] = {}
+_RESOLUTION: dict = {}
+_TOKEN = None
 _PIN = ArtifactPin("share")
 
 
 def load_model(force: bool = False) -> dict[str, Any] | None:
     global _BUNDLE, _MTIME, _CHECKED, _ERROR, _MANIFEST
+    global MODEL_PATH
     now = time.time()
     if not force and _CHECKED and now - _CHECKED < 30.0:
         return _BUNDLE
+    global _RESOLUTION, _TOKEN
+    resolved, _resolution = resolve_artifact(ARTIFACT_NAME, LEGACY_PATH)
+    _RESOLUTION = _resolution
+    # CACHE ON IDENTITY, NOT TIME. mtime is not model identity: two bundles can carry the same
+    # mtime, so a champion swap could leave the OLD bundle loaded while MODEL_PATH claimed the
+    # new one. The token also forces a reload after an evidence-mode refusal, which previously
+    # left _MTIME stale and could pin a None result.
+    token = (
+        _resolution.get("bundle_hash"),
+        _resolution.get("source"),
+        str(resolved) if resolved else None,
+    )
+    if token != _TOKEN:
+        _TOKEN = token
+        _MTIME = -1.0
+        force = True
+    if resolved is None:
+        # Evidence mode with no verified bundle: serve NO model rather than unverified bytes.
+        _BUNDLE, _MANIFEST, _ERROR = None, {}, str(_resolution.get("note") or "no verified bundle")
+        _CHECKED = now
+        return None
+    MODEL_PATH = resolved
     _CHECKED = now
     try:
         mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.is_file() else -1.0
@@ -78,6 +109,13 @@ def status() -> dict[str, Any]:
         "artifact": str(MODEL_PATH),
         "artifact_hash": _MANIFEST.get("artifact_sha256"),
         "policy_hash": _MANIFEST.get("policy_hash"),
+        # Resolution provenance, so a legacy fallback is visible through the status API rather
+        # than only in a log line nobody reads.
+        "resolution_source": _RESOLUTION.get("source"),
+        "bundle_verified": _RESOLUTION.get("verified"),
+        "bundle_hash": _RESOLUTION.get("bundle_hash"),
+        "evidence_mode": _RESOLUTION.get("evidence_mode"),
+        "resolution_note": _RESOLUTION.get("note"),
         **_PIN.status(),
     }
 

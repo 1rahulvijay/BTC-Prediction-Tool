@@ -178,8 +178,30 @@ def clean_xy(
     *,
     require_complete_entry: bool = False,
     feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
+    _allow_invalid_candidates: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Rows for training. `candidate_valid == 1` is MANDATORY.
+
+    Finiteness is not validity. A row can be perfectly finite and still be stale, crossed,
+    malformed, or missing a required feature that was replaced upstream - the builder records
+    exactly that in `candidate_valid` / `candidate_reasons`, and nothing was reading it. Every
+    training, calibration, test and family-selection path goes through here, so enforcing it
+    once closes all of them.
+
+    `_allow_invalid_candidates` exists ONLY for named diagnostics that deliberately inspect
+    rejected rows. It is underscore-prefixed and keyword-only so it cannot be passed by accident.
+    """
     selected = frame.loc[mask].copy()
+    if not _allow_invalid_candidates:
+        # FAIL CLOSED on absence. "Filter it if the column happens to exist" meant a stale
+        # dataset predating the column trained completely unfiltered - the exact fail-open this
+        # was meant to remove.
+        if "candidate_valid" not in selected.columns:
+            raise RuntimeError(
+                "dataset is missing the mandatory candidate_valid column; rebuild with "
+                "build_complete_trade_dataset.py before training"
+            )
+        selected = selected[selected["candidate_valid"] == 1]
     if require_complete_entry:
         selected = selected[selected["entry_complete"] == 1]
     selected = selected.dropna(subset=[*feature_columns, target])

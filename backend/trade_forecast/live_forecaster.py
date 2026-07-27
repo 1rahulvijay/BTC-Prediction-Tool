@@ -9,10 +9,17 @@ from collections import defaultdict, deque
 from typing import Any
 
 from . import btc_path_serving, execution_serving, share_path_serving
-from .trade_forecast_logger import LOG_HEALTH, log_forecast_monitored
+from .trade_forecast_logger import (
+    LOG_HEALTH,
+    log_forecast_monitored,
+    log_forward_prediction_v2,
+)
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
 from .trade_schema import (
+    M0_V2 as _M0_V2,
+    FEATURE_COLUMNS,
+    MAX_LOOKBACK_ERROR_S,
     PROMOTION_GATE,
     ENTRY_CHECKPOINTS_S,
     MODE,
@@ -21,7 +28,16 @@ from .trade_schema import (
 )
 
 
-_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=240))
+# TIME-bounded, not count-bounded. maxlen=240 means "240 observations", which at a fast update
+# rate is a few seconds and at a slow one is many minutes - the same deque could or could not
+# cover a 60s lookback depending on market activity. HISTORY_WINDOW_S is what the lookbacks
+# actually need; the generous maxlen only caps memory.
+HISTORY_WINDOW_S = 180.0
+# The emergency cap is memory protection ONLY and must never be the thing that decides coverage.
+# If it ever engages, the lookback window is no longer guaranteed, so it warns rather than
+# silently truncating.
+HISTORY_HARD_CAP = 20_000
+_HISTORY: dict[str, deque] = defaultdict(deque)
 _CACHE: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
 _LOGGED: set[str] = set()
 INFERENCE_INTERVAL_S = 5.0
@@ -46,6 +62,12 @@ def _ladder_vwap(levels: list, quantity: float) -> tuple[float | None, float]:
 
 
 def _history_value(history: deque, now_s: float, seconds: int, key: str) -> float | None:
+    """Observation nearest the requested lookback, or None.
+
+    The previous version accepted ANY older observation, so a "30s return" could be measured
+    against a print from six minutes ago and still be reported as a 30s return. Same rule and
+    same tolerance as the historical builder (MAX_LOOKBACK_ERROR_S), because a live feature that
+    means something different from its training counterpart is training-serving skew."""
     target = now_s - seconds
     selected = None
     for item in history:
@@ -53,7 +75,11 @@ def _history_value(history: deque, now_s: float, seconds: int, key: str) -> floa
             selected = item
         else:
             break
-    return float(selected[key]) if selected and selected.get(key) is not None else None
+    if not selected or selected.get(key) is None:
+        return None
+    if abs(float(selected["ts"]) - target) > MAX_LOOKBACK_ERROR_S:
+        return None
+    return float(selected[key])
 
 
 def _safe_div(a: float, b: float) -> float:
@@ -126,10 +152,12 @@ def _feature_values(
         previous = _history_value(history, now_s, seconds, "btc")
         value = _finite(previous)
         if not value:
-            # Not yet enough history to measure this return. That is a real gap in the feature
-            # vector, not a zero return.
+            # A REQUIRED feature with no data. Returning 0.0 told the model "perfectly flat
+            # market" with full confidence, while the historical builder invalidates the same
+            # candidate - textbook training-serving skew. `_missing_optional` cannot repair it
+            # because it is not in FEATURE_COLUMNS and the model never sees it.
             missing.append(f"btc_return_{seconds}s_bps")
-            return 0.0
+            return None
         return _safe_div(current_btc - value, value) * 10_000.0
 
     def bid_velocity(seconds: int) -> float:
@@ -137,7 +165,7 @@ def _feature_values(
         value = _finite(previous)
         if value is None:
             missing.append(f"contract_bid_velocity_{seconds}s")
-            return 0.0
+            return None
         return own_bid - value
 
     values: dict[str, Any] = {
@@ -176,9 +204,11 @@ def _feature_values(
         "contract_bid_velocity_5s": bid_velocity(5),
         "contract_bid_velocity_15s": bid_velocity(15),
         "contract_bid_velocity_30s": bid_velocity(30),
-        "btc_share_sensitivity_30s": _safe_div(
-            bid_velocity(30),
-            current_btc * btc_return(30) / 10_000.0,
+        # Derived from two nullable inputs, so it is nullable too. Computing it eagerly crashed
+        # once btc_return started returning None; the required-feature gate below turns a None
+        # here into NO FORECAST, which is the intended behaviour.
+        "btc_share_sensitivity_30s": _sensitivity_30s(
+            bid_velocity(30), current_btc, btc_return(30)
         ),
         "top_imbalance": _safe_div(bid_size - ask_size, bid_size + ask_size),
         "depth_imbalance": _safe_div(bid_depth - ask_depth, bid_depth + ask_depth),
@@ -189,7 +219,117 @@ def _feature_values(
     # forecast records which inputs were absent and how stale the quote was.
     values["_missing_optional"] = sorted(set(missing))
     values["_quote_age_s"] = float(share_prices.get("age_seconds") or 0.0)
+    # SAME CONTRACT AS THE BUILDER. Every FEATURE_COLUMNS entry must be present and finite, or
+    # there is no forecast - the caller surfaces MISSING_REQUIRED_FEATURE / NO_DATA.
+    absent = [
+        name for name in FEATURE_COLUMNS
+        if values.get(name) is None or not _is_finite(values.get(name))
+    ]
+    if absent:
+        values["_missing_required"] = absent
+        return None
     return values
+
+
+def _sensitivity_30s(velocity, current_btc, return_bps):
+    """Share move per dollar of BTC move. None if either input is unavailable."""
+    if velocity is None or return_bps is None:
+        return None
+    delta = float(current_btc) * float(return_bps) / 10_000.0
+    return _safe_div(float(velocity), delta)
+
+
+# The frozen identity every V2 evidence row must carry. Singleton across an evidence set by
+# construction: all four come from the loaded bundle / frozen config / frozen threshold artifact,
+# so if any of them changes mid-run the manifest's singleton check will refuse the whole set -
+# which is the intended behaviour, not a nuisance.
+OWN_FORWARD_RECORDER_SOURCE = "l2_recorder"
+_THRESHOLD_CACHE: dict[str, Any] = {}
+
+
+def _frozen_identity() -> dict[str, Any]:
+    from .trade_schema import M0_V2
+
+    bundle = share_path_serving.status().get("bundle_hash") or ""
+    threshold_hash, threshold_value, frozen_at = "", None, None
+    if not _THRESHOLD_CACHE:
+        import os as _os
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parents[2]
+        data = _Path(_os.environ.get("BTC_DATA_DIR") or root / "data")
+        path = data / "research" / "complete_trade_forecast" / "entry_threshold.json"
+        try:
+            from .forward_evidence import ThresholdArtifact
+
+            artifact = ThresholdArtifact.load(path)
+            _THRESHOLD_CACHE.update({
+                "hash": artifact.threshold_hash(),
+                "value": artifact.threshold,
+                "created_at": artifact.created_at,
+            })
+        except Exception:
+            # No frozen threshold yet. The row still records that fact honestly; the forward
+            # manifest will refuse an evidence set whose threshold hash is empty.
+            _THRESHOLD_CACHE.update({"hash": "", "value": None, "created_at": None})
+    threshold_hash = _THRESHOLD_CACHE.get("hash") or ""
+    threshold_value = _THRESHOLD_CACHE.get("value")
+    frozen_at = _THRESHOLD_CACHE.get("created_at")
+    # EVIDENCE RUN GATE. A row is promotion-authoritative only when every freeze already exists.
+    # Writing V2 rows with an empty threshold/model identity before the freeze permanently
+    # poisons the singleton checks: old and new rows mix and the set can never be admissible
+    # again. Before all of it exists we still record V1 diagnostics; we do NOT mint V2 evidence.
+    complete = bool(bundle) and bool(threshold_hash) and frozen_at is not None
+    run_id = (
+        hashlib.sha256(
+            "|".join([bundle, policy_hash(), threshold_hash, M0_V2["prereg_sha256"]])
+            .encode("utf-8")
+        ).hexdigest()[:24]
+        if complete else None
+    )
+    return {
+        "_evidence_complete": complete,
+        "evidence_run_id": run_id,
+        "model_bundle_sha256": bundle,
+        # SCHEMA hash, not values: identical for every row under one frozen feature contract.
+        "feature_schema_sha256": hashlib.sha256(
+            json.dumps(list(FEATURE_COLUMNS), separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "policy_sha256": policy_hash(),
+        "threshold_sha256": threshold_hash,
+        "prereg_sha256": M0_V2["prereg_sha256"],
+        "prereg_frozen_at_s": M0_V2.get("frozen_at_s"),
+        "model_frozen_at_s": share_path_serving.status().get("pinned_at"),
+        "threshold_frozen_at_s": frozen_at,
+        "_entry_threshold": threshold_value,
+    }
+
+
+def _prune_history(history: deque, now_s: float) -> None:
+    """Drop observations older than HISTORY_WINDOW_S.
+
+    The window was previously enforced by `deque(maxlen=240)`, i.e. by COUNT. At a fast update
+    rate 240 observations span a few seconds - not enough for a 60s lookback - and at a slow rate
+    they span many minutes. HISTORY_WINDOW_S existed as a constant but nothing pruned by it, so
+    the intended time bound was never actually applied."""
+    cutoff = float(now_s) - HISTORY_WINDOW_S
+    while history and float(history[0]["ts"]) < cutoff:
+        history.popleft()
+    if len(history) > HISTORY_HARD_CAP:
+        print(
+            f"[trade-forecast] history hard cap hit ({len(history)} obs in "
+            f"{HISTORY_WINDOW_S:.0f}s); lookback coverage is NOT guaranteed",
+            flush=True,
+        )
+        while len(history) > HISTORY_HARD_CAP:
+            history.popleft()
+
+
+def _is_finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _capacity_table(share_prices: dict[str, Any], side: str) -> list[dict[str, Any]]:
@@ -296,12 +436,28 @@ def _logger_rows(
             f"{round_data.get('id')}|{nearest}|{candidate['side']}|"
             f"{candidate['requested_qty']}"
         )
-        if key in _LOGGED:
-            continue
+        # NOTE: the de-dup check moves below, keyed on forecast_id - see the comment there.
         # NOTE: the de-duplication key is marked ONLY AFTER a confirmed write (see the end of
         # this block). Marking it here meant a failed insert permanently suppressed every later
         # retry for that checkpoint - the evidence was gone, and the run looked merely quiet.
-        forecast_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        # The identity must include the FROZEN POLICY, not just the market moment. Keyed on
+        # round/checkpoint/side/qty alone, a deliberate model or threshold change re-scoring the
+        # same checkpoint collides with the earlier forecast and the append-only insert rejects
+        # the new evidence as a duplicate.
+        identity = _frozen_identity()
+        forecast_id = hashlib.sha256(
+            "|".join([
+                key,
+                identity["model_bundle_sha256"],
+                identity["policy_sha256"],
+                identity["threshold_sha256"],
+            ]).encode("utf-8")
+        ).hexdigest()[:32]
+        # Keyed on the COLLISION-PROOF id, not round/checkpoint/side/qty. With the old key a
+        # legitimate model or threshold change was suppressed in memory before its new
+        # forecast_id was ever considered - the very re-score the new id exists to allow.
+        if forecast_id in _LOGGED:
+            continue
         share = candidate.get("share_forecast") or {}
         events = share.get("events") or {}
         summary = share.get("summary") or {}
@@ -387,10 +543,44 @@ def _logger_rows(
         # invisible either, and it must never be PERMANENT. The de-dup key is committed only on a
         # confirmed write, so a transient failure is retried on the next tick instead of silently
         # deleting that checkpoint from the evidence set forever.
-        if log_forecast_monitored(forecast, paths):
-            _LOGGED.add(key)
+        # Refuse to mint promotion evidence until the run identity is complete.
+        if not identity.get("_evidence_complete"):
+            if log_forecast_monitored(forecast, paths):
+                _LOGGED.add(forecast_id)
+            else:
+                _LOGGED.discard(forecast_id)
+            continue
+        v2_row = {
+            "forecast_id": forecast_id,
+            "round_id": round_data.get("id"),
+            "exposure_id": f"{round_data.get('id')}@{int(seconds_left)}",
+            "seconds_left": int(seconds_left),
+            "side": candidate["side"],
+            "requested_qty": float(candidate["requested_qty"]),
+            # Units in the name; both stored, neither inferred from the other.
+            "prediction_ts_ms": int(now_ms),
+            "prediction_ts_s": float(now_ms) / 1000.0,
+            **{k: v for k, v in identity.items() if not k.startswith("_")},
+            # Per-row by design: the VALUES this prediction was computed from. Never a singleton.
+            "feature_values_sha256": hashlib.sha256(
+                json.dumps(
+                    {k: v for k, v in candidate["features"].items()
+                     if not k.startswith("_")},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "entry_threshold": identity.pop("_entry_threshold", None),
+            "score": (share.get("events") or {}).get(_M0_V2["score_label"]),
+            "action": evaluation.get("action"),
+            "predicted_entry_vwap": candidate.get("predicted_entry_vwap"),
+            "exit_plan": evaluation.get("recommended_exit_plan"),
+            "reason_codes_json": json.dumps(evaluation.get("reason_codes") or []),
+            "evidence_source": OWN_FORWARD_RECORDER_SOURCE,
+        }
+        if log_forward_prediction_v2(v2_row, paths, legacy_forecast=forecast):
+            _LOGGED.add(forecast_id)
         else:
-            _LOGGED.discard(key)
+            _LOGGED.discard(forecast_id)
 
 
 def score_round(
@@ -421,6 +611,7 @@ def score_round(
     }
     if not history or observation["ts"] > history[-1]["ts"]:
         history.append(observation)
+        _prune_history(history, observation["ts"])
     cached = _CACHE.get(round_id)
     seconds_left = float(round_data.get("seconds_left") or 0.0)
     checkpoints = ENTRY_CHECKPOINTS_S.get(int(round_data.get("horizon") or 0), ())

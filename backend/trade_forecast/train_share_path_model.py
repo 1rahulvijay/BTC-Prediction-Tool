@@ -86,6 +86,21 @@ M0_REALIZED_COLUMN = "plan_take_3c_or_stop_3c_net"
 M0_INDEPENDENT_UNIT = "round_id"
 
 
+def admit_candidates(frame: pd.DataFrame, mask: np.ndarray) -> pd.DataFrame:
+    """The ONE candidate-admission rule, shared by threshold calibration and M0 evaluation.
+
+    Both previously selected rows directly and never consulted `candidate_valid`, so invalid
+    candidates could set the frozen entry threshold and populate the M0 buckets even after
+    clean_xy started rejecting them for training. Divergence between what a model trains on and
+    what its threshold is calibrated on is its own silent bias, so there is one function."""
+    if "candidate_valid" not in frame.columns:
+        raise RuntimeError(
+            "dataset is missing the mandatory candidate_valid column; rebuild the dataset"
+        )
+    rows = frame.loc[mask]
+    return rows[rows["candidate_valid"] == 1].copy()
+
+
 def derive_entry_threshold(
     frame: pd.DataFrame,
     calibration_mask: np.ndarray,
@@ -101,8 +116,8 @@ def derive_entry_threshold(
 
     Returning None (insufficient calibration data) is correct and makes M0 refuse to score -
     better than a threshold borrowed from the period being measured."""
-    rows = frame.loc[calibration_mask]
-    rows = rows[rows.get("entry_complete", 0) == 1] if "entry_complete" in rows else rows
+    rows = admit_candidates(frame, calibration_mask)
+    rows = rows[rows["entry_complete"] == 1] if "entry_complete" in rows else rows
     if len(rows) < 100:
         return None
     x = rows.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
@@ -165,6 +180,7 @@ def evaluate_m0(
         "stress_1000ms_take_3c_or_stop_3c_net",
         "round_start_ts",
         "exposure_id",
+        "candidate_valid",
         M0_INDEPENDENT_UNIT,
     ]
     missing = [name for name in required if name not in frame.columns]
@@ -173,7 +189,7 @@ def evaluate_m0(
         # candidate-counting error, so refuse rather than degrade.
         result["reasons"].append(f"dataset_missing_columns:{','.join(missing)}")
         return result
-    candidates = frame.loc[test_mask].dropna(subset=required).copy()
+    candidates = admit_candidates(frame, test_mask).dropna(subset=required)
     candidates = candidates[candidates["entry_complete"] == 1]
     if len(candidates) < 100:
         result["reasons"].append("fewer_than_100_test_candidates")

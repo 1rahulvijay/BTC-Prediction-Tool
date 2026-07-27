@@ -84,7 +84,15 @@ EXIT_PLANS = (
 M0_V2 = {
     "prereg": "PREREG_COMPLETE_TRADE_M0_V2.md",
     "prereg_sha256": "138616d3893c5034bddd29be562f73c452e16f570af67ffcb1adda209df793a5",
+    "clarification_001_sha256": "920352412cb715d1786e45f97eec5460d1fc09b216015507eb9a200221107996",
+    # Buckets are DIAGNOSTIC ONLY under clarification 001; the executable rule is an
+    # absolute frozen threshold with causal first-qualifying entry.
+    "bucket_role": "DIAGNOSTIC_ONLY",
+    "matched_random_pool": "SAME_CHECKPOINT_CANDIDATES_ONLY",
+    "min_selected_trades": 100,
     "frozen_at": "2026-07-26",
+    # Epoch seconds for the freeze boundary. Forward evidence must post-date this.
+    "frozen_at_s": 1785110400.0,
     "primary_plan": "TAKE_3C_OR_STOP_3C",
     "score_label": "plan_take_3c_or_stop_3c_profitable",
     "realized_column": "plan_take_3c_or_stop_3c_net",

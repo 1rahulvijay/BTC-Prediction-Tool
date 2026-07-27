@@ -8,14 +8,18 @@
     SHADOW / INSUFFICIENT_DATA / DRIFTED   likewise restricted
 
 Until now nothing read those permissions, so a head measured as unable to price could still price.
-This module is the reader. It is deliberately tiny and fail-open-with-a-reason: a missing report
-must not take the app down, but it must also never silently look like a passing grade.
+This module is the reader, and it FAILS CLOSED. Missing, stale, unknown or corrupt health means
+NO action authority - the head may neither price nor rank. The app stays online and may still
+display diagnostics (may_display_confidence is a separate permission); what is withheld is the
+authority to act. Absence of measurement is never a passing grade.
 
 WHY THIS MATTERS MORE THAN IT LOOKS
     `BTC_ENABLE_PAPER_BET=1` is an operator override. Without this check, that override also
     re-enables betting on a probability the live data says cannot price - which is exactly the
     failure the lockdown existed to prevent. With it, the override can only act on a head that
     currently measures as USABLE. The switch stops being a way to overrule the evidence.
+
+    Deleting or ageing the health report cannot restore permissions either: both states deny.
 
     python backend/head_permissions.py            # print current permissions
     python backend/head_permissions.py --selftest
@@ -235,7 +239,7 @@ if __name__ == "__main__":
     print(f"report: {REPORT}")
     print(f"enforcement: {'ON' if ENFORCED else 'OFF (observe only)'}")
     if not rep:
-        print("  no report found - permissions are NOT measured (permissive)")
+        print("  no report found - permissions are NOT measured: all action DENIED")
     else:
         print(f"  age: {rep.get('_age_s', 0)/3600:.1f}h  stale={rep.get('_stale')}")
         for head in (rep.get("heads") or {}):
