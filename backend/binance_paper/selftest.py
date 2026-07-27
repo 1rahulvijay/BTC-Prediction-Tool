@@ -6,10 +6,12 @@ from pathlib import Path
 import tempfile
 import time
 
+import duckdb
+
 from ..data_ingestion import BinanceFuturesWebSocketClient
 from .config import DEFAULT_DB_PATH, EngineConfig, StrategyRiskConfig
 from .fill_simulator import BinancePaperFillSimulator
-from .metrics import _day_block_lower_bound
+from .metrics import _day_block_lower_bound, _promotion_gate
 from .risk_engine import BinancePaperRiskEngine
 from .schemas import Action, DataQuality, MarketSnapshot, PositionSide
 from .service import BinancePaperService
@@ -132,6 +134,37 @@ def test_default_off() -> None:
     print("  PASS  engine defaults off and cannot create orders")
 
 
+def test_schema_v1_migration() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        db_path = Path(directory) / "paper.duckdb"
+        connection = duckdb.connect(str(db_path))
+        connection.execute(
+            """
+            CREATE TABLE binance_paper_schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at_ms BIGINT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO binance_paper_schema_version VALUES (1, ?)",
+            (int(time.time() * 1000),),
+        )
+        connection.close()
+        service = BinancePaperService(
+            FakeFuturesClient(),
+            config=config(db_path, hard_enabled=False),
+        )
+        service.initialize()
+        assert "binance_paper_funding_events" in service.persistence.table_names()
+        version = service.persistence._conn.execute(
+            "SELECT MAX(version) FROM binance_paper_schema_version"
+        ).fetchone()[0]
+        assert version == 2
+        service.shutdown()
+    print("  PASS  schema v1 migrates transactionally to funding-aware v2")
+
+
 def test_long_short_accounting_and_isolation() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
         client = FakeFuturesClient()
@@ -177,6 +210,69 @@ def test_long_short_accounting_and_isolation() -> None:
         assert float(short_trade["exit_price"]) > 99_901.0
         service.shutdown()
     print("  PASS  LONG/SHORT accounting, fees, slippage and strategy isolation")
+
+
+def test_observed_funding_accounting() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        client = FakeFuturesClient()
+        derivatives = {"funding_rate": None}
+        service = BinancePaperService(
+            client,
+            lambda: derivatives,
+            config=config(Path(directory) / "paper.duckdb", latency_ms=0),
+        )
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+        snapshot = feed(service, client, base, 99_999.0, 100_001.0)
+        decision = manual_decision(
+            service, "trend_following", snapshot, PositionSide.LONG, "funding"
+        )
+        queue_manual(service, decision, snapshot)
+        feed(service, client, base + 1, 99_999.0, 100_001.0)
+        position = service.persistence.open_positions("trend_following")[0]
+
+        derivatives["funding_rate"] = {"rate": 0.001, "time": base + 2}
+        feed(service, client, base + 3, 99_999.0, 100_001.0)
+        funding_events = service.funding_events()
+        assert len(funding_events) == 1
+        funding = float(funding_events[0]["funding_usd"])
+        assert funding < 0
+        assert service.persistence.account("trend_following")["funding_usd"] == funding
+
+        feed(service, client, base + 4, 99_999.0, 100_001.0)
+        assert len(service.funding_events()) == 1
+        assert service.persistence.account("trend_following")["funding_usd"] == funding
+
+        service.close_position(position["position_id"], confirm=True)
+        feed(service, client, base + 5, 99_999.0, 100_001.0)
+        trade = service.trades(1)[0]
+        assert abs(float(trade["funding_usd"]) - funding) < 1e-9
+        expected_net = (
+            float(trade["gross_pnl_usd"])
+            - float(trade["entry_fee_usd"])
+            - float(trade["exit_fee_usd"])
+            + funding
+        )
+        assert abs(float(trade["net_pnl_usd"]) - expected_net) < 1e-9
+
+        snapshot = feed(service, client, base + 6, 99_999.0, 100_001.0)
+        short_decision = manual_decision(
+            service, "breakout", snapshot, PositionSide.SHORT, "short-funding"
+        )
+        queue_manual(service, short_decision, snapshot)
+        feed(service, client, base + 7, 99_999.0, 100_001.0)
+        derivatives["funding_rate"] = {"rate": 0.001, "time": base + 8}
+        feed(service, client, base + 9, 99_999.0, 100_001.0)
+        short_funding = [
+            row
+            for row in service.funding_events()
+            if row["strategy_id"] == "breakout"
+        ]
+        assert len(short_funding) == 1
+        assert float(short_funding[0]["funding_usd"]) > 0
+        service.shutdown()
+    print("  PASS  settled funding is signed, position-linked and idempotent")
 
 
 def test_opposing_signal_order() -> None:
@@ -545,6 +641,9 @@ def test_risk_controls() -> None:
         def daily_net_pnl(self, *_args):
             return -200.0
 
+        def net_pnl_since(self, *_args):
+            return -300.0
+
         def recent_trade_count(self, *_args):
             return 10
 
@@ -622,6 +721,7 @@ def test_risk_controls() -> None:
         "duplicate_signal",
         "leverage_limit",
         "maximum_daily_loss_reached",
+        "maximum_weekly_loss_reached",
         "maximum_drawdown_reached",
         "maximum_trades_per_hour_reached",
         "cooldown_active",
@@ -698,13 +798,25 @@ def test_evidence_contract() -> None:
     second = _day_block_lower_bound(five_days)
     assert first == second
     assert first[0] is not None and first[0] > 0 and first[1] == 5
+    promotion = _promotion_gate(
+        [],
+        observation_days=0,
+        n_days=0,
+        profit_factor=None,
+        lower_bound=None,
+    )
+    assert promotion["status"] == "BLOCKED_FAILED_GATE"
+    assert promotion["checks"]["positive_under_1s_latency"] is None
+    assert promotion["real_orders_remain_impossible"] is True
     print("  PASS  frozen day-block bootstrap seed, weighting and five-day gate")
 
 
 def run() -> None:
     print("Binance paper Phase-1 selftest")
     test_default_off()
+    test_schema_v1_migration()
     test_long_short_accounting_and_isolation()
+    test_observed_funding_accounting()
     test_opposing_signal_order()
     test_actual_strategies_end_to_end()
     test_no_lookahead_stale_missing_and_liquidity()

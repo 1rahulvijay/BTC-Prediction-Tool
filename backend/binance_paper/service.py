@@ -129,6 +129,14 @@ class BinancePaperService:
             if not self.initialized or snapshot is None:
                 return
             self.portfolio.mark(snapshot)
+            funding_events = self.portfolio.apply_funding(snapshot)
+            for event in funding_events:
+                self.persistence.append_event(
+                    "FUNDING_APPLIED",
+                    "Observed Binance funding applied to paper position",
+                    strategy_id=event["strategy_id"],
+                    details=event,
+                )
             self._process_pending(snapshot)
             if self.config.hard_enabled:
                 self._queue_triggered_exits(snapshot)
@@ -661,6 +669,10 @@ class BinancePaperService:
     def fills(self, limit: int = 100) -> list[dict[str, Any]]:
         self._require_initialized()
         return self.persistence.fills(limit)
+
+    def funding_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        self._require_initialized()
+        return self.persistence.funding_events(limit)
 
     def trades(self, limit: int = 100) -> list[dict[str, Any]]:
         self._require_initialized()

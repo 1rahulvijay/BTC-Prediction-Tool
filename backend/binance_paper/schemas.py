@@ -47,7 +47,7 @@ class MarketSnapshot:
     feed_health: DataQuality
     update_id: int | None
     funding_rate: float | None
-    next_funding_time_ms: int | None
+    funding_time_ms: int | None
     agg_trade_age_ms: int | None
     agg_trade_message_count: int
     agg_trade_count_60s: int | None

@@ -96,7 +96,9 @@ def run() -> None:
                     "observation_days",
                     "measurability",
                     "lb_method",
+                    "promotion_gate",
                 }.issubset(item)
+            assert client.get("/api/binance-paper/funding").json()["items"] == []
             assert client.post("/api/binance-paper/pause").json()["runtime_state"] == "PAUSED"
         enabled.shutdown()
     configure_service(None)

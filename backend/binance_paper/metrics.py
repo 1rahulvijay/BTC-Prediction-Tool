@@ -8,6 +8,8 @@ from typing import Any
 
 MIN_EVIDENCE_TRADES = 500
 MIN_EVIDENCE_DAYS = 5
+MIN_PROMOTION_OBSERVATION_DAYS = 56
+MIN_PROMOTION_TRADING_DAYS = 30
 
 
 def _day_block_lower_bound(trades: list[dict[str, Any]]) -> tuple[float | None, int]:
@@ -41,12 +43,96 @@ def _side_metrics(trades: list[dict], side: str) -> dict[str, Any]:
     }
 
 
+def _promotion_gate(
+    trades: list[dict[str, Any]],
+    *,
+    observation_days: float,
+    n_days: int,
+    profit_factor: float | None,
+    lower_bound: float | None,
+) -> dict[str, Any]:
+    values = [float(row["net_pnl_usd"]) for row in trades]
+    by_week: dict[int, float] = {}
+    by_day: dict[int, float] = {}
+    for row in trades:
+        exit_time_ms = int(row["exit_time_ms"])
+        value = float(row["net_pnl_usd"])
+        day_index = exit_time_ms // 86_400_000
+        monday_day_index = day_index - ((day_index + 3) % 7)
+        by_week[monday_day_index] = by_week.get(monday_day_index, 0.0) + value
+        by_day[day_index] = by_day.get(day_index, 0.0) + value
+    positive_days = [max(0.0, value) for value in by_day.values()]
+    total_positive_days = sum(positive_days)
+    largest_day_profit_concentration = (
+        max(positive_days) / total_positive_days if total_positive_days > 0 else None
+    )
+    positive_week_fraction = (
+        sum(value > 0 for value in by_week.values()) / len(by_week)
+        if by_week
+        else None
+    )
+    fee_stress_net = sum(
+        float(row["net_pnl_usd"])
+        - 0.5 * (float(row["entry_fee_usd"]) + float(row["exit_fee_usd"]))
+        for row in trades
+    )
+    slippage_stress_net = sum(
+        float(row["net_pnl_usd"]) - 0.5 * float(row["slippage_usd"])
+        for row in trades
+    )
+    checks: dict[str, bool | None] = {
+        "independent_trades_500": len(trades) >= 500,
+        "forward_observation_56d": observation_days >= MIN_PROMOTION_OBSERVATION_DAYS,
+        "observed_trading_days_30": n_days >= MIN_PROMOTION_TRADING_DAYS,
+        "positive_after_cost_expectancy": bool(values)
+        and statistics.fmean(values) > 0,
+        "positive_day_block_lb": lower_bound is not None and lower_bound > 0,
+        "profit_factor_gt_1_20": profit_factor is not None and profit_factor > 1.20,
+        "positive_fee_50pct_stress": bool(values) and fee_stress_net > 0,
+        "positive_slippage_50pct_stress": bool(values) and slippage_stress_net > 0,
+        "positive_weeks_majority": positive_week_fraction is not None
+        and positive_week_fraction > 0.5,
+        "single_day_profit_concentration_lt_20pct": (
+            largest_day_profit_concentration is not None
+            and largest_day_profit_concentration < 0.20
+        ),
+        "positive_under_1s_latency": None,
+        "single_regime_profit_concentration_lt_50pct": None,
+        "deflated_sharpe_supports_skill": None,
+        "backtest_overfit_probability_acceptable": None,
+    }
+    if any(value is False for value in checks.values()):
+        status = "BLOCKED_FAILED_GATE"
+    elif any(value is None for value in checks.values()):
+        status = "BLOCKED_UNMEASURED"
+    else:
+        status = "FORWARD_GATE_PASSED_PAPER_ONLY"
+    return {
+        "status": status,
+        "checks": checks,
+        "positive_week_fraction": (
+            round(positive_week_fraction, 6)
+            if positive_week_fraction is not None
+            else None
+        ),
+        "largest_day_profit_concentration": (
+            round(largest_day_profit_concentration, 6)
+            if largest_day_profit_concentration is not None
+            else None
+        ),
+        "fee_50pct_stress_net_usd": round(fee_stress_net, 6),
+        "slippage_50pct_stress_net_usd": round(slippage_stress_net, 6),
+        "real_orders_remain_impossible": True,
+    }
+
+
 def strategy_metrics(persistence, strategy_id: str) -> dict[str, Any]:
     trades = persistence.trades(limit=10_000, strategy_id=strategy_id)
     account = persistence.account(strategy_id)
     values = [float(row["net_pnl_usd"]) for row in trades]
     gross_wins = sum(max(0.0, value) for value in values)
     gross_losses = -sum(min(0.0, value) for value in values)
+    profit_factor = gross_wins / gross_losses if gross_losses > 0 else None
     lower_bound, n_days = _day_block_lower_bound(trades)
     fees = sum(
         float(row["entry_fee_usd"]) + float(row["exit_fee_usd"])
@@ -93,7 +179,7 @@ def strategy_metrics(persistence, strategy_id: str) -> dict[str, Any]:
         "n_days": n_days,
         "net_pnl_usd": round(sum(values), 6),
         "profit_factor": (
-            round(gross_wins / gross_losses, 6) if gross_losses > 0 else None
+            round(profit_factor, 6) if profit_factor is not None else None
         ),
         "mean_expectancy_usd": (
             round(statistics.fmean(values), 6) if values else None
@@ -129,6 +215,13 @@ def strategy_metrics(persistence, strategy_id: str) -> dict[str, Any]:
             round(sum(value > 0 for value in values) / sample_size, 6)
             if sample_size
             else None
+        ),
+        "promotion_gate": _promotion_gate(
+            trades,
+            observation_days=observation_days,
+            n_days=n_days,
+            profit_factor=profit_factor,
+            lower_bound=lower_bound,
         ),
     }
 

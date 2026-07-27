@@ -113,6 +113,14 @@ def fills(limit: int = Query(100, ge=1, le=1000)):
         _translate(exc)
 
 
+@router.get("/funding", response_model=ListResponse)
+def funding(limit: int = Query(100, ge=1, le=1000)):
+    try:
+        return {"items": service().funding_events(limit)}
+    except Exception as exc:
+        _translate(exc)
+
+
 @router.get("/trades", response_model=ListResponse)
 def trades(limit: int = Query(100, ge=1, le=1000)):
     try:

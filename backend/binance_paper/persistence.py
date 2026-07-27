@@ -15,7 +15,7 @@ import duckdb
 from .schemas import FillResult, MarketSnapshot, StrategyDecision
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STRATEGY_IDS = ("trend_following", "breakout")
 
 
@@ -177,6 +177,21 @@ class BinancePaperPersistence:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS binance_paper_funding_events (
+                funding_event_id VARCHAR PRIMARY KEY,
+                position_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                funding_time_ms BIGINT NOT NULL,
+                observed_at_ms BIGINT NOT NULL,
+                funding_rate DOUBLE NOT NULL,
+                mark_price DOUBLE NOT NULL,
+                notional_usd DOUBLE NOT NULL,
+                funding_usd DOUBLE NOT NULL,
+                source VARCHAR NOT NULL,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS binance_paper_positions (
                 position_id VARCHAR PRIMARY KEY,
                 strategy_id VARCHAR NOT NULL,
@@ -261,7 +276,7 @@ class BinancePaperPersistence:
             ).fetchall()
             if versions and versions[-1][0] > SCHEMA_VERSION:
                 raise RuntimeError("Binance paper database schema is newer than this code")
-            if not versions:
+            if not versions or versions[-1][0] < SCHEMA_VERSION:
                 conn.execute(
                     "INSERT INTO binance_paper_schema_version VALUES (?, ?)",
                     (SCHEMA_VERSION, _now_ms()),
@@ -673,6 +688,119 @@ class BinancePaperPersistence:
                     (equity, unrealized, peak, max_dd, now, position["strategy_id"]),
                 )
 
+    def apply_observed_funding(
+        self, snapshot: MarketSnapshot
+    ) -> list[dict[str, Any]]:
+        if snapshot.funding_rate is None or snapshot.funding_time_ms is None:
+            return []
+        funding_rate = float(snapshot.funding_rate)
+        funding_time_ms = int(snapshot.funding_time_ms)
+        if (
+            not math.isfinite(funding_rate)
+            or funding_time_ms <= 0
+            or funding_time_ms > snapshot.received_at_ms
+        ):
+            return []
+        applied: list[dict[str, Any]] = []
+        with self.transaction() as conn:
+            positions = _rows(
+                conn.execute(
+                    """
+                    SELECT * FROM binance_paper_positions
+                    WHERE status = 'OPEN' AND symbol = ? AND opened_at_ms < ?
+                    """,
+                    (snapshot.symbol, funding_time_ms),
+                )
+            )
+            for position in positions:
+                event_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        (
+                            "binance-paper-funding:"
+                            f"{position['position_id']}:{funding_time_ms}"
+                        ),
+                    )
+                )
+                exists = conn.execute(
+                    """
+                    SELECT 1 FROM binance_paper_funding_events
+                    WHERE funding_event_id = ?
+                    """,
+                    (event_id,),
+                ).fetchone()
+                if exists is not None:
+                    continue
+                direction = 1.0 if position["side"] == "LONG" else -1.0
+                notional = float(position["quantity"]) * snapshot.mark_price
+                funding_usd = -direction * notional * funding_rate
+                account = conn.execute(
+                    """
+                    SELECT available_cash_usd, used_margin_usd,
+                           unrealized_pnl_usd, funding_usd,
+                           peak_equity_usd, maximum_drawdown_usd
+                    FROM binance_paper_accounts WHERE strategy_id = ?
+                    """,
+                    (position["strategy_id"],),
+                ).fetchone()
+                if account is None:
+                    raise RuntimeError("funded position has no strategy account")
+                available, margin, unrealized, funding_total, peak, max_dd = map(
+                    float, account
+                )
+                available += funding_usd
+                equity = available + margin + unrealized
+                peak = max(peak, equity)
+                max_dd = max(max_dd, peak - equity)
+                conn.execute(
+                    """
+                    INSERT INTO binance_paper_funding_events VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        position["position_id"],
+                        position["strategy_id"],
+                        funding_time_ms,
+                        snapshot.received_at_ms,
+                        funding_rate,
+                        snapshot.mark_price,
+                        notional,
+                        funding_usd,
+                        "binance_futures_public_rest_last_settled",
+                        _now_ms(),
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE binance_paper_accounts
+                    SET available_cash_usd = ?, equity_usd = ?, funding_usd = ?,
+                        peak_equity_usd = ?, maximum_drawdown_usd = ?,
+                        updated_at_ms = ?
+                    WHERE strategy_id = ?
+                    """,
+                    (
+                        available,
+                        equity,
+                        funding_total + funding_usd,
+                        peak,
+                        max_dd,
+                        snapshot.received_at_ms,
+                        position["strategy_id"],
+                    ),
+                )
+                applied.append(
+                    {
+                        "funding_event_id": event_id,
+                        "position_id": position["position_id"],
+                        "strategy_id": position["strategy_id"],
+                        "funding_time_ms": funding_time_ms,
+                        "funding_rate": funding_rate,
+                        "funding_usd": funding_usd,
+                    }
+                )
+        return applied
+
     def close_position(
         self,
         *,
@@ -706,7 +834,18 @@ class BinancePaperPersistence:
                 * (fill.average_fill_price - float(position["entry_price"]))
             )
             entry_fee = float(position["entry_fee_usd"])
-            net = gross - entry_fee - fill.fee_usd
+            position_funding = float(
+                conn.execute(
+                    """
+                    SELECT COALESCE(SUM(funding_usd), 0)
+                    FROM binance_paper_funding_events
+                    WHERE position_id = ?
+                    """,
+                    (position_id,),
+                ).fetchone()[0]
+                or 0.0
+            )
+            net = gross - entry_fee - fill.fee_usd + position_funding
             account = conn.execute(
                 """
                 SELECT available_cash_usd, used_margin_usd, realized_pnl_usd,
@@ -766,7 +905,7 @@ class BinancePaperPersistence:
                     gross,
                     entry_fee,
                     fill.fee_usd,
-                    0.0,
+                    position_funding,
                     net,
                     fill.slippage_cost_usd,
                     position["opened_at_ms"],
@@ -884,6 +1023,18 @@ class BinancePaperPersistence:
                 )
             )
 
+    def funding_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_funding_events
+                    ORDER BY funding_time_ms DESC, created_at_ms DESC LIMIT ?
+                    """,
+                    (max(1, min(1000, int(limit))),),
+                )
+            )
+
     def trades(
         self, limit: int = 100, strategy_id: str | None = None
     ) -> list[dict[str, Any]]:
@@ -950,7 +1101,7 @@ class BinancePaperPersistence:
                 ).fetchone()[0]
             )
 
-    def daily_net_pnl(self, strategy_id: str, day_start_ms: int) -> float:
+    def net_pnl_since(self, strategy_id: str, since_ms: int) -> float:
         with self._lock:
             value = self._conn.execute(
                 """
@@ -958,9 +1109,12 @@ class BinancePaperPersistence:
                 FROM binance_paper_trades
                 WHERE strategy_id = ? AND exit_time_ms >= ?
                 """,
-                (strategy_id, int(day_start_ms)),
+                (strategy_id, int(since_ms)),
             ).fetchone()[0]
         return float(value or 0.0)
+
+    def daily_net_pnl(self, strategy_id: str, day_start_ms: int) -> float:
+        return self.net_pnl_since(strategy_id, day_start_ms)
 
     def last_exit_time_ms(self, strategy_id: str) -> int | None:
         with self._lock:

@@ -17,6 +17,9 @@ class BinancePaperPortfolio:
     def mark(self, snapshot: MarketSnapshot) -> None:
         self.persistence.mark_positions(snapshot)
 
+    def apply_funding(self, snapshot: MarketSnapshot) -> list[dict]:
+        return self.persistence.apply_observed_funding(snapshot)
+
     def open(
         self,
         decision: StrategyDecision,

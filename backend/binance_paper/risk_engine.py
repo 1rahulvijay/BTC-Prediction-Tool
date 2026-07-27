@@ -93,6 +93,14 @@ class BinancePaperRiskEngine:
         day_start_ms = (now // 86_400_000) * 86_400_000
         if persistence.daily_net_pnl(decision.strategy_id, day_start_ms) <= -risk.maximum_daily_loss_usd:
             reasons.append("maximum_daily_loss_reached")
+        day_index = now // 86_400_000
+        monday_day_index = day_index - ((day_index + 3) % 7)
+        week_start_ms = monday_day_index * 86_400_000
+        if (
+            persistence.net_pnl_since(decision.strategy_id, week_start_ms)
+            <= -risk.maximum_weekly_loss_usd
+        ):
+            reasons.append("maximum_weekly_loss_reached")
         if (
             persistence.recent_trade_count(decision.strategy_id, now - 3_600_000)
             >= risk.maximum_trades_per_hour

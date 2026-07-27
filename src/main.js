@@ -4540,6 +4540,7 @@ function bpPercent(value) {
 }
 
 function bpTime(timestampMs) {
+  if (timestampMs == null || timestampMs === '') return '--';
   const value = Number(timestampMs);
   if (!Number.isFinite(value)) return '--';
   return new Date(value).toLocaleString();
@@ -4731,7 +4732,7 @@ function renderBinancePaperStatus(status) {
     <span>book messages ${bpNumber(market.book_message_count, 0)}</span>
     <span>perp trades ${bpNumber(market.agg_trade_message_count, 0)}</span>
     <span>perp CVD bar age ${bpAge(perpBarAge)}</span>
-    <span>funding ${bpPercent(market.funding_rate)}</span>
+    <span>funding ${bpPercent(market.funding_rate)} | settled ${bpTime(market.funding_time_ms)}</span>
     <span>hard gate ${status.hard_gate_enabled ? 'ON' : 'OFF'}</span>
     <span>pending orders ${bpNumber(status.pending_order_count, 0)}</span>
   `;
@@ -4757,6 +4758,7 @@ function renderBinancePaperStrategies(strategies, allMetrics) {
     const missing = strategy.missing_inputs || [];
     const inactive = strategy.inactive_reason;
     const evidence = metric.status || 'INSUFFICIENT_DATA';
+    const promotion = metric.promotion_gate?.status || 'BLOCKED_UNMEASURED';
     const reasons = decision.reason_codes || [];
     return `
       <article class="bp-strategy-card">
@@ -4795,7 +4797,8 @@ function renderBinancePaperStrategies(strategies, allMetrics) {
           <div><span>Observed days</span><strong>${bpNumber(metric.n_days, 0)}</strong></div>
         </div>
         <div class="bp-evidence ${evidence === 'EVIDENCE_READY' ? 'bp-evidence-ready' : ''}">
-          ${bpEscape(evidence.replaceAll('_', ' '))}
+          SAMPLE ${bpEscape(evidence.replaceAll('_', ' '))}
+          | PROMOTION ${bpEscape(promotion.replaceAll('_', ' '))}
         </div>
         <dl class="bp-detail-list">
           <div><dt>Status</dt><dd>${bpEscape(inactive || 'Active and observing')}</dd></div>
@@ -4805,7 +4808,7 @@ function renderBinancePaperStrategies(strategies, allMetrics) {
           <div><dt>Account</dt><dd>cash ${bpUsd(account.available_cash_usd)} | margin ${bpUsd(account.used_margin_usd)} | fees ${bpUsd(account.trading_fees_usd)} | funding ${bpUsd(account.funding_usd)}</dd></div>
           <div><dt>LONG</dt><dd>n=${bpNumber(metric.long?.sample_size, 0)} | net ${bpUsd(metric.long?.net_pnl_usd)} | mean ${bpUsd(metric.long?.mean_expectancy_usd)}</dd></div>
           <div><dt>SHORT</dt><dd>n=${bpNumber(metric.short?.sample_size, 0)} | net ${bpUsd(metric.short?.net_pnl_usd)} | mean ${bpUsd(metric.short?.mean_expectancy_usd)}</dd></div>
-          <div><dt>Evidence</dt><dd>${bpEscape(metric.lb_method || 'Day-block evidence unavailable')} | ${bpEscape(metric.measurability || 'NEVER_FIRES')}</dd></div>
+          <div><dt>Evidence</dt><dd>${bpEscape(metric.lb_method || 'Day-block evidence unavailable')} | ${bpEscape(metric.measurability || 'NEVER_FIRES')} | real orders remain impossible</dd></div>
           <div><dt>Reason</dt><dd>${reasons.length ? reasons.map(bpEscape).join(', ') : 'No decision recorded yet'}</dd></div>
         </dl>
       </article>

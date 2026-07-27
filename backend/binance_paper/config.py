@@ -81,8 +81,9 @@ class StrategyRiskConfig:
     max_leverage: float = 2.0
     max_position_notional_usd: float = 1_000.0
     max_account_exposure_usd: float = 1_000.0
-    risk_per_trade_fraction: float = 0.005
+    risk_per_trade_fraction: float = 0.001
     maximum_daily_loss_usd: float = 100.0
+    maximum_weekly_loss_usd: float = 250.0
     maximum_drawdown_fraction: float = 0.10
     maximum_trades_per_hour: int = 4
     cooldown_seconds: int = 60
@@ -108,6 +109,9 @@ class StrategyRiskConfig:
             ),
             maximum_daily_loss_usd=min(
                 100_000.0, max(1.0, float(self.maximum_daily_loss_usd))
+            ),
+            maximum_weekly_loss_usd=min(
+                500_000.0, max(1.0, float(self.maximum_weekly_loss_usd))
             ),
             maximum_drawdown_fraction=min(
                 0.50, max(0.01, float(self.maximum_drawdown_fraction))

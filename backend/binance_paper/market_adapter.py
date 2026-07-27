@@ -108,7 +108,7 @@ class BinancePaperMarketAdapter:
         ask = float(book["best_ask"])
         mark = (bid + ask) / 2.0
         spread = ask - bid
-        funding_rate, next_funding_time_ms = self._funding()
+        funding_rate, funding_time_ms = self._funding()
         cutoff = now - 60_000
         eligible = [sample for sample in samples if sample[0] >= cutoff]
         trade_count_60s = None
@@ -135,7 +135,7 @@ class BinancePaperMarketAdapter:
             feed_health=feed_health,
             update_id=book.get("update_id"),
             funding_rate=funding_rate,
-            next_funding_time_ms=next_funding_time_ms,
+            funding_time_ms=funding_time_ms,
             agg_trade_age_ms=agg_age,
             agg_trade_message_count=int(health["agg_trade_message_count"]),
             agg_trade_count_60s=trade_count_60s,
