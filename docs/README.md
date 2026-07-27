@@ -6,6 +6,10 @@
   basis-point labels, non-overlapping economic evaluation, sequential laptop-safe
   fitting, research-only artifacts, commands, and measured smoke validation.
   Dynamic exit remains excluded under its frozen closure record.
+- **[TRADE_POLICY_HEADS_120D_RESULTS_2026-07-27.md](active/TRADE_POLICY_HEADS_120D_RESULTS_2026-07-27.md)** -
+  completed 172,801-row run: moderate side-head ranking AUC but coin-flip selected
+  direction, negative post-cost EV in every fold and every top-score bucket, failed
+  ACT/SKIP promotion, and explicit refusal to wire the research artifacts live.
 - **[TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md](active/TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md)** -
   lifecycle requirement reconciliation; candidate expiry and entry bounds,
   truthful uncertainty/economics metadata, validated paper order states,
