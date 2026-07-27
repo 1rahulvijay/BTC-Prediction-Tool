@@ -48,11 +48,12 @@ SCHEMA = "f" * 64
 
 
 def _threshold() -> ThresholdArtifact:
+    freeze = float(M0_V2["frozen_at_s"])
     return ThresholdArtifact(
         threshold=0.70, objective="P(plan net>0)", target_entry_rate=0.20,
         calibration_start_ts=1.0, calibration_end_ts=2.0, calibration_rows=5000,
         dataset_sha256="d" * 64, model_sha256=MODEL, policy_sha256=POLICY,
-        code_sha256="c" * 64,
+        code_sha256="c" * 64, created_at=freeze,
     )
 
 
@@ -166,7 +167,7 @@ def run() -> int:
         threshold=0.70, objective="other", target_entry_rate=0.20,
         calibration_start_ts=1.0, calibration_end_ts=2.0, calibration_rows=5000,
         dataset_sha256="d" * 64, model_sha256="z" * 64, policy_sha256=POLICY,
-        code_sha256="c" * 64)
+        code_sha256="c" * 64, created_at=float(M0_V2["frozen_at_s"]))
     chk(evaluate(rows, outcomes, foreign)["status"] == "IDENTITY_MISMATCH",
         "a threshold derived from a DIFFERENT model is refused")
 
@@ -183,9 +184,9 @@ def run() -> int:
         zeroed[fid]["stress_1000ms_plan_net"] = 0.0
     z = evaluate(rows, zeroed, artifact)
     chk(z["status"] == "SCORED", "a zero stress PnL still scores (it is real data)")
-    chk(abs(float(z["stress_1000ms_mean"])) < 1e-9,
+    chk(abs(float(z.get("stress_1000ms_mean", float("inf")))) < 1e-9,
         "stress mean is 0.0, NOT silently replaced by the unstressed PnL")
-    chk(z["gates"]["survives_latency_stress"] is False,
+    chk((z.get("gates") or {}).get("survives_latency_stress") is False,
         "and the latency gate correctly FAILS - the bug inverted exactly this")
 
     empty_pool = {k: dict(v) for k, v in outcomes.items()}

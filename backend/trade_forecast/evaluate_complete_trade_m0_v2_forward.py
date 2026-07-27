@@ -520,15 +520,16 @@ def selftest() -> int:
     chk(not loaded, f"no training module is imported at runtime ({loaded})")
 
     print("end-to-end scoring")
+    freeze = float(M0_V2["frozen_at_s"])
     art = ThresholdArtifact(
         threshold=0.70, objective="P(plan net>0)", target_entry_rate=0.2,
         calibration_start_ts=1.0, calibration_end_ts=2.0, calibration_rows=5000,
         dataset_sha256="d" * 64, model_sha256="m" * 64,
-        policy_sha256="p" * 64, code_sha256="c" * 64)
+        policy_sha256="p" * 64, code_sha256="c" * 64,
+        created_at=freeze)
     digest = art.threshold_hash()
     # The fixture must satisfy the identity RELATIONSHIPS too: the threshold records the model
     # and policy it was derived from, and the evidence must have been produced by those.
-    freeze = float(M0_V2["frozen_at_s"])
 
     def synth(n=1200, span_days=63, pnl=lambda i: 0.03 if i % 3 else -0.01):
         rows, outs = [], {}
@@ -554,8 +555,10 @@ def selftest() -> int:
     chk(result["status"] == "SCORED" and result["passed"],
         f"a profitable, well-spread set SCORES and passes ({result['status']})")
     chk(result.get("trades") == 1200, "one trade per round across 1200 rounds")
-    chk(result["matched_random"]["p_value"] < 0.05, "matched-random p-value is significant")
-    chk(len(result["multiplicity"]["rejected"]) > 0, "and it survives BH correction")
+    chk((result.get("matched_random") or {}).get("p_value", 1.0) < 0.05,
+        "matched-random p-value is significant")
+    chk(len((result.get("multiplicity") or {}).get("rejected", [])) > 0,
+        "and it survives BH correction")
 
     leaked = [dict(rows[0], forecast_id="leak", prediction_ts=freeze - 1.0)] + rows
     chk(evaluate(leaked, outs, art)["status"] == "INADMISSIBLE",
@@ -569,7 +572,8 @@ def selftest() -> int:
         threshold=0.70, objective="x", target_entry_rate=0.2,
         calibration_start_ts=1.0, calibration_end_ts=2.0, calibration_rows=5000,
         dataset_sha256="d" * 64, model_sha256="z" * 64,
-        policy_sha256="p" * 64, code_sha256="c" * 64)
+        policy_sha256="p" * 64, code_sha256="c" * 64,
+        created_at=freeze)
     chk(evaluate([dict(r, threshold_sha256=foreign_model.threshold_hash()) for r in rows],
                  outs, foreign_model)["status"] == "IDENTITY_MISMATCH",
         "a threshold derived from a model that did not produce the evidence is refused")
