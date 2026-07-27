@@ -1,6 +1,7 @@
 """Single mandatory risk gate for every Binance paper entry."""
 from __future__ import annotations
 
+import math
 import time
 
 from .config import EngineConfig, StrategyRiskConfig
@@ -41,6 +42,17 @@ class BinancePaperRiskEngine:
             reasons.append("entry_side_missing")
         if signal_already_seen:
             reasons.append("duplicate_signal")
+        if decision.timestamp_ms > now:
+            reasons.append("decision_timestamp_in_future")
+        if decision.valid_until_ms is not None and now > decision.valid_until_ms:
+            reasons.append("signal_expired")
+        numeric_decision = (
+            decision.score,
+            decision.confidence,
+            decision.requested_notional_usd,
+        )
+        if not all(math.isfinite(float(value)) for value in numeric_decision):
+            reasons.append("non_finite_decision")
         if decision.missing_inputs:
             reasons.append("required_input_missing")
         if decision.data_quality_status is not DataQuality.HEALTHY:
@@ -55,6 +67,14 @@ class BinancePaperRiskEngine:
             reasons.append("stop_required")
         if decision.take_profit_price is None:
             reasons.append("take_profit_required")
+        if decision.stop_price is not None and not math.isfinite(
+            float(decision.stop_price)
+        ):
+            reasons.append("non_finite_stop")
+        if decision.take_profit_price is not None and not math.isfinite(
+            float(decision.take_profit_price)
+        ):
+            reasons.append("non_finite_target")
         if decision.side is PositionSide.LONG:
             if (
                 decision.stop_price is not None
@@ -124,6 +144,18 @@ class BinancePaperRiskEngine:
             if decision.side is PositionSide.LONG
             else top_price * (1.0 - slippage_fraction)
         )
+        if (
+            decision.side is PositionSide.LONG
+            and decision.maximum_entry_price is not None
+            and reference_price > decision.maximum_entry_price
+        ):
+            reasons.append("maximum_entry_price_breached")
+        if (
+            decision.side is PositionSide.SHORT
+            and decision.minimum_entry_price is not None
+            and reference_price < decision.minimum_entry_price
+        ):
+            reasons.append("minimum_entry_price_breached")
         requested = min(
             max(0.0, decision.requested_notional_usd),
             risk.max_position_notional_usd,

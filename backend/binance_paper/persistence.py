@@ -12,10 +12,15 @@ import uuid
 
 import duckdb
 
-from .schemas import FillResult, MarketSnapshot, StrategyDecision
+from .schemas import (
+    FillResult,
+    MarketSnapshot,
+    StrategyDecision,
+    validate_order_transition,
+)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STRATEGY_IDS = ("trend_following", "breakout")
 
 
@@ -120,6 +125,13 @@ class BinancePaperPersistence:
                 stop_price DOUBLE,
                 take_profit_price DOUBLE,
                 maximum_holding_seconds BIGINT NOT NULL,
+                valid_until_ms BIGINT,
+                maximum_entry_price DOUBLE,
+                minimum_entry_price DOUBLE,
+                probability_calibrated BOOLEAN NOT NULL DEFAULT FALSE,
+                uncertainty_status VARCHAR NOT NULL DEFAULT 'UNMEASURED',
+                expected_net_pnl_usd DOUBLE,
+                expected_net_pnl_lower_bound_usd DOUBLE,
                 feature_snapshot_json VARCHAR NOT NULL,
                 required_inputs_json VARCHAR NOT NULL,
                 available_inputs_json VARCHAR NOT NULL,
@@ -271,6 +283,27 @@ class BinancePaperPersistence:
         with self.transaction() as conn:
             for statement in statements:
                 conn.execute(statement)
+            signal_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info('binance_paper_signals')"
+                ).fetchall()
+            }
+            signal_migrations = {
+                "valid_until_ms": "BIGINT",
+                "maximum_entry_price": "DOUBLE",
+                "minimum_entry_price": "DOUBLE",
+                "probability_calibrated": "BOOLEAN DEFAULT FALSE",
+                "uncertainty_status": "VARCHAR DEFAULT 'UNMEASURED'",
+                "expected_net_pnl_usd": "DOUBLE",
+                "expected_net_pnl_lower_bound_usd": "DOUBLE",
+            }
+            for name, definition in signal_migrations.items():
+                if name not in signal_columns:
+                    conn.execute(
+                        f"ALTER TABLE binance_paper_signals "
+                        f"ADD COLUMN {name} {definition}"
+                    )
             versions = conn.execute(
                 "SELECT version FROM binance_paper_schema_version ORDER BY version"
             ).fetchall()
@@ -416,8 +449,21 @@ class BinancePaperPersistence:
             value = decision.to_dict()
             conn.execute(
                 """
-                INSERT INTO binance_paper_signals VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO binance_paper_signals (
+                    signal_id, strategy_id, strategy_version, strategy_config_hash,
+                    feature_schema_hash, feature_values_hash, decision_ts_ms,
+                    symbol, timeframe, action, side, score, confidence,
+                    requested_notional_usd, stop_price, take_profit_price,
+                    maximum_holding_seconds, valid_until_ms, maximum_entry_price,
+                    minimum_entry_price, probability_calibrated, uncertainty_status,
+                    expected_net_pnl_usd, expected_net_pnl_lower_bound_usd,
+                    feature_snapshot_json, required_inputs_json,
+                    available_inputs_json, missing_inputs_json, data_quality_status,
+                    reason_codes_json, created_at_ms
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     decision.signal_id,
@@ -437,6 +483,13 @@ class BinancePaperPersistence:
                     decision.stop_price,
                     decision.take_profit_price,
                     decision.maximum_holding_seconds,
+                    decision.valid_until_ms,
+                    decision.maximum_entry_price,
+                    decision.minimum_entry_price,
+                    decision.probability_calibrated,
+                    decision.uncertainty_status,
+                    decision.expected_net_pnl_usd,
+                    decision.expected_net_pnl_lower_bound_usd,
                     json.dumps(decision.features, sort_keys=True),
                     json.dumps(decision.required_inputs),
                     json.dumps(decision.available_inputs),
@@ -467,6 +520,21 @@ class BinancePaperPersistence:
     ) -> str:
         event_id = str(uuid.uuid4())
         with self.transaction_or_connection(connection) as conn:
+            previous = conn.execute(
+                """
+                SELECT status, created_at_ms
+                FROM binance_paper_orders
+                WHERE order_id = ?
+                ORDER BY created_at_ms DESC, order_event_id DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+            validate_order_transition(previous[0] if previous else None, status)
+            created_at_ms = max(
+                _now_ms(),
+                int(previous[1]) + 1 if previous else 0,
+            )
             conn.execute(
                 """
                 INSERT INTO binance_paper_orders VALUES
@@ -486,7 +554,7 @@ class BinancePaperPersistence:
                     simulated_send_ts_ms,
                     simulated_arrival_ts_ms,
                     rejection_reason,
-                    _now_ms(),
+                    created_at_ms,
                 ),
             )
         return event_id
@@ -1146,9 +1214,13 @@ class BinancePaperPersistence:
                        o.decision_ts_ms, o.simulated_send_ts_ms,
                        o.simulated_arrival_ts_ms
                 FROM binance_paper_orders o
-                QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY order_id ORDER BY created_at_ms DESC
-                ) = 1 AND status = 'PENDING'
+                WHERE o.status = 'PENDING'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM binance_paper_orders terminal
+                    WHERE terminal.order_id = o.order_id
+                      AND terminal.status <> 'PENDING'
+                  )
                 """
             ).fetchall()
         for row in rows:

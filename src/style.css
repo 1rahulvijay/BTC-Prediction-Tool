@@ -1336,9 +1336,18 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
 
 .bp-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.bp-title-row > div {
+  min-width: 0;
+}
+
+.bp-title-row .bp-badges {
+  justify-content: flex-end;
 }
 
 .bp-title-row h2,
@@ -1354,7 +1363,8 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
 
 .bp-badges,
 .bp-controls,
-.bp-market-strip {
+.bp-market-strip,
+.bp-governor-strip {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1392,6 +1402,29 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 0.76rem;
+}
+
+.bp-governor-strip {
+  margin-top: 0.55rem;
+  min-height: 38px;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--border-primary);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.bp-governor-ok {
+  border-left-color: var(--green);
+}
+
+.bp-governor-warning {
+  border-left-color: #f3ba2f;
+}
+
+.bp-governor-danger {
+  border-left-color: var(--red);
 }
 
 .bp-market-ok {

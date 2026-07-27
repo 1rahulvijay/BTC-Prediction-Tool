@@ -41,6 +41,12 @@ Phase 1 is implemented on the canonical `master` branch.
   events. They are position-linked and idempotent.
 - Transactional state changes, deterministic signal/order IDs and restart
   recovery.
+- Candidate expiry plus side-aware executable entry-price limits, checked again
+  after latency.
+- A validated paper order-state machine and aggregate capital-preservation
+  governor.
+- Baseline uncertainty is explicit: confidence is uncalibrated and net EV is
+  unavailable until a tested model supplies it.
 - Hard default-off environment gate and no authenticated Binance code.
 - Day-block evidence metrics and a separate, stricter promotion diagnostic.
 
@@ -69,6 +75,8 @@ after-cost edge.
 - There is no exchange/API acknowledgement or cancel-delay simulation.
 - There is no liquidation or bankruptcy engine.
 - Paper results cannot prove live fill quality.
+- No authenticated exchange acknowledgement/reconciliation state exists.
+- The current baselines do not have a trained net-EV or dynamic-exit head.
 
 These limitations must remain visible in evaluation and promotion decisions.
 

@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 import threading
 import time
 from typing import Any
 
 from .config import EngineConfig
 from .fill_simulator import BinancePaperFillSimulator
+from .governor import (
+    CapitalPreservationGovernor,
+    GovernorAccountState,
+)
 from .market_adapter import BinancePaperMarketAdapter
 from .metrics import all_metrics, strategy_metrics
 from .persistence import BinancePaperPersistence
@@ -55,6 +60,10 @@ class BinancePaperService:
         self.persistence = persistence
         self.portfolio = BinancePaperPortfolio(persistence) if persistence else None
         self.risk_engine = BinancePaperRiskEngine(self.config)
+        self.governor = CapitalPreservationGovernor(
+            latency_ms=self.config.latency_ms,
+            quote_stale_ms=self.config.quote_stale_ms,
+        )
         self.fill_simulator = BinancePaperFillSimulator(self.config)
         self.runtime_active = False
         self.initialized = False
@@ -67,6 +76,7 @@ class BinancePaperService:
         self._last_portfolio_update_ms = 0
         self._last_funding_time_ms: int | None = None
         self._last_equity_snapshot_ms = 0
+        self._integrity_error: str | None = None
 
     def initialize(self) -> None:
         with self._lock:
@@ -80,6 +90,7 @@ class BinancePaperService:
             )
             self.registry.load(self.persistence)
             self.persistence.reconcile_or_raise()
+            self._integrity_error = None
             cancelled = self.persistence.cancel_orphan_pending_orders()
             self.persistence.append_event(
                 "RECOVERY",
@@ -112,6 +123,7 @@ class BinancePaperService:
                             self.latest_snapshot = snapshot
                             self._evaluate(snapshot)
             except Exception as exc:
+                self._integrity_error = f"{type(exc).__name__}: {exc}"
                 if self.persistence is not None:
                     self.persistence.append_event(
                         "SERVICE_ERROR",
@@ -162,6 +174,13 @@ class BinancePaperService:
                     strategy_id=event["strategy_id"],
                     details=event,
                 )
+            governor = self._governor_decision(snapshot)
+            if not governor.can_open:
+                self._cancel_pending_entries(
+                    reason=f"capital_governor:{governor.mode.value.lower()}"
+                )
+            if governor.must_flatten and snapshot.feed_health is DataQuality.HEALTHY:
+                self._queue_governor_exits(snapshot, governor.reason_codes)
             self._queue_triggered_exits(snapshot)
             if (
                 snapshot.received_at_ms - self._last_equity_snapshot_ms
@@ -240,28 +259,23 @@ class BinancePaperService:
         strategy = self.registry.get(decision.strategy_id)
         current = self.portfolio.position_for(decision.strategy_id)
         account = self.persistence.account(decision.strategy_id)
-        risk_result = self.risk_engine.evaluate_entry(
-            decision=decision,
-            snapshot=snapshot,
-            account=account,
-            open_position=current,
-            risk=strategy.risk,
-            persistence=self.persistence,
-            runtime_active=self.runtime_active,
-            strategy_enabled=self.registry.is_enabled(decision.strategy_id),
-            signal_already_seen=signal_already_seen,
-            now_ms=snapshot.received_at_ms,
-        )
-        reference = (
-            snapshot.best_ask
-            if decision.side is PositionSide.LONG
-            else snapshot.best_bid
-        )
-        requested_quantity = (
-            decision.requested_notional_usd / reference if reference > 0 else 0.0
-        )
+        governor = self._governor_decision(snapshot)
         order_id = self._order_id(decision.signal_id, "ENTRY")
-        if not risk_result.approved:
+        if not governor.can_open:
+            reference = (
+                snapshot.best_ask
+                if decision.side is PositionSide.LONG
+                else snapshot.best_bid
+            )
+            requested_quantity = (
+                decision.requested_notional_usd / reference if reference > 0 else 0.0
+            )
+            reasons = tuple(
+                f"capital_governor:{reason}"
+                for reason in (
+                    governor.reason_codes or (governor.mode.value.lower(),)
+                )
+            )
             self.persistence.append_order_event(
                 order_id=order_id,
                 signal_id=decision.signal_id,
@@ -274,25 +288,80 @@ class BinancePaperService:
                 decision_ts_ms=decision.timestamp_ms,
                 simulated_send_ts_ms=decision.timestamp_ms,
                 simulated_arrival_ts_ms=decision.timestamp_ms + self.config.latency_ms,
+                rejection_reason=",".join(reasons),
+            )
+            self.latest_decisions[decision.strategy_id] = {
+                **decision.to_dict(),
+                "action": Action.RISK_BLOCKED.value,
+                "reason_codes": list(reasons),
+                "capital_governor": governor.to_dict(),
+            }
+            return
+        effective_decision = (
+            replace(
+                decision,
+                requested_notional_usd=(
+                    decision.requested_notional_usd * governor.size_multiplier
+                ),
+            )
+            if governor.size_multiplier < 1.0
+            else decision
+        )
+        risk_result = self.risk_engine.evaluate_entry(
+            decision=effective_decision,
+            snapshot=snapshot,
+            account=account,
+            open_position=current,
+            risk=strategy.risk,
+            persistence=self.persistence,
+            runtime_active=self.runtime_active,
+            strategy_enabled=self.registry.is_enabled(decision.strategy_id),
+            signal_already_seen=signal_already_seen,
+            now_ms=snapshot.received_at_ms,
+        )
+        reference = (
+            snapshot.best_ask
+            if effective_decision.side is PositionSide.LONG
+            else snapshot.best_bid
+        )
+        requested_quantity = (
+            effective_decision.requested_notional_usd / reference
+            if reference > 0
+            else 0.0
+        )
+        if not risk_result.approved:
+            self.persistence.append_order_event(
+                order_id=order_id,
+                signal_id=decision.signal_id,
+                strategy_id=decision.strategy_id,
+                operation="ENTRY",
+                side=effective_decision.side.value,
+                requested_quantity=requested_quantity,
+                requested_notional_usd=effective_decision.requested_notional_usd,
+                status="RISK_BLOCKED",
+                decision_ts_ms=decision.timestamp_ms,
+                simulated_send_ts_ms=decision.timestamp_ms,
+                simulated_arrival_ts_ms=decision.timestamp_ms + self.config.latency_ms,
                 rejection_reason=",".join(risk_result.reason_codes),
             )
             self.latest_decisions[decision.strategy_id] = {
                 **decision.to_dict(),
                 "action": Action.RISK_BLOCKED.value,
                 "reason_codes": list(risk_result.reason_codes),
+                "capital_governor": governor.to_dict(),
             }
             return
         intent = PendingIntent(
             order_id=order_id,
             signal_id=decision.signal_id,
             strategy_id=decision.strategy_id,
-            side=decision.side,
+            side=effective_decision.side,
             operation="ENTRY",
             quantity=risk_result.approved_quantity,
             requested_notional_usd=risk_result.approved_notional_usd,
             decision_ts_ms=decision.timestamp_ms,
             arrival_ts_ms=decision.timestamp_ms + self.config.latency_ms,
-            decision=decision,
+            decision=effective_decision,
         )
         self._pending[order_id] = intent
         self.persistence.append_order_event(
@@ -376,6 +445,18 @@ class BinancePaperService:
                     "entry_inactive_before_arrival",
                 )
                 continue
+            if intent.operation == "ENTRY":
+                governor = self._governor_decision(snapshot)
+                if not governor.can_open:
+                    self._cancel_pending_intent(
+                        intent,
+                        f"capital_governor_before_arrival:{governor.mode.value.lower()}",
+                    )
+                    continue
+                invalid_reason = self._entry_arrival_invalid_reason(intent, snapshot)
+                if invalid_reason:
+                    self._cancel_pending_intent(intent, invalid_reason)
+                    continue
             fill = self.fill_simulator.simulate(
                 signal_id=intent.signal_id,
                 order_id=intent.order_id,
@@ -435,6 +516,39 @@ class BinancePaperService:
                     signal_already_seen=False,
                 )
 
+    def _entry_arrival_invalid_reason(
+        self, intent: PendingIntent, snapshot: MarketSnapshot
+    ) -> str | None:
+        decision = intent.decision
+        if decision is None:
+            return "entry_decision_missing"
+        if (
+            decision.valid_until_ms is not None
+            and snapshot.received_at_ms > decision.valid_until_ms
+        ):
+            return "signal_expired_before_arrival"
+        slippage = self.config.slippage_bps / 10_000.0
+        expected_price = (
+            snapshot.best_ask * (1.0 + slippage)
+            if intent.side is PositionSide.LONG
+            else snapshot.best_bid * (1.0 - slippage)
+        )
+        if not math.isfinite(expected_price) or expected_price <= 0:
+            return "entry_price_invalid_before_arrival"
+        if (
+            intent.side is PositionSide.LONG
+            and decision.maximum_entry_price is not None
+            and expected_price > decision.maximum_entry_price
+        ):
+            return "maximum_entry_price_breached_before_arrival"
+        if (
+            intent.side is PositionSide.SHORT
+            and decision.minimum_entry_price is not None
+            and expected_price < decision.minimum_entry_price
+        ):
+            return "minimum_entry_price_breached_before_arrival"
+        return None
+
     def _cancel_pending_intent(self, intent: PendingIntent, reason: str) -> None:
         self.persistence.append_order_event(
             order_id=intent.order_id,
@@ -492,6 +606,71 @@ class BinancePaperService:
                     signal_id=signal_id,
                     exit_reason=reason,
                 )
+
+    def _queue_governor_exits(
+        self, snapshot: MarketSnapshot, reason_codes: tuple[str, ...]
+    ) -> None:
+        for position in self.persistence.open_positions():
+            signal_id = canonical_hash(
+                {
+                    "position_id": position["position_id"],
+                    "reason": "GOVERNOR_EMERGENCY_FLATTEN",
+                    "reason_codes": reason_codes,
+                    "decision_ts_ms": snapshot.received_at_ms,
+                }
+            )
+            self._queue_exit(
+                position,
+                snapshot,
+                signal_id=signal_id,
+                exit_reason="GOVERNOR_EMERGENCY_FLATTEN",
+            )
+
+    def _governor_decision(self, snapshot: MarketSnapshot | None = None):
+        now_ms = (
+            snapshot.received_at_ms
+            if snapshot is not None
+            else int(time.time() * 1000)
+        )
+        if not self.initialized or self.persistence is None:
+            return self.governor.evaluate(
+                snapshot=snapshot,
+                accounts=(),
+                integrity_error=self._integrity_error or "service_not_initialized",
+                now_ms=now_ms,
+            )
+        day_start_ms = (now_ms // 86_400_000) * 86_400_000
+        day_index = now_ms // 86_400_000
+        monday_day_index = day_index - ((day_index + 3) % 7)
+        week_start_ms = monday_day_index * 86_400_000
+        states = []
+        for strategy in self.registry.all():
+            account = self.persistence.account(strategy.strategy_id)
+            states.append(
+                GovernorAccountState(
+                    strategy_id=strategy.strategy_id,
+                    starting_cash_usd=float(account["starting_cash_usd"]),
+                    equity_usd=float(account["equity_usd"]),
+                    peak_equity_usd=float(account["peak_equity_usd"]),
+                    daily_net_pnl_usd=self.persistence.daily_net_pnl(
+                        strategy.strategy_id, day_start_ms
+                    ),
+                    weekly_net_pnl_usd=self.persistence.net_pnl_since(
+                        strategy.strategy_id, week_start_ms
+                    ),
+                    risk=strategy.risk.clamped(),
+                )
+            )
+        pending_ages = (
+            now_ms - intent.decision_ts_ms for intent in self._pending.values()
+        )
+        return self.governor.evaluate(
+            snapshot=snapshot,
+            accounts=states,
+            pending_ages_ms=pending_ages,
+            integrity_error=self._integrity_error,
+            now_ms=now_ms,
+        )
 
     def close_position(self, position_id: str, *, confirm: bool) -> dict[str, Any]:
         self._require_initialized()
@@ -595,11 +774,15 @@ class BinancePaperService:
                 "database_path": str(self.config.db_path),
                 "market": self.market_status(),
                 "pending_order_count": len(self._pending),
+                "capital_governor": self._governor_decision(
+                    self.adapter.snapshot()
+                ).to_dict(),
             }
 
     def strategy_statuses(self) -> list[dict[str, Any]]:
         self._require_initialized()
         snapshot = self.adapter.snapshot()
+        governor = self._governor_decision(snapshot)
         positions = {
             row["strategy_id"]: row for row in self.persistence.open_positions()
         }
@@ -627,7 +810,13 @@ class BinancePaperService:
                                 "Missing required inputs"
                                 if missing
                                 else (
-                                    "Engine paused" if not self.runtime_active else None
+                                    "Engine paused"
+                                    if not self.runtime_active
+                                    else (
+                                        f"Capital governor: {governor.mode.value}"
+                                        if not governor.can_open
+                                        else None
+                                    )
                                 )
                             )
                         )
@@ -642,6 +831,7 @@ class BinancePaperService:
                     "account": accounts[strategy_id],
                     "position": positions.get(strategy_id),
                     "metrics": strategy_metrics(self.persistence, strategy_id),
+                    "capital_governor": governor.to_dict(),
                 }
             )
         return result

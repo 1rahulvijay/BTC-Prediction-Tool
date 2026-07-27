@@ -1,6 +1,11 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md](active/TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md)** -
+  lifecycle requirement reconciliation; candidate expiry and entry bounds,
+  truthful uncertainty/economics metadata, validated paper order states,
+  aggregate capital-preservation governor, emergency paper flattening,
+  adversarial validation, and exact evidence-gated/live-execution boundaries.
 - **[QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md](active/QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md)** -
   canonical `master` state, shared event/health/risk/governance kernel, isolated Binance
   futures paper accounting and baseline strategy service, reusable research promotion gates,

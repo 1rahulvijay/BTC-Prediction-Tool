@@ -77,6 +77,13 @@ The production paper service implements:
   close behavior;
 - transactional persistence, deterministic signal/order identity, restart
   recovery, idempotent funding, and day-block paper metrics;
+- finite candidate validity, LONG maximum-entry and SHORT minimum-entry limits,
+  revalidated after simulated latency;
+- a validated paper order-event state machine with terminal-state protection;
+- truthful uncertainty/economics metadata: the current baseline confidence is
+  explicitly uncalibrated and net EV is explicitly unavailable;
+- an aggregate capital-preservation governor with `NORMAL`, `REDUCED_SIZE`,
+  `NO_NEW_ENTRIES`, `CLOSE_ONLY`, and `EMERGENCY_FLATTEN` modes;
 - UI/API inspection of strategies, accounts, positions, orders, fills, trades,
   funding, equity, events, and promotion diagnostics.
 
@@ -188,7 +195,8 @@ The frontend adds:
 
 - `Binance Paper`: engine/feed state, strategy accounts and decisions, risk and
   evidence metrics, positions, orders, executable fills, fees, funding, trades,
-  equity, rejection reasons, and guarded paper controls;
+  equity, rejection reasons, capital-governor state/causes, calibrated versus
+  uncalibrated scores, net-EV availability, and guarded paper controls;
 - `System Health`: Binance trade/depth/kline freshness, Coinbase freshness,
   Pyth freshness, own L2 recorder age, database write access, backend code
   identity, and live-execution availability.
@@ -237,6 +245,8 @@ not cover:
 - Isolated Binance paper execution and accounting domain.
 - Two baseline Binance paper strategies wired to the isolated simulator.
 - Typed paper API, guarded paper controls, and complete paper operations UI.
+- Paper candidate expiry/entry bounds, validated order states, truthful
+  uncertainty metadata, and aggregate capital-preservation governor.
 - Reusable research-validation and promotion-gate library.
 - Read-only system-health surface.
 - Deterministic tests registered in Linux and Windows CI and launcher preflight.

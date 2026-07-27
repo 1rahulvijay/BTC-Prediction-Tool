@@ -4,6 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import hashlib
 import json
+import math
 from typing import Any
 
 from .config import StrategyRiskConfig
@@ -29,6 +30,8 @@ class StrategyBase(ABC):
     strategy_version: str
     timeframe: str
     required_inputs: tuple[str, ...]
+    candidate_validity_ms = 2_500
+    maximum_entry_drift_bps = 2.0
 
     def __init__(self, risk: StrategyRiskConfig | None = None):
         self.risk = (risk or StrategyRiskConfig()).clamped()
@@ -45,6 +48,8 @@ class StrategyBase(ABC):
                 "strategy_version": self.strategy_version,
                 "parameters": self.parameters,
                 "risk": self.risk.to_dict(),
+                "candidate_validity_ms": self.candidate_validity_ms,
+                "maximum_entry_drift_bps": self.maximum_entry_drift_bps,
             }
         )
 
@@ -68,6 +73,10 @@ class StrategyBase(ABC):
         missing_inputs: tuple[str, ...] = (),
         data_quality_status: DataQuality | None = None,
         reason_codes: tuple[str, ...] = (),
+        probability_calibrated: bool = False,
+        uncertainty_status: str = "UNMEASURED",
+        expected_net_pnl_usd: float | None = None,
+        expected_net_pnl_lower_bound_usd: float | None = None,
     ) -> StrategyDecision:
         available = tuple(
             name
@@ -83,6 +92,26 @@ class StrategyBase(ABC):
             "side": side.value if side else None,
             "feature_values_hash": feature_values_hash,
         }
+        if not all(
+            math.isfinite(float(value))
+            for value in (score, confidence, requested_notional_usd)
+        ):
+            raise ValueError("strategy score, confidence and notional must be finite")
+        if stop_price is not None and not math.isfinite(float(stop_price)):
+            raise ValueError("strategy stop must be finite")
+        if take_profit_price is not None and not math.isfinite(float(take_profit_price)):
+            raise ValueError("strategy target must be finite")
+        drift_fraction = max(0.0, float(self.maximum_entry_drift_bps)) / 10_000.0
+        maximum_entry_price = (
+            snapshot.best_ask * (1.0 + drift_fraction)
+            if side is PositionSide.LONG
+            else None
+        )
+        minimum_entry_price = (
+            snapshot.best_bid * (1.0 - drift_fraction)
+            if side is PositionSide.SHORT
+            else None
+        )
         return StrategyDecision(
             signal_id=canonical_hash(identity),
             strategy_id=self.strategy_id,
@@ -107,6 +136,17 @@ class StrategyBase(ABC):
             missing_inputs=tuple(missing_inputs),
             data_quality_status=data_quality_status or snapshot.feed_health,
             reason_codes=tuple(reason_codes),
+            valid_until_ms=(
+                snapshot.received_at_ms + max(1, int(self.candidate_validity_ms))
+                if side is not None
+                else None
+            ),
+            maximum_entry_price=maximum_entry_price,
+            minimum_entry_price=minimum_entry_price,
+            probability_calibrated=bool(probability_calibrated),
+            uncertainty_status=str(uncertainty_status or "UNMEASURED"),
+            expected_net_pnl_usd=expected_net_pnl_usd,
+            expected_net_pnl_lower_bound_usd=expected_net_pnl_lower_bound_usd,
         )
 
     def no_data(

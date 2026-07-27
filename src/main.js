@@ -4790,6 +4790,7 @@ async function fetchBinancePaper() {
 function renderBinancePaperStatus(status) {
   const badge = document.getElementById('bp-engine-badge');
   const strip = document.getElementById('bp-market-strip');
+  const governorStrip = document.getElementById('bp-governor-strip');
   const startButton = document.getElementById('bp-start-btn');
   const pauseButton = document.getElementById('bp-pause-btn');
   const closeAllButton = document.getElementById('bp-close-all-btn');
@@ -4830,6 +4831,25 @@ function renderBinancePaperStatus(status) {
     <span>hard gate ${status.hard_gate_enabled ? 'ON' : 'OFF'}</span>
     <span>pending orders ${bpNumber(status.pending_order_count, 0)}</span>
   `;
+  if (governorStrip) {
+    const governor = status.capital_governor || {};
+    const mode = governor.mode || 'UNKNOWN';
+    const reasons = governor.reason_codes || [];
+    const modeClass = mode === 'NORMAL'
+      ? 'bp-governor-ok'
+      : mode === 'REDUCED_SIZE'
+        ? 'bp-governor-warning'
+        : 'bp-governor-danger';
+    governorStrip.className = `bp-governor-strip ${modeClass}`;
+    governorStrip.innerHTML = `
+      <strong>Capital mode: ${bpEscape(mode.replaceAll('_', ' '))}</strong>
+      <span>${governor.can_open ? `new entries allowed at ${bpPercent(governor.size_multiplier)} size` : 'new entries blocked'}</span>
+      <span>drawdown ${bpPercent(governor.portfolio_drawdown_fraction)}</span>
+      <span>daily limit used ${bpPercent(governor.daily_loss_limit_fraction)}</span>
+      <span>weekly limit used ${bpPercent(governor.weekly_loss_limit_fraction)}</span>
+      <span>${reasons.length ? bpEscape(reasons.join(', ').replaceAll('_', ' ')) : 'all monitored controls healthy'}</span>
+    `;
+  }
 }
 
 function renderBinancePaperStrategies(strategies, allMetrics) {
@@ -4873,6 +4893,7 @@ function renderBinancePaperStrategies(strategies, allMetrics) {
           <span>Latest decision</span>
           <strong>${bpEscape(action.replaceAll('_', ' '))}</strong>
           <small>score ${bpNumber(decision.score, 3)} | confidence ${bpPercent(decision.confidence)}</small>
+          <small>${decision.probability_calibrated ? 'calibrated probability' : 'uncalibrated research score'} | net EV ${decision.expected_net_pnl_usd == null ? 'not modelled' : bpUsd(decision.expected_net_pnl_usd)}</small>
         </div>
         <div class="bp-stat-grid">
           <div><span>Equity</span><strong>${bpUsd(account.equity_usd)}</strong></div>

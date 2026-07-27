@@ -47,6 +47,8 @@ Public Binance futures WebSocket
   -> BTCUSDT bookTicker + aggTrade + liquidations
   -> typed, freshness-checked MarketSnapshot
   -> Trend Following / Breakout paper decisions
+  -> candidate expiry + executable entry-price boundary
+  -> aggregate capital-preservation governor
   -> risk gate
   -> simulated latency
   -> executable bid/ask + visible top-size fill
@@ -77,7 +79,12 @@ The production paper service:
 - handles LONG and SHORT PnL with the correct sign;
 - applies observed settled funding with deterministic idempotent identifiers;
 - closes on stop, take-profit, maximum hold, opposing signal, or confirmed
-  manual action;
+  manual action, plus paper-only governor emergency flatten;
+- cancels entries that expire or breach their predeclared executable price
+  boundary during simulated latency;
+- validates every paper order-state transition and prevents terminal orders
+  from returning to pending;
+- identifies baseline confidence as uncalibrated and net EV as unavailable;
 - persists account, order, fill, position, funding, trade, equity, and event
   state transactionally;
 - cancels orphan pending orders on restart and reconciles persisted state;
@@ -139,6 +146,8 @@ state:
 - Binance full-service accounting, funding, reversal, latency, stale-data,
   partial-liquidity, pause, idempotency, recovery, rollback, risk, and evidence
   tests;
+- capital-governor mode, corrupt-state, overdue-order, signal-expiry,
+  latency-price-bound, and order-transition adversarial tests;
 - Binance typed API and default-off control tests;
 - all 16 Polymarket paper-strategy registry mappings;
 - all documentation tables;

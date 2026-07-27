@@ -31,6 +31,41 @@ class DataQuality(str, Enum):
     INVALID = "INVALID"
 
 
+class OrderState(str, Enum):
+    PENDING = "PENDING"
+    FILLED = "FILLED"
+    REJECTED = "REJECTED"
+    RISK_BLOCKED = "RISK_BLOCKED"
+    CANCELLED = "CANCELLED"
+    CANCELLED_RECOVERY = "CANCELLED_RECOVERY"
+
+
+_ORDER_TRANSITIONS: dict[OrderState | None, frozenset[OrderState]] = {
+    None: frozenset((OrderState.PENDING, OrderState.RISK_BLOCKED, OrderState.REJECTED)),
+    OrderState.PENDING: frozenset(
+        (
+            OrderState.FILLED,
+            OrderState.REJECTED,
+            OrderState.CANCELLED,
+            OrderState.CANCELLED_RECOVERY,
+        )
+    ),
+}
+
+
+def validate_order_transition(previous: str | None, current: str) -> OrderState:
+    try:
+        previous_state = OrderState(previous) if previous is not None else None
+        current_state = OrderState(current)
+    except ValueError as exc:
+        raise ValueError(f"unknown paper order state: {exc}") from exc
+    allowed = _ORDER_TRANSITIONS.get(previous_state, frozenset())
+    if current_state not in allowed:
+        before = previous_state.value if previous_state is not None else "NONE"
+        raise ValueError(f"invalid paper order transition: {before}->{current_state.value}")
+    return current_state
+
+
 @dataclass(frozen=True)
 class MarketSnapshot:
     symbol: str
@@ -88,6 +123,13 @@ class StrategyDecision:
     missing_inputs: tuple[str, ...]
     data_quality_status: DataQuality
     reason_codes: tuple[str, ...]
+    valid_until_ms: int | None = None
+    maximum_entry_price: float | None = None
+    minimum_entry_price: float | None = None
+    probability_calibrated: bool = False
+    uncertainty_status: str = "UNMEASURED"
+    expected_net_pnl_usd: float | None = None
+    expected_net_pnl_lower_bound_usd: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

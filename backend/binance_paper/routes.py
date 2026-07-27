@@ -20,6 +20,7 @@ class StatusResponse(BaseModel):
     database_path: str
     market: dict[str, Any]
     pending_order_count: int
+    capital_governor: dict[str, Any]
 
 
 class ListResponse(BaseModel):

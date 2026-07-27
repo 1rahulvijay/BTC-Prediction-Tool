@@ -11,6 +11,11 @@ import duckdb
 from ..data_ingestion import BinanceFuturesWebSocketClient
 from .config import DEFAULT_DB_PATH, EngineConfig, StrategyRiskConfig
 from .fill_simulator import BinancePaperFillSimulator
+from .governor import (
+    CapitalPreservationGovernor,
+    GovernorAccountState,
+    GovernorMode,
+)
 from .metrics import _day_block_lower_bound, _promotion_gate
 from .risk_engine import BinancePaperRiskEngine
 from .schemas import Action, DataQuality, MarketSnapshot, PositionSide
@@ -160,9 +165,248 @@ def test_schema_v1_migration() -> None:
         version = service.persistence._conn.execute(
             "SELECT MAX(version) FROM binance_paper_schema_version"
         ).fetchone()[0]
-        assert version == 2
+        assert version == 3
         service.shutdown()
-    print("  PASS  schema v1 migrates transactionally to funding-aware v2")
+    print("  PASS  schema v1 migrates transactionally to lifecycle-aware v3")
+
+
+def test_governor_modes_and_fail_closed_inputs() -> None:
+    now = int(time.time() * 1000)
+    snapshot = MarketSnapshot(
+        "BTCUSDT",
+        now - 5,
+        now,
+        100.0,
+        99.9,
+        100.1,
+        10.0,
+        10.0,
+        0.2,
+        20.0,
+        0,
+        DataQuality.HEALTHY,
+        1,
+        None,
+        None,
+        0,
+        100,
+        100,
+        None,
+    )
+    governor = CapitalPreservationGovernor(latency_ms=500, quote_stale_ms=2_000)
+    risk = StrategyRiskConfig()
+
+    def state(*, equity=10_000.0, daily=0.0, weekly=0.0):
+        return GovernorAccountState(
+            strategy_id="test",
+            starting_cash_usd=10_000.0,
+            equity_usd=equity,
+            peak_equity_usd=10_000.0,
+            daily_net_pnl_usd=daily,
+            weekly_net_pnl_usd=weekly,
+            risk=risk,
+        )
+
+    normal = governor.evaluate(snapshot=snapshot, accounts=(state(),), now_ms=now)
+    assert normal.mode is GovernorMode.NORMAL and normal.can_open
+    reduced = governor.evaluate(
+        snapshot=snapshot,
+        accounts=(state(equity=9_500.0),),
+        now_ms=now,
+    )
+    assert reduced.mode is GovernorMode.REDUCED_SIZE
+    assert reduced.size_multiplier == 0.5
+    close_only = governor.evaluate(
+        snapshot=snapshot,
+        accounts=(state(equity=9_000.0),),
+        now_ms=now,
+    )
+    assert close_only.mode is GovernorMode.CLOSE_ONLY
+    emergency = governor.evaluate(
+        snapshot=snapshot,
+        accounts=(state(equity=8_400.0),),
+        now_ms=now,
+    )
+    assert emergency.mode is GovernorMode.EMERGENCY_FLATTEN
+    assert emergency.must_flatten and not emergency.can_open
+    stale = governor.evaluate(
+        snapshot=replace(
+            snapshot,
+            feed_health=DataQuality.STALE,
+            feed_age_ms=10_000,
+        ),
+        accounts=(state(),),
+        now_ms=now,
+    )
+    assert stale.mode is GovernorMode.NO_NEW_ENTRIES
+    corrupt = governor.evaluate(
+        snapshot=snapshot,
+        accounts=(state(equity=float("nan")),),
+        now_ms=now,
+    )
+    assert corrupt.mode is GovernorMode.EMERGENCY_FLATTEN
+    overdue = governor.evaluate(
+        snapshot=snapshot,
+        accounts=(state(),),
+        pending_ages_ms=(governor.pending_unknown_ms + 1,),
+        now_ms=now,
+    )
+    assert overdue.mode is GovernorMode.NO_NEW_ENTRIES
+    print("  PASS  capital governor modes, stale feed and corrupt inputs fail closed")
+
+
+def test_signal_expiry_entry_bound_and_order_transitions() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        client = FakeFuturesClient()
+        service = BinancePaperService(
+            client,
+            config=config(Path(directory) / "paper.duckdb", latency_ms=500),
+        )
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+        snapshot = feed(service, client, base, 99_999.0, 100_001.0)
+
+        expiring = replace(
+            manual_decision(
+                service,
+                "trend_following",
+                snapshot,
+                PositionSide.LONG,
+                "expiry",
+            ),
+            valid_until_ms=base + 100,
+        )
+        queue_manual(service, expiring, snapshot)
+        feed(service, client, base + 500, 99_999.0, 100_001.0)
+        assert service.persistence.open_positions("trend_following") == []
+        expiry_event = service.orders(1)[0]
+        assert expiry_event["status"] == "CANCELLED"
+        assert expiry_event["rejection_reason"] == "signal_expired_before_arrival"
+
+        snapshot = feed(service, client, base + 1_000, 99_999.0, 100_001.0)
+        bounded = replace(
+            manual_decision(
+                service,
+                "breakout",
+                snapshot,
+                PositionSide.LONG,
+                "price-bound",
+            ),
+            valid_until_ms=base + 5_000,
+            maximum_entry_price=100_012.0,
+        )
+        queue_manual(service, bounded, snapshot)
+        feed(service, client, base + 1_500, 100_099.0, 100_101.0)
+        assert service.persistence.open_positions("breakout") == []
+        bound_event = service.orders(1)[0]
+        assert bound_event["status"] == "CANCELLED"
+        assert (
+            bound_event["rejection_reason"]
+            == "maximum_entry_price_breached_before_arrival"
+        )
+
+        order_id = "transition-test"
+        common = {
+            "order_id": order_id,
+            "signal_id": "transition-signal",
+            "strategy_id": "trend_following",
+            "operation": "ENTRY",
+            "side": "LONG",
+            "requested_quantity": 1.0,
+            "requested_notional_usd": 100.0,
+            "decision_ts_ms": base,
+            "simulated_send_ts_ms": base,
+            "simulated_arrival_ts_ms": base + 1,
+        }
+        service.persistence.append_order_event(status="PENDING", **common)
+        service.persistence.append_order_event(status="FILLED", **common)
+        try:
+            service.persistence.append_order_event(status="PENDING", **common)
+        except ValueError as exc:
+            assert "invalid paper order transition" in str(exc)
+        else:
+            raise AssertionError("terminal paper order returned to PENDING")
+
+        saved = service.persistence._conn.execute(
+            """
+            SELECT valid_until_ms, maximum_entry_price, probability_calibrated,
+                   uncertainty_status
+            FROM binance_paper_signals
+            WHERE signal_id = ?
+            """,
+            (bounded.signal_id,),
+        ).fetchone()
+        assert saved == (
+            bounded.valid_until_ms,
+            bounded.maximum_entry_price,
+            False,
+            "UNMEASURED",
+        )
+        assert service.status()["capital_governor"]["mode"] == "NORMAL"
+        service.shutdown()
+    print("  PASS  signal expiry, entry limit, order transitions and audit metadata")
+
+
+def test_governor_emergency_flatten_integration() -> None:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+        client = FakeFuturesClient()
+        service = BinancePaperService(
+            client,
+            config=config(Path(directory) / "paper.duckdb", latency_ms=0),
+        )
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+        snapshot = feed(service, client, base, 99_999.0, 100_001.0)
+        decision = manual_decision(
+            service,
+            "trend_following",
+            snapshot,
+            PositionSide.LONG,
+            "governor-flatten",
+        )
+        queue_manual(service, decision, snapshot)
+        feed(service, client, base + 1, 99_999.0, 100_001.0)
+        position = service.persistence.open_positions("trend_following")[0]
+
+        service.persistence._conn.execute(
+            """
+            UPDATE binance_paper_accounts
+            SET peak_equity_usd = 20000
+            WHERE strategy_id = 'trend_following'
+            """
+        )
+        snapshot = feed(service, client, base + 1_001, 99_999.0, 100_001.0)
+        governor = service._governor_decision(snapshot)
+        assert governor.mode is GovernorMode.EMERGENCY_FLATTEN
+        pending_exits = [
+            intent
+            for intent in service._pending.values()
+            if intent.operation == "EXIT"
+            and intent.position_id == position["position_id"]
+        ]
+        assert len(pending_exits) == 1
+
+        blocked = manual_decision(
+            service,
+            "breakout",
+            snapshot,
+            PositionSide.SHORT,
+            "governor-block-entry",
+        )
+        assert service.persistence.record_signal(blocked)
+        service._queue_entry(blocked, snapshot, signal_already_seen=False)
+        blocked_event = service.orders(1)[0]
+        assert blocked_event["status"] == "RISK_BLOCKED"
+        assert "capital_governor" in blocked_event["rejection_reason"]
+
+        feed(service, client, base + 1_002, 99_999.0, 100_001.0)
+        assert service.persistence.open_positions("trend_following") == []
+        trade = service.persistence.trades(1, "trend_following")[0]
+        assert trade["exit_reason"] == "GOVERNOR_EMERGENCY_FLATTEN"
+        service.shutdown()
+    print("  PASS  governor blocks entries and emergency-flattens paper positions")
 
 
 def test_long_short_accounting_and_isolation() -> None:
@@ -815,6 +1059,9 @@ def run() -> None:
     print("Binance paper Phase-1 selftest")
     test_default_off()
     test_schema_v1_migration()
+    test_governor_modes_and_fail_closed_inputs()
+    test_signal_expiry_entry_bound_and_order_transitions()
+    test_governor_emergency_flatten_integration()
     test_long_short_accounting_and_isolation()
     test_observed_funding_accounting()
     test_opposing_signal_order()
