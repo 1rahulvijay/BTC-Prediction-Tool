@@ -29,6 +29,8 @@ import pandas as pd
 from train_120d_conditional_ev_pipeline import (
     json_safe,
     quantile_factory,
+    quantile_metrics,
+    regression_metrics,
     regressor_factory,
 )
 from train_120d_trade_policy_heads import (
@@ -892,6 +894,87 @@ def benjamini_hochberg(p_values: dict[str, float]) -> dict[str, float]:
     return adjusted
 
 
+def locked_model_diagnostics(frame: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for horizon, horizon_frame in frame.groupby("horizon"):
+        for side in ("long", "short"):
+            profitable = (horizon_frame[f"{side}_net_bps"] > 0.0).to_numpy(np.int8)
+            probability_prefix = f"p_{side}_"
+            for column in horizon_frame.columns:
+                if not column.startswith(probability_prefix) or column.endswith(
+                    "disagreement"
+                ):
+                    continue
+                rows.append(
+                    {
+                        "horizon": int(horizon),
+                        "layer": "economic_classifier",
+                        "target": side.upper(),
+                        "model": column.removeprefix(probability_prefix),
+                        **binary_metrics(
+                            profitable, horizon_frame[column].to_numpy(float)
+                        ),
+                    }
+                )
+            net = horizon_frame[f"{side}_net_bps"].to_numpy(float)
+            mean_prefix = f"mean_{side}_"
+            for column in horizon_frame.columns:
+                if column.startswith(mean_prefix):
+                    rows.append(
+                        {
+                            "horizon": int(horizon),
+                            "layer": "expected_net_regression",
+                            "target": side.upper(),
+                            "model": column.removeprefix(mean_prefix),
+                            **regression_metrics(
+                                net, horizon_frame[column].to_numpy(float)
+                            ),
+                        }
+                    )
+            q20_prefix = f"q20_{side}_"
+            for column in horizon_frame.columns:
+                if column.startswith(q20_prefix):
+                    rows.append(
+                        {
+                            "horizon": int(horizon),
+                            "layer": "q20_net",
+                            "target": side.upper(),
+                            "model": column.removeprefix(q20_prefix),
+                            **quantile_metrics(
+                                net,
+                                horizon_frame[column].to_numpy(float),
+                                0.20,
+                            ),
+                        }
+                    )
+        candidate_side = np.where(
+            horizon_frame["p_long_ensemble"] >= horizon_frame["p_short_ensemble"],
+            "LONG",
+            "SHORT",
+        )
+        candidate_net = np.where(
+            candidate_side == "LONG",
+            horizon_frame["long_net_bps"],
+            horizon_frame["short_net_bps"],
+        )
+        candidate_profitable = (candidate_net > 0.0).astype(np.int8)
+        for column in horizon_frame.columns:
+            if column.startswith("p_act_"):
+                rows.append(
+                    {
+                        "horizon": int(horizon),
+                        "layer": "act_skip",
+                        "target": "CANDIDATE_PROFITABLE",
+                        "model": column.removeprefix("p_act_"),
+                        **binary_metrics(
+                            candidate_profitable,
+                            horizon_frame[column].to_numpy(float),
+                        ),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def run(config: Config, output_dir: Path) -> dict[str, Any]:
     started = time.monotonic()
     matrix_path = Path(config.matrix).resolve()
@@ -1061,12 +1144,14 @@ def run(config: Config, output_dir: Path) -> dict[str, Any]:
     catalog_frame = pd.concat(catalog_parts, ignore_index=True)
     predictions_frame = pd.concat(locked_predictions, ignore_index=True)
     metrics_frame = pd.DataFrame(metrics)
+    locked_diagnostics = locked_model_diagnostics(predictions_frame)
     catalog_frame.to_csv(output_dir / "selection_catalog.csv", index=False)
     predictions_frame.to_csv(output_dir / "locked_test_predictions.csv", index=False)
     predictions_frame.to_parquet(
         output_dir / "locked_test_predictions.parquet", index=False
     )
     metrics_frame.to_csv(output_dir / "model_metrics.csv", index=False)
+    locked_diagnostics.to_csv(output_dir / "locked_model_diagnostics.csv", index=False)
     if dynamic_parts:
         pd.concat(dynamic_parts, ignore_index=True).to_csv(
             output_dir / "dynamic_exit_predictions.csv", index=False

@@ -126,6 +126,7 @@ historical diagnostic.
 ```text
 manifest.json
 model_metrics.csv
+locked_model_diagnostics.csv
 selection_catalog.csv
 locked_test_predictions.csv/parquet
 dynamic_exit_predictions.csv (when testable)

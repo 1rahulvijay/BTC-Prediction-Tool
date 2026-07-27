@@ -13,6 +13,7 @@ from train_180d_economic_policy_campaign import (
     benjamini_hochberg,
     checkpoint_rows,
     day_block_stats,
+    locked_model_diagnostics,
     make_boundaries,
     policy_catalog,
     shadow_gate,
@@ -156,6 +157,25 @@ class EconomicCampaignTests(unittest.TestCase):
             (104.0 / 101.0 - 1.0) * 10_000.0,
         )
         self.assertEqual(len(rows), 4)
+
+    def test_locked_diagnostics_cover_all_head_types(self) -> None:
+        frame = fixture_frame()
+        frame["horizon"] = 5
+        frame["p_long_disagreement"] = 0.1
+        diagnostics = locked_model_diagnostics(frame)
+        self.assertEqual(
+            set(diagnostics.layer),
+            {
+                "economic_classifier",
+                "expected_net_regression",
+                "q20_net",
+                "act_skip",
+            },
+        )
+        classifier_models = diagnostics[
+            diagnostics.layer == "economic_classifier"
+        ].model
+        self.assertNotIn("disagreement", set(classifier_models))
 
 
 if __name__ == "__main__":

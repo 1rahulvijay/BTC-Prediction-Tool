@@ -6,6 +6,11 @@
   q20 specialists, ACT/SKIP, and one causal dynamic-exit challenger. It declares
   822 finite policy configurations, selects before a locked 30-day test, saves
   no serving artifacts, and permits at most a historical shadow candidate.
+- **[ECONOMIC_POLICY_CAMPAIGN_180D_RESULTS_2026-07-28.md](active/ECONOMIC_POLICY_CAMPAIGN_180D_RESULTS_2026-07-28.md)** -
+  complete older-era locked test: all 822 selection configurations failed,
+  both selected SHORT policies lost about 13 bps per trade, expected-net models
+  had no signed skill, q20 correctly abstained, ACT/SKIP did not create edge,
+  and dynamic exit failed its paired comparison with HOLD.
 - **[CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md](active/CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md)** -
   frozen, research-only decomposition of trade selection into magnitude probability,
   conditional direction, and conservative signed-return quantiles. The untouched
