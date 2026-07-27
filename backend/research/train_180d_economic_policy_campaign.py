@@ -275,6 +275,7 @@ def base_output(
             "row_index": eval_idx,
             "timestamp_ms": timestamps[eval_idx],
             "timestamp": pd.to_datetime(timestamps[eval_idx], unit="ms", utc=True),
+            "horizon": horizon,
             "gross_return_bps": labels.iloc[eval_idx]["gross_return_bps"].to_numpy(
                 float
             ),
