@@ -103,6 +103,9 @@ jobs:
       - name: Binance paper execution and accounting
         run: python -m backend.binance_paper.test_engine
 
+      - name: Research validation and promotion gates
+        run: python -m backend.quant_platform.test_research_validation
+
       # --- repo-wide consistency ------------------------------------------------------------
       - name: Strategy registry consistency
         run: python backend/research/audit_strategy_registry.py
@@ -178,4 +181,5 @@ jobs:
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
           python -m backend.quant_platform.test_kernel || exit /b 1
           python -m backend.binance_paper.test_engine || exit /b 1
+          python -m backend.quant_platform.test_research_validation || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1

@@ -317,6 +317,9 @@ if errorlevel 1 goto :selftest_failed_j
 echo [selftest] k. Binance paper execution and accounting:
 python -m backend.binance_paper.test_engine >nul 2>&1
 if errorlevel 1 goto :selftest_failed_k
+echo [selftest] l. Research validation and promotion gates:
+python -m backend.quant_platform.test_research_validation >nul 2>&1
+if errorlevel 1 goto :selftest_failed_l
 echo [selftest] All invariant selftests passed.
 goto :selftests_done
 
@@ -355,6 +358,10 @@ goto :selftest_abort
 
 :selftest_failed_k
 echo [selftest] FAILED: python -m backend.binance_paper.test_engine
+goto :selftest_abort
+
+:selftest_failed_l
+echo [selftest] FAILED: python -m backend.quant_platform.test_research_validation
 goto :selftest_abort
 
 :selftest_abort
