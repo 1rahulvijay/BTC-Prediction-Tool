@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any
 
 
 CONFIG_VERSION = "2026-07-26-complete-trade-m0-v2"
 MODE = "SHADOW_PILOT_ONLY"
+LEDGER_V2_SCHEMA_VERSION = "2026-07-27-eligibility-v1"
 
 HORIZONS = (5, 15)
 ENTRY_CHECKPOINTS_S = {
@@ -84,6 +86,7 @@ EXIT_PLANS = (
 M0_V2 = {
     "prereg": "PREREG_COMPLETE_TRADE_M0_V2.md",
     "prereg_sha256": "138616d3893c5034bddd29be562f73c452e16f570af67ffcb1adda209df793a5",
+    "clarification_001": "PREREG_COMPLETE_TRADE_M0_V2_CLARIFICATION_001.md",
     "clarification_001_sha256": "920352412cb715d1786e45f97eec5460d1fc09b216015507eb9a200221107996",
     # Buckets are DIAGNOSTIC ONLY under clarification 001; the executable rule is an
     # absolute frozen threshold with causal first-qualifying entry.
@@ -261,6 +264,7 @@ def frozen_config() -> dict[str, Any]:
         "exit_plans": list(EXIT_PLANS),
         "promotion_gate": PROMOTION_GATE,
         "m0_v2": M0_V2,
+        "ledger_v2_schema_version": LEDGER_V2_SCHEMA_VERSION,
         "feature_columns": list(FEATURE_COLUMNS),
         "btc_feature_columns": list(BTC_FEATURE_COLUMNS),
         "classification_targets": list(CLASSIFICATION_TARGETS),
@@ -307,6 +311,89 @@ def validate_candidate(candidate: dict[str, Any]) -> list[str]:
     return reasons
 
 
+EVIDENCE_ELIGIBILITY_FIELDS = (
+    "ledger_schema_version",
+    "candidate_valid",
+    "candidate_reasons_json",
+    "all_features_finite",
+    "decision_entry_complete",
+    "decision_book_age_s",
+    "conservative_capacity_q10",
+    "cost_q80",
+    "requested_qty",
+)
+
+
+def evidence_eligibility_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Canonical decision-time eligibility fields committed into Ledger V2."""
+    return {name: candidate.get(name) for name in EVIDENCE_ELIGIBILITY_FIELDS}
+
+
+def evidence_eligibility_hash(candidate: dict[str, Any]) -> str:
+    raw = json.dumps(
+        evidence_eligibility_payload(candidate),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def validate_evidence_candidate(candidate: dict[str, Any]) -> list[str]:
+    """Binding Clarification-001 candidate gate, evaluated only from frozen row fields."""
+    reasons: list[str] = []
+    if candidate.get("ledger_schema_version") != LEDGER_V2_SCHEMA_VERSION:
+        reasons.append("ledger_schema_version_mismatch")
+    if candidate.get("candidate_valid") is not True:
+        reasons.append("candidate_invalid")
+    if candidate.get("all_features_finite") is not True:
+        reasons.append("features_missing_or_nonfinite")
+    if candidate.get("decision_entry_complete") is not True:
+        reasons.append("decision_entry_incomplete")
+    try:
+        recorded_reasons = json.loads(str(candidate.get("candidate_reasons_json") or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        recorded_reasons = ["malformed_candidate_reasons"]
+    if recorded_reasons:
+        reasons.append("candidate_reasons_not_empty")
+    try:
+        age = float(candidate.get("decision_book_age_s"))
+        if not math.isfinite(age) or age < 0.0 or age > MAX_DECISION_BOOK_AGE_S:
+            reasons.append("decision_book_stale_or_invalid")
+    except (TypeError, ValueError):
+        reasons.append("decision_book_age_missing")
+    try:
+        quantity = float(candidate.get("requested_qty"))
+        capacity = float(candidate.get("conservative_capacity_q10"))
+        if (
+            not math.isfinite(quantity)
+            or quantity <= 0.0
+            or not math.isfinite(capacity)
+            or capacity + 1e-9 < quantity
+        ):
+            reasons.append("conservative_capacity_below_quantity")
+    except (TypeError, ValueError):
+        reasons.append("conservative_capacity_missing")
+    try:
+        cost_q80 = float(candidate.get("cost_q80"))
+        if not math.isfinite(cost_q80):
+            reasons.append("cost_q80_missing_or_invalid")
+    except (TypeError, ValueError):
+        reasons.append("cost_q80_missing_or_invalid")
+    recorded_hash = str(candidate.get("eligibility_sha256") or "")
+    try:
+        expected_hash = evidence_eligibility_hash(candidate)
+    except (TypeError, ValueError):
+        expected_hash = ""
+    if not recorded_hash or recorded_hash != expected_hash:
+        reasons.append("eligibility_hash_mismatch")
+    recorded_passed = candidate.get("eligibility_passed")
+    expected_passed = not reasons
+    if recorded_passed is not expected_passed:
+        reasons.append("eligibility_passed_mismatch")
+    return sorted(set(reasons))
+
+
 def selftest() -> None:
     assert len(policy_hash()) == 64
     valid = {
@@ -324,6 +411,23 @@ def selftest() -> None:
     }
     assert validate_candidate(valid) == []
     assert "crossed_book" in validate_candidate({**valid, "own_bid": 0.60})
+    eligibility = {
+        "ledger_schema_version": LEDGER_V2_SCHEMA_VERSION,
+        "candidate_valid": True,
+        "candidate_reasons_json": "[]",
+        "all_features_finite": True,
+        "decision_entry_complete": True,
+        "decision_book_age_s": 0.2,
+        "conservative_capacity_q10": 10.0,
+        "cost_q80": 0.01,
+        "requested_qty": 10.0,
+    }
+    eligibility["eligibility_sha256"] = evidence_eligibility_hash(eligibility)
+    eligibility["eligibility_passed"] = True
+    assert validate_evidence_candidate(eligibility) == []
+    assert "conservative_capacity_below_quantity" in validate_evidence_candidate(
+        {**eligibility, "conservative_capacity_q10": 5.0}
+    )
     print("trade_schema self-test: ALL PASS")
 
 

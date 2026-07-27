@@ -13,6 +13,7 @@ from .trade_forecast_logger import (
     LOG_HEALTH,
     log_forecast_monitored,
     log_forward_prediction_v2,
+    replay_pending_v2,
 )
 from .trade_labels import required_exit_bid, taker_fee
 from .trade_plan_optimizer import choose_trade
@@ -22,9 +23,13 @@ from .trade_schema import (
     MAX_LOOKBACK_ERROR_S,
     PROMOTION_GATE,
     ENTRY_CHECKPOINTS_S,
+    LEDGER_V2_SCHEMA_VERSION,
     MODE,
     QUANTITIES,
+    evidence_eligibility_hash,
     policy_hash,
+    validate_candidate,
+    validate_evidence_candidate,
 )
 
 
@@ -40,6 +45,8 @@ HISTORY_HARD_CAP = 20_000
 _HISTORY: dict[str, deque] = defaultdict(deque)
 _CACHE: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
 _LOGGED: set[str] = set()
+_LOGGED_BY_ROUND: dict[str, set[str]] = defaultdict(set)
+_LAST_REPLAY_S = 0.0
 INFERENCE_INTERVAL_S = 5.0
 DEFAULT_TRADE_QUANTITY = 10
 
@@ -114,7 +121,11 @@ def _feature_values(
     anchor = float(round_data.get("price_to_beat") or 0.0)
     if current_btc <= 0 or anchor <= 0:
         return None
-    now_s = float(share_prices.get("ts") or time.time())
+    quote_ts = _finite(share_prices.get("ts"))
+    quote_age = _finite(share_prices.get("age_seconds"))
+    if quote_ts is None or quote_age is None or quote_age < 0.0:
+        return None
+    now_s = quote_ts
     side_sign = 1.0 if side == "UP" else -1.0
     signed = (current_btc - anchor) * side_sign
     own_bid = float(own["bid"])
@@ -212,13 +223,13 @@ def _feature_values(
         ),
         "top_imbalance": _safe_div(bid_size - ask_size, bid_size + ask_size),
         "depth_imbalance": _safe_div(bid_depth - ask_depth, bid_depth + ask_depth),
-        "decision_quote_age_s": float(share_prices.get("age_seconds") or 0.0),
+        "decision_quote_age_s": quote_age,
     }
     # OPTIONAL features that were unavailable are reported, not hidden. `missing` is populated by
     # the history-dependent helpers above; a caller may still forecast without them, but the
     # forecast records which inputs were absent and how stale the quote was.
     values["_missing_optional"] = sorted(set(missing))
-    values["_quote_age_s"] = float(share_prices.get("age_seconds") or 0.0)
+    values["_quote_age_s"] = quote_age
     # SAME CONTRACT AS THE BUILDER. Every FEATURE_COLUMNS entry must be present and finite, or
     # there is no forecast - the caller surfaces MISSING_REQUIRED_FEATURE / NO_DATA.
     absent = [
@@ -250,7 +261,10 @@ _THRESHOLD_CACHE: dict[str, Any] = {}
 def _frozen_identity() -> dict[str, Any]:
     from .trade_schema import M0_V2
 
-    bundle = share_path_serving.status().get("bundle_hash") or ""
+    serving_status = share_path_serving.status()
+    bundle = serving_status.get("bundle_hash") or ""
+    bundle_manifest = serving_status.get("bundle_manifest_sha256") or ""
+    promoted_at = serving_status.get("promoted_at")
     threshold_hash, threshold_value, frozen_at = "", None, None
     if not _THRESHOLD_CACHE:
         import os as _os
@@ -267,11 +281,19 @@ def _frozen_identity() -> dict[str, Any]:
                 "hash": artifact.threshold_hash(),
                 "value": artifact.threshold,
                 "created_at": artifact.created_at,
+                "model_sha256": artifact.model_sha256,
+                "policy_sha256": artifact.policy_sha256,
             })
         except Exception:
             # No frozen threshold yet. The row still records that fact honestly; the forward
             # manifest will refuse an evidence set whose threshold hash is empty.
-            _THRESHOLD_CACHE.update({"hash": "", "value": None, "created_at": None})
+            _THRESHOLD_CACHE.update({
+                "hash": "",
+                "value": None,
+                "created_at": None,
+                "model_sha256": None,
+                "policy_sha256": None,
+            })
     threshold_hash = _THRESHOLD_CACHE.get("hash") or ""
     threshold_value = _THRESHOLD_CACHE.get("value")
     frozen_at = _THRESHOLD_CACHE.get("created_at")
@@ -279,10 +301,28 @@ def _frozen_identity() -> dict[str, Any]:
     # Writing V2 rows with an empty threshold/model identity before the freeze permanently
     # poisons the singleton checks: old and new rows mix and the set can never be admissible
     # again. Before all of it exists we still record V1 diagnostics; we do NOT mint V2 evidence.
-    complete = bool(bundle) and bool(threshold_hash) and frozen_at is not None
+    complete = (
+        bool(bundle)
+        and bool(bundle_manifest)
+        and promoted_at is not None
+        and serving_status.get("bundle_verified") is True
+        and serving_status.get("frozen") is True
+        and not serving_status.get("freeze_violation")
+        and bool(threshold_hash)
+        and frozen_at is not None
+        and _THRESHOLD_CACHE.get("model_sha256") == bundle
+        and _THRESHOLD_CACHE.get("policy_sha256") == policy_hash()
+    )
     run_id = (
         hashlib.sha256(
-            "|".join([bundle, policy_hash(), threshold_hash, M0_V2["prereg_sha256"]])
+            "|".join([
+                bundle,
+                bundle_manifest,
+                policy_hash(),
+                threshold_hash,
+                M0_V2["prereg_sha256"],
+                M0_V2["clarification_001_sha256"],
+            ])
             .encode("utf-8")
         ).hexdigest()[:24]
         if complete else None
@@ -291,6 +331,7 @@ def _frozen_identity() -> dict[str, Any]:
         "_evidence_complete": complete,
         "evidence_run_id": run_id,
         "model_bundle_sha256": bundle,
+        "bundle_manifest_sha256": bundle_manifest,
         # SCHEMA hash, not values: identical for every row under one frozen feature contract.
         "feature_schema_sha256": hashlib.sha256(
             json.dumps(list(FEATURE_COLUMNS), separators=(",", ":")).encode("utf-8")
@@ -298,10 +339,56 @@ def _frozen_identity() -> dict[str, Any]:
         "policy_sha256": policy_hash(),
         "threshold_sha256": threshold_hash,
         "prereg_sha256": M0_V2["prereg_sha256"],
+        "clarification_sha256": M0_V2["clarification_001_sha256"],
         "prereg_frozen_at_s": M0_V2.get("frozen_at_s"),
-        "model_frozen_at_s": share_path_serving.status().get("pinned_at"),
+        # Promotion time is immutable bundle provenance. ArtifactPin.pinned_at is process-local
+        # and changes on every restart, which would split one model into multiple evidence runs.
+        "model_frozen_at_s": promoted_at,
         "threshold_frozen_at_s": frozen_at,
         "_entry_threshold": threshold_value,
+    }
+
+
+def _forecast_id(snapshot_key: str, identity: dict[str, Any]) -> str:
+    """Return the append-only identity used by both scheduling and persistence."""
+    return hashlib.sha256(
+        "|".join([
+            snapshot_key,
+            str(identity.get("model_bundle_sha256") or ""),
+            str(identity.get("policy_sha256") or ""),
+            str(identity.get("threshold_sha256") or ""),
+        ]).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _mark_logged(round_id: Any, forecast_id: str) -> None:
+    value = str(round_id or "")
+    _LOGGED.add(forecast_id)
+    if value:
+        _LOGGED_BY_ROUND[value].add(forecast_id)
+
+
+def _unmark_logged(round_id: Any, forecast_id: str) -> None:
+    value = str(round_id or "")
+    _LOGGED.discard(forecast_id)
+    if value in _LOGGED_BY_ROUND:
+        _LOGGED_BY_ROUND[value].discard(forecast_id)
+        if not _LOGGED_BY_ROUND[value]:
+            _LOGGED_BY_ROUND.pop(value, None)
+
+
+def _public_evidence_status() -> dict[str, Any]:
+    identity = _frozen_identity()
+    return {
+        "identity_complete": bool(identity.get("_evidence_complete")),
+        "run_id": identity.get("evidence_run_id"),
+        "model_bundle_sha256": identity.get("model_bundle_sha256"),
+        "bundle_manifest_sha256": identity.get("bundle_manifest_sha256"),
+        "policy_sha256": identity.get("policy_sha256"),
+        "threshold_sha256": identity.get("threshold_sha256"),
+        "prereg_sha256": identity.get("prereg_sha256"),
+        "clarification_sha256": identity.get("clarification_sha256"),
+        "logger": LOG_HEALTH.snapshot(),
     }
 
 
@@ -378,7 +465,25 @@ def _candidate(
         else None
     )
     share = share_path_serving.score_candidate(int(round_data["horizon"]), values)
-    return {
+    capacity_q10 = (execution.get("capacity") or {}).get("q10")
+    cost_q80 = (execution.get("entry_slippage") or {}).get("q80")
+    canonical = {
+        "horizon": int(round_data.get("horizon") or 0),
+        "side": side,
+        "requested_qty": float(quantity),
+        "seconds_left": float(round_data.get("seconds_left") or 0.0),
+        "round_id": round_data.get("id"),
+        "decision_ts_ns": int(
+            float(share_prices.get("ts") or time.time()) * 1_000_000_000
+        ),
+        "anchor_price": round_data.get("price_to_beat"),
+        "current_btc": round_data.get("current_price"),
+        "own_bid": quote.get("bid"),
+        "own_ask": quote.get("ask"),
+        "decision_quote_age_s": values.get("decision_quote_age_s"),
+    }
+    candidate_reasons = validate_candidate(canonical)
+    result = {
         "side": side,
         "requested_qty": quantity,
         "features": values,
@@ -406,7 +511,42 @@ def _candidate(
             if predicted_entry is not None
             else None
         ),
+        "ledger_schema_version": LEDGER_V2_SCHEMA_VERSION,
+        "candidate_valid": not candidate_reasons,
+        "candidate_reasons_json": json.dumps(
+            candidate_reasons, sort_keys=True, separators=(",", ":")
+        ),
+        "all_features_finite": all(
+            _is_finite(values.get(name)) for name in FEATURE_COLUMNS
+        ),
+        "decision_entry_complete": bool(current_fill >= quantity - 1e-9),
+        "decision_book_age_s": values.get("decision_quote_age_s"),
+        "conservative_capacity_q10": capacity_q10,
+        "cost_q80": cost_q80,
     }
+    eligibility = {
+        key: result.get(key)
+        for key in (
+            "ledger_schema_version",
+            "candidate_valid",
+            "candidate_reasons_json",
+            "all_features_finite",
+            "decision_entry_complete",
+            "decision_book_age_s",
+            "conservative_capacity_q10",
+            "cost_q80",
+            "requested_qty",
+        )
+    }
+    try:
+        eligibility["eligibility_sha256"] = evidence_eligibility_hash(eligibility)
+    except (TypeError, ValueError):
+        eligibility["eligibility_sha256"] = ""
+    eligibility["eligibility_passed"] = True
+    if validate_evidence_candidate(eligibility):
+        eligibility["eligibility_passed"] = False
+    result.update(eligibility)
+    return result
 
 
 def _logger_rows(
@@ -445,14 +585,7 @@ def _logger_rows(
         # same checkpoint collides with the earlier forecast and the append-only insert rejects
         # the new evidence as a duplicate.
         identity = _frozen_identity()
-        forecast_id = hashlib.sha256(
-            "|".join([
-                key,
-                identity["model_bundle_sha256"],
-                identity["policy_sha256"],
-                identity["threshold_sha256"],
-            ]).encode("utf-8")
-        ).hexdigest()[:32]
+        forecast_id = _forecast_id(key, identity)
         # Keyed on the COLLISION-PROOF id, not round/checkpoint/side/qty. With the old key a
         # legitimate model or threshold change was suppressed in memory before its new
         # forecast_id was ever considered - the very re-score the new id exists to allow.
@@ -546,17 +679,33 @@ def _logger_rows(
         # Refuse to mint promotion evidence until the run identity is complete.
         if not identity.get("_evidence_complete"):
             if log_forecast_monitored(forecast, paths):
-                _LOGGED.add(forecast_id)
+                _mark_logged(round_data.get("id"), forecast_id)
             else:
-                _LOGGED.discard(forecast_id)
+                _unmark_logged(round_data.get("id"), forecast_id)
             continue
         v2_row = {
             "forecast_id": forecast_id,
             "round_id": round_data.get("id"),
             "exposure_id": f"{round_data.get('id')}@{int(seconds_left)}",
+            "horizon": int(round_data.get("horizon") or 0),
             "seconds_left": int(seconds_left),
             "side": candidate["side"],
             "requested_qty": float(candidate["requested_qty"]),
+            **{
+                key: candidate.get(key)
+                for key in (
+                    "ledger_schema_version",
+                    "candidate_valid",
+                    "candidate_reasons_json",
+                    "all_features_finite",
+                    "decision_entry_complete",
+                    "decision_book_age_s",
+                    "conservative_capacity_q10",
+                    "cost_q80",
+                    "eligibility_passed",
+                    "eligibility_sha256",
+                )
+            },
             # Units in the name; both stored, neither inferred from the other.
             "prediction_ts_ms": int(now_ms),
             "prediction_ts_s": float(now_ms) / 1000.0,
@@ -578,9 +727,9 @@ def _logger_rows(
             "evidence_source": OWN_FORWARD_RECORDER_SOURCE,
         }
         if log_forward_prediction_v2(v2_row, paths, legacy_forecast=forecast):
-            _LOGGED.add(forecast_id)
+            _mark_logged(round_data.get("id"), forecast_id)
         else:
-            _LOGGED.discard(forecast_id)
+            _unmark_logged(round_data.get("id"), forecast_id)
 
 
 def score_round(
@@ -588,6 +737,14 @@ def score_round(
     share_prices: dict[str, Any] | None,
     now_ms: int,
 ) -> dict[str, Any]:
+    global _LAST_REPLAY_S
+    now_s = float(now_ms) / 1000.0
+    if now_s - _LAST_REPLAY_S >= 30.0:
+        _LAST_REPLAY_S = now_s
+        try:
+            replay_pending_v2(limit=20)
+        except Exception as exc:  # noqa: BLE001
+            LOG_HEALTH.record_spool_failure(exc)
     if not share_prices:
         return {
             "mode": MODE,
@@ -616,11 +773,19 @@ def score_round(
     seconds_left = float(round_data.get("seconds_left") or 0.0)
     checkpoints = ENTRY_CHECKPOINTS_S.get(int(round_data.get("horizon") or 0), ())
     nearest = min(checkpoints, key=lambda value: abs(value - seconds_left), default=None)
+    checkpoint_identity = (
+        _frozen_identity()
+        if nearest is not None and abs(float(nearest) - seconds_left) <= 1.5
+        else None
+    )
     checkpoint_due = bool(
-        nearest is not None
-        and abs(float(nearest) - seconds_left) <= 1.5
+        checkpoint_identity is not None
         and any(
-            f"{round_id}|{nearest}|{side}|{quantity}" not in _LOGGED
+            _forecast_id(
+                f"{round_id}|{nearest}|{side}|{quantity}",
+                checkpoint_identity,
+            )
+            not in _LOGGED
             for side in ("UP", "DOWN")
             for quantity in QUANTITIES
         )
@@ -684,6 +849,7 @@ def score_round(
             "btc": btc_path_serving.status(),
             "execution": execution_serving.status(),
         },
+        "evidence": _public_evidence_status(),
         "champion_unchanged": True,
         "plain_reason": (
             # Generated from M0_V2, never a duplicated literal: the gate said 500 while the
@@ -785,6 +951,7 @@ def score_round(
             if stale_id not in active:
                 _HISTORY.pop(stale_id, None)
                 _CACHE.pop(stale_id, None)
+                _LOGGED.difference_update(_LOGGED_BY_ROUND.pop(stale_id, set()))
     _logger_rows(round_data, internal_result, now_ms)
     return result
 
@@ -795,14 +962,45 @@ def status() -> dict[str, Any]:
         "share_model": share_path_serving.status(),
         "btc_model": btc_path_serving.status(),
         "execution_model": execution_serving.status(),
+        "evidence": _public_evidence_status(),
         "tracked_rounds": len(_HISTORY),
     }
 
 
 def selftest() -> None:
+    from unittest.mock import patch
+
     assert _ladder_vwap([[0.5, 5], [0.6, 10]], 10) == (0.55, 10.0)
     result = score_round({}, None, 1)
     assert result["action"] == "NO_TRADE"
+    previous_threshold = dict(_THRESHOLD_CACHE)
+    try:
+        bundle_hash = "m" * 64
+        _THRESHOLD_CACHE.clear()
+        _THRESHOLD_CACHE.update({
+            "hash": "t" * 64,
+            "value": 0.7,
+            "created_at": 10.0,
+            "model_sha256": bundle_hash,
+            "policy_sha256": policy_hash(),
+        })
+        serving = {
+            "bundle_hash": bundle_hash,
+            "bundle_manifest_sha256": "b" * 64,
+            "promoted_at": 9.0,
+            "bundle_verified": True,
+            "frozen": False,
+            "freeze_violation": None,
+        }
+        with patch.object(share_path_serving, "status", return_value=serving):
+            assert not _frozen_identity()["_evidence_complete"]
+        with patch.object(
+            share_path_serving, "status", return_value={**serving, "frozen": True}
+        ):
+            assert _frozen_identity()["_evidence_complete"]
+    finally:
+        _THRESHOLD_CACHE.clear()
+        _THRESHOLD_CACHE.update(previous_threshold)
     print("live_forecaster self-test: ALL PASS")
 
 

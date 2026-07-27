@@ -78,7 +78,11 @@ def load_model(force: bool = False) -> dict[str, Any] | None:
         if not force and mtime == _MTIME:
             return _BUNDLE
         _MTIME = mtime
-        manifest, issues = artifact_issues(MODEL_PATH, require_promotable=False)
+        manifest, issues = artifact_issues(
+            MODEL_PATH,
+            require_promotable=False,
+            require_training_dataset=not bool(_RESOLUTION.get("verified")),
+        )
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
             return None
@@ -114,6 +118,8 @@ def status() -> dict[str, Any]:
         "resolution_source": _RESOLUTION.get("source"),
         "bundle_verified": _RESOLUTION.get("verified"),
         "bundle_hash": _RESOLUTION.get("bundle_hash"),
+        "bundle_manifest_sha256": _RESOLUTION.get("bundle_manifest_sha256"),
+        "promoted_at": _RESOLUTION.get("promoted_at"),
         "evidence_mode": _RESOLUTION.get("evidence_mode"),
         "resolution_note": _RESOLUTION.get("note"),
         **_PIN.status(),

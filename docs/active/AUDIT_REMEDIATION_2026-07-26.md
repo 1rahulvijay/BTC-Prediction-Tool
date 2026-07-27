@@ -1,5 +1,21 @@
 # AUDIT REMEDIATION — `COMPLETE_TRADE_FORECAST_V1` (2026-07-26)
 
+> **2026-07-27 COMPLETION ADDENDUM.** The serving/evidence gaps left after this audit are now
+> implemented: immutable candidate eligibility, direct capacity q10 training, durable disk
+> spool/replay, own-L2 outcome reconstruction, explicit evidence-run selection, both frozen
+> protocol hashes, deterministic bundle inventories, and verified serving without the original
+> raw training parquet. See
+> [`SERVING_EVIDENCE_COMPLETION_2026-07-27.md`](SERVING_EVIDENCE_COMPLETION_2026-07-27.md).
+> This closes code-path gaps only; M0 still requires fresh forward evidence and no profitability
+> claim is made.
+>
+> **This addendum supersedes the historical status rows for defects 9 and 11 below.** Defect 9's
+> portability problem is fixed by a self-contained, content-addressed bundle that serves without
+> the raw parquet at its old path; external private-key signing remains optional hardening.
+> Defect 11's authoritative path is replaced by manifest-verified promotion, a complete bundle
+> inventory, evidence-mode refusal of legacy fallback, and a frozen no-violation evidence clock.
+> The older table and "deliberately not done" paragraphs remain as the 2026-07-26 audit record.
+
 > **SECOND REVIEW PASS APPLIED.** A follow-up review found four further issues, one of which was a
 > bug introduced by the first pass. All four are fixed; see "Second review pass" at the end.
 > **M0 is NOT ready to spend** — the lane now runs under
@@ -379,9 +395,10 @@ incumbent is snapshotted before any copy.
 
 ## R7 — CI
 
-`.github/workflows/invariants.yml` runs all twelve suites plus `compileall` on every push and PR,
-including `verify_prereg_hashes.py`, which recomputes all six recorded protocol hashes and fails if
-any drifted.
+`.github/workflows/invariants.yml` now runs the complete-trade, serving, collector, promotion,
+documentation and preregistration suites plus `compileall` on every push and PR. It also performs
+the frontend lockfile install, production build and high-severity dependency audit. The Windows
+job parses `start.bat` and reruns the launch-critical invariant set.
 
 ---
 

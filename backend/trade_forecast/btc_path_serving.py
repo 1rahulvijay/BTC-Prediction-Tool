@@ -80,6 +80,7 @@ def load_model(force: bool = False):
             MODEL_PATH,
             require_promotable=False,
             expected_feature_columns=BTC_FEATURE_COLUMNS,
+            require_training_dataset=not bool(_RESOLUTION.get("verified")),
         )
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
@@ -114,6 +115,8 @@ def status() -> dict[str, Any]:
         "resolution_source": _RESOLUTION.get("source"),
         "bundle_verified": _RESOLUTION.get("verified"),
         "bundle_hash": _RESOLUTION.get("bundle_hash"),
+        "bundle_manifest_sha256": _RESOLUTION.get("bundle_manifest_sha256"),
+        "promoted_at": _RESOLUTION.get("promoted_at"),
         "evidence_mode": _RESOLUTION.get("evidence_mode"),
         "resolution_note": _RESOLUTION.get("note"),
         **_PIN.status(),

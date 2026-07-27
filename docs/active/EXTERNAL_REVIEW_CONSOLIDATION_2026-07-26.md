@@ -3,9 +3,9 @@
 ## Purpose
 
 This is the source-of-truth reconciliation for the external GitHub reviews supplied on
-2026-07-26. Those reviews inspected commit `8998d5b`. The local working tree contains newer,
-uncommitted collector, calibration, decision-safety and documentation work. A recommendation is
-not current merely because it appears in an external review or an older research note.
+2026-07-26. Those reviews inspected commit `8998d5b`. The repository now also contains the
+2026-07-27 serving/evidence completion work. A recommendation is not current merely because it
+appears in an external review or an older research note.
 
 The governing order is:
 
@@ -144,7 +144,7 @@ These may be useful, but are not present in the current serving path:
 - unified `DecisionEnvelope`;
 - explicit predictive/economic promotion service;
 - Binance episode builder and M0 scorer;
-- CI workflow covering all safety suites;
+- unified all-policy `DecisionEnvelope` coverage beyond the Complete Trade Forecast lane;
 - calibrated P(Hold) serving adoption;
 - regime-duration, options and relative-value research lanes.
 

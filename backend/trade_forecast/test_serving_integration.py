@@ -57,10 +57,28 @@ def _write_bundle(directory: Path, artifact: str, marker: str, mtime: float) -> 
 
 
 def _point(pointer: Path, bundle: Path) -> None:
-    from .champion_resolver import bundle_hash
+    from .champion_resolver import _file_hash, bundle_hash
 
+    manifest_path = bundle / "bundle_manifest.json"
+    entries = []
+    for path in sorted(bundle.rglob("*")):
+        if path.is_file() and path != manifest_path:
+            entries.append({
+                "path": path.relative_to(bundle).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": _file_hash(path),
+            })
+    manifest_path.write_text(
+        json.dumps({"manifest_version": 1, "entries": entries}, sort_keys=True),
+        encoding="utf-8",
+    )
     pointer.write_text(
-        json.dumps({"bundle_hash": bundle_hash(bundle), "path": str(bundle)}),
+        json.dumps({
+            "bundle_hash": bundle_hash(bundle),
+            "bundle_manifest_sha256": _file_hash(manifest_path),
+            "path": str(bundle),
+            "promoted_at": 1_700_000_000.0,
+        }),
         encoding="utf-8",
     )
 

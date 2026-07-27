@@ -13,7 +13,6 @@ WHY THIS FILE EXISTS
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -26,12 +25,17 @@ from .evaluate_complete_trade_m0_v2_forward import evaluate            # noqa: E
 from .forward_evidence import ThresholdArtifact                        # noqa: E402
 from .trade_forecast_logger import (                                   # noqa: E402
     connect,
+    ensure_v2_schema,
     log_forward_prediction_v2,
     read_forward_rows,
     read_resolved_outcomes,
 )
 from .trade_outcome_resolver import resolve_v2                         # noqa: E402
-from .trade_schema import M0_V2                                        # noqa: E402
+from .trade_schema import (                                           # noqa: E402
+    LEDGER_V2_SCHEMA_VERSION,
+    M0_V2,
+    evidence_eligibility_hash,
+)
 
 _OK = True
 
@@ -60,6 +64,7 @@ def _threshold() -> ThresholdArtifact:
 def _write_ledger(rounds: int, artifact: ThresholdArtifact) -> tuple[str, dict]:
     """Write a full evidence run through the REAL writer, on one shared connection."""
     shared = connect()
+    ensure_v2_schema(shared)
     freeze = float(M0_V2["frozen_at_s"])
     run_id = "run_" + artifact.threshold_hash()[:16]
     settled: dict[str, dict] = {}
@@ -71,12 +76,25 @@ def _write_ledger(rounds: int, artifact: ThresholdArtifact) -> tuple[str, dict]:
             fid = f"fc_{i}_{left}"
             row = {
                 "forecast_id": fid, "round_id": f"rd_{i}",
-                "exposure_id": f"rd_{i}@{left}", "seconds_left": left,
+                "exposure_id": f"rd_{i}@{left}", "horizon": 5,
+                "seconds_left": left,
                 "side": "UP", "requested_qty": 5.0,
+                "ledger_schema_version": LEDGER_V2_SCHEMA_VERSION,
+                "candidate_valid": True,
+                "candidate_reasons_json": "[]",
+                "all_features_finite": True,
+                "decision_entry_complete": True,
+                "decision_book_age_s": 0.2,
+                "conservative_capacity_q10": 10.0,
+                "cost_q80": 0.01,
+                "eligibility_passed": True,
                 "prediction_ts_ms": int(stamp * 1000), "prediction_ts_s": stamp,
-                "model_bundle_sha256": MODEL, "feature_schema_sha256": SCHEMA,
+                "model_bundle_sha256": MODEL,
+                "bundle_manifest_sha256": "b" * 64,
+                "feature_schema_sha256": SCHEMA,
                 "policy_sha256": POLICY, "threshold_sha256": artifact.threshold_hash(),
                 "prereg_sha256": M0_V2["prereg_sha256"],
+                "clarification_sha256": M0_V2["clarification_001_sha256"],
                 "feature_values_sha256": f"v{i}_{left}",
                 "prereg_frozen_at_s": freeze, "model_frozen_at_s": freeze,
                 "threshold_frozen_at_s": artifact.created_at,
@@ -85,6 +103,7 @@ def _write_ledger(rounds: int, artifact: ThresholdArtifact) -> tuple[str, dict]:
                 "exit_plan": "TAKE_3C_OR_STOP_3C", "reason_codes_json": "[]",
                 "evidence_source": "l2_recorder", "evidence_run_id": run_id,
             }
+            row["eligibility_sha256"] = evidence_eligibility_hash(row)
             assert log_forward_prediction_v2(row, conn=shared), f"write failed for {fid}"
         net = 0.03 if i % 3 else -0.01
         settled[f"rd_{i}"] = {
@@ -105,7 +124,7 @@ def run() -> int:
 
     print("write -> read")
     run_id, settled = _write_ledger(rounds, artifact)
-    rows = read_forward_rows()
+    rows = read_forward_rows(evidence_run_id=run_id)
     chk(len(rows) == rounds * 3, f"all {rounds * 3} predictions read back ({len(rows)})")
 
     # THE BUG THIS FILE EXISTS FOR.
@@ -138,9 +157,9 @@ def run() -> int:
         f"the rest entered at the earliest qualifying checkpoint ({by_left.get(120)})")
 
     print("resolve")
-    report = resolve_v2(settled)
+    report = resolve_v2(settled, evidence_run_id=run_id, test_only=True)
     chk(report["written"] == rounds * 3, f"outcomes written ({report['written']})")
-    outcomes = read_resolved_outcomes()
+    outcomes = read_resolved_outcomes(include_test_fixtures=True)
     chk(len(outcomes) == rounds * 3, "outcomes read back")
 
     print("evaluate")
@@ -173,8 +192,8 @@ def run() -> int:
 
     mixed = [dict(r) for r in rows]
     mixed[0]["evidence_run_id"] = "another_run"
-    chk(evaluate(mixed, outcomes, artifact)["status"] == "IDENTITY_MISMATCH",
-        "evidence spanning two run ids is refused")
+    chk(evaluate(mixed, outcomes, artifact)["status"] == "INADMISSIBLE",
+        "evidence spanning two run ids is refused by the manifest")
 
     print("zero-value and spend guards")
     # A stress PnL of exactly 0.00 was replaced by the UNSTRESSED PnL through `or net`, so a

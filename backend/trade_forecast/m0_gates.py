@@ -14,7 +14,7 @@ pass it.
 from __future__ import annotations
 
 import sys
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 

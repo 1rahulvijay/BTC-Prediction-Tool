@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import time
@@ -21,6 +22,8 @@ DB_PATH = Path(
     os.environ.get("BTC_COMPLETE_TRADE_DB")
     or DATA / "complete_trade_forecast.duckdb"
 )
+PENDING_V2_DIR = DATA / "complete_trade_forecast_pending_v2"
+OUTCOME_V2_SCHEMA_VERSION = "2026-07-27-l2-reconstruction-v1"
 
 
 def connect(path: Path | str | None = None) -> duckdb.DuckDBPyConnection:
@@ -168,9 +171,22 @@ CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
     forecast_id VARCHAR PRIMARY KEY,
     round_id VARCHAR,
     exposure_id VARCHAR,
+    horizon INTEGER,
     seconds_left INTEGER,
     side VARCHAR,
     requested_qty DOUBLE,
+    ledger_schema_version VARCHAR,
+
+    -- Clarification-001 eligibility, frozen at decision time.
+    candidate_valid BOOLEAN,
+    candidate_reasons_json VARCHAR,
+    all_features_finite BOOLEAN,
+    decision_entry_complete BOOLEAN,
+    decision_book_age_s DOUBLE,
+    conservative_capacity_q10 DOUBLE,
+    cost_q80 DOUBLE,
+    eligibility_passed BOOLEAN,
+    eligibility_sha256 VARCHAR,
 
     -- Units are explicit in the name. Both are stored; neither is inferred from the other.
     prediction_ts_ms BIGINT,
@@ -178,10 +194,12 @@ CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
 
     -- Identity of the frozen policy. Each of these MUST be a singleton across an evidence set.
     model_bundle_sha256 VARCHAR,
+    bundle_manifest_sha256 VARCHAR,
     feature_schema_sha256 VARCHAR,
     policy_sha256 VARCHAR,
     threshold_sha256 VARCHAR,
     prereg_sha256 VARCHAR,
+    clarification_sha256 VARCHAR,
 
     -- Per-row, deliberately NOT a singleton: the values this one prediction was computed from.
     feature_values_sha256 VARCHAR,
@@ -212,10 +230,15 @@ CREATE TABLE IF NOT EXISTS complete_trade_forecasts_v2(
 """
 
 FORECASTS_V2_COLUMNS = (
-    "forecast_id", "round_id", "exposure_id", "seconds_left", "side", "requested_qty",
+    "forecast_id", "round_id", "exposure_id", "horizon", "seconds_left", "side",
+    "requested_qty", "ledger_schema_version",
+    "candidate_valid", "candidate_reasons_json", "all_features_finite",
+    "decision_entry_complete", "decision_book_age_s", "conservative_capacity_q10",
+    "cost_q80", "eligibility_passed", "eligibility_sha256",
     "prediction_ts_ms", "prediction_ts_s",
-    "model_bundle_sha256", "feature_schema_sha256", "policy_sha256", "threshold_sha256",
-    "prereg_sha256", "feature_values_sha256",
+    "model_bundle_sha256", "bundle_manifest_sha256", "feature_schema_sha256",
+    "policy_sha256", "threshold_sha256", "prereg_sha256", "clarification_sha256",
+    "feature_values_sha256",
     "prereg_frozen_at_s", "model_frozen_at_s", "threshold_frozen_at_s",
     "entry_threshold", "score", "action", "predicted_entry_vwap", "exit_plan",
     "reason_codes_json", "evidence_source", "evidence_run_id",
@@ -228,24 +251,232 @@ OUTCOMES_V2_DDL = """
 CREATE TABLE IF NOT EXISTS complete_trade_outcomes_v2(
     forecast_id VARCHAR PRIMARY KEY,
     round_id VARCHAR,
+    outcome_schema_version VARCHAR,
     resolved_at_s DOUBLE,
     resolution_source VARCHAR,
+    reconstruction_source VARCHAR,
+    source_recording_sha256 VARCHAR,
     settled_side INTEGER,
     entry_filled BOOLEAN,
     entry_vwap DOUBLE,
+    entry_snapshot_ts_s DOUBLE,
+    entry_latency_ms DOUBLE,
     plan_net DOUBLE,
     plan_exit_kind VARCHAR,
     plan_holding_s DOUBLE,
     stress_1000ms_plan_net DOUBLE,
+    stress_entry_vwap DOUBLE,
     candidate_pnls_json VARCHAR
 )
 """
 
 OUTCOMES_V2_COLUMNS = (
-    "forecast_id", "round_id", "resolved_at_s", "resolution_source", "settled_side",
-    "entry_filled", "entry_vwap", "plan_net", "plan_exit_kind", "plan_holding_s",
-    "stress_1000ms_plan_net", "candidate_pnls_json",
+    "forecast_id", "round_id", "outcome_schema_version", "resolved_at_s",
+    "resolution_source", "reconstruction_source", "source_recording_sha256",
+    "settled_side", "entry_filled", "entry_vwap", "entry_snapshot_ts_s",
+    "entry_latency_ms", "plan_net", "plan_exit_kind", "plan_holding_s",
+    "stress_1000ms_plan_net", "stress_entry_vwap", "candidate_pnls_json",
 )
+
+
+def ensure_v2_schema(conn: Any) -> None:
+    """Create or additively migrate Ledger V2 without rewriting immutable rows."""
+    conn.execute(FORECASTS_V2_DDL)
+    conn.execute(OUTCOMES_V2_DDL)
+    forecast_types = {
+        "horizon": "INTEGER",
+        "ledger_schema_version": "VARCHAR",
+        "candidate_valid": "BOOLEAN",
+        "candidate_reasons_json": "VARCHAR",
+        "all_features_finite": "BOOLEAN",
+        "decision_entry_complete": "BOOLEAN",
+        "decision_book_age_s": "DOUBLE",
+        "conservative_capacity_q10": "DOUBLE",
+        "cost_q80": "DOUBLE",
+        "eligibility_passed": "BOOLEAN",
+        "eligibility_sha256": "VARCHAR",
+        "bundle_manifest_sha256": "VARCHAR",
+        "clarification_sha256": "VARCHAR",
+    }
+    outcome_types = {
+        "outcome_schema_version": "VARCHAR",
+        "reconstruction_source": "VARCHAR",
+        "source_recording_sha256": "VARCHAR",
+        "entry_snapshot_ts_s": "DOUBLE",
+        "entry_latency_ms": "DOUBLE",
+        "stress_entry_vwap": "DOUBLE",
+    }
+    for name, kind in forecast_types.items():
+        conn.execute(
+            f"ALTER TABLE complete_trade_forecasts_v2 "
+            f"ADD COLUMN IF NOT EXISTS {name} {kind}"
+        )
+    for name, kind in outcome_types.items():
+        conn.execute(
+            f"ALTER TABLE complete_trade_outcomes_v2 "
+            f"ADD COLUMN IF NOT EXISTS {name} {kind}"
+        )
+
+
+def _spool_path(forecast_id: str, directory: Path = PENDING_V2_DIR) -> Path:
+    digest = hashlib.sha256(forecast_id.encode("utf-8")).hexdigest()
+    return directory / f"{digest}.json"
+
+
+def _spool_v2_failure(
+    v2_row: dict[str, Any],
+    paths: list[dict[str, Any]] | None,
+    legacy_forecast: dict[str, Any] | None,
+    exc: BaseException,
+    *,
+    pending_dir: Path | None = None,
+) -> Path:
+    """Atomically persist a failed append for deterministic replay.
+
+    The filename is stable per forecast id. Repeated failures replace only the dead-letter
+    envelope for that same immutable row; replay still refuses to overwrite a different row
+    already stored under the forecast id.
+    """
+    forecast_id = str(v2_row.get("forecast_id") or "")
+    if not forecast_id:
+        raise ValueError("cannot spool V2 row without forecast_id")
+    directory = Path(pending_dir or PENDING_V2_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = _spool_path(forecast_id, directory)
+    if target.is_file():
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        if existing.get("v2_row") != v2_row:
+            raise ValueError(
+                "durable spool forecast_id collision with a different immutable payload"
+            )
+        return target
+    payload = {
+        "spool_version": 1,
+        "spooled_at_s": time.time(),
+        "error": f"{type(exc).__name__}: {exc}",
+        "v2_row": v2_row,
+        "paths": paths or [],
+        "legacy_forecast": legacy_forecast,
+    }
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}.",
+        suffix=".tmp",
+        dir=str(directory),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"), default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return target
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is right
+    if isinstance(left, bool) or isinstance(right, bool):
+        return bool(left) is bool(right)
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return float(left) == float(right)
+    return str(left) == str(right)
+
+
+def _stored_forecast_matches(
+    conn: Any,
+    row: dict[str, Any],
+) -> bool:
+    stored = conn.execute(
+        "SELECT " + ",".join(FORECASTS_V2_COLUMNS)
+        + " FROM complete_trade_forecasts_v2 WHERE forecast_id = ?",
+        [row["forecast_id"]],
+    ).fetchone()
+    if stored is None:
+        return False
+    return all(
+        _same_value(stored[index], row[column])
+        for index, column in enumerate(FORECASTS_V2_COLUMNS)
+    )
+
+
+def replay_pending_v2(
+    *,
+    conn: Any = None,
+    limit: int = 100,
+    pending_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Replay durable V2 dead letters without ever overwriting immutable evidence."""
+    own = conn is None
+    conn = conn or connect()
+    directory = Path(pending_dir or PENDING_V2_DIR)
+    report = {
+        "attempted": 0,
+        "recovered": 0,
+        "exact_duplicates": 0,
+        "failed": 0,
+        "remaining": 0,
+        "errors": [],
+    }
+    try:
+        ensure_v2_schema(conn)
+        files = sorted(directory.glob("*.json"))[: max(0, int(limit))] if directory.exists() else []
+        for path in files:
+            report["attempted"] += 1
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                row = payload["v2_row"]
+                missing = [column for column in FORECASTS_V2_COLUMNS if column not in row]
+                if missing:
+                    raise ValueError(f"spooled row missing columns: {missing}")
+                existing = conn.execute(
+                    "SELECT 1 FROM complete_trade_forecasts_v2 WHERE forecast_id = ?",
+                    [row["forecast_id"]],
+                ).fetchone()
+                if existing:
+                    if not _stored_forecast_matches(conn, row):
+                        raise ValueError(
+                            "immutable forecast_id collision with different stored payload"
+                        )
+                    report["exact_duplicates"] += 1
+                else:
+                    conn.execute("BEGIN TRANSACTION")
+                    try:
+                        log_forecast_v2(row, conn)
+                        conn.execute("COMMIT")
+                    except Exception:
+                        try:
+                            conn.execute("ROLLBACK")
+                        except Exception:
+                            pass
+                        raise
+                    legacy = payload.get("legacy_forecast")
+                    if legacy is not None:
+                        try:
+                            log_forecast(legacy, payload.get("paths") or [], conn)
+                        except Exception:
+                            # V1 is a compatibility mirror, never evidence authority.
+                            pass
+                    report["recovered"] += 1
+                    LOG_HEALTH.record_recovery()
+                path.unlink()
+            except Exception as exc:  # noqa: BLE001
+                report["failed"] += 1
+                report["errors"].append(
+                    {"file": path.name, "error": f"{type(exc).__name__}: {exc}"}
+                )
+        report["remaining"] = (
+            len(list(directory.glob("*.json"))) if directory.exists() else 0
+        )
+        return report
+    finally:
+        if own:
+            conn.close()
 
 
 def log_outcome_v2(row: dict[str, Any], conn: Any = None) -> None:
@@ -253,7 +484,8 @@ def log_outcome_v2(row: dict[str, Any], conn: Any = None) -> None:
     own = conn is None
     conn = conn or connect()
     try:
-        conn.execute(OUTCOMES_V2_DDL)
+        if own:
+            ensure_v2_schema(conn)
         missing = [c for c in OUTCOMES_V2_COLUMNS if c not in row]
         if missing:
             raise ValueError(f"outcome v2 row missing required columns: {missing}")
@@ -267,7 +499,11 @@ def log_outcome_v2(row: dict[str, Any], conn: Any = None) -> None:
             conn.close()
 
 
-def read_resolved_outcomes(conn: Any = None) -> dict[str, dict[str, Any]]:
+def read_resolved_outcomes(
+    conn: Any = None,
+    *,
+    include_test_fixtures: bool = False,
+) -> dict[str, dict[str, Any]]:
     """Resolved outcomes keyed by forecast_id. OFFICIAL provenance only.
 
     The evaluator claims to read official outcomes, so the filter belongs here rather than in a
@@ -276,11 +512,18 @@ def read_resolved_outcomes(conn: Any = None) -> dict[str, dict[str, Any]]:
     own = conn is None
     conn = conn or connect()
     try:
-        conn.execute(OUTCOMES_V2_DDL)
+        if own:
+            ensure_v2_schema(conn)
+        reconstruction_filter = (
+            ""
+            if include_test_fixtures
+            else " AND reconstruction_source = 'OWN_L2_RECONSTRUCTION'"
+        )
         cursor = conn.execute(
             "SELECT " + ",".join(OUTCOMES_V2_COLUMNS)
             + " FROM complete_trade_outcomes_v2 WHERE resolution_source IN ("
-            + ",".join("?" * len(OFFICIAL_RESOLUTION_SOURCES)) + ")",
+            + ",".join("?" * len(OFFICIAL_RESOLUTION_SOURCES)) + ")"
+            + reconstruction_filter,
             list(OFFICIAL_RESOLUTION_SOURCES),
         )
         names = [d[0] for d in cursor.description]
@@ -305,7 +548,8 @@ def log_forward_prediction_v2(
     own = conn is None
     conn = conn or connect()
     try:
-        conn.execute(FORECASTS_V2_DDL)
+        if own:
+            ensure_v2_schema(conn)
         conn.execute("BEGIN TRANSACTION")
         try:
             log_forecast_v2(v2_row, conn)
@@ -325,7 +569,20 @@ def log_forward_prediction_v2(
         LOG_HEALTH.record_success()
         return True
     except Exception as exc:                               # noqa: BLE001
+        # A controlled restart can re-emit the same checkpoint before its in-memory de-dup set
+        # is rebuilt. Exact immutable duplicates are idempotent success; a same-id/different-row
+        # collision still falls through to the durable failure path below.
+        try:
+            if _stored_forecast_matches(conn, v2_row):
+                LOG_HEALTH.record_exact_duplicate()
+                return True
+        except Exception:
+            pass
         LOG_HEALTH.record_failure(exc, v2_row)
+        try:
+            _spool_v2_failure(v2_row, paths, legacy_forecast, exc)
+        except Exception as spool_exc:                          # noqa: BLE001
+            LOG_HEALTH.record_spool_failure(spool_exc)
         print(f"[trade-forecast] V2 EVIDENCE WRITE FAILED: {type(exc).__name__}: {exc}",
               flush=True)
         return False
@@ -339,7 +596,8 @@ def log_forecast_v2(row: dict[str, Any], conn: Any = None) -> None:
     own = conn is None
     conn = conn or connect()
     try:
-        conn.execute(FORECASTS_V2_DDL)
+        if own:
+            ensure_v2_schema(conn)
         missing = [c for c in FORECASTS_V2_COLUMNS if c not in row]
         if missing:
             raise ValueError(f"ledger v2 row missing required columns: {missing}")
@@ -359,17 +617,22 @@ def read_forward_rows(conn: Any = None, evidence_run_id: str | None = None) -> l
     own = conn is None
     conn = conn or connect()
     try:
-        conn.execute(FORECASTS_V2_DDL)
+        ensure_v2_schema(conn)
         # EVERY field the policy executes on. The first version returned only hashes and
         # timestamps, so causal_selection() read seconds_left/score as missing, defaulted them
         # to 0, and no database-loaded row could ever clear a positive threshold. The synthetic
         # selftest hid it by hand-building complete dictionaries instead of reading this.
         cursor = conn.execute(
-            "SELECT forecast_id, round_id, exposure_id, seconds_left, side, requested_qty, "
+            "SELECT forecast_id, round_id, exposure_id, horizon, seconds_left, side, "
+            "requested_qty, ledger_schema_version, candidate_valid, candidate_reasons_json, "
+            "all_features_finite, decision_entry_complete, decision_book_age_s, "
+            "conservative_capacity_q10, cost_q80, eligibility_passed, eligibility_sha256, "
             "prediction_ts_s AS prediction_ts, prediction_ts_ms, "
             "score, action, entry_threshold, predicted_entry_vwap, exit_plan, "
-            "model_bundle_sha256 AS model_sha256, feature_schema_sha256, "
+            "model_bundle_sha256 AS model_sha256, bundle_manifest_sha256, "
+            "feature_schema_sha256, "
             "feature_values_sha256, policy_sha256, threshold_sha256, prereg_sha256, "
+            "clarification_sha256, "
             "prereg_frozen_at_s, model_frozen_at_s, threshold_frozen_at_s, "
             "evidence_source, evidence_run_id "
             "FROM complete_trade_forecasts_v2 "
@@ -496,6 +759,8 @@ class LogHealth:
         self.written = 0
         self.failed = 0
         self.duplicates = 0
+        self.spool_failures = 0
+        self.recovered = 0
         self.last_success_ts: float | None = None
         self.last_error: str | None = None
         self.last_error_ts: float | None = None
@@ -519,6 +784,18 @@ class LogHealth:
              "forecast_id": payload.get("forecast_id")}
         )
 
+    def record_exact_duplicate(self) -> None:
+        self.attempted += 1
+        self.duplicates += 1
+
+    def record_spool_failure(self, exc: BaseException) -> None:
+        self.spool_failures += 1
+        self.last_error = f"spool {type(exc).__name__}: {exc}"
+        self.last_error_ts = time.time()
+
+    def record_recovery(self) -> None:
+        self.recovered += 1
+
     def snapshot(self) -> dict[str, Any]:
         stale_s = (
             round(time.time() - self.last_success_ts, 1)
@@ -530,14 +807,25 @@ class LogHealth:
             "written": self.written,
             "failed": self.failed,
             "duplicate_rejections": self.duplicates,
+            "spool_failures": self.spool_failures,
+            "recovered_from_spool": self.recovered,
+            "durable_pending": (
+                len(list(PENDING_V2_DIR.glob("*.json")))
+                if PENDING_V2_DIR.exists()
+                else 0
+            ),
             "last_success_ts": self.last_success_ts,
             "seconds_since_last_write": stale_s,
             "last_error": self.last_error,
             "dead_letters": len(self.dead_letters),
-            "healthy": self.failed == 0,
+            "healthy": self.failed == 0 and self.spool_failures == 0,
             "alert": (
-                None if self.failed == 0
-                else f"{self.failed} forecast write(s) failed; last: {self.last_error}"
+                None
+                if self.failed == 0 and self.spool_failures == 0
+                else (
+                    f"{self.failed} forecast write(s) failed; "
+                    f"{self.spool_failures} spool failure(s); last: {self.last_error}"
+                )
             ),
         }
 

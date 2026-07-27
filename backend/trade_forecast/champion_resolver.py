@@ -85,6 +85,67 @@ def bundle_hash(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_bundle_manifest(
+    directory: Path,
+    expected_sha256: str,
+) -> tuple[bool, str]:
+    """Verify the promoted file inventory, including absence of undeclared files."""
+    path = directory / "bundle_manifest.json"
+    if not path.is_file():
+        return False, "bundle_manifest.json missing"
+    actual_manifest_hash = _file_hash(path)
+    if not expected_sha256 or actual_manifest_hash != expected_sha256:
+        return False, (
+            "bundle manifest hash mismatch: "
+            f"expected {expected_sha256[:16]}, found {actual_manifest_hash[:16]}"
+        )
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return False, f"bundle manifest unreadable: {type(exc).__name__}"
+    if manifest.get("manifest_version") != 1:
+        return False, "unsupported bundle manifest version"
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        return False, "bundle manifest entries missing"
+    declared: dict[str, dict] = {}
+    for entry in entries:
+        relative = str((entry or {}).get("path") or "")
+        if (
+            not relative
+            or relative in declared
+            or relative == "bundle_manifest.json"
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+        ):
+            return False, f"invalid bundle manifest path: {relative!r}"
+        declared[relative] = entry
+    actual = {
+        item.relative_to(directory).as_posix()
+        for item in directory.rglob("*")
+        if item.is_file() and item != path
+    }
+    if actual != set(declared):
+        missing = sorted(set(declared) - actual)
+        extra = sorted(actual - set(declared))
+        return False, f"bundle inventory mismatch missing={missing} extra={extra}"
+    for relative, entry in declared.items():
+        item = directory / relative
+        if item.stat().st_size != int(entry.get("size") or -1):
+            return False, f"bundle file size mismatch: {relative}"
+        if _file_hash(item) != str(entry.get("sha256") or ""):
+            return False, f"bundle file hash mismatch: {relative}"
+    return True, ""
+
+
 def _legacy(reason: str, **extra: Any) -> dict[str, Any]:
     return {
         "path": str(LEGACY),
@@ -115,6 +176,7 @@ def active_model_bundle(pointer: Path | None = None, *, verify: bool = True) -> 
             return _legacy(f"unreadable champion.json: {type(exc).__name__}")
         target = Path(str(payload.get("path") or ""))
         expected = str(payload.get("bundle_hash") or "")
+        expected_manifest = str(payload.get("bundle_manifest_sha256") or "")
         if not target.is_dir():
             return _legacy(f"champion.json points at a missing bundle: {target}",
                            bundle_hash=expected)
@@ -126,12 +188,22 @@ def active_model_bundle(pointer: Path | None = None, *, verify: bool = True) -> 
                     f"bundle hash mismatch: expected {expected[:16]}, found {actual[:16]}",
                     bundle_hash=expected,
                 )
+            manifest_ok, manifest_reason = verify_bundle_manifest(
+                target, expected_manifest
+            )
+            if not manifest_ok:
+                return _legacy(
+                    f"bundle manifest rejected: {manifest_reason}",
+                    bundle_hash=expected,
+                    bundle_manifest_sha256=expected_manifest,
+                )
         result = {
             "path": str(target),
             "bundle_hash": expected,
             "source": "champion_pointer",
             "verified": True,
             "promoted_at": payload.get("promoted_at"),
+            "bundle_manifest_sha256": expected_manifest,
         }
 
     if _freeze_enabled() and not _PINNED.get("path"):
@@ -163,6 +235,19 @@ def selftest() -> int:
             bundle = root / "bundle_x"
             bundle.mkdir()
             (bundle / "m.pkl").write_bytes(b"weights")
+            manifest = {
+                "manifest_version": 1,
+                "entries": [{
+                    "path": "m.pkl",
+                    "size": (bundle / "m.pkl").stat().st_size,
+                    "sha256": _file_hash(bundle / "m.pkl"),
+                }],
+            }
+            manifest_path = bundle / "bundle_manifest.json"
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True), encoding="utf-8"
+            )
+            manifest_hash = _file_hash(manifest_path)
             digest = bundle_hash(bundle)
 
             res = active_model_bundle(root / "none.json")
@@ -171,7 +256,13 @@ def selftest() -> int:
 
             pointer = root / "champion.json"
             pointer.write_text(
-                json.dumps({"bundle_hash": digest, "path": str(bundle)}), encoding="utf-8")
+                json.dumps({
+                    "bundle_hash": digest,
+                    "bundle_manifest_sha256": manifest_hash,
+                    "path": str(bundle),
+                    "promoted_at": 123.0,
+                }),
+                encoding="utf-8")
             res = active_model_bundle(pointer)
             chk(res["source"] == "champion_pointer" and res["verified"],
                 "a valid pointer resolves to the immutable bundle")
@@ -198,14 +289,33 @@ def selftest() -> int:
             _PINNED.clear()
             os.environ["BTC_FREEZE_MODEL"] = "1"
             pointer.write_text(
-                json.dumps({"bundle_hash": digest, "path": str(bundle)}), encoding="utf-8")
+                json.dumps({
+                    "bundle_hash": digest,
+                    "bundle_manifest_sha256": manifest_hash,
+                    "path": str(bundle),
+                    "promoted_at": 123.0,
+                }), encoding="utf-8")
             first = active_model_bundle(pointer)
             chk(first["verified"], "frozen serving pins the first verified bundle")
             other = root / "bundle_y"
             other.mkdir()
             (other / "m.pkl").write_bytes(b"NEW")
+            other_manifest = other / "bundle_manifest.json"
+            other_manifest.write_text(json.dumps({
+                "manifest_version": 1,
+                "entries": [{
+                    "path": "m.pkl",
+                    "size": (other / "m.pkl").stat().st_size,
+                    "sha256": _file_hash(other / "m.pkl"),
+                }],
+            }), encoding="utf-8")
             pointer.write_text(
-                json.dumps({"bundle_hash": bundle_hash(other), "path": str(other)}),
+                json.dumps({
+                    "bundle_hash": bundle_hash(other),
+                    "bundle_manifest_sha256": _file_hash(other_manifest),
+                    "path": str(other),
+                    "promoted_at": 456.0,
+                }),
                 encoding="utf-8")
             after = active_model_bundle(pointer)
             chk(after["path"] == first["path"] and after["source"] == "pinned",

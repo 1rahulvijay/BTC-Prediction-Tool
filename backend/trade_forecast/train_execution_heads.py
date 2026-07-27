@@ -34,7 +34,9 @@ DEFAULT_DATASET = (
     DATA / "research" / "complete_trade_forecast" / "complete_trade_dataset.parquet"
 )
 DEFAULT_ARTIFACT = DATA / "saved_models" / "complete_trade_execution_heads.pkl"
-EXECUTION_QUANTILES = (0.50, 0.80, 0.95)
+# q10 capacity is a binding Clarification-001 eligibility gate. It cannot be inferred from q50:
+# median capacity would fail in roughly half of comparable books, exactly when liquidity matters.
+EXECUTION_QUANTILES = (0.10, 0.50, 0.80, 0.95)
 
 
 def _families() -> tuple[str, ...]:

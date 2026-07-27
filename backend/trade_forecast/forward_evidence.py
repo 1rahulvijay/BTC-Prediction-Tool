@@ -164,9 +164,14 @@ def classify_source(source: str | None) -> str:
 
 REQUIRED_SINGLETON_FIELDS = (
     "model_sha256",
+    "bundle_manifest_sha256",
     "feature_schema_sha256",
     "policy_sha256",
     "threshold_sha256",
+    "prereg_sha256",
+    "clarification_sha256",
+    "ledger_schema_version",
+    "evidence_run_id",
 )
 
 
@@ -251,7 +256,6 @@ def build_forward_manifest(
     gaps = [b - a for a, b in zip(ordered, ordered[1:])] or [0.0]
     longest_gap_days = max(gaps) / 86400.0
     # Weeks inside the span that contain no evidence at all.
-    first_week = time.gmtime(min(ts))
     empty_internal = 0
     if len(weeks) >= 1:
         expected_weeks = int(span_weeks) + 1
@@ -334,8 +338,11 @@ def selftest() -> int:
 
     print("forward evidence manifest")
     base = {
-        "model_sha256": "m" * 64, "feature_schema_sha256": "f" * 64,
+        "model_sha256": "m" * 64, "bundle_manifest_sha256": "b" * 64,
+        "feature_schema_sha256": "f" * 64,
         "policy_sha256": "p" * 64, "threshold_sha256": art.threshold_hash(),
+        "prereg_sha256": "a" * 64, "clarification_sha256": "c" * 64,
+        "ledger_schema_version": "test-v2", "evidence_run_id": "test-run",
         "evidence_source": "l2_recorder",
     }
     freeze = 1_000_000.0

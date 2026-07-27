@@ -29,8 +29,10 @@ What it does, in order - and it refuses at the first failure rather than degradi
     12  1000ms latency stress
     13  write ONE immutable result manifest
 
-    python backend/trade_forecast/evaluate_complete_trade_m0_v2_forward.py --dry-run
-    python backend/trade_forecast/evaluate_complete_trade_m0_v2_forward.py --score-once
+    python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward \
+        --dry-run --evidence-run-id <id>
+    python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward \
+        --score-once --evidence-run-id <id>
 """
 from __future__ import annotations
 
@@ -61,11 +63,19 @@ from .m0_gates import (
     profit_factor,
 )
 from .trade_forecast_logger import read_forward_rows, read_resolved_outcomes
-from .trade_schema import M0_V2
+from .trade_schema import (
+    LEDGER_V2_SCHEMA_VERSION,
+    M0_V2,
+    evidence_eligibility_hash,
+    validate_evidence_candidate,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
 PREREG = ROOT / "docs" / "active" / M0_V2["prereg"]
+CLARIFICATION = (
+    ROOT / "docs" / "active" / M0_V2["clarification_001"]
+)
 THRESHOLD_PATH = DATA / "research" / "complete_trade_forecast" / "entry_threshold.json"
 RESULT_PATH = DATA / "research" / "complete_trade_forecast" / "m0_v2_forward_result.json"
 
@@ -88,7 +98,21 @@ def _verify_protocol() -> dict[str, Any]:
             f"preregistration hash mismatch: recorded {M0_V2['prereg_sha256'][:16]}, "
             f"found {actual[:16]} - the protocol was edited after freezing"
         )
-    return {"prereg_sha256": actual, "prereg": str(PREREG)}
+    if not CLARIFICATION.is_file():
+        raise Refused(f"clarification not found: {CLARIFICATION}")
+    clarification = _canonical_sha256(CLARIFICATION)
+    if clarification != M0_V2["clarification_001_sha256"]:
+        raise Refused(
+            "clarification hash mismatch: recorded "
+            f"{M0_V2['clarification_001_sha256'][:16]}, found "
+            f"{clarification[:16]} - the decision procedure was edited after freezing"
+        )
+    return {
+        "prereg_sha256": actual,
+        "prereg": str(PREREG),
+        "clarification_001_sha256": clarification,
+        "clarification_001": str(CLARIFICATION),
+    }
 
 
 def _load_threshold() -> ThresholdArtifact:
@@ -197,6 +221,8 @@ def causal_selection(rows: list[dict[str, Any]], threshold: float) -> list[dict[
     is NO_TRADE and contributes no trade - it is still counted as an observed round."""
     by_round: dict[Any, list[dict[str, Any]]] = {}
     for row in rows:
+        if validate_evidence_candidate(row):
+            continue
         by_round.setdefault(row.get("round_id"), []).append(row)
     selected = []
     for _, candidates in by_round.items():
@@ -216,6 +242,31 @@ def causal_selection(rows: list[dict[str, Any]], threshold: float) -> list[dict[
 def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
              threshold: ThresholdArtifact) -> dict[str, Any]:
     """Score the frozen policy. Pure over its inputs so it is testable without a database."""
+    integrity_failures = []
+    for row in rows:
+        reasons = validate_evidence_candidate(row)
+        structural = [
+            reason for reason in reasons
+            if reason in {
+                "ledger_schema_version_mismatch",
+                "eligibility_hash_mismatch",
+                "eligibility_passed_mismatch",
+            }
+        ]
+        if structural:
+            integrity_failures.append(
+                f"{row.get('forecast_id')}:{','.join(structural)}"
+            )
+    if integrity_failures:
+        return {
+            "status": "INADMISSIBLE",
+            "passed": False,
+            "blockers": [
+                f"{len(integrity_failures)} row(s) fail immutable eligibility integrity",
+                *integrity_failures[:3],
+            ],
+        }
+
     # The REAL boundary, not the prereg date twice over. Evidence must post-date every freeze
     # that defines the policy, and the latest of them is what binds.
     def _max_field(name: str, fallback: float) -> float:
@@ -258,6 +309,12 @@ def evaluate(rows: list[dict[str, Any]], outcomes: dict[str, dict[str, Any]],
     preregs = {str(r.get("prereg_sha256")) for r in rows}
     if preregs != {M0_V2["prereg_sha256"]}:
         problems.append(f"rows do not all carry the frozen preregistration hash ({preregs})")
+    clarifications = {str(r.get("clarification_sha256")) for r in rows}
+    if clarifications != {M0_V2["clarification_001_sha256"]}:
+        problems.append(
+            "rows do not all carry the frozen Clarification-001 hash "
+            f"({clarifications})"
+        )
     runs = {r.get("evidence_run_id") for r in rows}
     if len(runs) != 1 or None in runs:
         problems.append(f"evidence spans {len(runs)} run id(s) {runs} - exactly one is required")
@@ -395,17 +452,24 @@ def main() -> int:
                         help="write the immutable result manifest")
     parser.add_argument("--dry-run", action="store_true", help="report readiness, write nothing")
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument(
+        "--evidence-run-id",
+        help="required immutable run id; prevents scoring a mixed or unintended run",
+    )
     args = parser.parse_args()
     if args.selftest:
         return selftest()
     if not (args.score_once or args.dry_run):
         print("refusing to run without --dry-run or --score-once")
         return 2
+    if not args.evidence_run_id:
+        print("refusing to run without --evidence-run-id")
+        return 2
 
     try:
         protocol = _verify_protocol()
         threshold = _load_threshold()
-        rows = read_forward_rows()
+        rows = read_forward_rows(evidence_run_id=args.evidence_run_id)
         outcomes = read_resolved_outcomes()
     except Refused as exc:
         print(f"REFUSED: {exc}")
@@ -416,7 +480,8 @@ def main() -> int:
 
     result = {**evaluate(rows, outcomes, threshold), **protocol,
               "evaluated_at": time.time(), "ledger_rows": len(rows),
-              "resolved_outcomes": len(outcomes)}
+              "resolved_outcomes": len(outcomes),
+              "evidence_run_id": args.evidence_run_id}
     print(json.dumps({k: v for k, v in result.items() if k != "manifest"},
                      indent=2, default=str))
     blockers = (result.get("manifest") or {}).get("blockers") or []
@@ -452,13 +517,37 @@ def selftest() -> int:
     print("protocol integrity")
     chk(_canonical_sha256(PREREG) == M0_V2["prereg_sha256"],
         "the frozen preregistration verifies against its recorded hash")
+    chk(
+        _canonical_sha256(CLARIFICATION) == M0_V2["clarification_001_sha256"],
+        "the frozen clarification verifies against its recorded hash",
+    )
+
+    def eligible(requested_qty: float = 5.0) -> dict[str, Any]:
+        row = {
+            "ledger_schema_version": LEDGER_V2_SCHEMA_VERSION,
+            "candidate_valid": True,
+            "candidate_reasons_json": "[]",
+            "all_features_finite": True,
+            "decision_entry_complete": True,
+            "decision_book_age_s": 0.2,
+            "conservative_capacity_q10": 10.0,
+            "cost_q80": 0.01,
+            "requested_qty": requested_qty,
+            "eligibility_passed": True,
+        }
+        row["eligibility_sha256"] = evidence_eligibility_hash(row)
+        return row
 
     print("causal selection")
     rows = [
-        {"round_id": "r1", "seconds_left": 120, "score": 0.30, "forecast_id": "a"},
-        {"round_id": "r1", "seconds_left": 90, "score": 0.72, "forecast_id": "b"},
-        {"round_id": "r1", "seconds_left": 60, "score": 0.95, "forecast_id": "c"},
-        {"round_id": "r2", "seconds_left": 120, "score": 0.10, "forecast_id": "d"},
+        {**eligible(), "round_id": "r1", "seconds_left": 120,
+         "score": 0.30, "forecast_id": "a"},
+        {**eligible(), "round_id": "r1", "seconds_left": 90,
+         "score": 0.72, "forecast_id": "b"},
+        {**eligible(), "round_id": "r1", "seconds_left": 60,
+         "score": 0.95, "forecast_id": "c"},
+        {**eligible(), "round_id": "r2", "seconds_left": 120,
+         "score": 0.10, "forecast_id": "d"},
     ]
     picked = causal_selection(rows, 0.70)
     chk(len(picked) == 1, "a round with no qualifying checkpoint is NO_TRADE")
@@ -467,6 +556,21 @@ def selftest() -> int:
     chk(
         all(len([p for p in picked if p["round_id"] == r]) <= 1 for r in ("r1", "r2")),
         "at most one trade per round",
+    )
+    ineligible = {
+        **eligible(),
+        "round_id": "r1",
+        "seconds_left": 120,
+        "score": 0.99,
+        "forecast_id": "invalid-high",
+        "conservative_capacity_q10": 1.0,
+        "eligibility_passed": False,
+    }
+    ineligible["eligibility_sha256"] = evidence_eligibility_hash(ineligible)
+    picked = causal_selection([ineligible, rows[1]], 0.70)
+    chk(
+        [row["forecast_id"] for row in picked] == ["b"],
+        "an ineligible high score is skipped before threshold selection",
     )
 
     print("refusals")
@@ -538,11 +642,14 @@ def selftest() -> int:
             for left, score in ((120, 0.9 if i % 3 else 0.1), (90, 0.9), (60, 0.99)):
                 fid = f"f{i}_{left}"
                 rows.append({
+                    **eligible(),
                     "forecast_id": fid, "round_id": f"r{i}", "seconds_left": left,
                     "prediction_ts": stamp, "score": score, "model_sha256": "m" * 64,
+                    "bundle_manifest_sha256": "b" * 64,
                     "feature_schema_sha256": "f" * 64, "policy_sha256": "p" * 64,
                     "threshold_sha256": digest, "evidence_source": "l2_recorder",
                     "prereg_sha256": M0_V2["prereg_sha256"],
+                    "clarification_sha256": M0_V2["clarification_001_sha256"],
                     "evidence_run_id": "unit_run",
                     "model_frozen_at_s": freeze,
                     "threshold_frozen_at_s": art.created_at})
@@ -559,6 +666,12 @@ def selftest() -> int:
         "matched-random p-value is significant")
     chk(len((result.get("multiplicity") or {}).get("rejected", [])) > 0,
         "and it survives BH correction")
+    tampered = [dict(row) for row in rows]
+    tampered[0]["eligibility_sha256"] = "0" * 64
+    chk(
+        evaluate(tampered, outs, art)["status"] == "INADMISSIBLE",
+        "a tampered eligibility hash makes the evidence set inadmissible",
+    )
 
     leaked = [dict(rows[0], forecast_id="leak", prediction_ts=freeze - 1.0)] + rows
     chk(evaluate(leaked, outs, art)["status"] == "INADMISSIBLE",

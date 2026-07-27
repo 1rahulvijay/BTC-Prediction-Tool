@@ -40,14 +40,23 @@ jobs:
       - name: Builder integration (EXECUTES the label path)
         run: python -m backend.trade_forecast.test_builder_integration
 
+      - name: Complete-trade serving and optimizer integration
+        run: python -m backend.trade_forecast.test_complete_trade_forecast
+
       - name: Forward evidence isolation + frozen threshold artifact
         run: python backend/trade_forecast/forward_evidence.py --selftest
+
+      - name: Calibration-only threshold freezer
+        run: python -m backend.trade_forecast.freeze_complete_trade_threshold --selftest
 
       - name: M0 gates (matched-random, BH, profit concentration)
         run: python backend/trade_forecast/m0_gates.py --selftest
 
       - name: Ledger V2 end-to-end (real DuckDB write/read/resolve/evaluate)
         run: python -m backend.trade_forecast.test_ledger_v2_end_to_end
+
+      - name: Evidence completion (durable spool / eligibility / own-L2 outcomes)
+        run: python -m backend.trade_forecast.test_evidence_completion
 
       - name: Forward M0 V2 evaluator (incl. import boundary)
         run: python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest
@@ -103,6 +112,17 @@ jobs:
       - name: Every python file compiles
         run: python -m compileall -q backend
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Frontend lockfile, build and high-severity audit
+        run: |
+          npm ci
+          npm run build
+          npm audit --audit-level=high
+
   # Ubuntu module tests cannot verify Batch parsing, label targets, escaping or goto behaviour.
   # start.bat is the launch gate for every evidence run, so it is validated on the OS that runs it.
   startbat:
@@ -134,9 +154,12 @@ jobs:
         run: |
           python -m backend.trade_forecast.test_audit_fixes || exit /b 1
           python -m backend.trade_forecast.test_builder_integration || exit /b 1
+          python -m backend.trade_forecast.test_complete_trade_forecast || exit /b 1
           python backend/trade_forecast/forward_evidence.py --selftest || exit /b 1
+          python -m backend.trade_forecast.freeze_complete_trade_threshold --selftest || exit /b 1
           python backend/trade_forecast/m0_gates.py --selftest || exit /b 1
           python -m backend.trade_forecast.test_ledger_v2_end_to_end || exit /b 1
+          python -m backend.trade_forecast.test_evidence_completion || exit /b 1
           python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest || exit /b 1
           python -m backend.trade_forecast.test_serving_integration || exit /b 1
           python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1

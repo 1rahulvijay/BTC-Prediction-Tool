@@ -23,7 +23,7 @@ LEGACY_PATH = DATA / "saved_models" / ARTIFACT_NAME
 # champion.json must actually reach serving, or the atomic pointer is decorative.
 MODEL_PATH = LEGACY_PATH          # rebound by _resolve() below
 
-QUANTILES = (0.50, 0.80, 0.95)
+QUANTILES = (0.10, 0.50, 0.80, 0.95)
 
 _BUNDLE = None
 _MANIFEST: dict[str, Any] = {}
@@ -69,7 +69,10 @@ def load_model(force: bool = False):
         if not force and mtime == _MTIME:
             return _BUNDLE
         _MTIME = mtime
-        manifest, issues = artifact_issues(MODEL_PATH)
+        manifest, issues = artifact_issues(
+            MODEL_PATH,
+            require_training_dataset=not bool(_RESOLUTION.get("verified")),
+        )
         if issues:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "; ".join(issues)
             return None
@@ -101,6 +104,8 @@ def status() -> dict[str, Any]:
         "resolution_source": _RESOLUTION.get("source"),
         "bundle_verified": _RESOLUTION.get("verified"),
         "bundle_hash": _RESOLUTION.get("bundle_hash"),
+        "bundle_manifest_sha256": _RESOLUTION.get("bundle_manifest_sha256"),
+        "promoted_at": _RESOLUTION.get("promoted_at"),
         "evidence_mode": _RESOLUTION.get("evidence_mode"),
         "resolution_note": _RESOLUTION.get("note"),
         **_PIN.status(),

@@ -19,6 +19,7 @@ Refusal is the default. `--apply` performs the copy only when every gate passes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -39,6 +40,31 @@ MATRIX_MANIFEST = DATA / "research_matrix_1m.manifest.json"
 HEAD_HEALTH = DATA / "research" / "head_health" / "head_health.json"
 
 ARTIFACT_SUFFIXES = (".pkl", ".joblib")
+COMPLETE_TRADE_MANIFEST_FIELDS = (
+    "artifact_type",
+    "artifact_sha256",
+    "dataset_sha256",
+    "dataset_version",
+    "feature_schema_hash",
+    "policy_hash",
+    "code_hash",
+)
+MAIN_ENSEMBLE_MANIFEST_FIELDS = (
+    "artifact_type",
+    "artifact_hash",
+    "requested_days",
+    "matrix_requested_days",
+    "actual_start_ts_ms",
+    "actual_end_ts_ms",
+    "actual_span_days",
+    "row_count",
+    "matrix_coverage_ok",
+    "matrix_monthly_quality_passed",
+    "training_data_hash",
+    "source_manifest_hash",
+    "feature_schema_hash",
+    "code_hash",
+)
 
 
 def _load_json(path: Path) -> dict:
@@ -47,6 +73,24 @@ def _load_json(path: Path) -> dict:
             return json.load(handle)
     except Exception:
         return {}
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_candidates(artifact: Path) -> list[Path]:
+    return [
+        path for path in (
+            artifact.with_suffix(artifact.suffix + ".manifest.json"),
+            artifact.with_suffix(".manifest.json"),
+        )
+        if path.is_file()
+    ]
 
 
 def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
@@ -70,26 +114,74 @@ def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
     #   artifact_identity.artifact_manifest_path -> x.pkl.manifest.json (suffix APPENDED)
     # An artifact whose manifest uses the convention its own LOADER does not read is
     # effectively unmanifested at serving time, so the mix is reported, not smoothed over.
-    unmanifested, appended, replaced = [], [], []
+    unmanifested, ambiguous, invalid = [], [], []
+    policy_hashes: set[str] = set()
+    dataset_hashes: set[str] = set()
+    schema_hashes: set[str] = set()
+    manifest_families: set[str] = set()
     for p in artifacts:
-        has_appended = p.with_suffix(p.suffix + ".manifest.json").is_file()
-        has_replaced = p.with_suffix(".manifest.json").is_file()
-        if has_appended:
-            appended.append(p.name)
-        if has_replaced:
-            replaced.append(p.name)
-        if not (has_appended or has_replaced):
+        candidates = _manifest_candidates(p)
+        if not candidates:
             unmanifested.append(p.name)
+            continue
+        if len(candidates) != 1:
+            ambiguous.append(p.name)
+            continue
+        manifest_path = candidates[0]
+        manifest = _load_json(manifest_path)
+        complete_trade = "artifact_sha256" in manifest
+        required_fields = (
+            COMPLETE_TRADE_MANIFEST_FIELDS
+            if complete_trade
+            else MAIN_ENSEMBLE_MANIFEST_FIELDS
+        )
+        missing = [
+            field for field in required_fields
+            if manifest.get(field) in (None, "")
+        ]
+        problems = list(missing)
+        recorded_artifact_hash = manifest.get(
+            "artifact_sha256" if complete_trade else "artifact_hash"
+        )
+        if recorded_artifact_hash != _hash_file(p):
+            problems.append("artifact_sha256_mismatch")
+        if not complete_trade:
+            if int(manifest.get("requested_days") or 0) != int(
+                manifest.get("matrix_requested_days") or -1
+            ):
+                problems.append("requested_days_matrix_mismatch")
+            if not bool(manifest.get("matrix_coverage_ok")):
+                problems.append("matrix_coverage_failed")
+            if not bool(manifest.get("matrix_monthly_quality_passed")):
+                problems.append("matrix_monthly_quality_failed")
+            if requested_days is not None and int(
+                manifest.get("requested_days") or 0
+            ) != int(requested_days):
+                problems.append("artifact_requested_days_mismatch")
+        if problems:
+            invalid.append(f"{p.name}:{sorted(set(problems))}")
+            continue
+        manifest_families.add(
+            "complete_trade" if complete_trade else "main_ensemble"
+        )
+        if manifest.get("policy_hash"):
+            policy_hashes.add(str(manifest["policy_hash"]))
+        dataset_hashes.add(str(
+            manifest.get("dataset_sha256") or manifest.get("training_data_hash")
+        ))
+        schema_hashes.add(str(manifest["feature_schema_hash"]))
     if unmanifested:
         blockers.append(f"artifacts without a manifest: {sorted(unmanifested)}")
-    if appended and replaced:
+    if ambiguous:
         blockers.append(
-            f"MIXED manifest naming in one bundle - appended={sorted(appended)} "
-            f"replaced={sorted(replaced)}. A loader reads only one convention, so part of this "
-            f"bundle would serve unmanifested."
+            f"artifacts with both manifest conventions present: {sorted(ambiguous)}"
         )
-    if appended:
-        notes.append(f"manifest naming (appended .pkl.manifest.json): {sorted(appended)}")
+    if invalid:
+        blockers.append(f"invalid artifact manifests: {invalid}")
+    if len(policy_hashes) > 1:
+        blockers.append(
+            f"bundle artifacts carry different policy hashes: {sorted(policy_hashes)}"
+        )
 
     # 3/4. the matrix must have passed its own monthly gate, and match the claimed window.
     quality = _load_json(MATRIX_QUALITY)
@@ -141,6 +233,10 @@ def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
         "artifacts": sorted(p.name for p in artifacts),
         "blockers": blockers,
         "notes": notes,
+        "policy_hashes": sorted(policy_hashes),
+        "dataset_hashes": sorted(dataset_hashes),
+        "feature_schema_hashes": sorted(schema_hashes),
+        "manifest_families": sorted(manifest_families),
         "promotable": not blockers,
     }
 
@@ -155,6 +251,31 @@ def _bundle_hash(directory: Path) -> str:
             digest.update(path.relative_to(directory).as_posix().encode("utf-8"))
             digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def _write_bundle_manifest(directory: Path, report: dict) -> tuple[Path, str]:
+    """Commit the complete non-circular inventory of an immutable bundle."""
+    path = directory / "bundle_manifest.json"
+    entries = []
+    for item in sorted(directory.rglob("*")):
+        if item.is_file() and item != path:
+            entries.append({
+                "path": item.relative_to(directory).as_posix(),
+                "size": item.stat().st_size,
+                "sha256": _hash_file(item),
+            })
+    payload = {
+        "manifest_version": 1,
+        "entries": entries,
+        "policy_hashes": report.get("policy_hashes") or [],
+        "dataset_hashes": report.get("dataset_hashes") or [],
+        "feature_schema_hashes": report.get("feature_schema_hashes") or [],
+    }
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path, _hash_file(path)
 
 
 def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
@@ -179,29 +300,36 @@ def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
 
     source_hash = _bundle_hash(challenger)
     bundles = DATA / "saved_model_bundles"
-    target = bundles / f"bundle_{source_hash}"
+    bundles.mkdir(parents=True, exist_ok=True)
+    staging = bundles / f".staging_{source_hash}_{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(challenger, staging)
+    # Verify the copied source before adding the bundle-level inventory.
+    copied_source_hash = _bundle_hash(staging)
+    if copied_source_hash != source_hash:
+        shutil.rmtree(staging, ignore_errors=True)
+        print(f"[promote] ABORT: copied source hash {copied_source_hash[:16]} != "
+              f"source {source_hash[:16]}")
+        return 1
+    manifest_path, manifest_hash = _write_bundle_manifest(staging, report)
+    final_hash = _bundle_hash(staging)
+    target = bundles / f"bundle_{final_hash}"
     if target.exists():
-        # A pre-existing directory is NOT proof of correct content. Re-hash it; a truncated or
-        # tampered bundle from an earlier interrupted run must not be adopted silently.
         existing = _bundle_hash(target)
-        if existing != source_hash:
+        if existing != final_hash:
+            shutil.rmtree(staging, ignore_errors=True)
             print(f"[promote] ABORT: existing bundle content {existing[:16]} != "
-                  f"expected {source_hash[:16]}")
+                  f"expected {final_hash[:16]}")
             return 1
+        if _hash_file(target / manifest_path.name) != manifest_hash:
+            shutil.rmtree(staging, ignore_errors=True)
+            print("[promote] ABORT: existing bundle manifest differs")
+            return 1
+        shutil.rmtree(staging, ignore_errors=True)
         print(f"[promote] bundle already materialised and re-verified: {target}")
     else:
-        staging = bundles / f".staging_{source_hash}_{os.getpid()}"
-        if staging.exists():
-            shutil.rmtree(staging)
-        shutil.copytree(challenger, staging)
-        # Re-verify AFTER the copy: a truncated or corrupted write must not become the champion.
-        copied_hash = _bundle_hash(staging)
-        if copied_hash != source_hash:
-            shutil.rmtree(staging, ignore_errors=True)
-            print(f"[promote] ABORT: copied bundle hash {copied_hash[:16]} != "
-                  f"source {source_hash[:16]}")
-            return 1
-        staging.replace(target)          # atomic on the same filesystem
+        staging.replace(target)
         print(f"[promote] bundle materialised and re-verified: {target}")
 
     pointer = DATA / "champion.json"
@@ -212,7 +340,8 @@ def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
         except Exception:
             previous = None
     payload = {
-        "bundle_hash": source_hash,
+        "bundle_hash": final_hash,
+        "bundle_manifest_sha256": manifest_hash,
         "path": str(target),
         "promoted_at": time.time(),
         "requested_days": requested_days,
@@ -223,7 +352,7 @@ def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
     temporary = pointer.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temporary.replace(pointer)
-    print(f"[promote] champion -> {source_hash[:16]} ({target})")
+    print(f"[promote] champion -> {final_hash[:16]} ({target})")
     if payload["previous_bundle_hash"]:
         print(f"[promote] rollback: point champion.json back at "
               f"{payload['previous_bundle_hash'][:16]}")
@@ -232,6 +361,7 @@ def promote(challenger: Path, requested_days: int | None, apply: bool) -> int:
 
 def selftest() -> int:
     import tempfile
+    global DATA, MATRIX_QUALITY, MATRIX_MANIFEST, HEAD_HEALTH
 
     ok = True
 
@@ -239,6 +369,20 @@ def selftest() -> int:
         nonlocal ok
         print(f"  {'OK  ' if cond else 'FAIL'} {msg}")
         ok &= bool(cond)
+
+    def write_test_manifest(artifact: Path) -> None:
+        artifact.with_suffix(artifact.suffix + ".manifest.json").write_text(
+            json.dumps({
+                "artifact_type": "selftest",
+                "artifact_sha256": _hash_file(artifact),
+                "dataset_sha256": "d" * 64,
+                "dataset_version": "selftest",
+                "feature_schema_hash": "f" * 64,
+                "policy_hash": "p" * 64,
+                "code_hash": "c" * 64,
+            }),
+            encoding="utf-8",
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -257,11 +401,41 @@ def selftest() -> int:
             any("without a manifest" in b for b in r["blockers"]),
             "an artifact with no manifest is refused (no provenance)",
         )
-        (chal / "model_a.pkl.manifest.json").write_text("{}", encoding="utf-8")
+        write_test_manifest(chal / "model_a.pkl")
         r = gate_report(chal)
         chk(
-            not any("without a manifest" in b for b in r["blockers"]),
-            "a manifested artifact clears the manifest gate",
+            not any(
+                "without a manifest" in b or "invalid artifact manifests" in b
+                for b in r["blockers"]
+            ),
+            "a valid manifested artifact clears the manifest gate",
+        )
+        generic = root / "generic"
+        generic.mkdir()
+        generic_artifact = generic / "ensemble.pkl"
+        generic_artifact.write_bytes(b"ensemble")
+        generic_artifact.with_suffix(
+            generic_artifact.suffix + ".manifest.json"
+        ).write_text(json.dumps({
+            "artifact_type": "multi_model_ensemble",
+            "artifact_hash": _hash_file(generic_artifact),
+            "requested_days": 30,
+            "matrix_requested_days": 30,
+            "actual_start_ts_ms": 1,
+            "actual_end_ts_ms": 2,
+            "actual_span_days": 30.0,
+            "row_count": 100,
+            "matrix_coverage_ok": True,
+            "matrix_monthly_quality_passed": True,
+            "training_data_hash": "d" * 64,
+            "source_manifest_hash": "s" * 64,
+            "feature_schema_hash": "f" * 64,
+            "code_hash": "c" * 64,
+        }), encoding="utf-8")
+        r = gate_report(generic, requested_days=30)
+        chk(
+            not any("invalid artifact manifests" in b for b in r["blockers"]),
+            "the existing main-ensemble artifact_identity manifest remains supported",
         )
 
     # The wrong-key fail-open, pinned. head_health writes "state"; reading "status" found
@@ -272,8 +446,7 @@ def selftest() -> int:
         chal2 = root2 / "c"
         chal2.mkdir()
         (chal2 / "m.pkl").write_bytes(b"x")
-        (chal2 / "m.pkl.manifest.json").write_text("{}", encoding="utf-8")
-        global HEAD_HEALTH
+        write_test_manifest(chal2 / "m.pkl")
         original = HEAD_HEALTH
         try:
             hh = root2 / "hh.json"
@@ -323,6 +496,48 @@ def selftest() -> int:
         chk(_bundle_hash(b) == h1, "identical bundles in different paths hash the same")
         (b / "extra.pkl").write_bytes(b"x")
         chk(_bundle_hash(b) != h1, "an EXTRA file changes the bundle hash (no partial bundles)")
+
+    print("promotion publishes a verified bundle manifest")
+    with tempfile.TemporaryDirectory() as tmp4:
+        root4 = Path(tmp4)
+        challenger = root4 / "challenger"
+        challenger.mkdir()
+        artifact = challenger / "model.pkl"
+        artifact.write_bytes(b"model")
+        write_test_manifest(artifact)
+        quality_path = root4 / "quality.json"
+        quality_path.write_text(json.dumps({"passed": True, "months": []}), encoding="utf-8")
+        matrix_path = root4 / "matrix.json"
+        matrix_path.write_text(json.dumps({"requested_days": 30}), encoding="utf-8")
+        health_path = root4 / "health.json"
+        health_path.write_text(
+            json.dumps({"heads": {"p_hold": {"state": "USABLE"}}}), encoding="utf-8"
+        )
+        originals = (DATA, MATRIX_QUALITY, MATRIX_MANIFEST, HEAD_HEALTH)
+        try:
+            DATA = root4 / "data"
+            MATRIX_QUALITY = quality_path
+            MATRIX_MANIFEST = matrix_path
+            HEAD_HEALTH = health_path
+            chk(promote(challenger, 30, True) == 0, "a fully gated bundle promotes")
+            pointer = json.loads((DATA / "champion.json").read_text(encoding="utf-8"))
+            target = Path(pointer["path"])
+            chk(
+                _hash_file(target / "bundle_manifest.json")
+                == pointer["bundle_manifest_sha256"],
+                "pointer commits the bundle-manifest hash",
+            )
+            try:
+                from trade_forecast.champion_resolver import verify_bundle_manifest
+            except ImportError:
+                from backend.trade_forecast.champion_resolver import verify_bundle_manifest
+
+            verified, reason = verify_bundle_manifest(
+                target, pointer["bundle_manifest_sha256"]
+            )
+            chk(verified, f"serving verifies the complete inventory ({reason})")
+        finally:
+            DATA, MATRIX_QUALITY, MATRIX_MANIFEST, HEAD_HEALTH = originals
 
     # Live state: the real 1265d attempt FAILED its monthly gate on 2023-03, so a bundle claiming
     # that window must be refused right now. This is the gate doing its job, not a bug.
