@@ -15,6 +15,7 @@ import duckdb
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS quant_audit_events(
     event_id VARCHAR PRIMARY KEY,
+    event_index BIGINT,
     created_at_ns BIGINT NOT NULL,
     category VARCHAR NOT NULL,
     source_id VARCHAR NOT NULL,
@@ -32,6 +33,30 @@ class AuditLedger:
         self._lock = RLock()
         with self._connect() as con:
             con.execute(SCHEMA)
+            columns = {
+                str(row[1])
+                for row in con.execute(
+                    "PRAGMA table_info('quant_audit_events')"
+                ).fetchall()
+            }
+            if "event_index" not in columns:
+                con.execute(
+                    "ALTER TABLE quant_audit_events ADD COLUMN event_index BIGINT"
+                )
+            con.execute(
+                "WITH ranked AS ("
+                "  SELECT event_id, row_number() OVER "
+                "    (ORDER BY created_at_ns, event_id) - 1 AS event_index "
+                "  FROM quant_audit_events WHERE event_index IS NULL"
+                ") "
+                "UPDATE quant_audit_events "
+                "SET event_index = ranked.event_index "
+                "FROM ranked WHERE quant_audit_events.event_id = ranked.event_id"
+            )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS quant_audit_event_index "
+                "ON quant_audit_events(event_index)"
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[duckdb.DuckDBPyConnection]:
@@ -54,7 +79,6 @@ class AuditLedger:
         payload_json = json.dumps(
             dict(payload), sort_keys=True, separators=(",", ":"), default=str
         )
-        created_at_ns = created_at_ns or time.time_ns()
         with self._lock, self._connect() as con:
             con.execute("BEGIN TRANSACTION")
             try:
@@ -65,23 +89,31 @@ class AuditLedger:
                     [event_id],
                 ).fetchone()
                 if existing is not None:
-                    comparable = (
+                    comparable = [
                         category,
                         source_id,
                         payload_json,
-                        created_at_ns,
-                    )
-                    if tuple(existing[:4]) != comparable:
+                    ]
+                    stored = list(existing[:3])
+                    if created_at_ns is not None:
+                        comparable.append(created_at_ns)
+                        stored.append(existing[3])
+                    if stored != comparable:
                         raise ValueError(
                             "event_id collision with different immutable content"
                         )
                     con.execute("COMMIT")
                     return str(existing[5])
+                if created_at_ns is None:
+                    created_at_ns = time.time_ns()
+                if created_at_ns <= 0:
+                    raise ValueError("created_at_ns must be positive")
                 last = con.execute(
-                    "SELECT event_sha256 FROM quant_audit_events "
-                    "ORDER BY created_at_ns DESC, event_id DESC LIMIT 1"
+                    "SELECT event_index, event_sha256 FROM quant_audit_events "
+                    "ORDER BY event_index DESC LIMIT 1"
                 ).fetchone()
-                previous = str(last[0]) if last else "GENESIS"
+                event_index = int(last[0]) + 1 if last else 0
+                previous = str(last[1]) if last else "GENESIS"
                 raw = json.dumps(
                     {
                         "event_id": event_id,
@@ -96,9 +128,13 @@ class AuditLedger:
                 ).encode("utf-8")
                 digest = hashlib.sha256(raw).hexdigest()
                 con.execute(
-                    "INSERT INTO quant_audit_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO quant_audit_events "
+                    "(event_id, event_index, created_at_ns, category, source_id, "
+                    "payload_json, previous_sha256, event_sha256) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         event_id,
+                        event_index,
                         created_at_ns,
                         category,
                         source_id,
@@ -118,7 +154,7 @@ class AuditLedger:
             rows = con.execute(
                 "SELECT event_id, created_at_ns, category, source_id, payload_json, "
                 "previous_sha256, event_sha256 FROM quant_audit_events "
-                "ORDER BY created_at_ns, event_id"
+                "ORDER BY event_index"
             ).fetchall()
         previous = "GENESIS"
         reasons: list[str] = []

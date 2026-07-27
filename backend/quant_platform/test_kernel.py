@@ -49,7 +49,15 @@ def main() -> None:
     assert monitor.record(_event(3, 2_100_000_000)) is EventHealth.GAP
     ok, reasons = monitor.healthy(["binance-book"])
     assert not ok and reasons == ["binance-book:gap"]
-    assert monitor.record(_event(4, 2_200_000_000)) is EventHealth.HEALTHY
+    assert monitor.record(_event(4, 2_200_000_000)) is EventHealth.GAP
+    next_session = MarketEvent(
+        **{
+            **_event(1, 2_300_000_000).canonical_dict(),
+            "recording_session_id": "session-2",
+            "health": EventHealth.HEALTHY,
+        }
+    )
+    assert monitor.record(next_session) is EventHealth.HEALTHY
     clock.advance(2.0)
     assert monitor.snapshot()["binance-book"]["status"] == "STALE"
 
@@ -91,6 +99,12 @@ def main() -> None:
     assert engine.evaluate(intent, healthy).action is RiskAction.ALLOW
     blocked = RiskState(kill_switch=True, feed_age_ms=10.0, sequence_healthy=True)
     assert "kill_switch" in engine.evaluate(intent, blocked).reasons
+    invalid_risk = RiskState(
+        feed_age_ms=10.0,
+        sequence_healthy=True,
+        daily_pnl=float("nan"),
+    )
+    assert "invalid_risk_state" in engine.evaluate(intent, invalid_risk).reasons
 
     allocations = allocate(
         [
@@ -117,11 +131,18 @@ def main() -> None:
         ledger = AuditLedger(Path(tmp) / "audit.duckdb")
         digest = ledger.append("e1", "RISK", "test", {"allow": True}, 1)
         assert ledger.append("e1", "RISK", "test", {"allow": True}, 1) == digest
+        implicit_digest = ledger.append("implicit", "RISK", "test", {"allow": True})
+        assert (
+            ledger.append("implicit", "RISK", "test", {"allow": True})
+            == implicit_digest
+        )
         try:
             ledger.append("e1", "RISK", "test", {"allow": False}, 1)
             raise AssertionError("immutable collision was accepted")
         except ValueError:
             pass
+        ledger.append("e3", "RISK", "test", {"allow": True}, 2)
+        ledger.append("e2", "RISK", "test", {"allow": True}, 2)
         assert ledger.verify() == (True, [])
 
     print("quant-platform kernel: ALL PASS")

@@ -24,6 +24,14 @@ class SourceHealth:
 
 
 class FeedHealthMonitor:
+    _SEVERITY = {
+        EventHealth.HEALTHY: 0,
+        EventHealth.DEGRADED: 1,
+        EventHealth.GAP: 2,
+        EventHealth.STALE: 3,
+        EventHealth.INVALID: 4,
+    }
+
     def __init__(self, stale_after_s: float = 5.0, clock: Clock | None = None):
         if stale_after_s <= 0:
             raise ValueError("stale_after_s must be positive")
@@ -43,8 +51,11 @@ class FeedHealthMonitor:
         sequence = self._numeric_sequence(event.sequence_id)
         with self._lock:
             state = self._sources.get(event.source_id)
-            is_new_source = state is None
-            if state is None:
+            is_new_session = (
+                state is None
+                or state.recording_session_id != event.recording_session_id
+            )
+            if is_new_session:
                 state = SourceHealth(
                     source_id=event.source_id,
                     recording_session_id=event.recording_session_id,
@@ -53,16 +64,13 @@ class FeedHealthMonitor:
                     last_sequence=sequence,
                 )
                 self._sources[event.source_id] = state
-            elif state.recording_session_id != event.recording_session_id:
-                state.recording_session_id = event.recording_session_id
-                state.last_sequence = None
 
             status = event.health
-            if not is_new_source and event.receive_ts_ns < state.last_receive_ts_ns:
+            if not is_new_session and event.receive_ts_ns < state.last_receive_ts_ns:
                 state.out_of_order_count += 1
                 status = EventHealth.INVALID
             elif (
-                not is_new_source
+                not is_new_session
                 and
                 sequence is not None
                 and state.last_sequence is not None
@@ -71,7 +79,7 @@ class FeedHealthMonitor:
                 state.out_of_order_count += 1
                 status = EventHealth.INVALID
             elif (
-                not is_new_source
+                not is_new_session
                 and
                 sequence is not None
                 and state.last_sequence is not None
@@ -79,6 +87,11 @@ class FeedHealthMonitor:
             ):
                 state.gap_count += sequence - state.last_sequence - 1
                 status = EventHealth.GAP
+
+            if not is_new_session and (
+                self._SEVERITY[state.status] > self._SEVERITY[status]
+            ):
+                status = state.status
 
             state.event_count += 1
             if event.health is not EventHealth.HEALTHY:

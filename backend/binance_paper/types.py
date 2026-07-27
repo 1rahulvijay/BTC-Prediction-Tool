@@ -106,6 +106,7 @@ class ExecutionResult:
     average_price: float | None
     filled_notional: float
     fee: float
+    realized_pnl_gross: float
     fill_ts_ns: int
     reason_codes: tuple[str, ...]
 
@@ -119,6 +120,7 @@ class PositionState:
     fees_paid: float = 0.0
     funding_pnl: float = 0.0
     cash_balance: float = 0.0
+    leverage: float = 1.0
     updated_at_ns: int = 0
 
     @property

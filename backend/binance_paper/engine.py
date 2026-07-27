@@ -48,7 +48,12 @@ class BinancePaperEngine:
         )
         if not all(math.isfinite(value) for value in numeric):
             raise ValueError("engine configuration must be finite")
-        if starting_capital <= 0 or taker_fee_bps < 0 or max_slippage_bps < 0:
+        if (
+            starting_capital <= 0
+            or taker_fee_bps < 0
+            or max_slippage_bps < 0
+            or not 0 <= maintenance_margin_rate < 1
+        ):
             raise ValueError("invalid paper engine configuration")
         self.instrument = instrument
         self.starting_capital = starting_capital
@@ -78,6 +83,7 @@ class BinancePaperEngine:
             "fees_paid",
             "funding_pnl",
             "cash_balance",
+            "leverage",
         ):
             if abs(float(getattr(replayed, name)) - float(getattr(self.position, name))) > tolerance:
                 reasons.append(f"position_mismatch:{name}")
@@ -88,14 +94,28 @@ class BinancePaperEngine:
         self, request: OrderRequest, book: BookSnapshot, mark_price: float
     ) -> RiskState:
         age_ms = max(0.0, (request.decision_ts_ns - book.receive_ts_ns) / 1_000_000.0)
+        unrealized_pnl = self.position.quantity * (
+            mark_price - self.position.average_entry
+        )
+        day_ns = 24 * 60 * 60 * 1_000_000_000
+        daily_pnl = (
+            self.store.pnl_since(self.instrument, request.decision_ts_ns - day_ns)
+            + unrealized_pnl
+        )
+        weekly_pnl = (
+            self.store.pnl_since(
+                self.instrument, request.decision_ts_ns - 7 * day_ns
+            )
+            + unrealized_pnl
+        )
         return RiskState(
             kill_switch=self.kill_switch,
             position_known=self.position_known,
             model_available=request.model_available,
             feed_age_ms=age_ms,
             sequence_healthy=book.sequence_healthy,
-            daily_pnl=0.0,
-            weekly_pnl=0.0,
+            daily_pnl=daily_pnl,
+            weekly_pnl=weekly_pnl,
             open_notional=abs(self.position.quantity) * mark_price,
             correlated_exposure=abs(self.position.quantity) * mark_price,
         )
@@ -115,7 +135,11 @@ class BinancePaperEngine:
                 return result
             if request.instrument != self.instrument or book.instrument != self.instrument:
                 return self._reject(request, book.receive_ts_ns, ("instrument_mismatch",))
-            mark = float(mark_price or (book.bids[0].price + book.asks[0].price) / 2)
+            mark = float(
+                (book.bids[0].price + book.asks[0].price) / 2
+                if mark_price is None
+                else mark_price
+            )
             if not math.isfinite(mark) or mark <= 0:
                 return self._reject(request, book.receive_ts_ns, ("invalid_mark_price",))
 
@@ -169,6 +193,17 @@ class BinancePaperEngine:
                 fill_reasons.append("insufficient_depth")
             if reduce_only_capped:
                 fill_reasons.append("reduce_only_capped_to_position")
+            fill_ts_ns = max(request.decision_ts_ns, book.receive_ts_ns)
+            next_position = PositionState(**asdict(self.position))
+            realized_pnl_gross = apply_position_fill(
+                next_position,
+                request.side,
+                depth_fill.filled_quantity,
+                depth_fill.average_price,
+                fee,
+                fill_ts_ns,
+                request.leverage,
+            )
             result = ExecutionResult(
                 order_id=request.order_id,
                 request_sha256=request.request_sha256,
@@ -178,17 +213,9 @@ class BinancePaperEngine:
                 average_price=depth_fill.average_price,
                 filled_notional=depth_fill.notional,
                 fee=fee,
-                fill_ts_ns=max(request.decision_ts_ns, book.receive_ts_ns),
+                realized_pnl_gross=realized_pnl_gross,
+                fill_ts_ns=fill_ts_ns,
                 reason_codes=tuple(fill_reasons),
-            )
-            next_position = PositionState(**asdict(self.position))
-            apply_position_fill(
-                next_position,
-                request.side,
-                result.filled_quantity,
-                result.average_price,
-                fee,
-                result.fill_ts_ns,
             )
             self.store.commit_order(request, result, next_position)
             self.position = next_position
@@ -206,6 +233,7 @@ class BinancePaperEngine:
             average_price=None,
             filled_notional=0.0,
             fee=0.0,
+            realized_pnl_gross=0.0,
             fill_ts_ns=max(request.decision_ts_ns, fill_ts_ns),
             reason_codes=reasons or ("rejected",),
         )
@@ -254,15 +282,16 @@ class BinancePaperEngine:
     def account(
         self,
         mark_price: float,
-        leverage: float = 1.0,
+        leverage: float | None = None,
         timestamp_ns: int | None = None,
         persist: bool = True,
     ) -> dict:
+        effective_leverage = self.position.leverage if leverage is None else leverage
         if (
             not math.isfinite(mark_price)
             or mark_price <= 0
-            or not math.isfinite(leverage)
-            or leverage <= 0
+            or not math.isfinite(effective_leverage)
+            or effective_leverage <= 0
         ):
             raise ValueError("mark_price and leverage must be finite and positive")
         quantity = self.position.quantity
@@ -272,17 +301,17 @@ class BinancePaperEngine:
             else 0.0
         )
         notional = abs(quantity) * mark_price
-        initial_margin = notional / leverage
+        initial_margin = notional / effective_leverage
         equity = self.position.cash_balance + unrealized
         available = equity - initial_margin
         liquidation_price = None
         if quantity > 0:
             liquidation_price = self.position.average_entry * (
-                1.0 - 1.0 / leverage + self.maintenance_margin_rate
+                1.0 - 1.0 / effective_leverage + self.maintenance_margin_rate
             )
         elif quantity < 0:
             liquidation_price = self.position.average_entry * (
-                1.0 + 1.0 / leverage - self.maintenance_margin_rate
+                1.0 + 1.0 / effective_leverage - self.maintenance_margin_rate
             )
         if liquidation_price is not None:
             liquidation_price = max(0.0, liquidation_price)
@@ -293,6 +322,7 @@ class BinancePaperEngine:
             "position_side": self.position.side,
             "position_quantity": quantity,
             "average_entry": self.position.average_entry,
+            "leverage": effective_leverage,
             "realized_pnl_gross": self.position.realized_pnl_gross,
             "fees_paid": self.position.fees_paid,
             "funding_pnl": self.position.funding_pnl,

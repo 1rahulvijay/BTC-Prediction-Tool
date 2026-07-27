@@ -78,9 +78,15 @@ Implemented accounting and execution behavior:
 - reduce-only validation and position-size capping;
 - gross realized PnL, fees, funding, cash, unrealized PnL, equity, initial
   margin, and available balance;
+- per-fill realized PnL persisted separately from cumulative position PnL;
+- rolling 24-hour and 7-day net PnL, including fees, funding, and current
+  unrealized PnL, supplied to the daily/weekly loss gates;
+- position leverage persisted and replayed, with conservative leverage on
+  same-side position increases;
 - conservative liquidation-price estimate;
 - long funding debits and short funding credits for positive rates;
 - immutable order IDs and exact idempotent retry;
+- immutable funding IDs: exact retries are ignored and payload collisions fail;
 - rejection on stale data, sequence failure, unknown position, unavailable
   model, kill switch, leverage, notional, loss, and correlated-exposure gates;
 - atomic order plus position persistence;
@@ -155,6 +161,28 @@ or running backend code differs from disk.
 
 The frontend explicitly says strategy order generation is not wired. It does
 not imply that an empty ledger is active trading.
+
+The frontend also leaves the loading screen after ten seconds when no backend
+message has ever arrived. It then exposes the operational tabs with explicit
+`unavailable` states. Missing account values render as `--`, never as `$0.00`.
+
+### Final integrity hardening
+
+The final audit found and corrected issues that the first happy-path tests did
+not cover:
+
+- audit events now use a monotonic `event_index`; equal timestamps cannot
+  reorder and break the hash chain;
+- an audit retry that omitted its generated timestamp remains idempotent;
+- sequence gaps and invalid ordering remain latched for the recording session
+  and clear only when a new session begins;
+- non-finite risk state values block orders instead of bypassing comparisons;
+- daily and weekly loss limits use persisted paper outcomes instead of constant
+  zero placeholders;
+- paper-position leverage survives restart and controls margin/liquidation
+  reporting;
+- funding identifier collisions with different economics raise an error;
+- explicit zero/invalid mark prices cannot silently fall back to book mid.
 
 ## Requirement Reconciliation
 
@@ -231,6 +259,7 @@ python -m backend.binance_paper.test_engine
 python -m backend.quant_platform.test_research_validation
 python -m py_compile backend\server.py
 npm.cmd run build
+npm.cmd audit --audit-level=high
 set BTC_VALIDATE_STARTUP=1
 call start.bat
 ```
@@ -250,14 +279,35 @@ The browser build was checked for the two new tabs and their DOM views with the
 backend stopped. The expected degraded behavior is a visible unavailable state,
 not fake data.
 
-The full existing repository invariant matrix must remain green before this
-branch is proposed for merge.
+On 2026-07-27 the complete deterministic repository matrix passed locally:
+
+- Complete Trade audit, builder, serving, freeze, threshold, evaluator,
+  evidence-completion, and Ledger V2 tests;
+- 3,600 Ledger V2 forecasts read/resolved across 1,200 rounds;
+- head permissions, promotion, and long-window preflight;
+- multi-venue recorder, admissibility, and collector-integrity tests;
+- shared kernel, Binance paper accounting, and research-validation tests;
+- all 16 registered paper strategies reconciled across server and UI;
+- all seven preregistration hashes intact;
+- repository-wide Python compilation and Pyflakes checks;
+- Vite production build and npm audit with zero vulnerabilities;
+- Windows launcher parsing with a 1,265-day source-backed window, 98/2 gate,
+  and full-data refit enabled.
+
+The browser test confirmed that with port 8000 closed the splash exits, the
+dashboard is reachable, the connection reads `Disconnected`, and both new
+operational views read `unavailable` rather than displaying fabricated values.
+
+The remote GitHub Actions run did not execute repository steps because the
+runner stopped before checkout due to the repository/account runner billing
+lock. This is an external CI availability blocker, not a passing remote gate.
 
 ## Next Valid Sequence
 
 1. Run the complete deterministic regression matrix.
 2. Push `quant-platform-v1`.
-3. Let CI run; inspect logs rather than relying only on a badge.
+3. Restore GitHub Actions runner availability and obtain a run in which the
+   actual steps execute and pass.
 4. Deploy the existing recorders without altering their frozen evidence schema.
 5. Add a canonical-event adapter beside each recorder and compare counts,
    sequence gaps, timestamps, and hashes in shadow.

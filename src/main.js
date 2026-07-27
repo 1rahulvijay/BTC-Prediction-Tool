@@ -43,6 +43,8 @@ let activePlainTF = 5;   // pruned 2026-06-21: 1m removed, default to the 5m mar
 let activePtbHorizon = 5;
 let lastPlainData = null;
 let replayPollTimer = null;
+let connectionFailureCount = 0;
+let backendMessageSeen = false;
 
 const API_URL = 'ws://127.0.0.1:8000/ws';
 const HTTP_API_BASE = 'http://127.0.0.1:8000';
@@ -231,6 +233,12 @@ function init() {
   initRSIChart();
   initMACDChart();
   connectWebSocket();
+  setTimeout(() => {
+    if (!backendMessageSeen) {
+      clearSplash();
+      fetchPlatformStatus();
+    }
+  }, 10000);
   
   els.verifyTabs.forEach(tab => {
     tab.addEventListener('click', (e) => {
@@ -447,6 +455,7 @@ function connectWebSocket() {
   ws = new WebSocket(API_URL);
 
   ws.onopen = () => {
+    connectionFailureCount = 0;
     els.liveDot.classList.remove('disconnected');
     els.connection.className = 'connection-status connected';
     els.connection.textContent = '● Connected';
@@ -459,6 +468,7 @@ function connectWebSocket() {
   };
 
   ws.onmessage = (event) => {
+    backendMessageSeen = true;
     const msg = JSON.parse(event.data);
     if (msg.type === 'status') {
       updateLoadingStatus(msg);
@@ -493,9 +503,14 @@ function connectWebSocket() {
   };
 
   ws.onclose = () => {
+    connectionFailureCount += 1;
     els.liveDot.classList.add('disconnected');
     els.connection.className = 'connection-status disconnected';
     els.connection.textContent = '● Disconnected';
+    if (connectionFailureCount >= 3) {
+      clearSplash();
+      fetchPlatformStatus();
+    }
     setTimeout(connectWebSocket, 3000);
   };
 
@@ -603,6 +618,7 @@ function escapePlatformText(value) {
 }
 
 function platformMoney(value) {
+  if (value === null || value === undefined || value === '') return '--';
   const number = Number(value);
   return Number.isFinite(number)
     ? number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
@@ -657,7 +673,7 @@ function renderBinancePaperStatus(payload) {
   }
   orders.innerHTML = `
     <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:.82em">
-      <thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Status</th><th>Filled</th><th>Average</th><th>Fee</th><th>Reason</th></tr></thead>
+      <thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Status</th><th>Filled</th><th>Average</th><th>Realized</th><th>Fee</th><th>Reason</th></tr></thead>
       <tbody>${rows.map(row => `
         <tr>
           <td>${new Date(Number(row.fill_ts_ns) / 1e6).toLocaleTimeString()}</td>
@@ -666,6 +682,7 @@ function renderBinancePaperStatus(payload) {
           <td>${escapePlatformText(row.status)}</td>
           <td>${Number(row.filled_quantity || 0).toFixed(6)} BTC</td>
           <td>${platformMoney(row.average_price)}</td>
+          <td>${platformMoney(row.realized_pnl_gross)}</td>
           <td>${platformMoney(row.fee)}</td>
           <td>${escapePlatformText(row.reason_codes || 'OK')}</td>
         </tr>`).join('')}</tbody>

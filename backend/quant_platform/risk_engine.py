@@ -20,6 +20,18 @@ class RiskLimits:
     max_weekly_loss: float = 300.0
     max_feed_age_ms: float = 2_000.0
 
+    def __post_init__(self) -> None:
+        values = (
+            self.max_leverage,
+            self.max_notional,
+            self.max_correlated_exposure,
+            self.max_daily_loss,
+            self.max_weekly_loss,
+            self.max_feed_age_ms,
+        )
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            raise ValueError("all risk limits must be finite and positive")
+
 
 @dataclass(frozen=True, slots=True)
 class RiskState:
@@ -72,17 +84,31 @@ class RiskEngine:
             reasons.append("invalid_notional")
         if intent.leverage <= 0 or intent.leverage > self.limits.max_leverage:
             reasons.append("leverage_limit")
+        risk_values = (
+            state.daily_pnl,
+            state.weekly_pnl,
+            state.open_notional,
+            state.correlated_exposure,
+        )
+        risk_state_valid = all(math.isfinite(value) for value in risk_values)
+        if not risk_state_valid:
+            reasons.append("invalid_risk_state")
         if not intent.reduce_only:
-            if state.open_notional + intent.notional > self.limits.max_notional:
+            if (
+                risk_state_valid
+                and state.open_notional + intent.notional > self.limits.max_notional
+            ):
                 reasons.append("notional_limit")
             if (
+                risk_state_valid
+                and
                 state.correlated_exposure + intent.notional
                 > self.limits.max_correlated_exposure
             ):
                 reasons.append("correlated_exposure_limit")
-            if state.daily_pnl <= -self.limits.max_daily_loss:
+            if risk_state_valid and state.daily_pnl <= -self.limits.max_daily_loss:
                 reasons.append("daily_loss_limit")
-            if state.weekly_pnl <= -self.limits.max_weekly_loss:
+            if risk_state_valid and state.weekly_pnl <= -self.limits.max_weekly_loss:
                 reasons.append("weekly_loss_limit")
         return RiskDecision(
             RiskAction.BLOCK if reasons else RiskAction.ALLOW,

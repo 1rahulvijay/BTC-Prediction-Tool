@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS paper_orders(
     average_price DOUBLE,
     filled_notional DOUBLE NOT NULL,
     fee DOUBLE NOT NULL,
+    realized_pnl_gross DOUBLE NOT NULL,
     status VARCHAR NOT NULL,
     reduce_only BOOLEAN NOT NULL,
     leverage DOUBLE NOT NULL,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS paper_positions(
     fees_paid DOUBLE NOT NULL,
     funding_pnl DOUBLE NOT NULL,
     cash_balance DOUBLE NOT NULL,
+    leverage DOUBLE NOT NULL,
     updated_at_ns BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS paper_funding(
@@ -75,6 +77,25 @@ class BinancePaperStore:
         self._lock = RLock()
         with self._connect() as con:
             con.execute(SCHEMA)
+            order_columns = {
+                str(row[1])
+                for row in con.execute("PRAGMA table_info('paper_orders')").fetchall()
+            }
+            if "realized_pnl_gross" not in order_columns:
+                con.execute(
+                    "ALTER TABLE paper_orders ADD COLUMN "
+                    "realized_pnl_gross DOUBLE DEFAULT 0.0"
+                )
+            position_columns = {
+                str(row[1])
+                for row in con.execute(
+                    "PRAGMA table_info('paper_positions')"
+                ).fetchall()
+            }
+            if "leverage" not in position_columns:
+                con.execute(
+                    "ALTER TABLE paper_positions ADD COLUMN leverage DOUBLE DEFAULT 1.0"
+                )
             existing = con.execute(
                 "SELECT value FROM paper_meta WHERE key = 'starting_capital'"
             ).fetchone()
@@ -102,7 +123,7 @@ class BinancePaperStore:
         with self._lock, self._connect() as con:
             row = con.execute(
                 "SELECT instrument, quantity, average_entry, realized_pnl_gross, "
-                "fees_paid, funding_pnl, cash_balance, updated_at_ns "
+                "fees_paid, funding_pnl, cash_balance, leverage, updated_at_ns "
                 "FROM paper_positions WHERE instrument = ?",
                 [instrument],
             ).fetchone()
@@ -114,13 +135,25 @@ class BinancePaperStore:
         with self._lock, self._connect() as con:
             row = con.execute(
                 "SELECT request_sha256, status, requested_quantity, filled_quantity, "
-                "average_price, filled_notional, fee, fill_ts_ns, reason_codes "
+                "average_price, filled_notional, fee, realized_pnl_gross, "
+                "fill_ts_ns, reason_codes "
                 "FROM paper_orders WHERE order_id = ?",
                 [order_id],
             ).fetchone()
         if row is None:
             return None
-        request_sha, status, requested, filled, avg, notional, fee, fill_ts, reasons = row
+        (
+            request_sha,
+            status,
+            requested,
+            filled,
+            avg,
+            notional,
+            fee,
+            realized,
+            fill_ts,
+            reasons,
+        ) = row
         result = ExecutionResult(
             order_id=order_id,
             request_sha256=request_sha,
@@ -130,6 +163,7 @@ class BinancePaperStore:
             average_price=avg,
             filled_notional=notional,
             fee=fee,
+            realized_pnl_gross=realized,
             fill_ts_ns=fill_ts,
             reason_codes=tuple(filter(None, str(reasons).split("|"))),
         )
@@ -145,8 +179,12 @@ class BinancePaperStore:
             con.execute("BEGIN TRANSACTION")
             try:
                 con.execute(
-                    "INSERT INTO paper_orders VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO paper_orders "
+                    "(order_id, request_sha256, decision_ts_ns, fill_ts_ns, "
+                    "instrument, strategy_id, side, requested_quantity, "
+                    "filled_quantity, average_price, filled_notional, fee, "
+                    "realized_pnl_gross, status, reduce_only, leverage, reason_codes) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         request.order_id,
                         request.request_sha256,
@@ -160,6 +198,7 @@ class BinancePaperStore:
                         result.average_price,
                         result.filled_notional,
                         result.fee,
+                        result.realized_pnl_gross,
                         result.status.value,
                         request.reduce_only,
                         request.leverage,
@@ -167,8 +206,10 @@ class BinancePaperStore:
                     ],
                 )
                 con.execute(
-                    "INSERT OR REPLACE INTO paper_positions VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO paper_positions "
+                    "(instrument, quantity, average_entry, realized_pnl_gross, "
+                    "fees_paid, funding_pnl, cash_balance, leverage, updated_at_ns) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     list(asdict(position).values()),
                 )
                 con.execute("COMMIT")
@@ -188,10 +229,24 @@ class BinancePaperStore:
         with self._lock, self._connect() as con:
             con.execute("BEGIN TRANSACTION")
             try:
-                exists = con.execute(
-                    "SELECT 1 FROM paper_funding WHERE funding_id = ?", [funding_id]
+                existing = con.execute(
+                    "SELECT instrument, timestamp_ns, position_quantity, mark_price, "
+                    "funding_rate, funding_pnl FROM paper_funding WHERE funding_id = ?",
+                    [funding_id],
                 ).fetchone()
-                if exists:
+                if existing is not None:
+                    incoming = (
+                        position.instrument,
+                        timestamp_ns,
+                        position.quantity,
+                        mark_price,
+                        funding_rate,
+                        funding_pnl,
+                    )
+                    if tuple(existing) != incoming:
+                        raise ValueError(
+                            "funding_id collision with different immutable content"
+                        )
                     con.execute("COMMIT")
                     return False
                 con.execute(
@@ -207,8 +262,10 @@ class BinancePaperStore:
                     ],
                 )
                 con.execute(
-                    "INSERT OR REPLACE INTO paper_positions VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO paper_positions "
+                    "(instrument, quantity, average_entry, realized_pnl_gross, "
+                    "fees_paid, funding_pnl, cash_balance, leverage, updated_at_ns) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     list(asdict(position).values()),
                 )
                 con.execute("COMMIT")
@@ -248,7 +305,8 @@ class BinancePaperStore:
             rows = con.execute(
                 "SELECT order_id, decision_ts_ns, fill_ts_ns, instrument, strategy_id, "
                 "side, requested_quantity, filled_quantity, average_price, "
-                "filled_notional, fee, status, reduce_only, leverage, reason_codes "
+                "filled_notional, fee, realized_pnl_gross, status, reduce_only, "
+                "leverage, reason_codes "
                 "FROM paper_orders ORDER BY fill_ts_ns DESC, order_id DESC LIMIT ?",
                 [limit],
             ).fetchall()
@@ -264,6 +322,7 @@ class BinancePaperStore:
             "average_price",
             "filled_notional",
             "fee",
+            "realized_pnl_gross",
             "status",
             "reduce_only",
             "leverage",
@@ -274,13 +333,27 @@ class BinancePaperStore:
             "recent_orders": [dict(zip(keys, row, strict=True)) for row in rows],
         }
 
+    def pnl_since(self, instrument: str, cutoff_ns: int) -> float:
+        with self._lock, self._connect() as con:
+            order_pnl = con.execute(
+                "SELECT coalesce(sum(realized_pnl_gross - fee), 0.0) "
+                "FROM paper_orders WHERE instrument = ? AND fill_ts_ns >= ?",
+                [instrument, cutoff_ns],
+            ).fetchone()[0]
+            funding_pnl = con.execute(
+                "SELECT coalesce(sum(funding_pnl), 0.0) "
+                "FROM paper_funding WHERE instrument = ? AND timestamp_ns >= ?",
+                [instrument, cutoff_ns],
+            ).fetchone()[0]
+        return float(order_pnl) + float(funding_pnl)
+
     def replay_position(
         self, instrument: str, starting_capital: float
     ) -> PositionState:
         state = PositionState(instrument=instrument, cash_balance=starting_capital)
         with self._lock, self._connect() as con:
             orders = con.execute(
-                "SELECT side, filled_quantity, average_price, fee, fill_ts_ns "
+                "SELECT side, filled_quantity, average_price, fee, leverage, fill_ts_ns "
                 "FROM paper_orders WHERE instrument = ? AND filled_quantity > 0 "
                 "ORDER BY fill_ts_ns, order_id",
                 [instrument],
@@ -290,14 +363,20 @@ class BinancePaperStore:
                 "WHERE instrument = ? ORDER BY timestamp_ns, funding_id",
                 [instrument],
             ).fetchall()
-        events = [(row[4], 0, row) for row in orders] + [
+        events = [(row[5], 0, row) for row in orders] + [
             (row[0], 1, row) for row in funding
         ]
         for _, kind, row in sorted(events, key=lambda item: (item[0], item[1])):
             if kind == 0:
-                side, quantity, price, fee, timestamp_ns = row
+                side, quantity, price, fee, leverage, timestamp_ns = row
                 apply_position_fill(
-                    state, OrderSide(side), quantity, price, fee, timestamp_ns
+                    state,
+                    OrderSide(side),
+                    quantity,
+                    price,
+                    fee,
+                    timestamp_ns,
+                    leverage,
                 )
             else:
                 timestamp_ns, funding_pnl = row
@@ -314,6 +393,7 @@ def apply_position_fill(
     price: float,
     fee: float,
     timestamp_ns: int,
+    leverage: float,
 ) -> float:
     from .types import OrderSide
 
@@ -323,12 +403,14 @@ def apply_position_fill(
     if abs(old_quantity) <= 1e-12:
         state.quantity = delta
         state.average_entry = price
+        state.leverage = leverage
     elif old_quantity * delta > 0:
         total = abs(old_quantity) + abs(delta)
         state.average_entry = (
             abs(old_quantity) * state.average_entry + abs(delta) * price
         ) / total
         state.quantity = old_quantity + delta
+        state.leverage = min(state.leverage, leverage)
     else:
         close_quantity = min(abs(old_quantity), abs(delta))
         realized = (
@@ -340,11 +422,13 @@ def apply_position_fill(
         if abs(new_quantity) <= 1e-12:
             state.quantity = 0.0
             state.average_entry = 0.0
+            state.leverage = 1.0
         elif old_quantity * new_quantity > 0:
             state.quantity = new_quantity
         else:
             state.quantity = new_quantity
             state.average_entry = price
+            state.leverage = leverage
     state.realized_pnl_gross += realized
     state.fees_paid += fee
     state.cash_balance += realized - fee
