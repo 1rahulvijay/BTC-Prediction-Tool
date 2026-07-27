@@ -1,5 +1,12 @@
 # Documentation Index
 
+## Latest quant-platform implementation
+- **[QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md](active/QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md)** -
+  canonical integration branch, shared event/health/risk/governance kernel, isolated Binance
+  futures paper accounting, reusable research promotion gates, read-only paper and system-health
+  views, exact completed/partial/not-implemented status, safety state, and validation commands.
+  This is engineering infrastructure, not evidence of a profitable strategy.
+
 ## Latest serving and evidence completion
 - **[SERVING_EVIDENCE_COMPLETION_2026-07-27.md](active/SERVING_EVIDENCE_COMPLETION_2026-07-27.md)** -
   immutable Clarification-001 candidate eligibility, direct execution-capacity q10, durable
