@@ -88,7 +88,6 @@ class BinancePaperEngine:
         self, request: OrderRequest, book: BookSnapshot, mark_price: float
     ) -> RiskState:
         age_ms = max(0.0, (request.decision_ts_ns - book.receive_ts_ns) / 1_000_000.0)
-        account = self.account(mark_price, persist=False)
         return RiskState(
             kill_switch=self.kill_switch,
             position_known=self.position_known,

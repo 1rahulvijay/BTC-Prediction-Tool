@@ -235,6 +235,17 @@ set BTC_VALIDATE_STARTUP=1
 call start.bat
 ```
 
+The optional multi-gigabyte local Complete Trade pilot fixture is now explicit:
+
+```powershell
+set BTC_TEST_COMPLETE_TRADE_PILOT=1
+python -m backend.trade_forecast.test_complete_trade_forecast
+```
+
+Clean CI does not contain ignored `data/` fixtures. Before this correction, CI
+silently skipped that branch while any developer with an old fixture failed the
+same invariant suite. With the flag set, a missing or stale fixture fails closed.
+
 The browser build was checked for the two new tabs and their DOM views with the
 backend stopped. The expected degraded behavior is a visible unavailable state,
 not fake data.

@@ -8,7 +8,7 @@ import json
 import math
 from pathlib import Path
 import random
-from statistics import NormalDist, mean, pstdev
+from statistics import NormalDist, mean
 from typing import Iterable, Sequence
 
 
