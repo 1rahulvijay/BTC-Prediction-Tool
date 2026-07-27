@@ -1,6 +1,11 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[TRADE_POLICY_HEADS_120D_RESEARCH.md](active/TRADE_POLICY_HEADS_120D_RESEARCH.md)** -
+  isolated purged walk-forward LONG, SHORT, and ACT/SKIP research lane; post-cost
+  basis-point labels, non-overlapping economic evaluation, sequential laptop-safe
+  fitting, research-only artifacts, commands, and measured smoke validation.
+  Dynamic exit remains excluded under its frozen closure record.
 - **[TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md](active/TRADE_LIFECYCLE_AND_CAPITAL_PRESERVATION_2026-07-27.md)** -
   lifecycle requirement reconciliation; candidate expiry and entry bounds,
   truthful uncertainty/economics metadata, validated paper order states,
