@@ -1,6 +1,11 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md](active/CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md)** -
+  frozen, research-only decomposition of trade selection into magnitude probability,
+  conditional direction, and conservative signed-return quantiles. The untouched
+  120-day result must clear every predeclared economic gate before any deployment;
+  the experiment does not save or promote serving artifacts.
 - **[TRADE_POLICY_HEADS_120D_RESEARCH.md](active/TRADE_POLICY_HEADS_120D_RESEARCH.md)** -
   isolated purged walk-forward LONG, SHORT, and ACT/SKIP research lane; post-cost
   basis-point labels, non-overlapping economic evaluation, sequential laptop-safe
