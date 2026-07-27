@@ -96,6 +96,10 @@ jobs:
       - name: Collector evidence integrity (D1-D5)
         run: python backend/venues/test_collector_integrity.py
 
+      # --- shared platform kernel -----------------------------------------------------------
+      - name: Quant-platform kernel invariants
+        run: python -m backend.quant_platform.test_kernel
+
       # --- repo-wide consistency ------------------------------------------------------------
       - name: Strategy registry consistency
         run: python backend/research/audit_strategy_registry.py
@@ -169,4 +173,5 @@ jobs:
           python backend/preflight_longwindow.py --selftest || exit /b 1
           python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
+          python -m backend.quant_platform.test_kernel || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1

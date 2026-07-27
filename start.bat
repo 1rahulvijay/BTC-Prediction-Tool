@@ -311,6 +311,9 @@ if errorlevel 1 goto :selftest_failed_h
 echo [selftest] i. Challenger promotion gates - no ungated model replacement:
 python backend\promote_challenger.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_i
+echo [selftest] j. Shared quant-platform kernel:
+python -m backend.quant_platform.test_kernel >nul 2>&1
+if errorlevel 1 goto :selftest_failed_j
 echo [selftest] All invariant selftests passed.
 goto :selftests_done
 
@@ -341,6 +344,10 @@ goto :selftest_abort
 
 :selftest_failed_i
 echo [selftest] FAILED: python backend\promote_challenger.py --selftest
+goto :selftest_abort
+
+:selftest_failed_j
+echo [selftest] FAILED: python -m backend.quant_platform.test_kernel
 goto :selftest_abort
 
 :selftest_abort
