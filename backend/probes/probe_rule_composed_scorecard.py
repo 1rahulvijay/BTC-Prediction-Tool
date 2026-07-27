@@ -5,7 +5,6 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
 
 # Add backend to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -25,7 +24,7 @@ def build_oos_predictions(df, features, target):
     
     for train_idx, test_idx in tscv.split(X):
         X_train, y_train = X[train_idx], y[train_idx]
-        X_test, y_test = X[test_idx], y[test_idx]
+        X_test = X[test_idx]
         
         # Scale
         scaler = StandardScaler()
@@ -141,10 +140,10 @@ def main():
     # A. Baseline Selectivity Only (Assume random direction, gross EV)
     top_5_sel = df_oos[df_oos['p_big_move'] >= np.percentile(df_oos['p_big_move'], 95)]
     top_5_abs_pct = (top_5_sel['abs_ret_5m'] / top_5_sel['close']).mean() * 10000
-    print(f"[A. Baseline Selectivity (Top 5%)]")
+    print("[A. Baseline Selectivity (Top 5%)]")
     print(f"  Signals   : {len(top_5_sel)}")
     print(f"  Avg Abs Move : {top_5_abs_pct:.1f} bps")
-    print(f"  Directional Side Accuracy: N/A (Needs side logic)")
+    print("  Directional Side Accuracy: N/A (Needs side logic)")
     print("")
 
     # Evaluate Tiers

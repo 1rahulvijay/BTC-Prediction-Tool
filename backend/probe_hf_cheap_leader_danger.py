@@ -73,7 +73,7 @@ def main():
          f"Does the cheap-leader anomaly survive when conditioned on fragility? Round-level, cheap = leader trade-price "
          f"0.42–0.58 (n={len(cheap):,}). Fragility = dist_vol_ratio (small lead vs vol = easy to flip). "
          f"⚠️ Trade prices, not asks; live /book required.", "",
-         f"## Cheap leaders split by fragility",
+         "## Cheap leaders split by fragility",
          "| bucket | result |", "|---|---|"]
     for f in ("FRAGILE (low dist/vol)", "MID", "SAFE (high dist/vol)"):
         L.append(f"| {f} | {line(cheap[cheap['frag']==f])} |")

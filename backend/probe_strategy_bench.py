@@ -135,7 +135,6 @@ def seasonality_test():
     print("\n" + "=" * 92)
     print("4) INTRADAY SEASONALITY  (native: hour/day vol & directional effects)")
     hv = base.groupby("hour")["absret"].mean()
-    hr = base.groupby("hour")["ret"].mean()
     print(f"  VOL by hour (UTC): peak h{hv.idxmax()}={hv.max()*1e4:.1f}bps  trough h{hv.idxmin()}={hv.min()*1e4:.1f}bps "
           f"(ratio {hv.max()/hv.min():.2f}x)  -> REAL vol seasonality" if hv.max()/hv.min() > 1.3 else "  weak vol seasonality")
     # directional seasonality: is any hour's mean return significant?

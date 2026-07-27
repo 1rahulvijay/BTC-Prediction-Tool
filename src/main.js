@@ -45,6 +45,9 @@ let lastPlainData = null;
 let replayPollTimer = null;
 let connectionFailureCount = 0;
 let backendMessageSeen = false;
+let binancePaperPollTimer = null;
+let binancePaperEquityChart = null;
+let binancePaperEquitySeries = null;
 
 const API_URL = 'ws://127.0.0.1:8000/ws';
 const HTTP_API_BASE = 'http://127.0.0.1:8000';
@@ -263,14 +266,14 @@ function init() {
       const bv = document.getElementById('binance-view');
       const pv = document.getElementById('polymarket-view');
       const bpv = document.getElementById('binancepm-view');
-      const tav = document.getElementById('tanalysis-view');
       const paperView = document.getElementById('binance-paper-view');
+      const tav = document.getElementById('tanalysis-view');
       const healthView = document.getElementById('system-health-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
       if (bpv) bpv.classList.toggle('hidden', !isDiag);
-      if (tav) tav.classList.toggle('hidden', currentAppTab !== 'tanalysis');
       if (paperView) paperView.classList.toggle('hidden', currentAppTab !== 'binance-paper');
+      if (tav) tav.classList.toggle('hidden', currentAppTab !== 'tanalysis');
       if (healthView) healthView.classList.toggle('hidden', currentAppTab !== 'system-health');
       const trv = document.getElementById('trades-view');
       if (trv) trv.classList.toggle('hidden', currentAppTab !== 'trades');
@@ -284,9 +287,9 @@ function init() {
       if (currentAppTab === 'binance' && lastPlainData) renderBinanceView(lastPlainData);
       if (currentAppTab === 'polymarket' && lastPlainData) renderPolymarketView(lastPlainData);
       if (currentAppTab === 'tanalysis' && lastPlainData) renderTAView(lastPlainData);
-      if (currentAppTab === 'binance-paper' || currentAppTab === 'system-health') {
-        fetchPlatformStatus();
-      }
+      if (currentAppTab === 'binance-paper') startBinancePaperPolling();
+      else stopBinancePaperPolling();
+      if (currentAppTab === 'system-health') fetchPlatformStatus();
       if (isDiag && lastPlainData) {
         renderModelsView(lastPlainData);
         fetchActionLog();
@@ -295,7 +298,7 @@ function init() {
     });
   });
   setInterval(() => {
-    if (currentAppTab === 'binance-paper' || currentAppTab === 'system-health') {
+    if (currentAppTab === 'system-health') {
       fetchPlatformStatus();
     }
   }, 5000);
@@ -329,6 +332,7 @@ function init() {
     els.replayRunButton.addEventListener('click', triggerReplay);
     fetchReplayStatus();
   }
+  initBinancePaperControls();
 }
 
 // ══════════════════════════════════════════════
@@ -617,76 +621,15 @@ function escapePlatformText(value) {
     .replaceAll("'", '&#039;');
 }
 
-function platformMoney(value) {
-  if (value === null || value === undefined || value === '') return '--';
-  const number = Number(value);
-  return Number.isFinite(number)
-    ? number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
-    : '--';
-}
-
 async function fetchPlatformStatus() {
   try {
-    const [paperResponse, healthResponse] = await Promise.all([
-      fetch(`${HTTP_API_BASE}/api/binance-paper/status`),
-      fetch(`${HTTP_API_BASE}/api/system-health`),
-    ]);
-    if (!paperResponse.ok || !healthResponse.ok) throw new Error('status endpoint unavailable');
-    renderBinancePaperStatus(await paperResponse.json());
+    const healthResponse = await fetch(`${HTTP_API_BASE}/api/system-health`);
+    if (!healthResponse.ok) throw new Error('status endpoint unavailable');
     renderSystemHealthStatus(await healthResponse.json());
   } catch (error) {
-    const paper = document.getElementById('binance-paper-summary');
     const health = document.getElementById('system-health-summary');
-    if (paper) paper.textContent = 'Binance paper status unavailable.';
     if (health) health.textContent = 'System health unavailable.';
   }
-}
-
-function renderBinancePaperStatus(payload) {
-  const summary = document.getElementById('binance-paper-summary');
-  const orders = document.getElementById('binance-paper-orders');
-  if (!summary || !orders) return;
-  const account = payload.account || {};
-  const counts = payload.ledger?.counts || {};
-  const enabled = payload.paper_enabled === true;
-  const known = payload.position_known === true;
-  const stateColor = enabled && known ? 'var(--green)' : 'var(--yellow)';
-  const side = escapePlatformText(account.position_side || 'FLAT');
-  summary.innerHTML = `
-    <div style="border:1px solid ${stateColor};padding:.8rem;background:rgba(255,255,255,.02)">
-      <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
-        <strong style="color:${stateColor}">${enabled ? 'PAPER ENABLED' : 'PAPER DISABLED'}</strong>
-        <span>Position: <strong>${side}</strong> ${Number(account.position_quantity || 0).toFixed(6)} BTC</span>
-        <span>Equity: <strong>${platformMoney(account.equity)}</strong></span>
-        <span>Available: <strong>${platformMoney(account.available_balance)}</strong></span>
-      </div>
-      <div style="margin-top:.5rem;color:var(--text-secondary);font-size:.85em">
-        Real orders: unavailable · strategy orders: ${escapePlatformText(payload.strategy_order_generation)}
-        · reconciliation: ${known ? 'OK' : escapePlatformText((payload.reconciliation_reasons || []).join(', '))}
-        · ledger orders: ${Number(counts.paper_orders || 0)}
-      </div>
-    </div>`;
-  const rows = payload.ledger?.recent_orders || [];
-  if (!rows.length) {
-    orders.innerHTML = '<div style="padding:.8rem;color:var(--text-secondary)">No paper orders yet. The execution engine exists, but strategy order generation is intentionally not wired.</div>';
-    return;
-  }
-  orders.innerHTML = `
-    <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:.82em">
-      <thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Status</th><th>Filled</th><th>Average</th><th>Realized</th><th>Fee</th><th>Reason</th></tr></thead>
-      <tbody>${rows.map(row => `
-        <tr>
-          <td>${new Date(Number(row.fill_ts_ns) / 1e6).toLocaleTimeString()}</td>
-          <td>${escapePlatformText(row.strategy_id)}</td>
-          <td>${escapePlatformText(row.side)}</td>
-          <td>${escapePlatformText(row.status)}</td>
-          <td>${Number(row.filled_quantity || 0).toFixed(6)} BTC</td>
-          <td>${platformMoney(row.average_price)}</td>
-          <td>${platformMoney(row.realized_pnl_gross)}</td>
-          <td>${platformMoney(row.fee)}</td>
-          <td>${escapePlatformText(row.reason_codes || 'OK')}</td>
-        </tr>`).join('')}</tbody>
-    </table></div>`;
 }
 
 function renderSystemHealthStatus(payload) {
@@ -4651,6 +4594,489 @@ function renderDirectionalLog(items) {
 // ══════════════════════════════════════════════
 //  Utilities
 // ══════════════════════════════════════════════
+// Binance perpetual paper trading
+
+function bpEscape(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function bpUsd(value, digits = 2) {
+  if (value == null || value === '') return '--';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function bpNumber(value, digits = 2) {
+  if (value == null || value === '') return '--';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function bpPercent(value) {
+  if (value == null || value === '') return '--';
+  const number = Number(value);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : '--';
+}
+
+function bpTime(timestampMs) {
+  if (timestampMs == null || timestampMs === '') return '--';
+  const value = Number(timestampMs);
+  if (!Number.isFinite(value)) return '--';
+  return new Date(value).toLocaleString();
+}
+
+function bpAge(value) {
+  if (value == null || value === '') return '--';
+  const ageMs = Number(value);
+  if (!Number.isFinite(ageMs)) return '--';
+  if (ageMs < 1000) return `${Math.max(0, Math.round(ageMs))}ms`;
+  return `${(ageMs / 1000).toFixed(1)}s`;
+}
+
+async function bpRequest(path, options = {}) {
+  const response = await fetch(`${HTTP_API_BASE}/api/binance-paper${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || `${response.status} ${response.statusText}`);
+  }
+  return payload;
+}
+
+function setBinancePaperMessage(message, isError = false) {
+  const element = document.getElementById('bp-control-message');
+  if (!element) return;
+  element.textContent = message;
+  element.classList.toggle('bp-error-text', isError);
+}
+
+async function runBinancePaperControl(path, body, successMessage) {
+  setBinancePaperMessage('Working...');
+  try {
+    await bpRequest(path, {
+      method: 'POST',
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    setBinancePaperMessage(successMessage);
+    await fetchBinancePaper();
+  } catch (error) {
+    setBinancePaperMessage(error.message, true);
+  }
+}
+
+function initBinancePaperControls() {
+  const startButton = document.getElementById('bp-start-btn');
+  const pauseButton = document.getElementById('bp-pause-btn');
+  const closeAllButton = document.getElementById('bp-close-all-btn');
+  const strategyGrid = document.getElementById('bp-strategy-grid');
+  const positions = document.getElementById('bp-positions');
+  const equityFilter = document.getElementById('bp-equity-strategy');
+
+  startButton?.addEventListener('click', () => {
+    runBinancePaperControl('/start', null, 'Paper engine started.');
+  });
+  pauseButton?.addEventListener('click', () => {
+    runBinancePaperControl('/pause', null, 'New paper entries paused.');
+  });
+  closeAllButton?.addEventListener('click', () => {
+    if (!window.confirm('Close every open Binance paper position at the next executable quote?')) return;
+    runBinancePaperControl('/close-all', { confirm: true }, 'Close orders submitted.');
+  });
+  strategyGrid?.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-bp-strategy-toggle]');
+    if (!button) return;
+    const strategyId = button.dataset.bpStrategyToggle;
+    const enabled = button.dataset.bpEnabled !== 'true';
+    setBinancePaperMessage(`${enabled ? 'Enabling' : 'Disabling'} ${strategyId}...`);
+    try {
+      await bpRequest(`/strategies/${encodeURIComponent(strategyId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled, risk: {} }),
+      });
+      setBinancePaperMessage(`${strategyId} ${enabled ? 'enabled' : 'disabled'}.`);
+      await fetchBinancePaper();
+    } catch (error) {
+      setBinancePaperMessage(error.message, true);
+    }
+  });
+  positions?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-bp-close-position]');
+    if (!button) return;
+    const positionId = button.dataset.bpClosePosition;
+    if (!window.confirm('Close this paper position at the next executable quote?')) return;
+    runBinancePaperControl(
+      `/positions/${encodeURIComponent(positionId)}/close`,
+      { confirm: true },
+      'Close order submitted.',
+    );
+  });
+  equityFilter?.addEventListener('change', fetchBinancePaper);
+}
+
+function startBinancePaperPolling() {
+  stopBinancePaperPolling();
+  fetchBinancePaper();
+  binancePaperPollTimer = setInterval(fetchBinancePaper, 2000);
+}
+
+function stopBinancePaperPolling() {
+  if (binancePaperPollTimer) clearInterval(binancePaperPollTimer);
+  binancePaperPollTimer = null;
+}
+
+async function fetchBinancePaper() {
+  if (currentAppTab !== 'binance-paper') return;
+  const strategyFilter = document.getElementById('bp-equity-strategy')?.value || '';
+  const equityPath = strategyFilter
+    ? `/equity?strategy_id=${encodeURIComponent(strategyFilter)}&limit=2000`
+    : '/equity?limit=4000';
+  try {
+    const [
+      status,
+      strategies,
+      positions,
+      orders,
+      fills,
+      trades,
+      metrics,
+      equity,
+    ] = await Promise.all([
+      bpRequest('/status'),
+      bpRequest('/strategies'),
+      bpRequest('/positions'),
+      bpRequest('/orders?limit=30'),
+      bpRequest('/fills?limit=30'),
+      bpRequest('/trades?limit=100'),
+      bpRequest('/metrics'),
+      bpRequest(equityPath),
+    ]);
+    renderBinancePaperStatus(status);
+    renderBinancePaperStrategies(strategies.items || [], metrics);
+    renderBinancePaperPositions(positions.items || []);
+    renderBinancePaperOrders(orders.items || [], fills.items || []);
+    renderBinancePaperTrades(trades.items || []);
+    renderBinancePaperEquity(equity.items || [], strategyFilter);
+    const controlMessage = document.getElementById('bp-control-message');
+    if (controlMessage?.textContent.startsWith('Binance paper API:')) {
+      setBinancePaperMessage('');
+    }
+  } catch (error) {
+    const badge = document.getElementById('bp-engine-badge');
+    if (badge) {
+      badge.textContent = 'API UNAVAILABLE';
+      badge.className = 'bp-badge bp-badge-danger';
+    }
+    setBinancePaperMessage(`Binance paper API: ${error.message}`, true);
+  }
+}
+
+function renderBinancePaperStatus(status) {
+  const badge = document.getElementById('bp-engine-badge');
+  const strip = document.getElementById('bp-market-strip');
+  const startButton = document.getElementById('bp-start-btn');
+  const pauseButton = document.getElementById('bp-pause-btn');
+  const closeAllButton = document.getElementById('bp-close-all-btn');
+  if (!badge || !strip) return;
+
+  const state = status.runtime_state || 'UNKNOWN';
+  badge.textContent = state.replaceAll('_', ' ');
+  badge.className = `bp-badge ${
+    state === 'RUNNING' ? 'bp-badge-ok' : state === 'PAPER_ENGINE_DISABLED' ? 'bp-badge-danger' : ''
+  }`;
+  if (startButton) startButton.disabled = !status.hard_gate_enabled || state === 'RUNNING';
+  if (pauseButton) pauseButton.disabled = state !== 'RUNNING';
+  if (closeAllButton) closeAllButton.disabled = !status.hard_gate_enabled;
+
+  const market = status.market || {};
+  const health = market.status || market.feed_health || 'NO_DATA';
+  const healthy = health === 'HEALTHY';
+  const bid = Number(market.best_bid);
+  const ask = Number(market.best_ask);
+  const perpBarAge = market.last_completed_perp_cvd_bar_ts_ms == null
+    ? null
+    : Date.now() - Number(market.last_completed_perp_cvd_bar_ts_ms);
+  const priceText = Number.isFinite(bid) && Number.isFinite(ask)
+    ? `<strong>Bid ${bpUsd(bid)} / Ask ${bpUsd(ask)}</strong>`
+    : '<strong>No executable perpetual quote</strong>';
+  strip.className = `bp-market-strip ${healthy ? 'bp-market-ok' : 'bp-market-bad'}`;
+  strip.innerHTML = `
+    <span class="bp-health-dot"></span>
+    <span>${bpEscape(health)}</span>
+    <span>mid ${bpUsd(market.mark_price)}</span>
+    <span>${priceText}</span>
+    <span>spread ${bpNumber(market.spread_bps, 2)} bps</span>
+    <span>book age ${bpAge(market.book_age_ms ?? market.feed_age_ms)}</span>
+    <span>book messages ${bpNumber(market.book_message_count, 0)}</span>
+    <span>perp trades ${bpNumber(market.agg_trade_message_count, 0)}</span>
+    <span>perp CVD bar age ${bpAge(perpBarAge)}</span>
+    <span>funding ${bpPercent(market.funding_rate)} | settled ${bpTime(market.funding_time_ms)}</span>
+    <span>hard gate ${status.hard_gate_enabled ? 'ON' : 'OFF'}</span>
+    <span>pending orders ${bpNumber(status.pending_order_count, 0)}</span>
+  `;
+}
+
+function renderBinancePaperStrategies(strategies, allMetrics) {
+  const container = document.getElementById('bp-strategy-grid');
+  if (!container) return;
+  if (!strategies.length) {
+    container.innerHTML = '<div class="bp-empty">No paper strategies are configured.</div>';
+    return;
+  }
+  const metricByStrategy = Object.fromEntries(
+    (allMetrics?.strategies || []).map((item) => [item.strategy_id, item]),
+  );
+  container.innerHTML = strategies.map((strategy) => {
+    const account = strategy.account || {};
+    const decision = strategy.latest_decision || {};
+    const metric = metricByStrategy[strategy.strategy_id] || strategy.metrics || {};
+    const position = strategy.position;
+    const action = decision.action || 'WAITING';
+    const sideClass = action.includes('LONG') ? 'bp-long' : action.includes('SHORT') ? 'bp-short' : '';
+    const missing = strategy.missing_inputs || [];
+    const inactive = strategy.inactive_reason;
+    const evidence = metric.status || 'INSUFFICIENT_DATA';
+    const promotion = metric.promotion_gate?.status || 'BLOCKED_UNMEASURED';
+    const reasons = decision.reason_codes || [];
+    return `
+      <article class="bp-strategy-card">
+        <header>
+          <div>
+            <h3>${bpEscape(strategy.name)}</h3>
+            <span>${bpEscape(strategy.timeframe)} | ${bpEscape(strategy.version)}</span>
+          </div>
+          <button
+            class="bp-icon-command"
+            type="button"
+            data-bp-strategy-toggle="${bpEscape(strategy.strategy_id)}"
+            data-bp-enabled="${Boolean(strategy.enabled)}"
+            title="${strategy.enabled ? 'Disable strategy entries' : 'Enable strategy entries'}"
+          >${strategy.enabled ? 'Pause strategy' : 'Enable strategy'}</button>
+        </header>
+        <div class="bp-decision ${sideClass}">
+          <span>Latest decision</span>
+          <strong>${bpEscape(action.replaceAll('_', ' '))}</strong>
+          <small>score ${bpNumber(decision.score, 3)} | confidence ${bpPercent(decision.confidence)}</small>
+        </div>
+        <div class="bp-stat-grid">
+          <div><span>Equity</span><strong>${bpUsd(account.equity_usd)}</strong></div>
+          <div><span>Net PnL</span><strong>${bpUsd(metric.net_pnl_usd)}</strong></div>
+          <div><span>Realized</span><strong>${bpUsd(account.realized_pnl_usd)}</strong></div>
+          <div><span>Unrealized</span><strong>${bpUsd(account.unrealized_pnl_usd)}</strong></div>
+          <div><span>Open side</span><strong>${bpEscape(position?.side || 'FLAT')}</strong></div>
+          <div><span>Profit factor</span><strong>${bpNumber(metric.profit_factor, 2)}</strong></div>
+          <div><span>Mean expectancy</span><strong>${bpUsd(metric.mean_expectancy_usd)}</strong></div>
+          <div><span>Median expectancy</span><strong>${bpUsd(metric.median_expectancy_usd)}</strong></div>
+          <div><span>EV lower bound</span><strong>${bpUsd(metric.ev_lb_block_usd)}</strong></div>
+          <div><span>Maximum drawdown</span><strong>${bpUsd(metric.maximum_drawdown_usd)}</strong></div>
+          <div><span>Fees / slippage</span><strong>${bpUsd(metric.fees_usd)} / ${bpUsd(metric.slippage_usd)}</strong></div>
+          <div><span>Exposure time</span><strong>${formatDuration(metric.exposure_seconds)}</strong></div>
+          <div><span>Trades</span><strong>${bpNumber(metric.sample_size, 0)}</strong></div>
+          <div><span>Observed days</span><strong>${bpNumber(metric.n_days, 0)}</strong></div>
+        </div>
+        <div class="bp-evidence ${evidence === 'EVIDENCE_READY' ? 'bp-evidence-ready' : ''}">
+          SAMPLE ${bpEscape(evidence.replaceAll('_', ' '))}
+          | PROMOTION ${bpEscape(promotion.replaceAll('_', ' '))}
+        </div>
+        <dl class="bp-detail-list">
+          <div><dt>Status</dt><dd>${bpEscape(inactive || 'Active and observing')}</dd></div>
+          <div><dt>Data</dt><dd>${bpEscape(decision.data_quality_status || 'NO DECISION')}</dd></div>
+          <div><dt>Inputs</dt><dd>${missing.length ? `Missing: ${missing.map(bpEscape).join(', ')}` : 'Required inputs available'}</dd></div>
+          <div><dt>Feed age</dt><dd>book ${bpAge(strategy.data_ages?.book_age_ms)} | trades ${bpAge(strategy.data_ages?.agg_trade_age_ms)}</dd></div>
+          <div><dt>Account</dt><dd>cash ${bpUsd(account.available_cash_usd)} | margin ${bpUsd(account.used_margin_usd)} | fees ${bpUsd(account.trading_fees_usd)} | funding ${bpUsd(account.funding_usd)}</dd></div>
+          <div><dt>LONG</dt><dd>n=${bpNumber(metric.long?.sample_size, 0)} | net ${bpUsd(metric.long?.net_pnl_usd)} | mean ${bpUsd(metric.long?.mean_expectancy_usd)}</dd></div>
+          <div><dt>SHORT</dt><dd>n=${bpNumber(metric.short?.sample_size, 0)} | net ${bpUsd(metric.short?.net_pnl_usd)} | mean ${bpUsd(metric.short?.mean_expectancy_usd)}</dd></div>
+          <div><dt>Evidence</dt><dd>${bpEscape(metric.lb_method || 'Day-block evidence unavailable')} | ${bpEscape(metric.measurability || 'NEVER_FIRES')} | real orders remain impossible</dd></div>
+          <div><dt>Reason</dt><dd>${reasons.length ? reasons.map(bpEscape).join(', ') : 'No decision recorded yet'}</dd></div>
+        </dl>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderBinancePaperPositions(positions) {
+  const container = document.getElementById('bp-positions');
+  if (!container) return;
+  if (!positions.length) {
+    container.innerHTML = '<div class="bp-empty">No open Binance paper positions.</div>';
+    return;
+  }
+  container.innerHTML = `
+    <table class="bp-table">
+      <thead><tr>
+        <th>Strategy</th><th>Side</th><th>Quantity</th><th>Notional</th><th>Leverage</th>
+        <th>Entry</th><th>Mark</th><th>Unrealized</th><th>Entry fee</th>
+        <th>Stop / Target</th><th>Held</th><th>Action</th>
+      </tr></thead>
+      <tbody>${positions.map((position) => `
+        <tr>
+          <td>${bpEscape(position.strategy_id)}</td>
+          <td class="${position.side === 'LONG' ? 'bp-long-text' : 'bp-short-text'}"><strong>${bpEscape(position.side)}</strong></td>
+          <td>${bpNumber(position.quantity, 6)} BTC</td>
+          <td>${bpUsd(position.notional_usd)}</td>
+          <td>${bpNumber(position.leverage, 2)}x</td>
+          <td>${bpUsd(position.entry_price)}</td>
+          <td>${bpUsd(position.last_mark_price)}</td>
+          <td>${bpUsd(position.unrealized_pnl_usd)}</td>
+          <td>${bpUsd(position.entry_fee_usd, 4)}</td>
+          <td>${bpUsd(position.stop_price)} / ${bpUsd(position.take_profit_price)}</td>
+          <td>${formatDuration(position.holding_seconds)}</td>
+          <td><button class="bp-table-button" type="button" data-bp-close-position="${bpEscape(position.position_id)}">Close</button></td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+function renderBinancePaperOrders(orders, fills) {
+  const container = document.getElementById('bp-orders-fills');
+  if (!container) return;
+  if (!orders.length && !fills.length) {
+    container.innerHTML = '<div class="bp-empty">No paper order events or fills yet.</div>';
+    return;
+  }
+  const fillByOrder = new Map();
+  fills.forEach((fill) => {
+    if (!fillByOrder.has(fill.order_id)) fillByOrder.set(fill.order_id, fill);
+  });
+  const rows = orders.map((order) => {
+    const fill = fillByOrder.get(order.order_id);
+    return `
+      <tr>
+        <td>${bpTime(order.decision_ts_ms)}</td>
+        <td>${bpTime(order.simulated_arrival_ts_ms)}</td>
+        <td>${fill ? bpTime(fill.market_ts_ms) : '--'}</td>
+        <td>${bpEscape(order.strategy_id)}</td>
+        <td>${bpEscape(order.operation)} ${bpEscape(order.side)}</td>
+        <td>${bpEscape(order.status)}</td>
+        <td>${bpNumber(order.requested_quantity, 6)} BTC</td>
+        <td>${fill ? bpNumber(fill.filled_quantity, 6) : '--'}</td>
+        <td>${fill ? bpUsd(fill.average_fill_price) : '--'}</td>
+        <td>${fill ? bpAge(fill.quote_age_ms) : '--'}</td>
+        <td>${fill ? bpUsd(fill.spread_cost_usd, 4) : '--'}</td>
+        <td>${fill ? bpUsd(fill.slippage_cost_usd, 4) : '--'}</td>
+        <td>${fill ? bpUsd(fill.fee_usd, 4) : '--'}</td>
+        <td>${fill ? bpAge(fill.latency_assumption_ms) : '--'}</td>
+        <td>${fill ? bpEscape(fill.fill_quality_status) : bpEscape(order.rejection_reason || '--')}</td>
+        <td>${bpEscape(fill?.rejection_reason || order.rejection_reason || '--')}</td>
+      </tr>
+    `;
+  }).join('');
+  container.innerHTML = `
+    <table class="bp-table">
+      <thead><tr>
+        <th>Decision</th><th>Arrival</th><th>Market time</th><th>Strategy</th>
+        <th>Order</th><th>Status</th><th>Requested</th><th>Filled</th><th>Price</th>
+        <th>Quote age</th><th>Spread cost</th><th>Slippage</th><th>Fee</th>
+        <th>Latency</th><th>Quality</th><th>Reason</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderBinancePaperTrades(trades) {
+  const container = document.getElementById('bp-trades');
+  if (!container) return;
+  if (!trades.length) {
+    container.innerHTML = '<div class="bp-empty">No closed Binance paper trades.</div>';
+    return;
+  }
+  container.innerHTML = `
+    <table class="bp-table">
+      <thead><tr>
+        <th>Entry time</th><th>Exit time</th><th>Strategy / version</th><th>Side</th>
+        <th>Entry</th><th>Exit</th><th>Gross</th><th>Fees</th><th>Funding</th>
+        <th>Net</th><th>Held</th><th>Exit reason</th>
+      </tr></thead>
+      <tbody>${trades.map((trade) => `
+        <tr>
+          <td>${bpTime(trade.entry_time_ms)}</td>
+          <td>${bpTime(trade.exit_time_ms)}</td>
+          <td>${bpEscape(trade.strategy_id)} / ${bpEscape(trade.strategy_version)}</td>
+          <td class="${trade.side === 'LONG' ? 'bp-long-text' : 'bp-short-text'}"><strong>${bpEscape(trade.side)}</strong></td>
+          <td>${bpUsd(trade.entry_price)}</td>
+          <td>${bpUsd(trade.exit_price)}</td>
+          <td>${bpUsd(trade.gross_pnl_usd)}</td>
+          <td>${bpUsd(Number(trade.entry_fee_usd) + Number(trade.exit_fee_usd), 4)}</td>
+          <td>${bpUsd(trade.funding_usd, 4)}</td>
+          <td class="${Number(trade.net_pnl_usd) >= 0 ? 'bp-long-text' : 'bp-short-text'}"><strong>${bpUsd(trade.net_pnl_usd)}</strong></td>
+          <td>${formatDuration(trade.holding_seconds)}</td>
+          <td>${bpEscape(trade.exit_reason)}</td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+function ensureBinancePaperEquityChart() {
+  const container = document.getElementById('bp-equity-chart');
+  if (!container || binancePaperEquityChart) return;
+  binancePaperEquityChart = createChart(container, {
+    width: Math.max(320, container.clientWidth),
+    height: 260,
+    layout: {
+      background: { type: ColorType.Solid, color: 'transparent' },
+      textColor: '#8892a6',
+    },
+    grid: {
+      vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+      horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+    },
+    rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true },
+  });
+  binancePaperEquitySeries = binancePaperEquityChart.addLineSeries({
+    color: '#f3ba2f',
+    lineWidth: 2,
+    priceLineVisible: false,
+  });
+  const resize = () => {
+    if (container.clientWidth > 0) {
+      binancePaperEquityChart.applyOptions({ width: container.clientWidth });
+    }
+  };
+  window.addEventListener('resize', resize);
+}
+
+function renderBinancePaperEquity(items, strategyFilter) {
+  ensureBinancePaperEquityChart();
+  if (!binancePaperEquitySeries) return;
+  const grouped = new Map();
+  [...items].reverse().forEach((item) => {
+    const time = Math.floor(Number(item.timestamp_ms) / 1000);
+    if (!Number.isFinite(time)) return;
+    const value = Number(item.equity_usd);
+    if (!Number.isFinite(value)) return;
+    if (strategyFilter) {
+      grouped.set(time, value);
+    } else {
+      grouped.set(time, (grouped.get(time) || 0) + value);
+    }
+  });
+  const data = [...grouped.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([time, value]) => ({ time, value }));
+  binancePaperEquitySeries.setData(data);
+  if (data.length) binancePaperEquityChart.timeScale().fitContent();
+}
+
 function formatNumberShort(num) {
   if (num == null || isNaN(num)) return '--';
   const absNum = Math.abs(num);

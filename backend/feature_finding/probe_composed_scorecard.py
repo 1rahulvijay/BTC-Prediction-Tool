@@ -6,12 +6,10 @@ Builds a unified Composed Paper Scorecard that gates all live entry conditions.
 import os
 import sys
 import numpy as np
-import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from edge_probe import _load_bars, FEATURE_BUILDERS
@@ -148,7 +146,7 @@ def main():
         print(f"Net Expected PnL    : {pnl_net * 100:.2f}% (After 14 bps round-trip slippage)")
         print("=============================================================")
 
-    print(f"\nFunnel Analysis:")
+    print("\nFunnel Analysis:")
     print(f"Base Top 5% Selectivity : {np.sum(p_big > top_5_thresh)}")
     print(f"Base Top 1% Selectivity : {np.sum(p_big > top_1_thresh)}")
     print(f"Base VPIN Side != 0     : {np.sum(side != 0)}")

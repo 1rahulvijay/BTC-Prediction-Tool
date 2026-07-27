@@ -21,7 +21,7 @@ def build_oos_predictions(df, features, target, is_regression=False):
     tscv = TimeSeriesSplit(n_splits=5)
     for train_idx, test_idx in tscv.split(X):
         X_train, y_train = X[train_idx], y[train_idx]
-        X_test, y_test = X[test_idx], y[test_idx]
+        X_test = X[test_idx]
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
@@ -108,7 +108,7 @@ def main():
         net_ev = gated_df['net_ret_30m'].mean() * 10000
         win_rate = (gated_df['net_ret_30m'] > 0).mean() * 100
         
-        print(f"\n[GATED TIER PERFORMANCE (30m Hold, 14 bps slip)]")
+        print("\n[GATED TIER PERFORMANCE (30m Hold, 14 bps slip)]")
         print(f"  Signals : {len(gated_df)}")
         print(f"  Net EV  : {net_ev:>+8.2f} bps")
         print(f"  Win %   : {win_rate:>8.1f}%")

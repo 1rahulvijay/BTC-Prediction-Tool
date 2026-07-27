@@ -216,7 +216,7 @@ def main():
     print(f"IMPACT → REVERSAL / BIG-DROP PROBE v2  (n={r['n']:,} 1m bars, H={a.horizon}m, impulse K={a.impulse_bars}m, "
           f"fitted b={r['b']:.3g}, leak-free)")
     print("=" * 88)
-    print(f"Corrected: fitted square-root-law scale, K-bar impulse, elasticity (not collinear), CONDITIONAL on")
+    print("Corrected: fitted square-root-law scale, K-bar impulse, elasticity (not collinear), CONDITIONAL on")
     print(f"the top-{100-a.cond_pct}% impulse (|impulse| >= ${r['cond_thr']:.0f}). Does impact lift reversal AUC over rv?\n")
     for tname, t in r["targets"].items():
         sub = f", n_sub={t['n_sub']:,}" if "n_sub" in t else ""

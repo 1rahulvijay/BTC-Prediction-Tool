@@ -155,7 +155,7 @@ def audit(ob_days: int):
           f"- top-10 ladder parseable: {_pct(stats['ladder_ok'], stats['ladder_n'])} ✅",
           f"- 2 tokens per (market, snapshot): {_pct(stats['two_tok'], stats['mkts'])} ✅",
           f"- snapshot ts inside [window_start, window_end]: {_pct(stats['ts_in_win'], stats['ts_win_n'])}",
-          f"\n**Liquidity characterization (not a defect — the key trading caveat):**",
+          "\n**Liquidity characterization (not a defect — the key trading caveat):**",
           f"- median bid/ask spread: **${med_spr:.2f}** (of a $1 share) — these books are WIDE",
           f"- tight snapshots (spread ≤ 5c): **{_pct(stats['tight'], stats['rows'])}** — the only tradeable subset",
           f"- both-sides overround (ask_a+ask_b in [0.99,1.10]): {_pct(stats['comp_ok'], stats['comp_n'])} — the rest "

@@ -2,9 +2,9 @@
 
 Date: 2026-07-27
 
-Branch: `quant-platform-v1`
+Canonical branch: `master`
 
-Base: `master` at `a00d613087b30f637926ba6cc2984f48d655b10d`
+Consolidation date: 2026-07-27
 
 Mode: research, shadow, and paper only
 
@@ -25,18 +25,16 @@ to measure paper strategies honestly and keep venue economics isolated.
 
 ### Repository workflow
 
-`AGENTS.md` establishes one integration branch:
+`AGENTS.md` establishes one maintained branch:
 
 ```text
-quant-platform-v1
+master
 ```
 
-It records the actual repository path and prohibits real-order activation,
-unrelated retraining, force-pushes, branch sprawl, and evidence contamination.
-
-The serving/evidence work was already merged into `master` before this branch was
-created. The integration branch starts from that verified state instead of
-replaying or resetting history.
+It records the actual repository path and prohibits unrequested branch sprawl,
+real-order activation, unrelated retraining, force-pushes, and evidence
+contamination. The former integration and paper-service branches were merged
+without rewriting history, validated together, and retired.
 
 ### Shared quant-platform kernel
 
@@ -67,7 +65,22 @@ math, venue fill rules, or position accounting.
 data/binance_paper.duckdb
 ```
 
-Implemented accounting and execution behavior:
+The production paper service implements:
+
+- one reused public Binance futures socket carrying `bookTicker`, `aggTrade`
+  and liquidations;
+- exactly two transparent baselines: Trend Following and Breakout;
+- independent per-strategy accounts and one-way positions;
+- post-latency executable top-of-book fills, visible-size full-fill
+  requirements, adverse slippage, fees, and settled funding;
+- stop, take-profit, maximum-hold, opposing-signal reversal, pause, and manual
+  close behavior;
+- transactional persistence, deterministic signal/order identity, restart
+  recovery, idempotent funding, and day-block paper metrics;
+- UI/API inspection of strategies, accounts, positions, orders, fills, trades,
+  funding, equity, events, and promotion diagnostics.
+
+The separate low-level accounting harness also verifies:
 
 - signed one-way positions: positive `LONG`, negative `SHORT`;
 - `BUY` walks asks;
@@ -98,14 +111,15 @@ There is no import or use of the Polymarket 0-1 contract fee function.
 
 There is no authenticated Binance client in this package.
 
-The service is disabled by default:
+The production service is disabled by default:
 
 ```text
-BTC_BINANCE_PAPER_ENABLED=0
+BTC_ENABLE_BINANCE_PAPER=0
 ```
 
-Setting this to `1` only enables the paper engine. It cannot create a real
-exchange order.
+Setting this to `1` before backend launch only unlocks the UI's paper-engine
+start control. Starting the engine generates simulated strategy orders only. It
+cannot create a real exchange order.
 
 ### Research validation
 
@@ -139,19 +153,42 @@ PAPER_ONLY
 
 ### Operational surfaces
 
-New read-only endpoints:
+The paper API includes read endpoints:
 
 ```text
 GET /api/binance-paper/status
+GET /api/binance-paper/market
+GET /api/binance-paper/strategies
+GET /api/binance-paper/accounts
+GET /api/binance-paper/positions
+GET /api/binance-paper/orders
+GET /api/binance-paper/fills
+GET /api/binance-paper/funding
+GET /api/binance-paper/trades
+GET /api/binance-paper/metrics
+GET /api/binance-paper/equity
+GET /api/binance-paper/events
 GET /api/system-health
+```
+
+Paper-only controls start/pause the simulator, update a baseline, and close
+simulated positions. They cannot reach an exchange:
+
+```text
+POST /api/binance-paper/start
+POST /api/binance-paper/pause
+POST /api/binance-paper/positions/{id}/close
+POST /api/binance-paper/close-all
+PATCH /api/binance-paper/strategies/{id}
 ```
 
 `GET /api/runtime-status` now includes both payloads.
 
 The frontend adds:
 
-- `Binance Paper`: position, equity, available balance, reconciliation, ledger
-  counts, fills, fees, and rejection reasons;
+- `Binance Paper`: engine/feed state, strategy accounts and decisions, risk and
+  evidence metrics, positions, orders, executable fills, fees, funding, trades,
+  equity, rejection reasons, and guarded paper controls;
 - `System Health`: Binance trade/depth/kline freshness, Coinbase freshness,
   Pyth freshness, own L2 recorder age, database write access, backend code
   identity, and live-execution availability.
@@ -159,8 +196,9 @@ The frontend adds:
 The global trust state is `DO_NOT_TRUST` when a required feed is missing/stale
 or running backend code differs from disk.
 
-The frontend explicitly says strategy order generation is not wired. It does
-not imply that an empty ledger is active trading.
+The frontend explicitly identifies the baselines as research-only, the engine
+as paper-only, and real orders as disabled. An empty ledger is not presented as
+evidence of active or profitable trading.
 
 The frontend also leaves the loading screen after ten seconds when no backend
 message has ever arrived. It then exposes the operational tabs with explicit
@@ -197,8 +235,10 @@ not cover:
 - Previously merged persistent failed-write spool and replay.
 - Shared venue-neutral kernel.
 - Isolated Binance paper execution and accounting domain.
+- Two baseline Binance paper strategies wired to the isolated simulator.
+- Typed paper API, guarded paper controls, and complete paper operations UI.
 - Reusable research-validation and promotion-gate library.
-- Read-only Binance paper and system-health UI surfaces.
+- Read-only system-health surface.
 - Deterministic tests registered in Linux and Windows CI and launcher preflight.
 
 ### Partial
@@ -220,7 +260,6 @@ not cover:
 
 ### Not Implemented
 
-- Binance strategy-to-order generation.
 - Synchronized Binance paper collection using the canonical event bus.
 - Trained Binance liquidation-continuation and liquidation-exhaustion heads.
 - Trained cross-venue executable lead-lag head.
@@ -239,11 +278,13 @@ model can be trained or promoted honestly.
 
 ## Safety State
 
-The new Binance paper engine starts with its kill switch active.
+The Binance paper engine starts with its launch-time hard gate disabled and its
+runtime state inactive.
 
 The shared orchestrator also starts fail-closed.
 
-The new UI and APIs are read-only.
+The system-health API is read-only. Binance paper controls can mutate only the
+isolated simulator and its dedicated DuckDB database.
 
 No live-execution package exists under `backend/execution_live/`.
 
@@ -256,6 +297,8 @@ Focused deterministic commands:
 ```powershell
 python -m backend.quant_platform.test_kernel
 python -m backend.binance_paper.test_engine
+python -m backend.binance_paper.selftest
+python -m backend.binance_paper.api_selftest
 python -m backend.quant_platform.test_research_validation
 python -m py_compile backend\server.py
 npm.cmd run build
@@ -287,6 +330,7 @@ On 2026-07-27 the complete deterministic repository matrix passed locally:
 - head permissions, promotion, and long-window preflight;
 - multi-venue recorder, admissibility, and collector-integrity tests;
 - shared kernel, Binance paper accounting, and research-validation tests;
+- full Binance paper strategy, funding, recovery, API, and control tests;
 - all 16 registered paper strategies reconciled across server and UI;
 - all seven preregistration hashes intact;
 - repository-wide Python compilation and Pyflakes checks;
@@ -304,23 +348,21 @@ lock. This is an external CI availability blocker, not a passing remote gate.
 
 ## Next Valid Sequence
 
-1. Run the complete deterministic regression matrix.
-2. Push `quant-platform-v1`.
-3. Restore GitHub Actions runner availability and obtain a run in which the
+1. Push the consolidated `master`.
+2. Restore GitHub Actions runner availability and obtain a run in which the
    actual steps execute and pass.
-4. Deploy the existing recorders without altering their frozen evidence schema.
-5. Add a canonical-event adapter beside each recorder and compare counts,
+3. Deploy the existing recorders without altering their frozen evidence schema.
+4. Add a canonical-event adapter beside each recorder and compare counts,
    sequence gaps, timestamps, and hashes in shadow.
-6. Preregister one Binance mechanism, not a large indicator family.
-7. Wire only that strategy to the paper engine.
-8. Collect resolved fills and outcomes.
-9. Evaluate with the frozen validation and promotion gates.
-10. Keep the result `PAPER_ONLY` unless every predeclared forward gate passes.
+5. Preregister one Binance mechanism, not a large indicator family.
+6. Add it as a disabled challenger beside the two transparent baselines.
+7. Collect resolved fills and outcomes.
+8. Evaluate with the frozen validation and promotion gates.
+9. Keep the result `PAPER_ONLY` unless every predeclared forward gate passes.
 
 ## Merge Rule
 
-Do not merge this branch into `master` merely because unit tests pass.
-
-The engineering package can be reviewed and merged after CI and integration
-tests are green. Strategy profitability remains a separate forward-evidence
-question after merge.
+The engineering branches were consolidated into `master` only after the full
+local deterministic matrix passed. Remote GitHub Actions still requires an
+available runner to provide independent CI evidence. Strategy profitability
+remains a separate forward-evidence question after code consolidation.

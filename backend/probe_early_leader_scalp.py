@@ -104,7 +104,7 @@ def run(latency=0):
     mk = mk.dropna(subset=["anchor"])
     meta = mk.set_index("condition_id")[["anchor", "start_ms", "end_t", "outcome"]]
     tk = tk[tk["condition_id"].isin(meta.index)]
-    trades, weeks = [], []
+    trades = []
     for cid, g in tk.groupby("condition_id", sort=False):
         m = meta.loc[cid]
         g = g.sort_values("t")
@@ -135,7 +135,7 @@ def run(latency=0):
     print(f"  win rate     : {(pnl > 0).mean()*100:.1f}%")
     print(f"  mean pnl     : {mean*100:+.2f}c/share   95% LB: {lb*100:+.2f}c")
     print(f"  profit factor: {pf:.2f}")
-    print(f"  exits        : " + "  ".join(f"{h}={n_}({n_/len(d)*100:.0f}%)"
+    print("  exits        : " + "  ".join(f"{h}={n_}({n_/len(d)*100:.0f}%)"
                                            for h, n_ in d["hit"].value_counts().items()))
     print(f"  median hold  : {d['hold'].median():.0f}s   avg entry ask: {d['entry'].mean()*100:.1f}c")
     wk = d.groupby("week")["pnl"].agg(["count", "mean"])

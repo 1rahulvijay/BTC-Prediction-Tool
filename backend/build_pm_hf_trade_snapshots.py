@@ -19,7 +19,6 @@ import json
 import os
 import sys
 import urllib.request
-from datetime import date
 
 import numpy as np
 import pandas as pd

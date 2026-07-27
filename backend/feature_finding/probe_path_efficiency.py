@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from edge_probe import _load_bars, _roll_sum, _roll_mean
+from edge_probe import _load_bars, _roll_sum
 from probes.tradability_helpers import make_tradability_labels
 
 def evaluate_path_efficiency(bars):

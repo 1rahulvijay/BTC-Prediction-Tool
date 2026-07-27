@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from edge_probe import _load_bars, FEATURE_BUILDERS, _roll_sum, _roll_mean
+from edge_probe import _load_bars, _roll_sum
 
 def main():
     days = 60
@@ -48,7 +48,6 @@ def main():
     
     # 2. move_spent_ratio
     # current 3m expansion / expected threshold
-    recent_expansion_3m = _roll_sum(np.abs(ret1), 3)
     # Using log scale for threshold approximation: target_abs is in dollars, so convert ret1 to dollars
     ret1_dollars = np.zeros(n_bars); ret1_dollars[1:] = np.diff(bars["close"])
     recent_expansion_3m_dollars = _roll_sum(np.abs(ret1_dollars), 3)

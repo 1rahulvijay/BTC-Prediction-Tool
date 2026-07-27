@@ -1,10 +1,9 @@
 import os
-import sys
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import roc_auc_score, accuracy_score, log_loss
+from sklearn.metrics import roc_auc_score, accuracy_score
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"
@@ -45,9 +44,6 @@ def main():
     
     X = df_valid[features].values
     y = (df_valid[target] > 0).astype(int).values
-    
-    # We will also keep track of original dataframe indices to evaluate conditionally
-    df_indices = df_valid.index.values
     
     print(f"\nTraining on {len(y)} valid minutes...")
     

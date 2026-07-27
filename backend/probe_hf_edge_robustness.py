@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -89,7 +89,7 @@ def main():
     ph = d["p_hold"].to_numpy(float)
     # NULL shuffle: permute p_hold within (horizon, seconds_left)
     rng = np.random.default_rng(0)
-    dsh = d.copy(); sh = ph.copy()
+    sh = ph.copy()
     for _, idx in d.groupby(["horizon", "seconds_left"]).groups.items():
         pos = d.index.get_indexer(idx)
         sh[pos] = rng.permutation(sh[pos])

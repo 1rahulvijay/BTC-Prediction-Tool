@@ -107,9 +107,9 @@ def main():
     n = len(m); q = int(m["quarantine"].sum()); clean = n - q
     is5 = m["market_id"].str.contains("updown-5m"); is15 = m["market_id"].str.contains("updown-15m")
     L = [f"# HF Trades Token Mapping — {date.today().isoformat()}", "",
-         f"Deterministic token→UP/DOWN mapping from resolution + late trade price (winner settles to ~1.0). "
-         f"Quarantine any market not cleanly separated. Foundation for the trades edge pipeline.", "",
-         f"## Result",
+         "Deterministic token→UP/DOWN mapping from resolution + late trade price (winner settles to ~1.0). "
+         "Quarantine any market not cleanly separated. Foundation for the trades edge pipeline.", "",
+         "## Result",
          f"- markets mapped: **{n:,}** ({int(is5.sum()):,} 5m, {int(is15.sum()):,} 15m)",
          f"- **clean: {clean:,} ({100*clean/n:.1f}%)** · quarantined (ambiguous): {q:,} ({100*q/n:.1f}%)",
          f"- separation (winner − loser late price): median **{m['separation'].median():.3f}**, "

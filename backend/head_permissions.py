@@ -149,7 +149,7 @@ def selftest() -> int:
 
     print("head_permissions selftest (FAIL-CLOSED)")
     import tempfile
-    global REPORT, _CACHE
+    global REPORT
     tmp = tempfile.mkdtemp()
     REPORT = os.path.join(tmp, "head_health.json")
 

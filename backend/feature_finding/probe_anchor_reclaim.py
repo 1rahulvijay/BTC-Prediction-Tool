@@ -6,7 +6,6 @@ Evaluates Anchor VWAP reclaim failures and distance-from-anchor mean reversion.
 import os
 import sys
 import numpy as np
-import pandas as pd
 from sklearn.metrics import accuracy_score
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -48,7 +47,7 @@ def main():
     
     if valid_n > 0:
         acc = accuracy_score(target_test[mask], pred_test[mask])
-        print(f"Mean Reversion from Extreme Anchor Distance (Z > 2.0):")
+        print("Mean Reversion from Extreme Anchor Distance (Z > 2.0):")
         print(f"Accuracy: {acc:.2%} | Sample Size: {valid_n}")
     else:
         print("No signals found.")

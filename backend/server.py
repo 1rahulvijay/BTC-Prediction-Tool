@@ -68,8 +68,12 @@ from polymarket_model import PolymarketModel
 from polymarket_simulator import PolymarketSimulator
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
+from binance_paper import BinancePaperService
+from binance_paper.routes import (
+    configure_service as configure_binance_paper_service,
+    router as binance_paper_router,
+)
 from historical_replay import run_replay as run_historical_replay
-from binance_paper import service as binance_paper_service
 import database
 
 logging.basicConfig(
@@ -250,6 +254,7 @@ def _write_active_train_boundary(train_boundary_ts=None, *, full_refit: bool = F
 async def lifespan(app: FastAPI):
     logger.info("Initializing Database...")
     database.init_db()
+    binance_paper_service.initialize()
     loaded_signals = signal_buffer.load(SIGNAL_HISTORY_PATH)
     logger.info(f"Loaded {loaded_signals} persisted signal-history snapshots")
     restored = verifier.restore_from_database(
@@ -306,6 +311,7 @@ async def lifespan(app: FastAPI):
     coinbase_client.on("ticker", handle_coinbase_ticker)
     futures_ws_client.on("liquidation", handle_liquidation)
     futures_ws_client.on("perp_bar", handle_perp_bar)   # A4 live perp-CVD parity recorder
+    futures_ws_client.on("book", binance_paper_service.on_book)
     cross_asset_client.on("cross_asset_trade", handle_cross_asset_trade)
     cross_asset_client.on("cross_asset_depth", handle_cross_asset_depth)
     cross_asset_client.on("cross_asset_kline", handle_cross_asset_kline)
@@ -322,6 +328,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(ws_client.connect())
     asyncio.create_task(coinbase_client.connect())
     asyncio.create_task(futures_ws_client.connect())
+    asyncio.create_task(binance_paper_service.run())
     asyncio.create_task(polymarket_client.connect_ws())
     asyncio.create_task(cross_asset_client.connect())
 
@@ -330,6 +337,7 @@ async def lifespan(app: FastAPI):
     ws_client.stop()
     coinbase_client.stop()
     futures_ws_client.stop()
+    binance_paper_service.shutdown()
     cross_asset_client.stop()
     signal_buffer.save(SIGNAL_HISTORY_PATH, force=True)
     await rest_client.close()
@@ -524,6 +532,13 @@ data_state = {
     "sol_volume": 0.0,
     "sol_imbalance": 0.0,
 }
+
+binance_paper_service = BinancePaperService(
+    futures_ws_client,
+    lambda: data_state.get("derivatives") or {},
+)
+configure_binance_paper_service(binance_paper_service)
+app.include_router(binance_paper_router)
 
 
 async def fast_price_broadcaster():
@@ -4330,7 +4345,6 @@ def _system_health_snapshot() -> dict:
 
 @app.get("/api/runtime-status")
 async def runtime_status():
-    mark_price = data_state.get("live_price")
     return {
         "model_trained": model.is_trained,
         "boot_status": {
@@ -4344,19 +4358,13 @@ async def runtime_status():
         "replay_status": _safe_public_status(backend_state.get("replay_status")),
         "model_inventory": model.get_model_inventory(),
         "system_health": _system_health_snapshot(),
-        "binance_paper": binance_paper_service.status(mark_price),
+        "binance_paper": binance_paper_service.status(),
     }
 
 
 @app.get("/api/system-health")
 async def api_system_health():
     return _system_health_snapshot()
-
-
-@app.get("/api/binance-paper/status")
-async def api_binance_paper_status():
-    """Read-only paper account. This endpoint cannot submit an order."""
-    return binance_paper_service.status(data_state.get("live_price"))
 
 
 @app.get("/api/paper-ledger")

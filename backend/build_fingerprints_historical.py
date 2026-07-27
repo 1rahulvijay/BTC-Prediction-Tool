@@ -20,7 +20,6 @@ import os
 
 import numpy as np
 
-from backfill_trade_features import download_day, load_aggtrades, _daterange as daterange
 from train_beat_classifier import (build_beat_features, beat_labels, FEATURE_NAMES,
                                     _ohlc_for_dates, resolve_dates)
 

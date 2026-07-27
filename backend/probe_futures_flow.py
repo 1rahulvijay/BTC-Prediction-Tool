@@ -108,7 +108,6 @@ def run(horizon=5):
 def selftest():
     # synthetic: futures feature that DOES predict the round -> must register a break
     rng = np.random.default_rng(0); n = 4000
-    ts = pd.date_range("2026-03-20", periods=n, freq="5min", tz="UTC")
     signal = rng.normal(0, 1, n)
     y = (signal > 0).astype(float)
     X = pd.DataFrame({"fx_basis": signal + rng.normal(0, 0.3, n),

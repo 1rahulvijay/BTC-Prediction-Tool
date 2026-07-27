@@ -54,12 +54,12 @@ def run():
     for w in (5, 15):
         tth, ttl = _timing(df, w)
         m = ~np.isnan(tth)
-        th = tth[m].astype(int); tl = ttl[m].astype(int)
+        th = tth[m].astype(int)
         print("\n" + "=" * 80)
         print(f"BTC {w}m  -  WITHIN-WINDOW TIMING of the high/low  (n={m.sum()})")
         # 1) distribution (arcsine / U-shape check)
         dist = np.bincount(th, minlength=w + 1)[1:] / len(th)
-        print(f"  time-to-HIGH distribution by minute: " +
+        print("  time-to-HIGH distribution by minute: " +
               " ".join(f"m{i+1}:{dist[i]*100:.0f}%" for i in range(w)))
         edges = dist[0] + dist[-1]; mid = dist[len(dist)//2]
         print(f"    edges(min1+min{w})={edges*100:.0f}%  vs middle(min{w//2+1})={mid*100:.0f}%  "

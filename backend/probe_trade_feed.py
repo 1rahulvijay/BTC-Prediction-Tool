@@ -51,7 +51,6 @@ def _run_live(secs: int):
     async def go():
         n = 0
         sample = None
-        first_ts = last_ts = None
         print(f"connecting: {URL}")
         try:
             async with websockets.connect(URL, ping_interval=20, ping_timeout=20) as ws:
@@ -66,9 +65,6 @@ def _run_live(secs: int):
                     tr = parse_aggtrade(msg)
                     if tr is not None:
                         n += 1
-                        now = time.time()
-                        first_ts = first_ts or now
-                        last_ts = now
                         if sample is None:
                             sample = tr
         except Exception as e:

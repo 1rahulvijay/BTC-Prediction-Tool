@@ -879,20 +879,86 @@
         </section>
       </main>
 
-      <main class="models-view hidden" id="binance-paper-view">
-        <section class="analysis-section">
-          <div class="analysis-section-header" style="border-left:4px solid #f3ba2f; padding-left:1rem;">
-            <h2>Binance Futures Paper Account</h2>
-            <p>Independent LONG/SHORT paper accounting. No authenticated exchange client is loaded and this screen cannot place a real order.</p>
+      <!-- BINANCE PAPER: isolated BTCUSDT USD-M perpetual research accounts -->
+      <main class="models-view hidden binance-paper-view" id="binance-paper-view">
+        <section class="analysis-section bp-status-band">
+          <div class="bp-title-row">
+            <div>
+              <h2>Binance Perpetual Paper Trading</h2>
+              <p>Independent LONG and SHORT research accounts using executable perpetual bid/ask prices.</p>
+            </div>
+            <div class="bp-badges">
+              <span class="bp-badge">PAPER ONLY</span>
+              <span class="bp-badge bp-badge-danger">REAL ORDERS DISABLED</span>
+              <span class="bp-badge" id="bp-engine-badge">LOADING</span>
+            </div>
           </div>
-          <div id="binance-paper-summary" aria-live="polite">Loading isolated paper ledger...</div>
+          <div class="bp-market-strip" id="bp-market-strip" aria-live="polite">
+            Waiting for the Binance perpetual book...
+          </div>
+          <div class="bp-controls">
+            <button class="top-action-button" id="bp-start-btn" type="button">Start paper engine</button>
+            <button class="top-action-button" id="bp-pause-btn" type="button">Pause</button>
+            <button class="top-action-button bp-danger-button" id="bp-close-all-btn" type="button">Close all paper positions</button>
+            <span id="bp-control-message" role="status"></span>
+          </div>
         </section>
+
         <section class="analysis-section">
-          <div class="analysis-section-header" style="border-left:4px solid #64b5f6; padding-left:1rem;">
-            <h2>Paper Orders</h2>
-            <p>Depth-walked fills, partial fills, fees, and explicit rejection reasons.</p>
+          <div class="analysis-section-header">
+            <h2>Strategy Accounts</h2>
+            <p>Each baseline owns a separate account and cannot alter the other strategy's position or PnL.</p>
           </div>
-          <div id="binance-paper-orders" class="action-log-wrap"></div>
+          <div class="bp-strategy-grid" id="bp-strategy-grid"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Open Positions</h2>
+            <p>One-way mode: at most one BTCUSDT position per strategy, with stop, target and maximum hold.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-positions"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Orders And Executable Fills</h2>
+            <p>Post-latency top-of-book execution, visible size only, conservative slippage and explicit fees.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-orders-fills"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Binance Paper Trade History</h2>
+            <p>This ledger is physically separate from the Polymarket Trades tab.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-trades"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="bp-title-row">
+            <div class="analysis-section-header">
+              <h2>Observed Equity</h2>
+              <p>Unsmoothed paper equity. Short samples remain explicitly insufficient.</p>
+            </div>
+            <label class="bp-equity-filter">Account
+              <select id="bp-equity-strategy">
+                <option value="">Combined diagnostic</option>
+                <option value="trend_following">Trend Following</option>
+                <option value="breakout">Breakout</option>
+              </select>
+            </label>
+          </div>
+          <div class="bp-equity-chart" id="bp-equity-chart"></div>
+        </section>
+
+        <section class="analysis-section bp-research-warning">
+          <strong>Research baselines only.</strong>
+          Prior short-horizon BTC direction and static stop/target research in this repository
+          did not establish an edge. Positive paper results are not proof of profitability.
+          A trade must remain positive after spread, fees, slippage, funding, latency and
+          uncertainty; sample readiness is not permission to use real capital.
         </section>
       </main>
 

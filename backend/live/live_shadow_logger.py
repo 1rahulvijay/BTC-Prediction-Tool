@@ -1,7 +1,5 @@
 import sqlite3
-import json
 import time
-import os
 import pandas as pd
 from datetime import datetime
 

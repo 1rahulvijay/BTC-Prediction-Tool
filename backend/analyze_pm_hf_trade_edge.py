@@ -74,7 +74,7 @@ def metrics(q):
     if n < 15:
         return f"| {n} | — | — | — | — | — | — | — |"
     won = q["lead_won"].to_numpy(int); price = q["lead_price"].to_numpy(float); pnl = q["pnl"].to_numpy(float)
-    wr = won.mean(); lb = wilson(int(won.sum()), n); roi = pnl.sum() / (price.sum() + 1e-9)
+    wr = won.mean(); lb = wilson(int(won.sum()), n)
     pf = pnl[pnl > 0].sum() / (-pnl[pnl < 0].sum() + 1e-9)
     dd = float((np.cumsum(pnl) - np.maximum.accumulate(np.cumsum(pnl))).min())
     return (f"| {n} | {price.mean():.3f} | {q['p_hold'].mean():.3f} | {wr:.3f} | {lb:.3f} | "
@@ -92,8 +92,8 @@ def main():
          f"First historical test of **our P(Hold) vs the actual traded price**, trading ONLY the currently-leading "
          f"side (no fabricated symmetric probability). {len(df):,} leader snapshots over {df['market_id'].nunique():,} "
          f"rounds (Jan–Mar 2026), price={a.price}.",
-         f"⚠️ **Executed-trade research, NOT fillability proof** — a trade price is not an executable resting ask; the "
-         f"live /book recorder is still required to prove executable edge.", ""]
+         "⚠️ **Executed-trade research, NOT fillability proof** — a trade price is not an executable resting ask; the "
+         "live /book recorder is still required to prove executable edge.", ""]
     hdr = "| n | avg price | avg P(Hold) | win% | Wilson-LB | mean PnL/sh | PF | max-DD |"
     sep = "|" + "|".join("---" for _ in range(8)) + "|"
     for buf in BUFFERS:

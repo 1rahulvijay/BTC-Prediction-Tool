@@ -197,7 +197,7 @@ def add_prediction_rows(
 
 
 def top_edge_rows(y_true: np.ndarray, prob: np.ndarray) -> dict[str, float]:
-    from sklearn.metrics import precision_score, recall_score
+    from sklearn.metrics import precision_score
 
     y = y_true.astype(int)
     p = np.clip(prob.astype(float), 1e-6, 1 - 1e-6)

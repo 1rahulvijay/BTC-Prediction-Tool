@@ -12,10 +12,9 @@ import os
 import sys
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from scipy.stats import spearmanr
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from edge_probe import _load_bars, FEATURE_BUILDERS, _roll_sum, _roll_mean
+from edge_probe import _load_bars, FEATURE_BUILDERS
 
 def make_tradable_labels(bars, horizon=5, p_threshold=75):
     n = len(bars["close"])

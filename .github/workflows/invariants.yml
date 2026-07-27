@@ -31,7 +31,7 @@ jobs:
         run: |
           python -m pip install --quiet --upgrade pip
           pip install --quiet -r backend/requirements.txt
-          pip install --quiet joblib scikit-learn lightgbm catboost
+          pip install --quiet joblib scikit-learn lightgbm catboost pyflakes
 
       # --- complete-trade correctness -------------------------------------------------------
       - name: Audit regressions (labels / M0 unit / execution / logging)
@@ -69,6 +69,13 @@ jobs:
 
       - name: Frozen-artifact pinning
         run: python backend/trade_forecast/freeze_guard.py --selftest
+
+      # --- isolated Binance perpetual paper engine -----------------------------------------
+      - name: Binance paper execution, risk, recovery and DB isolation
+        run: python -m backend.binance_paper.selftest
+
+      - name: Binance paper typed API and hard-off controls
+        run: python -m backend.binance_paper.api_selftest
 
       - name: Exit-plan and scenario-engine selftests
         run: |
@@ -122,6 +129,9 @@ jobs:
       - name: Every python file compiles
         run: python -m compileall -q backend
 
+      - name: Python static checks
+        run: python -m pyflakes backend
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -149,7 +159,7 @@ jobs:
         run: |
           python -m pip install --quiet --upgrade pip
           pip install --quiet -r backend/requirements.txt
-          pip install --quiet joblib scikit-learn lightgbm catboost
+          pip install --quiet joblib scikit-learn lightgbm catboost pyflakes
 
       # Parses the whole file and prints the resolved configuration without launching servers.
       - name: start.bat parses and resolves configuration
@@ -183,3 +193,7 @@ jobs:
           python -m backend.binance_paper.test_engine || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1
+          python -m backend.binance_paper.selftest || exit /b 1
+          python -m backend.binance_paper.api_selftest || exit /b 1
+          python -m compileall -q backend || exit /b 1
+          python -m pyflakes backend || exit /b 1

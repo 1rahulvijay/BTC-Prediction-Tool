@@ -1,29 +1,30 @@
 # Repository Workflow - Mandatory
 
-Canonical development branch:
+Canonical branch:
 
 ```text
-quant-platform-v1
+master
 ```
 
 Rules:
 
-1. Never create another feature branch.
-2. Never switch to another feature branch.
-3. Never commit directly to `master`.
+1. Keep all maintained code and documentation on `master`.
+2. Do not create another feature branch unless the user explicitly requests one.
+3. Commit completed, validated changes directly to `master`.
 4. Before editing, run:
 
    ```powershell
    git fetch origin --prune
-   git switch quant-platform-v1
-   git pull --ff-only origin quant-platform-v1
+   git switch master
+   git pull --ff-only origin master
    git status --short
    git branch --show-current
    ```
 
-5. Stop immediately unless the active branch is exactly `quant-platform-v1`.
+5. Stop immediately unless the active branch is exactly `master`, except while
+   finishing an explicitly requested branch consolidation.
 6. Commit each completed phase separately.
-7. Do not merge into `master` until the full platform gate is green.
+7. Run the full platform gate before pushing `master`.
 8. Do not force-push or rewrite pushed commits.
 9. Do not claim a feature is complete until its executable tests pass.
 10. Real Binance and Polymarket orders remain disabled unless the user explicitly

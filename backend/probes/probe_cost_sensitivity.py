@@ -21,7 +21,7 @@ def build_oos_predictions(df, features, target):
     tscv = TimeSeriesSplit(n_splits=5)
     for train_idx, test_idx in tscv.split(X):
         X_train, y_train = X[train_idx], y[train_idx]
-        X_test, y_test = X[test_idx], y[test_idx]
+        X_test = X[test_idx]
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)

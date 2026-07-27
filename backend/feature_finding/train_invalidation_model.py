@@ -58,7 +58,7 @@ def main():
         except:
             pass
             
-    print(f"P(Fail_Fast) Model Trained.")
+    print("P(Fail_Fast) Model Trained.")
     print(f"Mean Fold AUC: {np.mean(aucs):.3f}")
     
     # Train final model on all data

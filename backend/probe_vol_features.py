@@ -105,7 +105,7 @@ def run():
                        else "WORSE")
             print(f"{target:<18}{b[0]:.3f}+-{b[1]:.3f}({b[2]})    {bv[0]:.3f}+-{bv[1]:.3f}({bv[2]})    "
                   f"{v[0]:.3f}+-{v[1]:.3f}    {delta:+.4f}  {verdict}")
-        print(f"  (LIFT only if delta > 2x baseline fold-std -- i.e. beyond noise.)")
+        print("  (LIFT only if delta > 2x baseline fold-std -- i.e. beyond noise.)")
     print("\nREAD: if baseline+vol == baseline on big_move, the new estimators are REDUNDANT with the "
           "realized_vol/range_compression already in the matrix -- the manual's 'one signal, five ways'. "
           "vol_only shows their standalone timing power.")

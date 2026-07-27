@@ -8,7 +8,6 @@ import sys
 import pickle
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score
 import scipy.stats as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

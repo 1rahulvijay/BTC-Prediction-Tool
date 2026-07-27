@@ -19,7 +19,6 @@ def evaluate_shock_cluster(bars):
     print("\n  feature                    h  tradable_AUC   avoid_AUC")
     
     hl = bars["high"] - bars["low"]
-    hl_mean_15 = _roll_mean(hl, 15)
     hl_mean_60 = _roll_mean(hl, 60)
     
     shock = hl / (hl_mean_60 + 1e-9)

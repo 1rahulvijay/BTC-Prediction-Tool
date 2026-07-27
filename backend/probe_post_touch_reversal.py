@@ -42,10 +42,8 @@ def run():
         px = float(c.median()); b50 = 50 / px * 1e4
         # intra-window 1-min highs/lows and closes
         Hs = [df["high"].shift(-k) for k in range(1, w + 1)]
-        Ls = [df["low"].shift(-k) for k in range(1, w + 1)]
         fc = c.shift(-w)
         up = (pd.concat(Hs, axis=1).max(axis=1) / c - 1) * 1e4
-        dn = (pd.concat(Ls, axis=1).min(axis=1) / c - 1) * 1e4
         netclose = (fc / c - 1) * 1e4
         # time of first up-touch (minute the running high first exceeds +b50)
         touched_up = up >= b50

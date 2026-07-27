@@ -1,11 +1,15 @@
 # Documentation Index
 
-## Latest quant-platform implementation
+## Latest canonical implementation
 - **[QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md](active/QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md)** -
-  canonical integration branch, shared event/health/risk/governance kernel, isolated Binance
-  futures paper accounting, reusable research promotion gates, read-only paper and system-health
-  views, exact completed/partial/not-implemented status, safety state, and validation commands.
+  canonical `master` state, shared event/health/risk/governance kernel, isolated Binance
+  futures paper accounting and baseline strategy service, reusable research promotion gates,
+  paper controls, system-health views, exact completed/partial/not-implemented status, safety
+  state, and validation commands.
   This is engineering infrastructure, not evidence of a profitable strategy.
+- **[MASTER_CONSOLIDATION_AND_VALIDATION_2026-07-27.md](active/MASTER_CONSOLIDATION_AND_VALIDATION_2026-07-27.md)** -
+  branch-consolidation record, production paper-service wiring, safety boundaries, deterministic
+  validation matrix, and the evidence-gated items that remain intentionally unimplemented.
 
 ## Latest serving and evidence completion
 - **[SERVING_EVIDENCE_COMPLETION_2026-07-27.md](active/SERVING_EVIDENCE_COMPLETION_2026-07-27.md)** -

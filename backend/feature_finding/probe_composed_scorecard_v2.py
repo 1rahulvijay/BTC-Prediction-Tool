@@ -6,8 +6,6 @@ Builds a composed scorecard verifying that the full multi-gate system outperform
 import os
 import sys
 import numpy as np
-import pandas as pd
-import math
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler

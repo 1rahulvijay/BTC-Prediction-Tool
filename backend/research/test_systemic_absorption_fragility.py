@@ -206,7 +206,6 @@ def build_frame(days: int) -> pd.DataFrame:
 def _targets(frame: pd.DataFrame, horizon_minutes: int, train_end: int):
     bars = horizon_minutes // 5
     close = frame["close"].to_numpy(float)
-    high = frame["high"].to_numpy(float)
     low = frame["low"].to_numpy(float)
     future_close = np.full(len(frame), np.nan)
     future_low = np.full(len(frame), np.nan)

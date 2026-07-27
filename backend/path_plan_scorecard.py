@@ -28,7 +28,6 @@ LOG = os.path.join(os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data"),
 
 
 def _grade(df):
-    import numpy as np
     out = []
     df = df.copy()
     df["touched_either"] = ((df["touched_up_50"] == 1) | (df["touched_dn_50"] == 1)).astype(int)

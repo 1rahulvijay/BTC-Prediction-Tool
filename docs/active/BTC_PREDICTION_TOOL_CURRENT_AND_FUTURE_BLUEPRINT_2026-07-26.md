@@ -7,11 +7,13 @@
 **Real-money orders:** Disabled  
 **Primary objective:** Build an auditable BTC trading-research platform that identifies rare, executable, post-cost opportunities rather than merely predicting direction.
 
-**2026-07-27 integration update:** serving/evidence completion is on `master` at `a00d613`.
-The shared quant-platform kernel, isolated Binance futures paper engine, research promotion
-library, and operational views are on `quant-platform-v1`. See
+**2026-07-27 integration update:** serving/evidence completion, the shared quant-platform
+kernel, the isolated Binance futures paper service, the research-promotion library, and
+the operational views are consolidated on `master`. See
 [QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md](QUANT_PLATFORM_V1_IMPLEMENTATION_STATUS_2026-07-27.md).
-The paper engine is disabled by default and strategy order generation is not wired.
+The paper engine is disabled by default. Its two transparent baseline strategies can
+generate simulated orders only after the launch-time hard gate and UI start control are
+both enabled. No authenticated exchange-order path exists.
 
 ---
 
@@ -193,13 +195,13 @@ Complete Trade Forecast V1:
     NO_TRADE
 
 Shared quant-platform kernel:
-    implemented on quant-platform-v1
+    implemented on master
     venue adapters partially integrated
 
 Binance futures paper engine:
-    execution/accounting implemented on quant-platform-v1
+    execution/accounting implemented on master
     disabled by default
-    strategy order generation not wired
+    Trend Following and Breakout paper baselines wired
     no live-order adapter
 
 Multi-window 1265-day experts:

@@ -58,7 +58,7 @@ def main():
         except:
             pass
             
-    print(f"P(Tradable_Move) Model Trained.")
+    print("P(Tradable_Move) Model Trained.")
     print(f"Mean Fold AUC: {np.mean(aucs):.3f}")
     
     # Train final model on all data

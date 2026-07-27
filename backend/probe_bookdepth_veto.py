@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 import os
 import sys
-from datetime import date, date as _d
+from datetime import date
 
 import numpy as np
 import pandas as pd
