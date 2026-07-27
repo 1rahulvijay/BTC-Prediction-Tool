@@ -69,6 +69,7 @@ from polymarket_simulator import PolymarketSimulator
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
 from historical_replay import run_replay as run_historical_replay
+from binance_paper import service as binance_paper_service
 import database
 
 logging.basicConfig(
@@ -513,6 +514,7 @@ data_state = {
     "sentiment": {},
     "coinbase_premium": 0.0,
     "bybit_data": {},
+    "feed_timestamps_ms": {},
     "poor_regimes": {},
     "macro": {"dxy": 104.5, "us10y": 4.25},
     "eth_price": 0.0,
@@ -615,6 +617,7 @@ async def pyth_price_poller():
             if price and price > 0:
                 data_state["pyth_price"] = price
                 data_state["pyth_price_ts"] = time.time()
+                data_state["feed_timestamps_ms"]["pyth_price"] = int(time.time() * 1000)
         except Exception as exc:
             now = time.time()
             if now - last_error_log >= 30.0:
@@ -1167,6 +1170,7 @@ def handle_trade(trade):
     # cvd/vpin/large_trade dead-zero through a silent multi-day trade-feed outage. The feature-log +
     # feed-health warning key off THIS, so a trade outage can't hide behind a live depth stream again.
     data_state["last_trade_ms"] = _ms_now
+    data_state["feed_timestamps_ms"]["binance_trade"] = _ms_now
 
     # Fire and forget parquet log
     import database
@@ -1183,6 +1187,8 @@ def handle_depth(depth: dict) -> None:
     data_state["order_flow"] = order_flow.get_summary()
     data_state["order_flow"]["freshness_ms"] = depth["freshness_ms"]
     data_state["order_flow_updated_ms"] = int(time.time() * 1000)  # wall-clock: DETECTS disconnects (§5bw)
+    data_state["last_depth_ms"] = data_state["order_flow_updated_ms"]
+    data_state["feed_timestamps_ms"]["binance_depth"] = data_state["last_depth_ms"]
 
     # Log orderbook to Parquet
     import database
@@ -1192,6 +1198,7 @@ def handle_depth(depth: dict) -> None:
 def handle_kline(kline: dict) -> None:
     if not data_state["klines"]:
         return
+    data_state["feed_timestamps_ms"]["binance_kline"] = int(time.time() * 1000)
 
     last_kline = data_state["klines"][-1]
     if kline["time"] == last_kline["time"]:
@@ -1245,6 +1252,7 @@ def handle_cross_asset_kline(kline: dict) -> None:
 
 
 def handle_coinbase_ticker(ticker: dict) -> None:
+    data_state["feed_timestamps_ms"]["coinbase_ticker"] = int(time.time() * 1000)
     if data_state["klines"]:
         binance_price = data_state["klines"][-1]["close"]
         coinbase_price = ticker["price"]
@@ -1264,6 +1272,7 @@ def handle_perp_bar(bar: dict) -> None:
 def handle_liquidation(liq: dict) -> None:
     # Maintain a rolling window of liquidations (last 60 seconds)
     now = time.time() * 1000
+    data_state["feed_timestamps_ms"]["binance_liquidation"] = int(now)
     # Guard: a slow-data poll may have replaced `liquidations` with the REST client's
     # vestigial empty list. Reset to a dict so the aggregation keeps working.
     der = data_state["derivatives"]
@@ -4231,8 +4240,97 @@ async def main_loop():
             logger.error(f"Loop error: {e}", exc_info=True)
 
 
+def _source_age_status(
+    timestamp_ms: int | float | None, stale_after_ms: float
+) -> dict:
+    if not timestamp_ms:
+        return {"status": "MISSING", "age_ms": None}
+    age_ms = max(0.0, time.time() * 1000.0 - float(timestamp_ms))
+    return {
+        "status": "HEALTHY" if age_ms <= stale_after_ms else "STALE",
+        "age_ms": round(age_ms, 1),
+    }
+
+
+def _recorder_file_status(path: str, stale_after_s: float = 30.0) -> dict:
+    candidates = [path, f"{path}.wal"]
+    mtimes = [
+        os.path.getmtime(candidate)
+        for candidate in candidates
+        if os.path.exists(candidate)
+    ]
+    if not mtimes:
+        return {"status": "MISSING", "age_s": None, "path": path}
+    age_s = max(0.0, time.time() - max(mtimes))
+    return {
+        "status": "HEALTHY" if age_s <= stale_after_s else "STALE",
+        "age_s": round(age_s, 1),
+        "path": path,
+    }
+
+
+def _system_health_snapshot() -> dict:
+    timestamps = _safe_dict(data_state.get("feed_timestamps_ms"))
+    pyth_ts = data_state.get("pyth_price_ts")
+    feeds = {
+        "binance_trade": _source_age_status(
+            timestamps.get("binance_trade"), 5_000.0
+        ),
+        "binance_depth": _source_age_status(
+            timestamps.get("binance_depth"), 5_000.0
+        ),
+        "binance_kline": _source_age_status(
+            timestamps.get("binance_kline"), 10_000.0
+        ),
+        "coinbase_ticker": _source_age_status(
+            timestamps.get("coinbase_ticker"), 15_000.0
+        ),
+        "pyth_price": _source_age_status(
+            float(pyth_ts) * 1000.0 if pyth_ts else None, 10_000.0
+        ),
+    }
+    execution_db = os.path.join(DATA_DIR, "execution_layer.duckdb")
+    recorders = {
+        "polymarket_l2": _recorder_file_status(execution_db),
+    }
+    disk_hash = _backend_code_hash()
+    required_feed_names = ("binance_trade", "binance_depth", "pyth_price")
+    blockers = [
+        f"feed:{name}:{feeds[name]['status'].lower()}"
+        for name in required_feed_names
+        if feeds[name]["status"] != "HEALTHY"
+    ]
+    if disk_hash != BACKEND_BOOT_CODE_HASH:
+        blockers.append("backend_code_changed_after_boot")
+    complete_trade = complete_trade_forecaster.status()
+    return {
+        "trust_state": "DATA_OK" if not blockers else "DO_NOT_TRUST",
+        "blockers": blockers,
+        "feeds": feeds,
+        "recorders": recorders,
+        "database_writer": {
+            "status": "HEALTHY" if os.access(DATA_DIR, os.W_OK) else "BLOCKED",
+            "data_directory": DATA_DIR,
+        },
+        "backend": {
+            "started_at_s": backend_state.get("startup_start_time"),
+            "boot_code_hash": BACKEND_BOOT_CODE_HASH,
+            "disk_code_hash": disk_hash,
+            "code_current": disk_hash == BACKEND_BOOT_CODE_HASH,
+            "websocket_clients": len(clients),
+        },
+        "complete_trade": complete_trade,
+        "live_execution": {
+            "available": False,
+            "reason": "real-order adapters are not implemented or loaded",
+        },
+        "generated_at_s": time.time(),
+    }
+
+
 @app.get("/api/runtime-status")
 async def runtime_status():
+    mark_price = data_state.get("live_price")
     return {
         "model_trained": model.is_trained,
         "boot_status": {
@@ -4245,7 +4343,20 @@ async def runtime_status():
         "relearn_status": _safe_public_status(backend_state.get("relearn_status")),
         "replay_status": _safe_public_status(backend_state.get("replay_status")),
         "model_inventory": model.get_model_inventory(),
+        "system_health": _system_health_snapshot(),
+        "binance_paper": binance_paper_service.status(mark_price),
     }
+
+
+@app.get("/api/system-health")
+async def api_system_health():
+    return _system_health_snapshot()
+
+
+@app.get("/api/binance-paper/status")
+async def api_binance_paper_status():
+    """Read-only paper account. This endpoint cannot submit an order."""
+    return binance_paper_service.status(data_state.get("live_price"))
 
 
 @app.get("/api/paper-ledger")

@@ -256,10 +256,14 @@ function init() {
       const pv = document.getElementById('polymarket-view');
       const bpv = document.getElementById('binancepm-view');
       const tav = document.getElementById('tanalysis-view');
+      const paperView = document.getElementById('binance-paper-view');
+      const healthView = document.getElementById('system-health-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
       if (bpv) bpv.classList.toggle('hidden', !isDiag);
       if (tav) tav.classList.toggle('hidden', currentAppTab !== 'tanalysis');
+      if (paperView) paperView.classList.toggle('hidden', currentAppTab !== 'binance-paper');
+      if (healthView) healthView.classList.toggle('hidden', currentAppTab !== 'system-health');
       const trv = document.getElementById('trades-view');
       if (trv) trv.classList.toggle('hidden', currentAppTab !== 'trades');
       if (currentAppTab === 'trades') fetchTradesBlotter();
@@ -272,6 +276,9 @@ function init() {
       if (currentAppTab === 'binance' && lastPlainData) renderBinanceView(lastPlainData);
       if (currentAppTab === 'polymarket' && lastPlainData) renderPolymarketView(lastPlainData);
       if (currentAppTab === 'tanalysis' && lastPlainData) renderTAView(lastPlainData);
+      if (currentAppTab === 'binance-paper' || currentAppTab === 'system-health') {
+        fetchPlatformStatus();
+      }
       if (isDiag && lastPlainData) {
         renderModelsView(lastPlainData);
         fetchActionLog();
@@ -279,6 +286,11 @@ function init() {
       }
     });
   });
+  setInterval(() => {
+    if (currentAppTab === 'binance-paper' || currentAppTab === 'system-health') {
+      fetchPlatformStatus();
+    }
+  }, 5000);
 
   els.tfSubtabs.forEach(tab => {
     tab.addEventListener('click', (e) => {
@@ -579,6 +591,136 @@ async function fetchReplayStatus() {
   } catch (err) {
     if (els.replayStatus) els.replayStatus.textContent = 'Replay status unavailable';
   }
+}
+
+function escapePlatformText(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function platformMoney(value) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+    : '--';
+}
+
+async function fetchPlatformStatus() {
+  try {
+    const [paperResponse, healthResponse] = await Promise.all([
+      fetch(`${HTTP_API_BASE}/api/binance-paper/status`),
+      fetch(`${HTTP_API_BASE}/api/system-health`),
+    ]);
+    if (!paperResponse.ok || !healthResponse.ok) throw new Error('status endpoint unavailable');
+    renderBinancePaperStatus(await paperResponse.json());
+    renderSystemHealthStatus(await healthResponse.json());
+  } catch (error) {
+    const paper = document.getElementById('binance-paper-summary');
+    const health = document.getElementById('system-health-summary');
+    if (paper) paper.textContent = 'Binance paper status unavailable.';
+    if (health) health.textContent = 'System health unavailable.';
+  }
+}
+
+function renderBinancePaperStatus(payload) {
+  const summary = document.getElementById('binance-paper-summary');
+  const orders = document.getElementById('binance-paper-orders');
+  if (!summary || !orders) return;
+  const account = payload.account || {};
+  const counts = payload.ledger?.counts || {};
+  const enabled = payload.paper_enabled === true;
+  const known = payload.position_known === true;
+  const stateColor = enabled && known ? 'var(--green)' : 'var(--yellow)';
+  const side = escapePlatformText(account.position_side || 'FLAT');
+  summary.innerHTML = `
+    <div style="border:1px solid ${stateColor};padding:.8rem;background:rgba(255,255,255,.02)">
+      <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+        <strong style="color:${stateColor}">${enabled ? 'PAPER ENABLED' : 'PAPER DISABLED'}</strong>
+        <span>Position: <strong>${side}</strong> ${Number(account.position_quantity || 0).toFixed(6)} BTC</span>
+        <span>Equity: <strong>${platformMoney(account.equity)}</strong></span>
+        <span>Available: <strong>${platformMoney(account.available_balance)}</strong></span>
+      </div>
+      <div style="margin-top:.5rem;color:var(--text-secondary);font-size:.85em">
+        Real orders: unavailable · strategy orders: ${escapePlatformText(payload.strategy_order_generation)}
+        · reconciliation: ${known ? 'OK' : escapePlatformText((payload.reconciliation_reasons || []).join(', '))}
+        · ledger orders: ${Number(counts.paper_orders || 0)}
+      </div>
+    </div>`;
+  const rows = payload.ledger?.recent_orders || [];
+  if (!rows.length) {
+    orders.innerHTML = '<div style="padding:.8rem;color:var(--text-secondary)">No paper orders yet. The execution engine exists, but strategy order generation is intentionally not wired.</div>';
+    return;
+  }
+  orders.innerHTML = `
+    <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:.82em">
+      <thead><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Status</th><th>Filled</th><th>Average</th><th>Fee</th><th>Reason</th></tr></thead>
+      <tbody>${rows.map(row => `
+        <tr>
+          <td>${new Date(Number(row.fill_ts_ns) / 1e6).toLocaleTimeString()}</td>
+          <td>${escapePlatformText(row.strategy_id)}</td>
+          <td>${escapePlatformText(row.side)}</td>
+          <td>${escapePlatformText(row.status)}</td>
+          <td>${Number(row.filled_quantity || 0).toFixed(6)} BTC</td>
+          <td>${platformMoney(row.average_price)}</td>
+          <td>${platformMoney(row.fee)}</td>
+          <td>${escapePlatformText(row.reason_codes || 'OK')}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+function renderSystemHealthStatus(payload) {
+  const summary = document.getElementById('system-health-summary');
+  const grid = document.getElementById('system-health-grid');
+  if (!summary || !grid) return;
+  const trusted = payload.trust_state === 'DATA_OK';
+  const color = trusted ? 'var(--green)' : 'var(--red)';
+  const blockers = payload.blockers || [];
+  summary.innerHTML = `
+    <div style="border-left:4px solid ${color};padding:.7rem;background:rgba(255,255,255,.02)">
+      <strong style="color:${color}">${trusted ? 'DATA OK' : 'DO NOT TRUST SIGNALS'}</strong>
+      <div style="margin-top:.3rem;color:var(--text-secondary);font-size:.85em">
+        ${trusted ? 'Required feeds are fresh and the running code matches disk.' : escapePlatformText(blockers.join(' · ') || 'health state incomplete')}
+      </div>
+    </div>`;
+  const feedTiles = Object.entries(payload.feeds || {}).map(([name, item]) => ({
+    name,
+    value: item.age_ms == null ? '--' : `${Math.round(item.age_ms)} ms`,
+    status: item.status,
+  }));
+  const recorderTiles = Object.entries(payload.recorders || {}).map(([name, item]) => ({
+    name,
+    value: item.age_s == null ? '--' : `${item.age_s} s`,
+    status: item.status,
+  }));
+  const extra = [
+    {
+      name: 'database writer',
+      value: escapePlatformText(payload.database_writer?.status || 'UNKNOWN'),
+      status: payload.database_writer?.status || 'UNKNOWN',
+    },
+    {
+      name: 'backend code',
+      value: payload.backend?.code_current ? 'current' : 'restart required',
+      status: payload.backend?.code_current ? 'HEALTHY' : 'STALE',
+    },
+    {
+      name: 'live execution',
+      value: payload.live_execution?.available ? 'available' : 'disabled',
+      status: payload.live_execution?.available ? 'HEALTHY' : 'INFO',
+    },
+  ];
+  grid.innerHTML = [...feedTiles, ...recorderTiles, ...extra].map(item => {
+    const tileColor = item.status === 'HEALTHY' ? 'var(--green)' : item.status === 'INFO' ? 'var(--text-secondary)' : 'var(--red)';
+    return `<div style="border:1px solid rgba(255,255,255,.12);padding:.7rem;background:rgba(255,255,255,.02)">
+      <div style="font-size:.72em;text-transform:uppercase;color:var(--text-secondary)">${escapePlatformText(item.name.replaceAll('_', ' '))}</div>
+      <strong style="display:block;margin-top:.25rem;color:${tileColor}">${escapePlatformText(item.status)}</strong>
+      <span style="font-size:.82em">${escapePlatformText(item.value)}</span>
+    </div>`;
+  }).join('');
 }
 
 function renderDashboard(data) {

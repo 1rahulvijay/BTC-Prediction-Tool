@@ -115,7 +115,9 @@
         <button class="app-tab active" data-view="polymarket">🎯 Polymarket</button>
         <button class="app-tab" data-view="trades" title="Every paper trade from all rules and shadows: buys, exits, P/L, win rates, totals">📒 Trades</button>
         <button class="app-tab" data-view="binance">₿ Bitcoin</button>
+        <button class="app-tab" data-view="binance-paper">Binance Paper</button>
         <button class="app-tab" data-view="tanalysis">📊 Analysis</button>
+        <button class="app-tab" data-view="system-health">System Health</button>
         <a class="app-tab" href="/polymarket-betting.html" target="_blank" rel="noopener"
            style="text-decoration:none" title="How to bet: which side, what price, when to sit out">📖 How to bet</a>
       </nav>
@@ -874,6 +876,34 @@
             <p>The live microstructure the model trades on — taker flow, big players, funding/OI. Green = buy-side / bullish pressure.</p>
           </div>
           <div id="binance-flow" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;"></div>
+        </section>
+      </main>
+
+      <main class="models-view hidden" id="binance-paper-view">
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #f3ba2f; padding-left:1rem;">
+            <h2>Binance Futures Paper Account</h2>
+            <p>Independent LONG/SHORT paper accounting. No authenticated exchange client is loaded and this screen cannot place a real order.</p>
+          </div>
+          <div id="binance-paper-summary" aria-live="polite">Loading isolated paper ledger...</div>
+        </section>
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #64b5f6; padding-left:1rem;">
+            <h2>Paper Orders</h2>
+            <p>Depth-walked fills, partial fills, fees, and explicit rejection reasons.</p>
+          </div>
+          <div id="binance-paper-orders" class="action-log-wrap"></div>
+        </section>
+      </main>
+
+      <main class="models-view hidden" id="system-health-view">
+        <section class="analysis-section">
+          <div class="analysis-section-header" style="border-left:4px solid #00e676; padding-left:1rem;">
+            <h2>System Health</h2>
+            <p>Data freshness, recorder state, database write access, code identity, model bundle state, and execution availability.</p>
+          </div>
+          <div id="system-health-summary" aria-live="polite">Checking platform health...</div>
+          <div id="system-health-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.6rem;margin-top:.8rem"></div>
         </section>
       </main>
 

@@ -234,6 +234,46 @@ class BinancePaperStore:
                 ],
             )
 
+    def summary(self, limit: int = 50) -> dict:
+        limit = max(1, min(int(limit), 500))
+        with self._lock, self._connect() as con:
+            counts = {
+                table: int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in (
+                    "paper_orders",
+                    "paper_funding",
+                    "paper_equity_snapshots",
+                )
+            }
+            rows = con.execute(
+                "SELECT order_id, decision_ts_ns, fill_ts_ns, instrument, strategy_id, "
+                "side, requested_quantity, filled_quantity, average_price, "
+                "filled_notional, fee, status, reduce_only, leverage, reason_codes "
+                "FROM paper_orders ORDER BY fill_ts_ns DESC, order_id DESC LIMIT ?",
+                [limit],
+            ).fetchall()
+        keys = (
+            "order_id",
+            "decision_ts_ns",
+            "fill_ts_ns",
+            "instrument",
+            "strategy_id",
+            "side",
+            "requested_quantity",
+            "filled_quantity",
+            "average_price",
+            "filled_notional",
+            "fee",
+            "status",
+            "reduce_only",
+            "leverage",
+            "reason_codes",
+        )
+        return {
+            "counts": counts,
+            "recent_orders": [dict(zip(keys, row, strict=True)) for row in rows],
+        }
+
     def replay_position(
         self, instrument: str, starting_capital: float
     ) -> PositionState:
