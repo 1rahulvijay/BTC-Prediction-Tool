@@ -1,0 +1,1064 @@
+"""Physically isolated, serialized DuckDB persistence for Binance paper state."""
+from __future__ import annotations
+
+from contextlib import contextmanager
+import json
+import math
+from pathlib import Path
+import threading
+import time
+from typing import Any
+import uuid
+
+import duckdb
+
+from .schemas import FillResult, MarketSnapshot, StrategyDecision
+
+
+SCHEMA_VERSION = 1
+STRATEGY_IDS = ("trend_following", "breakout")
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _rows(cursor) -> list[dict[str, Any]]:
+    columns = [item[0] for item in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+class BinancePaperPersistence:
+    """One process-lifetime connection and one serialized writer path."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path).resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._conn = duckdb.connect(str(self.path))
+        self._initialize_schema()
+
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            self._conn.execute("BEGIN TRANSACTION")
+            try:
+                yield self._conn
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+            else:
+                self._conn.execute("COMMIT")
+
+    @contextmanager
+    def transaction_or_connection(self, connection=None):
+        """Join an existing atomic execution transaction or create a new one."""
+        if connection is not None:
+            yield connection
+            return
+        with self.transaction() as conn:
+            yield conn
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+    def _initialize_schema(self) -> None:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_accounts (
+                strategy_id VARCHAR PRIMARY KEY,
+                starting_cash_usd DOUBLE NOT NULL,
+                available_cash_usd DOUBLE NOT NULL,
+                used_margin_usd DOUBLE NOT NULL,
+                equity_usd DOUBLE NOT NULL,
+                realized_pnl_usd DOUBLE NOT NULL,
+                unrealized_pnl_usd DOUBLE NOT NULL,
+                trading_fees_usd DOUBLE NOT NULL,
+                funding_usd DOUBLE NOT NULL,
+                peak_equity_usd DOUBLE NOT NULL,
+                maximum_drawdown_usd DOUBLE NOT NULL,
+                closed_trade_count BIGINT NOT NULL,
+                updated_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_strategy_configs (
+                strategy_id VARCHAR PRIMARY KEY,
+                strategy_name VARCHAR NOT NULL,
+                strategy_version VARCHAR NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                config_json VARCHAR NOT NULL,
+                config_hash VARCHAR NOT NULL,
+                updated_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_signals (
+                signal_id VARCHAR PRIMARY KEY,
+                strategy_id VARCHAR NOT NULL,
+                strategy_version VARCHAR NOT NULL,
+                strategy_config_hash VARCHAR NOT NULL,
+                feature_schema_hash VARCHAR NOT NULL,
+                feature_values_hash VARCHAR NOT NULL,
+                decision_ts_ms BIGINT NOT NULL,
+                symbol VARCHAR NOT NULL,
+                timeframe VARCHAR NOT NULL,
+                action VARCHAR NOT NULL,
+                side VARCHAR,
+                score DOUBLE NOT NULL,
+                confidence DOUBLE NOT NULL,
+                requested_notional_usd DOUBLE NOT NULL,
+                stop_price DOUBLE,
+                take_profit_price DOUBLE,
+                maximum_holding_seconds BIGINT NOT NULL,
+                feature_snapshot_json VARCHAR NOT NULL,
+                required_inputs_json VARCHAR NOT NULL,
+                available_inputs_json VARCHAR NOT NULL,
+                missing_inputs_json VARCHAR NOT NULL,
+                data_quality_status VARCHAR NOT NULL,
+                reason_codes_json VARCHAR NOT NULL,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_orders (
+                order_event_id VARCHAR PRIMARY KEY,
+                order_id VARCHAR NOT NULL,
+                signal_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                operation VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                requested_quantity DOUBLE NOT NULL,
+                requested_notional_usd DOUBLE NOT NULL,
+                status VARCHAR NOT NULL,
+                decision_ts_ms BIGINT NOT NULL,
+                simulated_send_ts_ms BIGINT NOT NULL,
+                simulated_arrival_ts_ms BIGINT NOT NULL,
+                rejection_reason VARCHAR,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_fills (
+                fill_id VARCHAR PRIMARY KEY,
+                order_id VARCHAR NOT NULL,
+                signal_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                operation VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                requested_quantity DOUBLE NOT NULL,
+                filled_quantity DOUBLE NOT NULL,
+                unfilled_quantity DOUBLE NOT NULL,
+                decision_ts_ms BIGINT NOT NULL,
+                simulated_send_ts_ms BIGINT NOT NULL,
+                simulated_arrival_ts_ms BIGINT NOT NULL,
+                market_ts_ms BIGINT NOT NULL,
+                received_at_ms BIGINT NOT NULL,
+                quote_age_ms BIGINT NOT NULL,
+                executable_price_source VARCHAR NOT NULL,
+                average_fill_price DOUBLE,
+                spread_cost_usd DOUBLE NOT NULL,
+                slippage_cost_usd DOUBLE NOT NULL,
+                fee_usd DOUBLE NOT NULL,
+                fee_rate_bps DOUBLE NOT NULL,
+                latency_assumption_ms BIGINT NOT NULL,
+                fill_quality_status VARCHAR NOT NULL,
+                rejection_reason VARCHAR,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_positions (
+                position_id VARCHAR PRIMARY KEY,
+                strategy_id VARCHAR NOT NULL,
+                symbol VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                quantity DOUBLE NOT NULL,
+                entry_price DOUBLE NOT NULL,
+                entry_notional_usd DOUBLE NOT NULL,
+                leverage DOUBLE NOT NULL,
+                margin_usd DOUBLE NOT NULL,
+                entry_fee_usd DOUBLE NOT NULL,
+                stop_price DOUBLE NOT NULL,
+                take_profit_price DOUBLE NOT NULL,
+                maximum_holding_seconds BIGINT NOT NULL,
+                entry_signal_id VARCHAR NOT NULL,
+                entry_order_id VARCHAR NOT NULL,
+                entry_fill_id VARCHAR NOT NULL,
+                opened_at_ms BIGINT NOT NULL,
+                last_mark_price DOUBLE NOT NULL,
+                unrealized_pnl_usd DOUBLE NOT NULL,
+                status VARCHAR NOT NULL,
+                closed_at_ms BIGINT,
+                updated_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_trades (
+                trade_id VARCHAR PRIMARY KEY,
+                position_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                symbol VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                quantity DOUBLE NOT NULL,
+                entry_price DOUBLE NOT NULL,
+                exit_price DOUBLE NOT NULL,
+                gross_pnl_usd DOUBLE NOT NULL,
+                entry_fee_usd DOUBLE NOT NULL,
+                exit_fee_usd DOUBLE NOT NULL,
+                funding_usd DOUBLE NOT NULL,
+                net_pnl_usd DOUBLE NOT NULL,
+                slippage_usd DOUBLE NOT NULL,
+                entry_time_ms BIGINT NOT NULL,
+                exit_time_ms BIGINT NOT NULL,
+                holding_seconds DOUBLE NOT NULL,
+                exit_reason VARCHAR NOT NULL,
+                strategy_version VARCHAR NOT NULL,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_equity_snapshots (
+                snapshot_id VARCHAR PRIMARY KEY,
+                strategy_id VARCHAR NOT NULL,
+                timestamp_ms BIGINT NOT NULL,
+                equity_usd DOUBLE NOT NULL,
+                available_cash_usd DOUBLE NOT NULL,
+                used_margin_usd DOUBLE NOT NULL,
+                realized_pnl_usd DOUBLE NOT NULL,
+                unrealized_pnl_usd DOUBLE NOT NULL,
+                gross_exposure_usd DOUBLE NOT NULL,
+                long_exposure_usd DOUBLE NOT NULL,
+                short_exposure_usd DOUBLE NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS binance_paper_events (
+                event_id VARCHAR PRIMARY KEY,
+                event_type VARCHAR NOT NULL,
+                strategy_id VARCHAR,
+                severity VARCHAR NOT NULL,
+                message VARCHAR NOT NULL,
+                details_json VARCHAR NOT NULL,
+                created_at_ms BIGINT NOT NULL
+            )
+            """,
+        ]
+        with self.transaction() as conn:
+            for statement in statements:
+                conn.execute(statement)
+            versions = conn.execute(
+                "SELECT version FROM binance_paper_schema_version ORDER BY version"
+            ).fetchall()
+            if versions and versions[-1][0] > SCHEMA_VERSION:
+                raise RuntimeError("Binance paper database schema is newer than this code")
+            if not versions:
+                conn.execute(
+                    "INSERT INTO binance_paper_schema_version VALUES (?, ?)",
+                    (SCHEMA_VERSION, _now_ms()),
+                )
+
+    def ensure_strategy(
+        self,
+        strategy_id: str,
+        strategy_name: str,
+        strategy_version: str,
+        enabled: bool,
+        config_json: str,
+        config_hash: str,
+        starting_cash_usd: float,
+    ) -> None:
+        now = _now_ms()
+        with self.transaction() as conn:
+            account = conn.execute(
+                "SELECT strategy_id FROM binance_paper_accounts WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            if account is None:
+                conn.execute(
+                    """
+                    INSERT INTO binance_paper_accounts VALUES
+                    (?, ?, ?, 0, ?, 0, 0, 0, 0, ?, 0, 0, ?)
+                    """,
+                    (
+                        strategy_id,
+                        starting_cash_usd,
+                        starting_cash_usd,
+                        starting_cash_usd,
+                        starting_cash_usd,
+                        now,
+                    ),
+                )
+            config = conn.execute(
+                """
+                SELECT strategy_id FROM binance_paper_strategy_configs
+                WHERE strategy_id = ?
+                """,
+                (strategy_id,),
+            ).fetchone()
+            if config is None:
+                conn.execute(
+                    """
+                    INSERT INTO binance_paper_strategy_configs
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        strategy_id,
+                        strategy_name,
+                        strategy_version,
+                        enabled,
+                        config_json,
+                        config_hash,
+                        now,
+                    ),
+                )
+
+    def update_strategy_config(
+        self, strategy_id: str, enabled: bool, config_json: str, config_hash: str
+    ) -> None:
+        with self.transaction() as conn:
+            changed = conn.execute(
+                """
+                UPDATE binance_paper_strategy_configs
+                SET enabled = ?, config_json = ?, config_hash = ?, updated_at_ms = ?
+                WHERE strategy_id = ?
+                RETURNING strategy_id
+                """,
+                (enabled, config_json, config_hash, _now_ms(), strategy_id),
+            ).fetchone()
+            if changed is None:
+                raise KeyError(f"unknown strategy: {strategy_id}")
+
+    def strategy_configs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    "SELECT * FROM binance_paper_strategy_configs ORDER BY strategy_id"
+                )
+            )
+
+    def accounts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    "SELECT * FROM binance_paper_accounts ORDER BY strategy_id"
+                )
+            )
+
+    def account(self, strategy_id: str) -> dict[str, Any]:
+        with self._lock:
+            rows = _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_accounts WHERE strategy_id = ?
+                    """,
+                    (strategy_id,),
+                )
+            )
+        if not rows:
+            raise KeyError(f"missing account: {strategy_id}")
+        return rows[0]
+
+    def open_positions(self, strategy_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM binance_paper_positions WHERE status = 'OPEN'"
+        params: tuple = ()
+        if strategy_id is not None:
+            sql += " AND strategy_id = ?"
+            params = (strategy_id,)
+        sql += " ORDER BY opened_at_ms"
+        with self._lock:
+            return _rows(self._conn.execute(sql, params))
+
+    def position(self, position_id: str) -> dict[str, Any]:
+        with self._lock:
+            rows = _rows(
+                self._conn.execute(
+                    "SELECT * FROM binance_paper_positions WHERE position_id = ?",
+                    (position_id,),
+                )
+            )
+        if not rows:
+            raise KeyError(f"unknown position: {position_id}")
+        return rows[0]
+
+    def record_signal(self, decision: StrategyDecision) -> bool:
+        with self.transaction() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM binance_paper_signals WHERE signal_id = ?",
+                (decision.signal_id,),
+            ).fetchone()
+            if existing:
+                return False
+            value = decision.to_dict()
+            conn.execute(
+                """
+                INSERT INTO binance_paper_signals VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.signal_id,
+                    decision.strategy_id,
+                    decision.strategy_version,
+                    decision.strategy_config_hash,
+                    decision.feature_schema_hash,
+                    decision.feature_values_hash,
+                    decision.timestamp_ms,
+                    decision.symbol,
+                    decision.timeframe,
+                    value["action"],
+                    value["side"],
+                    decision.score,
+                    decision.confidence,
+                    decision.requested_notional_usd,
+                    decision.stop_price,
+                    decision.take_profit_price,
+                    decision.maximum_holding_seconds,
+                    json.dumps(decision.features, sort_keys=True),
+                    json.dumps(decision.required_inputs),
+                    json.dumps(decision.available_inputs),
+                    json.dumps(decision.missing_inputs),
+                    value["data_quality_status"],
+                    json.dumps(decision.reason_codes),
+                    _now_ms(),
+                ),
+            )
+        return True
+
+    def append_order_event(
+        self,
+        *,
+        order_id: str,
+        signal_id: str,
+        strategy_id: str,
+        operation: str,
+        side: str,
+        requested_quantity: float,
+        requested_notional_usd: float,
+        status: str,
+        decision_ts_ms: int,
+        simulated_send_ts_ms: int,
+        simulated_arrival_ts_ms: int,
+        rejection_reason: str | None = None,
+        connection=None,
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        with self.transaction_or_connection(connection) as conn:
+            conn.execute(
+                """
+                INSERT INTO binance_paper_orders VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    order_id,
+                    signal_id,
+                    strategy_id,
+                    operation,
+                    side,
+                    requested_quantity,
+                    requested_notional_usd,
+                    status,
+                    decision_ts_ms,
+                    simulated_send_ts_ms,
+                    simulated_arrival_ts_ms,
+                    rejection_reason,
+                    _now_ms(),
+                ),
+            )
+        return event_id
+
+    def append_fill(self, fill: FillResult, *, connection=None) -> None:
+        value = fill.to_dict()
+        with self.transaction_or_connection(connection) as conn:
+            conn.execute(
+                """
+                INSERT INTO binance_paper_fills VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fill.fill_id,
+                    fill.order_id,
+                    fill.signal_id,
+                    fill.strategy_id,
+                    fill.operation,
+                    value["side"],
+                    fill.requested_quantity,
+                    fill.filled_quantity,
+                    fill.unfilled_quantity,
+                    fill.decision_ts_ms,
+                    fill.simulated_send_ts_ms,
+                    fill.simulated_arrival_ts_ms,
+                    fill.market_ts_ms,
+                    fill.received_at_ms,
+                    fill.quote_age_ms,
+                    fill.executable_price_source,
+                    fill.average_fill_price,
+                    fill.spread_cost_usd,
+                    fill.slippage_cost_usd,
+                    fill.fee_usd,
+                    fill.fee_rate_bps,
+                    fill.latency_assumption_ms,
+                    fill.fill_quality_status,
+                    fill.rejection_reason,
+                    _now_ms(),
+                ),
+            )
+
+    def open_position(
+        self,
+        *,
+        position_id: str,
+        decision: StrategyDecision,
+        fill: FillResult,
+        leverage: float,
+        connection=None,
+    ) -> dict[str, Any]:
+        if fill.average_fill_price is None or fill.filled_quantity <= 0:
+            raise ValueError("cannot open a position without an executable fill")
+        if decision.stop_price is None or decision.take_profit_price is None:
+            raise ValueError("stop and take-profit are required")
+        entry_notional = fill.average_fill_price * fill.filled_quantity
+        margin = entry_notional / leverage
+        now = fill.received_at_ms
+        with self.transaction_or_connection(connection) as conn:
+            existing = conn.execute(
+                """
+                SELECT position_id FROM binance_paper_positions
+                WHERE strategy_id = ? AND status = 'OPEN'
+                """,
+                (decision.strategy_id,),
+            ).fetchall()
+            if existing:
+                raise RuntimeError("strategy already has an open position")
+            account = conn.execute(
+                """
+                SELECT available_cash_usd, used_margin_usd, equity_usd,
+                       trading_fees_usd, peak_equity_usd
+                FROM binance_paper_accounts WHERE strategy_id = ?
+                """,
+                (decision.strategy_id,),
+            ).fetchone()
+            if account is None:
+                raise RuntimeError("strategy account is missing")
+            available, used_margin, _equity, fees, peak = map(float, account)
+            cash_required = margin + fill.fee_usd
+            if available + 1e-9 < cash_required:
+                raise RuntimeError("insufficient paper cash for margin and fee")
+            available -= cash_required
+            used_margin += margin
+            equity = available + used_margin
+            peak = max(peak, equity)
+            conn.execute(
+                """
+                INSERT INTO binance_paper_positions (
+                    position_id, strategy_id, symbol, side, quantity, entry_price,
+                    entry_notional_usd, leverage, margin_usd, entry_fee_usd,
+                    stop_price, take_profit_price, maximum_holding_seconds,
+                    entry_signal_id, entry_order_id, entry_fill_id, opened_at_ms,
+                    last_mark_price, unrealized_pnl_usd, status, closed_at_ms,
+                    updated_at_ms
+                ) VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position_id,
+                    decision.strategy_id,
+                    decision.symbol,
+                    decision.side.value,
+                    fill.filled_quantity,
+                    fill.average_fill_price,
+                    entry_notional,
+                    leverage,
+                    margin,
+                    fill.fee_usd,
+                    decision.stop_price,
+                    decision.take_profit_price,
+                    decision.maximum_holding_seconds,
+                    decision.signal_id,
+                    fill.order_id,
+                    fill.fill_id,
+                    now,
+                    fill.average_fill_price,
+                    0.0,
+                    "OPEN",
+                    None,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE binance_paper_accounts
+                SET available_cash_usd = ?, used_margin_usd = ?, equity_usd = ?,
+                    unrealized_pnl_usd = 0, trading_fees_usd = ?,
+                    peak_equity_usd = ?, updated_at_ms = ?
+                WHERE strategy_id = ?
+                """,
+                (
+                    available,
+                    used_margin,
+                    equity,
+                    fees + fill.fee_usd,
+                    peak,
+                    now,
+                    decision.strategy_id,
+                ),
+            )
+        return self.open_positions(decision.strategy_id)[0]
+
+    @staticmethod
+    def _unrealized(position: dict[str, Any], mark: float) -> float:
+        direction = 1.0 if position["side"] == "LONG" else -1.0
+        return (
+            direction
+            * float(position["quantity"])
+            * (float(mark) - float(position["entry_price"]))
+        )
+
+    def mark_positions(self, snapshot: MarketSnapshot) -> None:
+        now = snapshot.received_at_ms
+        with self.transaction() as conn:
+            positions = _rows(
+                conn.execute(
+                    """
+                    SELECT * FROM binance_paper_positions
+                    WHERE status = 'OPEN' AND symbol = ?
+                    """,
+                    (snapshot.symbol,),
+                )
+            )
+            for position in positions:
+                unrealized = self._unrealized(position, snapshot.mark_price)
+                conn.execute(
+                    """
+                    UPDATE binance_paper_positions
+                    SET last_mark_price = ?, unrealized_pnl_usd = ?, updated_at_ms = ?
+                    WHERE position_id = ? AND status = 'OPEN'
+                    """,
+                    (snapshot.mark_price, unrealized, now, position["position_id"]),
+                )
+                account = conn.execute(
+                    """
+                    SELECT available_cash_usd, used_margin_usd, realized_pnl_usd,
+                           trading_fees_usd, funding_usd, peak_equity_usd,
+                           maximum_drawdown_usd
+                    FROM binance_paper_accounts WHERE strategy_id = ?
+                    """,
+                    (position["strategy_id"],),
+                ).fetchone()
+                if account is None:
+                    raise RuntimeError("open position has no strategy account")
+                available, margin, realized, fees, funding, peak, max_dd = map(
+                    float, account
+                )
+                equity = available + margin + unrealized
+                peak = max(peak, equity)
+                max_dd = max(max_dd, peak - equity)
+                conn.execute(
+                    """
+                    UPDATE binance_paper_accounts
+                    SET equity_usd = ?, unrealized_pnl_usd = ?,
+                        peak_equity_usd = ?, maximum_drawdown_usd = ?,
+                        updated_at_ms = ?
+                    WHERE strategy_id = ?
+                    """,
+                    (equity, unrealized, peak, max_dd, now, position["strategy_id"]),
+                )
+
+    def close_position(
+        self,
+        *,
+        position_id: str,
+        fill: FillResult,
+        exit_reason: str,
+        strategy_version: str,
+        connection=None,
+    ) -> dict[str, Any]:
+        if fill.average_fill_price is None or fill.filled_quantity <= 0:
+            raise ValueError("cannot close without an executable fill")
+        with self.transaction_or_connection(connection) as conn:
+            rows = _rows(
+                conn.execute(
+                    """
+                    SELECT * FROM binance_paper_positions
+                    WHERE position_id = ? AND status = 'OPEN'
+                    """,
+                    (position_id,),
+                )
+            )
+            if not rows:
+                raise KeyError(f"open position not found: {position_id}")
+            position = rows[0]
+            if abs(fill.filled_quantity - float(position["quantity"])) > 1e-9:
+                raise RuntimeError("Phase-1 exits must close the full position")
+            direction = 1.0 if position["side"] == "LONG" else -1.0
+            gross = (
+                direction
+                * float(position["quantity"])
+                * (fill.average_fill_price - float(position["entry_price"]))
+            )
+            entry_fee = float(position["entry_fee_usd"])
+            net = gross - entry_fee - fill.fee_usd
+            account = conn.execute(
+                """
+                SELECT available_cash_usd, used_margin_usd, realized_pnl_usd,
+                       trading_fees_usd, funding_usd, peak_equity_usd,
+                       maximum_drawdown_usd, closed_trade_count
+                FROM binance_paper_accounts WHERE strategy_id = ?
+                """,
+                (position["strategy_id"],),
+            ).fetchone()
+            if account is None:
+                raise RuntimeError("position account is missing")
+            (
+                available,
+                used_margin,
+                realized,
+                account_fees,
+                funding,
+                peak,
+                max_dd,
+                closed_count,
+            ) = account
+            available = float(available) + float(position["margin_usd"]) + gross - fill.fee_usd
+            used_margin = float(used_margin) - float(position["margin_usd"])
+            if used_margin < -0.01:
+                raise RuntimeError("account used margin would become negative")
+            used_margin = max(0.0, used_margin)
+            realized = float(realized) + net
+            account_fees = float(account_fees) + fill.fee_usd
+            equity = available + used_margin
+            peak = max(float(peak), equity)
+            max_dd = max(float(max_dd), peak - equity)
+            now = fill.received_at_ms
+            trade_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                UPDATE binance_paper_positions
+                SET last_mark_price = ?, unrealized_pnl_usd = 0,
+                    status = 'CLOSED', closed_at_ms = ?, updated_at_ms = ?
+                WHERE position_id = ?
+                """,
+                (fill.average_fill_price, now, now, position_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO binance_paper_trades VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_id,
+                    position_id,
+                    position["strategy_id"],
+                    position["symbol"],
+                    position["side"],
+                    position["quantity"],
+                    position["entry_price"],
+                    fill.average_fill_price,
+                    gross,
+                    entry_fee,
+                    fill.fee_usd,
+                    0.0,
+                    net,
+                    fill.slippage_cost_usd,
+                    position["opened_at_ms"],
+                    now,
+                    max(0.0, (now - int(position["opened_at_ms"])) / 1000.0),
+                    exit_reason,
+                    strategy_version,
+                    _now_ms(),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE binance_paper_accounts
+                SET available_cash_usd = ?, used_margin_usd = ?, equity_usd = ?,
+                    realized_pnl_usd = ?, unrealized_pnl_usd = 0,
+                    trading_fees_usd = ?, peak_equity_usd = ?,
+                    maximum_drawdown_usd = ?, closed_trade_count = ?,
+                    updated_at_ms = ?
+                WHERE strategy_id = ?
+                """,
+                (
+                    available,
+                    used_margin,
+                    equity,
+                    realized,
+                    account_fees,
+                    peak,
+                    max_dd,
+                    int(closed_count) + 1,
+                    now,
+                    position["strategy_id"],
+                ),
+            )
+        return self.trades(limit=1, strategy_id=position["strategy_id"])[0]
+
+    def append_equity_snapshots(self, timestamp_ms: int) -> None:
+        accounts = {row["strategy_id"]: row for row in self.accounts()}
+        positions = {row["strategy_id"]: row for row in self.open_positions()}
+        with self.transaction() as conn:
+            for strategy_id, account in accounts.items():
+                position = positions.get(strategy_id)
+                notional = (
+                    float(position["quantity"]) * float(position["last_mark_price"])
+                    if position
+                    else 0.0
+                )
+                long_exposure = notional if position and position["side"] == "LONG" else 0.0
+                short_exposure = notional if position and position["side"] == "SHORT" else 0.0
+                conn.execute(
+                    """
+                    INSERT INTO binance_paper_equity_snapshots VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        strategy_id,
+                        int(timestamp_ms),
+                        account["equity_usd"],
+                        account["available_cash_usd"],
+                        account["used_margin_usd"],
+                        account["realized_pnl_usd"],
+                        account["unrealized_pnl_usd"],
+                        notional,
+                        long_exposure,
+                        short_exposure,
+                    ),
+                )
+
+    def append_event(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        strategy_id: str | None = None,
+        severity: str = "INFO",
+        details: dict[str, Any] | None = None,
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO binance_paper_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id,
+                    event_type,
+                    strategy_id,
+                    severity,
+                    message,
+                    json.dumps(details or {}, sort_keys=True),
+                    _now_ms(),
+                ),
+            )
+        return event_id
+
+    def latest_orders(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_orders
+                    ORDER BY created_at_ms DESC LIMIT ?
+                    """,
+                    (max(1, min(1000, int(limit))),),
+                )
+            )
+
+    def fills(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_fills
+                    ORDER BY created_at_ms DESC LIMIT ?
+                    """,
+                    (max(1, min(1000, int(limit))),),
+                )
+            )
+
+    def trades(
+        self, limit: int = 100, strategy_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM binance_paper_trades"
+        params: list[Any] = []
+        if strategy_id:
+            sql += " WHERE strategy_id = ?"
+            params.append(strategy_id)
+        sql += " ORDER BY exit_time_ms DESC LIMIT ?"
+        params.append(max(1, min(10_000, int(limit))))
+        with self._lock:
+            return _rows(self._conn.execute(sql, tuple(params)))
+
+    def equity_snapshots(
+        self, limit: int = 1000, strategy_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM binance_paper_equity_snapshots"
+        params: list[Any] = []
+        if strategy_id:
+            sql += " WHERE strategy_id = ?"
+            params.append(strategy_id)
+        sql += " ORDER BY timestamp_ms DESC LIMIT ?"
+        params.append(max(1, min(20_000, int(limit))))
+        with self._lock:
+            return _rows(self._conn.execute(sql, tuple(params)))
+
+    def observation_window_ms(
+        self, strategy_id: str
+    ) -> tuple[int | None, int | None]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT MIN(timestamp_ms), MAX(timestamp_ms)
+                FROM binance_paper_equity_snapshots
+                WHERE strategy_id = ?
+                """,
+                (strategy_id,),
+            ).fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None, None
+        return int(row[0]), int(row[1])
+
+    def events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_events
+                    ORDER BY created_at_ms DESC LIMIT ?
+                    """,
+                    (max(1, min(1000, int(limit))),),
+                )
+            )
+
+    def recent_trade_count(self, strategy_id: str, since_ms: int) -> int:
+        with self._lock:
+            return int(
+                self._conn.execute(
+                    """
+                    SELECT COUNT(*) FROM binance_paper_trades
+                    WHERE strategy_id = ? AND exit_time_ms >= ?
+                    """,
+                    (strategy_id, int(since_ms)),
+                ).fetchone()[0]
+            )
+
+    def daily_net_pnl(self, strategy_id: str, day_start_ms: int) -> float:
+        with self._lock:
+            value = self._conn.execute(
+                """
+                SELECT COALESCE(SUM(net_pnl_usd), 0)
+                FROM binance_paper_trades
+                WHERE strategy_id = ? AND exit_time_ms >= ?
+                """,
+                (strategy_id, int(day_start_ms)),
+            ).fetchone()[0]
+        return float(value or 0.0)
+
+    def last_exit_time_ms(self, strategy_id: str) -> int | None:
+        with self._lock:
+            value = self._conn.execute(
+                """
+                SELECT MAX(exit_time_ms) FROM binance_paper_trades
+                WHERE strategy_id = ?
+                """,
+                (strategy_id,),
+            ).fetchone()[0]
+        return int(value) if value is not None else None
+
+    def has_signal(self, signal_id: str) -> bool:
+        with self._lock:
+            return (
+                self._conn.execute(
+                    "SELECT 1 FROM binance_paper_signals WHERE signal_id = ?",
+                    (signal_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def cancel_orphan_pending_orders(self) -> int:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT o.order_id, o.signal_id, o.strategy_id, o.operation, o.side,
+                       o.requested_quantity, o.requested_notional_usd,
+                       o.decision_ts_ms, o.simulated_send_ts_ms,
+                       o.simulated_arrival_ts_ms
+                FROM binance_paper_orders o
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY order_id ORDER BY created_at_ms DESC
+                ) = 1 AND status = 'PENDING'
+                """
+            ).fetchall()
+        for row in rows:
+            self.append_order_event(
+                order_id=row[0],
+                signal_id=row[1],
+                strategy_id=row[2],
+                operation=row[3],
+                side=row[4],
+                requested_quantity=row[5],
+                requested_notional_usd=row[6],
+                status="CANCELLED_RECOVERY",
+                decision_ts_ms=row[7],
+                simulated_send_ts_ms=row[8],
+                simulated_arrival_ts_ms=row[9],
+                rejection_reason="process_restarted_before_latency_fill",
+            )
+        return len(rows)
+
+    def reconcile_or_raise(self) -> None:
+        accounts = {row["strategy_id"]: row for row in self.accounts()}
+        positions = self.open_positions()
+        seen: set[str] = set()
+        margins: dict[str, float] = {}
+        for position in positions:
+            strategy_id = position["strategy_id"]
+            if strategy_id in seen:
+                raise RuntimeError(f"multiple open positions for {strategy_id}")
+            seen.add(strategy_id)
+            if strategy_id not in accounts:
+                raise RuntimeError(f"open position has no account: {strategy_id}")
+            numeric = (
+                position["quantity"],
+                position["entry_price"],
+                position["margin_usd"],
+                position["entry_fee_usd"],
+            )
+            if not all(math.isfinite(float(value)) and float(value) >= 0 for value in numeric):
+                raise RuntimeError(f"invalid open position state: {position['position_id']}")
+            margins[strategy_id] = float(position["margin_usd"])
+        for strategy_id, account in accounts.items():
+            numeric = (
+                account["available_cash_usd"],
+                account["used_margin_usd"],
+                account["equity_usd"],
+                account["realized_pnl_usd"],
+                account["unrealized_pnl_usd"],
+            )
+            if not all(math.isfinite(float(value)) for value in numeric):
+                raise RuntimeError(f"invalid account state: {strategy_id}")
+            expected_margin = margins.get(strategy_id, 0.0)
+            if abs(float(account["used_margin_usd"]) - expected_margin) > 0.01:
+                raise RuntimeError(f"used margin mismatch for {strategy_id}")
+            expected_equity = (
+                float(account["available_cash_usd"])
+                + float(account["used_margin_usd"])
+                + float(account["unrealized_pnl_usd"])
+            )
+            if abs(float(account["equity_usd"]) - expected_equity) > 0.01:
+                raise RuntimeError(f"equity mismatch for {strategy_id}")
+
+    def table_names(self) -> set[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        return {str(row[0]) for row in rows}

@@ -115,6 +115,7 @@
         <button class="app-tab active" data-view="polymarket">🎯 Polymarket</button>
         <button class="app-tab" data-view="trades" title="Every paper trade from all rules and shadows: buys, exits, P/L, win rates, totals">📒 Trades</button>
         <button class="app-tab" data-view="binance">₿ Bitcoin</button>
+        <button class="app-tab" data-view="binance-paper">Binance Paper</button>
         <button class="app-tab" data-view="tanalysis">📊 Analysis</button>
         <a class="app-tab" href="/polymarket-betting.html" target="_blank" rel="noopener"
            style="text-decoration:none" title="How to bet: which side, what price, when to sit out">📖 How to bet</a>
@@ -874,6 +875,87 @@
             <p>The live microstructure the model trades on — taker flow, big players, funding/OI. Green = buy-side / bullish pressure.</p>
           </div>
           <div id="binance-flow" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem;"></div>
+        </section>
+      </main>
+
+      <!-- BINANCE PAPER: isolated BTCUSDT USD-M perpetual research accounts -->
+      <main class="models-view hidden binance-paper-view" id="binance-paper-view">
+        <section class="analysis-section bp-status-band">
+          <div class="bp-title-row">
+            <div>
+              <h2>Binance Perpetual Paper Trading</h2>
+              <p>Independent LONG and SHORT research accounts using executable perpetual bid/ask prices.</p>
+            </div>
+            <div class="bp-badges">
+              <span class="bp-badge">PAPER ONLY</span>
+              <span class="bp-badge bp-badge-danger">REAL ORDERS DISABLED</span>
+              <span class="bp-badge" id="bp-engine-badge">LOADING</span>
+            </div>
+          </div>
+          <div class="bp-market-strip" id="bp-market-strip" aria-live="polite">
+            Waiting for the Binance perpetual book...
+          </div>
+          <div class="bp-controls">
+            <button class="top-action-button" id="bp-start-btn" type="button">Start paper engine</button>
+            <button class="top-action-button" id="bp-pause-btn" type="button">Pause</button>
+            <button class="top-action-button bp-danger-button" id="bp-close-all-btn" type="button">Close all paper positions</button>
+            <span id="bp-control-message" role="status"></span>
+          </div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Strategy Accounts</h2>
+            <p>Each baseline owns a separate account and cannot alter the other strategy's position or PnL.</p>
+          </div>
+          <div class="bp-strategy-grid" id="bp-strategy-grid"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Open Positions</h2>
+            <p>One-way mode: at most one BTCUSDT position per strategy, with stop, target and maximum hold.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-positions"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Orders And Executable Fills</h2>
+            <p>Post-latency top-of-book execution, visible size only, conservative slippage and explicit fees.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-orders-fills"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="analysis-section-header">
+            <h2>Binance Paper Trade History</h2>
+            <p>This ledger is physically separate from the Polymarket Trades tab.</p>
+          </div>
+          <div class="bp-table-wrap" id="bp-trades"></div>
+        </section>
+
+        <section class="analysis-section">
+          <div class="bp-title-row">
+            <div class="analysis-section-header">
+              <h2>Observed Equity</h2>
+              <p>Unsmoothed paper equity. Short samples remain explicitly insufficient.</p>
+            </div>
+            <label class="bp-equity-filter">Account
+              <select id="bp-equity-strategy">
+                <option value="">Combined diagnostic</option>
+                <option value="trend_following">Trend Following</option>
+                <option value="breakout">Breakout</option>
+              </select>
+            </label>
+          </div>
+          <div class="bp-equity-chart" id="bp-equity-chart"></div>
+        </section>
+
+        <section class="analysis-section bp-research-warning">
+          <strong>Research baselines only.</strong>
+          Prior short-horizon BTC direction and static stop/target research in this repository
+          did not establish an edge. Positive paper results are not proof of profitability.
         </section>
       </main>
 

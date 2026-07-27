@@ -1,0 +1,141 @@
+"""Canonical strategy interface and deterministic decision construction."""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+import hashlib
+import json
+from typing import Any
+
+from .config import StrategyRiskConfig
+from .schemas import (
+    Action,
+    DataQuality,
+    MarketSnapshot,
+    PositionSide,
+    StrategyDecision,
+)
+
+
+def canonical_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class StrategyBase(ABC):
+    strategy_id: str
+    strategy_name: str
+    strategy_version: str
+    timeframe: str
+    required_inputs: tuple[str, ...]
+
+    def __init__(self, risk: StrategyRiskConfig | None = None):
+        self.risk = (risk or StrategyRiskConfig()).clamped()
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def config_hash(self) -> str:
+        return canonical_hash(
+            {
+                "strategy_id": self.strategy_id,
+                "strategy_version": self.strategy_version,
+                "parameters": self.parameters,
+                "risk": self.risk.to_dict(),
+            }
+        )
+
+    @property
+    def feature_schema_hash(self) -> str:
+        return canonical_hash(list(self.required_inputs))
+
+    def _decision(
+        self,
+        snapshot: MarketSnapshot,
+        *,
+        action: Action,
+        side: PositionSide | None,
+        score: float,
+        confidence: float,
+        requested_notional_usd: float,
+        stop_price: float | None,
+        take_profit_price: float | None,
+        maximum_holding_seconds: int,
+        features: dict[str, Any],
+        missing_inputs: tuple[str, ...] = (),
+        data_quality_status: DataQuality | None = None,
+        reason_codes: tuple[str, ...] = (),
+    ) -> StrategyDecision:
+        available = tuple(
+            name
+            for name in self.required_inputs
+            if name not in set(missing_inputs)
+        )
+        feature_values_hash = canonical_hash(features)
+        identity = {
+            "strategy_id": self.strategy_id,
+            "strategy_version": self.strategy_version,
+            "timestamp_ms": snapshot.received_at_ms,
+            "action": action.value,
+            "side": side.value if side else None,
+            "feature_values_hash": feature_values_hash,
+        }
+        return StrategyDecision(
+            signal_id=canonical_hash(identity),
+            strategy_id=self.strategy_id,
+            strategy_version=self.strategy_version,
+            strategy_config_hash=self.config_hash,
+            feature_schema_hash=self.feature_schema_hash,
+            feature_values_hash=feature_values_hash,
+            timestamp_ms=snapshot.received_at_ms,
+            symbol=snapshot.symbol,
+            timeframe=self.timeframe,
+            action=action,
+            side=side,
+            score=min(1.0, max(-1.0, float(score))),
+            confidence=min(1.0, max(0.0, float(confidence))),
+            requested_notional_usd=max(0.0, float(requested_notional_usd)),
+            stop_price=stop_price,
+            take_profit_price=take_profit_price,
+            maximum_holding_seconds=max(1, int(maximum_holding_seconds)),
+            features=features,
+            required_inputs=self.required_inputs,
+            available_inputs=available,
+            missing_inputs=tuple(missing_inputs),
+            data_quality_status=data_quality_status or snapshot.feed_health,
+            reason_codes=tuple(reason_codes),
+        )
+
+    def no_data(
+        self,
+        snapshot: MarketSnapshot,
+        missing_inputs: tuple[str, ...],
+        features: dict[str, Any],
+        *reason_codes: str,
+    ) -> StrategyDecision:
+        return self._decision(
+            snapshot,
+            action=Action.NO_DATA,
+            side=None,
+            score=0.0,
+            confidence=0.0,
+            requested_notional_usd=0.0,
+            stop_price=None,
+            take_profit_price=None,
+            maximum_holding_seconds=1,
+            features=features,
+            missing_inputs=missing_inputs,
+            data_quality_status=(
+                DataQuality.STALE
+                if snapshot.feed_health is DataQuality.STALE
+                else DataQuality.MISSING
+            ),
+            reason_codes=tuple(reason_codes) or ("required_input_missing",),
+        )
+
+    @abstractmethod
+    def decide(self, snapshot: MarketSnapshot) -> StrategyDecision:
+        raise NotImplementedError

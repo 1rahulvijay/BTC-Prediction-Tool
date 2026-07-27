@@ -7,6 +7,7 @@ Binance Data Ingestion
 
 import asyncio
 import json
+import math
 import time
 import logging
 from typing import Callable, Optional
@@ -131,7 +132,7 @@ class BinanceFuturesWebSocketClient:
     """Connects to Binance Futures WebSocket stream for Liquidations."""
 
     FUTURES_WS = "wss://fstream.binance.com/stream"
-    STREAMS = ["btcusdt@forceOrder", "btcusdt@aggTrade"]
+    STREAMS = ["btcusdt@forceOrder", "btcusdt@aggTrade", "btcusdt@bookTicker"]
 
     def __init__(self):
         self.ws = None
@@ -140,6 +141,7 @@ class BinanceFuturesWebSocketClient:
             "liquidation": [],
             "status": [],
             "perp_bar": [],   # A4 parity: one finalized 1m perp-CVD bar per minute
+            "book": [],
         }
         self.reconnect_delay = 1.0
         # A4 live PERP-CVD accumulator (parity twin of build_crossvenue_flow's per-bar CVD;
@@ -149,6 +151,11 @@ class BinanceFuturesWebSocketClient:
         self._pb_vol = 0.0
         self._pb_last = 0.0
         self.last_perp_bar = None
+        self.last_book = None
+        self.last_book_receive_ts_ms = None
+        self.book_message_count = 0
+        self.last_agg_trade_receive_ts_ms = None
+        self.agg_trade_message_count = 0
 
     def on(self, event: str, callback: Callable):
         if event in self.callbacks:
@@ -160,6 +167,25 @@ class BinanceFuturesWebSocketClient:
                 cb(data)
             except Exception as e:
                 logger.error(f"Callback error for {event}: {e}")
+
+    def health_snapshot(self, now_ms: int | None = None) -> dict:
+        """Return observational feed health without fabricating missing inputs."""
+        now = int(now_ms if now_ms is not None else time.time() * 1000)
+
+        def age(ts):
+            return max(0, now - int(ts)) if ts is not None else None
+
+        return {
+            "last_book_receive_ts_ms": self.last_book_receive_ts_ms,
+            "book_message_count": int(self.book_message_count),
+            "book_age_ms": age(self.last_book_receive_ts_ms),
+            "last_agg_trade_receive_ts_ms": self.last_agg_trade_receive_ts_ms,
+            "agg_trade_message_count": int(self.agg_trade_message_count),
+            "agg_trade_age_ms": age(self.last_agg_trade_receive_ts_ms),
+            "last_completed_perp_cvd_bar_ts_ms": (
+                int(self.last_perp_bar["ts"]) if self.last_perp_bar else None
+            ),
+        }
 
     def _ingest_perp_trade(self, price: float, qty: float, m: bool, T: int):
         """Accumulate PERP CVD per clock-aligned 1m bar; emit the finalized bar on rollover.
@@ -180,6 +206,38 @@ class BinanceFuturesWebSocketClient:
         self._pb_cvd += (-qty if m else qty)
         self._pb_vol += qty
         self._pb_last = price
+
+    @staticmethod
+    def _parse_book_ticker(data: dict, received_at_ms: int) -> dict:
+        """Validate and normalize one public USD-M BTCUSDT bookTicker message."""
+        book = {
+            "symbol": str(data["s"]),
+            "best_bid": float(data["b"]),
+            "best_ask": float(data["a"]),
+            "bid_size": float(data["B"]),
+            "ask_size": float(data["A"]),
+            "event_ts_ms": int(data.get("E") or data.get("T") or 0),
+            "received_at_ms": int(received_at_ms),
+            "update_id": int(data["u"]) if data.get("u") is not None else None,
+        }
+        numeric = (
+            book["best_bid"],
+            book["best_ask"],
+            book["bid_size"],
+            book["ask_size"],
+        )
+        if (
+            book["symbol"] != "BTCUSDT"
+            or not all(math.isfinite(value) for value in numeric)
+            or book["best_bid"] <= 0
+            or book["best_ask"] <= book["best_bid"]
+            or book["bid_size"] < 0
+            or book["ask_size"] < 0
+            or book["event_ts_ms"] <= 0
+            or book["received_at_ms"] <= 0
+        ):
+            raise ValueError("invalid BTCUSDT perpetual bookTicker")
+        return book
 
     async def connect(self):
         self.running = True
@@ -213,9 +271,18 @@ class BinanceFuturesWebSocketClient:
                                     },
                                 )
                             elif stream == "btcusdt@aggTrade":
+                                self.last_agg_trade_receive_ts_ms = int(time.time() * 1000)
+                                self.agg_trade_message_count += 1
                                 self._ingest_perp_trade(
                                     float(data["p"]), float(data["q"]),
                                     bool(data["m"]), int(data["T"]))
+                            elif stream == "btcusdt@bookTicker":
+                                received_at_ms = int(time.time() * 1000)
+                                book = self._parse_book_ticker(data, received_at_ms)
+                                self.last_book = book
+                                self.last_book_receive_ts_ms = received_at_ms
+                                self.book_message_count += 1
+                                self._emit("book", dict(book))
                         except Exception:
                             pass
             except Exception as e:

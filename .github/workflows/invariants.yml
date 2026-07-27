@@ -52,6 +52,13 @@ jobs:
       - name: Frozen-artifact pinning
         run: python backend/trade_forecast/freeze_guard.py --selftest
 
+      # --- isolated Binance perpetual paper engine -----------------------------------------
+      - name: Binance paper execution, risk, recovery and DB isolation
+        run: python -m backend.binance_paper.selftest
+
+      - name: Binance paper typed API and hard-off controls
+        run: python -m backend.binance_paper.api_selftest
+
       - name: Exit-plan and scenario-engine selftests
         run: |
           python -c "import sys; sys.path.insert(0,'backend'); \
@@ -135,3 +142,5 @@ jobs:
           python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1
+          python -m backend.binance_paper.selftest || exit /b 1
+          python -m backend.binance_paper.api_selftest || exit /b 1
