@@ -5,3 +5,6 @@ dist/
 *.pyc
 .env
 Kaggle Data/
+
+# Recorded market data - large binary artifacts, never in git.
+microstructure/

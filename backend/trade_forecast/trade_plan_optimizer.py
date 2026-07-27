@@ -61,6 +61,8 @@ def optimize_candidate(
     evidence_promotable: bool,
 ) -> dict[str, Any]:
     reasons: list[str] = []
+    if candidate.get("eligibility_passed") is not True:
+        reasons.append("decision_candidate_ineligible")
     entry_vwap = candidate.get("predicted_entry_vwap")
     share = candidate.get("share_forecast") or {}
     execution = candidate.get("execution_forecast") or {}
@@ -228,8 +230,12 @@ def choose_trade(
             from head_permissions import may_rank as _may_rank
 
             _ok, _why = _may_rank("p_hold")
-        except Exception:
-            _ok, _why = True, ""          # never let the permission check take serving down
+        except Exception as exc:        # noqa: BLE001
+            # FAIL CLOSED. A permission check that cannot run has not granted permission.
+            # This instance was missed when the same pattern was fixed in decision_champion:
+            # it is currently masked because scenario economics force NO_TRADE anyway, but it
+            # becomes a live action-authority bug the moment direct plan heads are promotable.
+            _ok, _why = False, f"permission_check_failed:{type(exc).__name__}"
         if not _ok:
             return {
                 "action": "NO_TRADE",
@@ -259,6 +265,17 @@ def selftest() -> None:
     )
     assert blocked["action"] == "NO_TRADE"
     assert "insufficient_forward_evidence" in blocked["reason_codes"]
+    ineligible = optimize_candidate(
+        {
+            "side": "UP",
+            "requested_qty": 10,
+            "eligibility_passed": False,
+        },
+        data_healthy=True,
+        evidence_promotable=True,
+    )
+    assert ineligible["action"] == "NO_TRADE"
+    assert "decision_candidate_ineligible" in ineligible["reason_codes"]
     result = choose_trade([], data_healthy=True, evidence_promotable=False)
     assert result["action"] == "NO_TRADE"
     print("trade_plan_optimizer self-test: ALL PASS")

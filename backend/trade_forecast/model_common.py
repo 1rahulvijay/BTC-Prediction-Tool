@@ -178,8 +178,30 @@ def clean_xy(
     *,
     require_complete_entry: bool = False,
     feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
+    _allow_invalid_candidates: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Rows for training. `candidate_valid == 1` is MANDATORY.
+
+    Finiteness is not validity. A row can be perfectly finite and still be stale, crossed,
+    malformed, or missing a required feature that was replaced upstream - the builder records
+    exactly that in `candidate_valid` / `candidate_reasons`, and nothing was reading it. Every
+    training, calibration, test and family-selection path goes through here, so enforcing it
+    once closes all of them.
+
+    `_allow_invalid_candidates` exists ONLY for named diagnostics that deliberately inspect
+    rejected rows. It is underscore-prefixed and keyword-only so it cannot be passed by accident.
+    """
     selected = frame.loc[mask].copy()
+    if not _allow_invalid_candidates:
+        # FAIL CLOSED on absence. "Filter it if the column happens to exist" meant a stale
+        # dataset predating the column trained completely unfiltered - the exact fail-open this
+        # was meant to remove.
+        if "candidate_valid" not in selected.columns:
+            raise RuntimeError(
+                "dataset is missing the mandatory candidate_valid column; rebuild with "
+                "build_complete_trade_dataset.py before training"
+            )
+        selected = selected[selected["candidate_valid"] == 1]
     if require_complete_entry:
         selected = selected[selected["entry_complete"] == 1]
     selected = selected.dropna(subset=[*feature_columns, target])
@@ -532,6 +554,7 @@ def artifact_issues(
     *,
     require_promotable: bool = False,
     expected_feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
+    require_training_dataset: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     manifest_path = artifact_path.with_suffix(".manifest.json")
     if not artifact_path.is_file() or not manifest_path.is_file():
@@ -555,14 +578,17 @@ def artifact_issues(
     ):
         issues.append("model_code_mismatch")
     raw_dataset_path = manifest.get("dataset_path")
-    if not raw_dataset_path:
-        issues.append("training_dataset_path_missing")
-    else:
-        dataset_path = Path(str(raw_dataset_path))
-        if not dataset_path.is_file():
-            issues.append("training_dataset_missing")
-        elif manifest.get("dataset_sha256") != hash_file(dataset_path):
-            issues.append("training_dataset_hash_mismatch")
+    if require_training_dataset:
+        if not raw_dataset_path:
+            issues.append("training_dataset_path_missing")
+        else:
+            dataset_path = Path(str(raw_dataset_path))
+            if not dataset_path.is_file():
+                issues.append("training_dataset_missing")
+            elif manifest.get("dataset_sha256") != hash_file(dataset_path):
+                issues.append("training_dataset_hash_mismatch")
+    elif not manifest.get("dataset_sha256"):
+        issues.append("training_dataset_hash_missing")
     if require_promotable and not manifest.get("input_promotable"):
         issues.append("insufficient_forward_evidence")
     return manifest, issues
@@ -584,6 +610,30 @@ def selftest() -> None:
     test_min = frame.loc[split["test"], "round_start_ts"].min()
     assert cal_min - train_max >= 900
     assert test_min - frame.loc[split["calibration"], "round_start_ts"].max() >= 900
+    with tempfile.TemporaryDirectory() as directory:
+        artifact = Path(directory) / "model.pkl"
+        artifact.write_bytes(b"model")
+        artifact_type = "complete_trade_execution_heads"
+        artifact.with_suffix(".manifest.json").write_text(
+            json.dumps({
+                "dataset_version": CONFIG_VERSION,
+                "policy_hash": policy_hash(),
+                "feature_schema_hash": hash_json(list(FEATURE_COLUMNS)),
+                "artifact_sha256": hash_file(artifact),
+                "code_hash": _model_code_hash(artifact_type),
+                "artifact_type": artifact_type,
+                "dataset_sha256": "d" * 64,
+            }),
+            encoding="utf-8",
+        )
+        _, portable_issues = artifact_issues(
+            artifact, require_training_dataset=False
+        )
+        assert portable_issues == []
+        _, loose_issues = artifact_issues(
+            artifact, require_training_dataset=True
+        )
+        assert "training_dataset_path_missing" in loose_issues
     print("complete-trade model_common self-test: ALL PASS")
 
 

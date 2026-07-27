@@ -157,8 +157,9 @@ REM A head that live outcomes say cannot price is not allowed to price. Specific
 REM BTC_ENABLE_PAPER_BET=1 used to be enough on its own to re-enable betting on P(hold) even
 REM when the head-health report had already measured P(hold) as CALIBRATION_ONLY -- i.e. the
 REM override could overrule the evidence. It now ALSO requires the head to measure USABLE.
-REM Missing report = permissive but says "not measured"; a report older than 14d = STALE.
-REM The gate re-opens by itself when the next report returns the head to USABLE.
+REM FAILS CLOSED: a missing, stale, unknown or corrupt report DENIES both pricing and
+REM ranking. The app stays online and still displays diagnostics; only ACTION authority is
+REM withheld. The gate re-opens by itself when the next report returns the head to USABLE.
 REM Set to 0 for observe-only (permissions logged, not enforced). Must be set BEFORE launch.
 REM   python backend\head_permissions.py          (print current permissions)
 if not defined BTC_ENFORCE_HEAD_HEALTH set "BTC_ENFORCE_HEAD_HEALTH=1"
@@ -261,10 +262,27 @@ if errorlevel 1 goto :selftest_failed_a
 echo [selftest] a2. Builder integration - EXECUTES the label path:
 python -m backend.trade_forecast.test_builder_integration >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a2b. Complete-trade serving and optimizer integration:
+python -m backend.trade_forecast.test_complete_trade_forecast >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
 echo [selftest] a3. Forward evidence isolation + M0 gates:
 python backend/trade_forecast/forward_evidence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
+python -m backend.trade_forecast.freeze_complete_trade_threshold --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
 python backend/trade_forecast/m0_gates.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a7. Ledger V2 end-to-end - real DuckDB round trip:
+python -m backend.trade_forecast.test_ledger_v2_end_to_end >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a8. Evidence completion - durable logging, eligibility, own-L2 outcomes:
+python -m backend.trade_forecast.test_evidence_completion >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a6. Forward M0 V2 evaluator + import boundary:
+python -m backend.trade_forecast.evaluate_complete_trade_m0_v2_forward --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_a
+echo [selftest] a5. Serving integration - EXECUTES loaders + pointer swaps:
+python -m backend.trade_forecast.test_serving_integration >nul 2>&1
 if errorlevel 1 goto :selftest_failed_a
 echo [selftest] a4. Champion resolver - promotion reaches serving:
 python backend/trade_forecast/champion_resolver.py --selftest >nul 2>&1

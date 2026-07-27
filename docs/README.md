@@ -1,9 +1,17 @@
 # Documentation Index
 
+## Latest serving and evidence completion
+- **[SERVING_EVIDENCE_COMPLETION_2026-07-27.md](active/SERVING_EVIDENCE_COMPLETION_2026-07-27.md)** -
+  immutable Clarification-001 candidate eligibility, direct execution-capacity q10, durable
+  Ledger V2 spool/replay, own-recorder L2 outcome reconstruction, explicit evidence-run scoring,
+  frozen clarification verification, deterministic bundle manifests, self-contained verified
+  serving, operator commands, compatibility impact, and remaining evidence/research limits.
+  This completes the code path; it does not claim a profitable strategy.
+
 ## Audit remediation — COMPLETE_TRADE_FORECAST_V1 (rebuild required before any M0)
 - **[AUDIT_REMEDIATION_2026-07-26.md](active/AUDIT_REMEDIATION_2026-07-26.md)** — external audit of
   `b7306cb` found 14 defects letting the Complete Trade Forecaster manufacture apparent
-  selectivity. **10 fixed, 1 contained, 3 explicitly deferred**, with a regression test per defect
+  selectivity. **12 fixed, 1 contained, 1 explicitly deferred**, with a regression test per defect
   (`python -m backend.trade_forecast.test_audit_fixes`, 60 checks). Headline fixes: future targets
   no longer run past contract expiry (a 30s-left decision was carrying BTC prices from 90s AFTER
   settlement); `exposure_id` makes M0 score one deployable action per market moment instead of

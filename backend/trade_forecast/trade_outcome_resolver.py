@@ -147,12 +147,129 @@ def resolve_from_dataset(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--db", type=Path, default=DB_PATH)
+    parser = argparse.ArgumentParser(
+        description="Reconstruct V2 evidence from this host's own L2 recorder."
+    )
+    parser.add_argument("--evidence-run-id")
+    parser.add_argument(
+        "--recorder-db",
+        type=Path,
+        default=DATA / "execution_layer.duckdb",
+    )
+    parser.add_argument("--ledger-db", type=Path, default=DB_PATH)
+    parser.add_argument(
+        "--legacy-dataset",
+        type=Path,
+        help="explicit compatibility-only V1 resolver; never writes Ledger V2 evidence",
+    )
     args = parser.parse_args()
-    print(json.dumps(resolve_from_dataset(args.dataset.resolve(), args.db.resolve()), indent=2))
+    if args.legacy_dataset:
+        print(json.dumps(
+            resolve_from_dataset(
+                args.legacy_dataset.resolve(), args.ledger_db.resolve()
+            ),
+            indent=2,
+        ))
+        return 0
+    if not args.evidence_run_id:
+        parser.error("--evidence-run-id is required for V2 reconstruction")
+    from .l2_outcome_reconstruction import reconstruct_v2_outcomes
+
+    print(json.dumps(
+        reconstruct_v2_outcomes(
+            evidence_run_id=args.evidence_run_id,
+            recorder_db=args.recorder_db.resolve(),
+            ledger_db=args.ledger_db.resolve(),
+        ),
+        indent=2,
+    ))
     return 0
+
+
+# ===================================================================================
+# V2 RESOLVER - the only writer of complete_trade_outcomes_v2
+# ===================================================================================
+# The legacy resolver reads complete_trade_forecasts and writes complete_trade_outcomes, so the
+# V2 outcome table would have stayed empty forever and the forward evaluator would have had
+# nothing to score. This resolver reads V2 predictions and writes V2 outcomes, and it refuses
+# anything whose settlement is not officially sourced.
+
+
+def resolve_v2(
+    settled_rounds: dict[str, dict[str, Any]],
+    conn: Any = None,
+    *,
+    evidence_run_id: str | None = None,
+    test_only: bool = False,
+) -> dict[str, Any]:
+    """TEST-FIXTURE resolver only; production must use own-L2 reconstruction.
+
+    `settled_rounds` maps round_id -> {resolution_source, settled_side, plan_net,
+    stress_1000ms_plan_net, candidate_pnls, entry_filled, entry_vwap, plan_exit_kind,
+    plan_holding_s}. Rounds whose resolution_source is not on the frozen allowlist are SKIPPED
+    with a reason rather than written, because an unofficial outcome is not ground truth."""
+    if not test_only:
+        raise RuntimeError(
+            "caller-supplied V2 economics are prohibited; use "
+            "reconstruct_v2_outcomes() against the own L2 recorder"
+        )
+    from .trade_forecast_logger import (
+        connect,
+        ensure_v2_schema,
+        log_outcome_v2,
+        read_forward_rows,
+        read_resolved_outcomes,
+    )
+    from .trade_schema import OFFICIAL_RESOLUTION_SOURCES
+
+    own = conn is None
+    conn = conn or connect()
+    written, skipped = 0, []
+    try:
+        ensure_v2_schema(conn)
+        rows = read_forward_rows(conn, evidence_run_id)
+        already = set(read_resolved_outcomes(conn, include_test_fixtures=True))
+        for row in rows:
+            fid = row["forecast_id"]
+            if fid in already:
+                continue
+            settled = settled_rounds.get(row.get("round_id"))
+            if not settled:
+                skipped.append((fid, "no_settlement"))
+                continue
+            source = str(settled.get("resolution_source") or "")
+            if source not in OFFICIAL_RESOLUTION_SOURCES:
+                skipped.append((fid, f"unofficial_source:{source or 'missing'}"))
+                continue
+            log_outcome_v2({
+                "forecast_id": fid,
+                "round_id": row.get("round_id"),
+                "outcome_schema_version": "TEST_FIXTURE_V1",
+                "resolved_at_s": float(settled.get("resolved_at_s") or time.time()),
+                "resolution_source": source,
+                "reconstruction_source": "TEST_FIXTURE",
+                "source_recording_sha256": "t" * 64,
+                "settled_side": settled.get("settled_side"),
+                "entry_filled": settled.get("entry_filled"),
+                "entry_vwap": settled.get("entry_vwap"),
+                "entry_snapshot_ts_s": settled.get("entry_snapshot_ts_s"),
+                "entry_latency_ms": settled.get("entry_latency_ms"),
+                "plan_net": settled.get("plan_net"),
+                "plan_exit_kind": settled.get("plan_exit_kind"),
+                "plan_holding_s": settled.get("plan_holding_s"),
+                "stress_1000ms_plan_net": settled.get("stress_1000ms_plan_net"),
+                "stress_entry_vwap": settled.get("stress_entry_vwap"),
+                # The matched-random control needs the SAME-CHECKPOINT alternatives the policy
+                # could have taken. A pool containing later checkpoints would hand the random
+                # control opportunities that did not exist when the trade was made.
+                "candidate_pnls_json": json.dumps(settled.get("candidate_pnls") or []),
+            }, conn)
+            written += 1
+        return {"written": written, "skipped": len(skipped),
+                "skip_reasons": skipped[:10], "predictions": len(rows)}
+    finally:
+        if own:
+            conn.close()
 
 
 if __name__ == "__main__":

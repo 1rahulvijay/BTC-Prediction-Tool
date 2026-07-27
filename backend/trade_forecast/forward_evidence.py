@@ -123,11 +123,55 @@ class ThresholdArtifact:
         return artifact
 
 
+# ===================================================================================
+# EVIDENCE CLASS - which sources may support which claims
+# ===================================================================================
+# Free historical Polymarket L2 DOES exist from third parties (PMXT archives, Resolved Markets,
+# Polyfun, HF recordings). That is genuinely useful and shortens development from months to days.
+# It is also the single most dangerous thing that could enter this pipeline, because a downloaded
+# archive is indistinguishable from own-recorder output once it is inside a parquet.
+#
+# What a third-party archive CANNOT carry, however complete its ladders are:
+#
+#   recv_ts on THIS host   -> so 500ms entry simulation and latency sensitivity are unprovable
+#   this collector's gaps  -> so continuous-coverage claims describe someone else's uptime
+#   this host's outages    -> so stream health is not measurable at all
+#
+# Those are exactly the quantities the promotion contract is built on. So the classes are kept
+# apart MECHANICALLY, not by discipline: a forward evidence set containing even one third-party
+# row is inadmissible, and says so.
+THIRD_PARTY_HISTORICAL = "THIRD_PARTY_HISTORICAL"     # development, kill-only authority
+OWN_FORWARD_RECORDER = "OWN_FORWARD_RECORDER"         # promotion-authoritative
+
+PROMOTION_AUTHORITATIVE_CLASSES = frozenset({OWN_FORWARD_RECORDER})
+
+# Sources seen so far. Extend deliberately; an unrecognised source is treated as third-party,
+# which is the safe direction.
+KNOWN_SOURCES = {
+    "l2_recorder": OWN_FORWARD_RECORDER,
+    "pmxt": THIRD_PARTY_HISTORICAL,
+    "resolved_markets": THIRD_PARTY_HISTORICAL,
+    "polyfun": THIRD_PARTY_HISTORICAL,
+    "huggingface": THIRD_PARTY_HISTORICAL,
+    "polymarket_prices_history": THIRD_PARTY_HISTORICAL,
+}
+
+
+def classify_source(source: str | None) -> str:
+    """Unknown or absent source -> THIRD_PARTY_HISTORICAL. Never the promoting class by default."""
+    return KNOWN_SOURCES.get(str(source or "").strip().lower(), THIRD_PARTY_HISTORICAL)
+
+
 REQUIRED_SINGLETON_FIELDS = (
     "model_sha256",
+    "bundle_manifest_sha256",
     "feature_schema_sha256",
     "policy_sha256",
     "threshold_sha256",
+    "prereg_sha256",
+    "clarification_sha256",
+    "ledger_schema_version",
+    "evidence_run_id",
 )
 
 
@@ -157,6 +201,22 @@ def build_forward_manifest(
             f"{len(pre_freeze)} prediction(s) at or before the freeze boundary "
             f"({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(freeze_ts))}); "
             f"promotion evidence must post-date BOTH the prereg and model freezes"
+        )
+
+    # EVIDENCE CLASS FIRST. Checked before anything else, because a mixed set is not a weaker
+    # evidence set - it is a different claim wearing the same shape.
+    classes = sorted({classify_source(r.get("evidence_source")) for r in rows})
+    non_promoting = [c for c in classes if c not in PROMOTION_AUTHORITATIVE_CLASSES]
+    if non_promoting:
+        offenders = sorted({
+            str(r.get("evidence_source") or "<unset>")
+            for r in rows
+            if classify_source(r.get("evidence_source")) not in PROMOTION_AUTHORITATIVE_CLASSES
+        })
+        blockers.append(
+            f"evidence set contains non-promoting sources {offenders} "
+            f"(classes {non_promoting}). Third-party history has KILL-ONLY authority: it cannot "
+            f"carry this host's recv_ts, gaps or outages, so it cannot prove live execution."
         )
 
     singletons: dict[str, list[str]] = {}
@@ -196,7 +256,6 @@ def build_forward_manifest(
     gaps = [b - a for a, b in zip(ordered, ordered[1:])] or [0.0]
     longest_gap_days = max(gaps) / 86400.0
     # Weeks inside the span that contain no evidence at all.
-    first_week = time.gmtime(min(ts))
     empty_internal = 0
     if len(weeks) >= 1:
         expected_weeks = int(span_weeks) + 1
@@ -215,6 +274,8 @@ def build_forward_manifest(
         "admissible": not blockers,
         "blockers": blockers,
         "rows": len(rows),
+        "evidence_classes": classes,
+        "promotion_authoritative": classes == [OWN_FORWARD_RECORDER],
         "prereg_sha256": prereg_sha256,
         "prereg_frozen_at": prereg_frozen_at,
         "model_frozen_at": model_frozen_at,
@@ -277,8 +338,12 @@ def selftest() -> int:
 
     print("forward evidence manifest")
     base = {
-        "model_sha256": "m" * 64, "feature_schema_sha256": "f" * 64,
+        "model_sha256": "m" * 64, "bundle_manifest_sha256": "b" * 64,
+        "feature_schema_sha256": "f" * 64,
         "policy_sha256": "p" * 64, "threshold_sha256": art.threshold_hash(),
+        "prereg_sha256": "a" * 64, "clarification_sha256": "c" * 64,
+        "ledger_schema_version": "test-v2", "evidence_run_id": "test-run",
+        "evidence_source": "l2_recorder",
     }
     freeze = 1_000_000.0
     good = [
@@ -357,6 +422,32 @@ def selftest() -> int:
                                model_frozen_at=freeze - 10, min_rounds=1000, min_weeks=8)
     chk(m["admissible"], f"continuous coverage passes ({m['blockers']})")
     chk(m["distinct_calendar_weeks"] >= 8, "and it occupies at least 8 distinct weeks")
+
+    print("evidence class separation")
+    chk(classify_source("l2_recorder") == OWN_FORWARD_RECORDER,
+        "own recorder is promotion-authoritative")
+    for third in ("pmxt", "resolved_markets", "polyfun", "huggingface"):
+        chk(classify_source(third) == THIRD_PARTY_HISTORICAL,
+            f"{third} is third-party historical (kill-only)")
+    chk(classify_source(None) == THIRD_PARTY_HISTORICAL,
+        "an UNSET source defaults to third-party, never to the promoting class")
+    chk(classify_source("some_new_vendor") == THIRD_PARTY_HISTORICAL,
+        "an UNRECOGNISED source defaults to third-party (safe direction)")
+
+    # A single imported row poisons the set - it cannot carry this host's recv_ts or outages.
+    contaminated = [*steady[:1199],
+                    {**steady[1199], "evidence_source": "pmxt"}]
+    m = build_forward_manifest(contaminated, prereg_sha256="a" * 64, prereg_frozen_at=freeze,
+                               model_frozen_at=freeze - 10, min_rounds=1000, min_weeks=8)
+    chk(not m["admissible"], "ONE third-party row makes the whole forward set inadmissible")
+    chk(not m["promotion_authoritative"], "and the set is flagged non-authoritative")
+    chk(any("KILL-ONLY" in b for b in m["blockers"]),
+        "the blocker explains WHY third-party history cannot promote")
+
+    m = build_forward_manifest(steady, prereg_sha256="a" * 64, prereg_frozen_at=freeze,
+                               model_frozen_at=freeze - 10, min_rounds=1000, min_weeks=8)
+    chk(m["promotion_authoritative"] and m["evidence_classes"] == [OWN_FORWARD_RECORDER],
+        "a pure own-recorder set remains promotion-authoritative")
 
     print("threshold artifact hardening")
     with tempfile.TemporaryDirectory() as tmp:
