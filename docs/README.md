@@ -1,6 +1,11 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[ECONOMIC_POLICY_CAMPAIGN_180D_PROTOCOL_2026-07-28.md](active/ECONOMIC_POLICY_CAMPAIGN_180D_PROTOCOL_2026-07-28.md)** -
+  frozen standalone test of direct economic LONG/SHORT heads, expected-net and
+  q20 specialists, ACT/SKIP, and one causal dynamic-exit challenger. It declares
+  822 finite policy configurations, selects before a locked 30-day test, saves
+  no serving artifacts, and permits at most a historical shadow candidate.
 - **[CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md](active/CONDITIONAL_EV_120D_EXPERIMENT_2026-07-27.md)** -
   frozen, research-only decomposition of trade selection into magnitude probability,
   conditional direction, and conservative signed-return quantiles. The untouched
