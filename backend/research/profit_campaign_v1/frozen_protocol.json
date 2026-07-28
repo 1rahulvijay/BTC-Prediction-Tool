@@ -1,0 +1,147 @@
+{
+  "protocol_id": "PROFIT_CAMPAIGN_V1_2026-07-28",
+  "status": "frozen_before_campaign_results",
+  "research_only": true,
+  "campaigns": [
+    "BINANCE_COST_AWARE_NET_PNL_V1",
+    "BINANCE_DYNAMIC_EXIT_V1"
+  ],
+  "instrument": "BTCUSDT_PERPETUAL",
+  "decision_interval_seconds": 15,
+  "horizons_seconds": [
+    30,
+    180,
+    900
+  ],
+  "latencies_ms": [
+    100,
+    250,
+    500,
+    1000
+  ],
+  "capital_usd": [
+    100,
+    500,
+    1000,
+    5000,
+    10000
+  ],
+  "primary_latency_ms": 500,
+  "primary_capital_usd": 1000,
+  "execution": {
+    "entry": "first causally received complete book at or after decision plus latency",
+    "long": "buy ask depth then sell bid depth",
+    "short": "sell bid depth then buy ask depth",
+    "taker_fee_bps_per_leg": 5.0,
+    "additional_impact_bps_per_leg": 1.0,
+    "maximum_book_age_ms": 10000,
+    "minimum_fill_fraction": 0.25,
+    "signal_expiry_ms": 10000,
+    "funding": "observed archived BTCUSDT funding event when crossed",
+    "midpoint_fills_prohibited": true,
+    "future_high_low_features_prohibited": true
+  },
+  "selector": {
+    "quantiles": [
+      0.1,
+      0.2,
+      0.5,
+      0.8,
+      0.9
+    ],
+    "uncertainty_reserve_bps": 2.0,
+    "action_rule": "argmax(q20_long,q20_short,0) only when winning q20 exceeds reserve; otherwise WAIT"
+  },
+  "validation": {
+    "development_fraction": 0.8,
+    "untouched_fraction": 0.2,
+    "walk_forward_folds": 4,
+    "purge_seconds": 900,
+    "embargo_seconds": 900,
+    "bootstrap_iterations": 2000,
+    "random_seed": 20260728,
+    "minimum_trading_days": 30,
+    "minimum_forward_decisions": 500,
+    "minimum_forward_weeks": 8,
+    "minimum_profit_factor": 1.2,
+    "maximum_single_day_profit_concentration": 0.2,
+    "maximum_single_regime_profit_concentration": 0.5
+  },
+  "dynamic_exit": {
+    "entry_cohort": "non-overlapping causal 30-second momentum sign entries",
+    "minimum_hold_seconds": 5,
+    "incremental_wait_seconds": [
+      5,
+      15,
+      30,
+      60
+    ],
+    "target_net_bps": 15.0,
+    "stop_net_bps": 10.0,
+    "trailing_drawdown_bps": 5.0,
+    "break_even_activation_bps": 10.0,
+    "profit_lock_activation_bps": 15.0,
+    "profit_lock_floor_bps": 5.0
+  },
+  "stress": {
+    "fee_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "slippage_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "latencies_ms": [
+      100,
+      250,
+      500,
+      1000,
+      2000
+    ],
+    "capital_usd": [
+      100,
+      500,
+      1000,
+      5000,
+      10000
+    ]
+  },
+  "promotion": {
+    "historical_net_pnl_positive": true,
+    "majority_walk_forward_folds_positive": true,
+    "untouched_net_pnl_positive": true,
+    "day_block_lower_95_positive": true,
+    "forward_decisions_minimum": 500,
+    "forward_trading_days_minimum": 30,
+    "forward_weeks_minimum": 8,
+    "profit_factor_minimum": 1.2,
+    "positive_fee_stress_1_5x": true,
+    "positive_slippage_stress_1_5x": true,
+    "positive_latency_1000ms": true,
+    "single_day_positive_pnl_maximum_fraction": 0.2,
+    "single_regime_positive_pnl_maximum_fraction": 0.5,
+    "no_reconciliation_errors": true
+  },
+  "comparisons": [
+    "ALWAYS_LONG",
+    "ALWAYS_SHORT",
+    "RANDOM_SIDE",
+    "MOMENTUM",
+    "MEAN_REVERSION",
+    "CURRENT_ENSEMBLE",
+    "COST_AWARE_SELECTOR",
+    "WAIT"
+  ],
+  "prohibitions": [
+    "no_paper_activation",
+    "no_live_activation",
+    "no_model_promotion",
+    "no_production_model_write",
+    "no_polymarket_campaign_change",
+    "no_win_rate_headline",
+    "no_claim_from_missing_execution_data"
+  ]
+}
