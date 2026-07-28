@@ -539,15 +539,46 @@ def selftest() -> int:
         finally:
             DATA, MATRIX_QUALITY, MATRIX_MANIFEST, HEAD_HEALTH = originals
 
-    # Live state: the real 1265d attempt FAILED its monthly gate on 2023-03, so a bundle claiming
-    # that window must be refused right now. This is the gate doing its job, not a bug.
+    # The monthly gate is enforced in BOTH directions, and neither direction is allowed to depend
+    # on what today's matrix happens to contain.
+    #
+    # This previously asserted `passed is False` because the 1265d attempt had failed on 2023-03.
+    # That is an observation, not an invariant: rebuilding a clean matrix turned the assertion
+    # false and made the launch gate refuse to start on GOOD data. A selftest inside start.bat
+    # must assert the RULE (verdict blocks promotion) and merely report the current state.
     quality = _load_json(MATRIX_QUALITY)
     if quality:
         failed = [m["month"] for m in quality.get("months", []) if not m.get("passed")]
-        chk(
-            quality.get("passed") is False and bool(failed),
-            f"LIVE: matrix monthly gate currently FAILS (months={failed}) so promotion is blocked",
+        passed = quality.get("passed") is True
+        blocked_now = any(
+            "monthly data-quality gate" in b for b in gate_report(LIVE)["blockers"]
         )
+        chk(
+            blocked_now == (not passed),
+            f"LIVE: the matrix verdict and the promotion gate agree "
+            f"(passed={passed}, failed_months={failed}, blocked={blocked_now})",
+        )
+
+    # Enforcement direction, proven on synthetic data so it holds whatever the live matrix says:
+    # a FAILING monthly report must block promotion. Without this, a matrix that silently starts
+    # reporting `passed: true` would face no test at all.
+    import tempfile as _tempfile
+
+    _saved = MATRIX_QUALITY
+    try:
+        _scratch = Path(_tempfile.mkdtemp()) / "quality.json"
+        _scratch.write_text(json.dumps({
+            "passed": False,
+            "months": [{"month": "2023-03", "passed": False}],
+        }), encoding="utf-8")
+        MATRIX_QUALITY = _scratch
+        _blockers = gate_report(LIVE)["blockers"]
+        chk(
+            any("monthly data-quality gate" in b and "2023-03" in b for b in _blockers),
+            "a FAILING monthly report blocks promotion and names the offending month",
+        )
+    finally:
+        MATRIX_QUALITY = _saved
     manifest = _load_json(MATRIX_MANIFEST)
     if manifest.get("requested_days"):
         r = gate_report(LIVE, requested_days=1265)

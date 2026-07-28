@@ -295,10 +295,18 @@ echo [selftest] b. Frozen-artifact pinning - no model swap mid-evidence-run:
 python backend\trade_forecast\freeze_guard.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b2. Quarantined prototypes + non-blocking feed callbacks:
-python backend	est_quarantine_and_feed.py >nul 2>&1
+python backend\test_quarantine_and_feed.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backendeed_writer.py --selftest >nul 2>&1
+python backend\feed_writer.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+echo [selftest] b3. Launcher integrity - every invoked path exists:
+python backend\test_launcher_integrity.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b3
+echo [selftest] b4. Model registry + artifact bundles (foundation):
+python backend\model_registry.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b4
+python backend\model_artifacts.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b4
 echo [selftest] c. Head permissions - a head that cannot price may not price:
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
@@ -337,6 +345,12 @@ echo [selftest] FAILED: python -m backend.trade_forecast.test_audit_fixes
 goto :selftest_abort
 :selftest_failed_b
 echo [selftest] FAILED: python backend\trade_forecast\freeze_guard.py --selftest
+goto :selftest_abort
+:selftest_failed_b3
+echo [selftest] FAILED: python backend\test_launcher_integrity.py
+goto :selftest_abort
+:selftest_failed_b4
+echo [selftest] FAILED: python backend\model_registry.py --selftest (or model_artifacts.py)
 goto :selftest_abort
 :selftest_failed_c
 echo [selftest] FAILED: python backend\head_permissions.py --selftest
