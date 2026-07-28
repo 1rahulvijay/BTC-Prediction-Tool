@@ -4,8 +4,9 @@ Single source of truth for what is fixed, what is built, what is blocked, what w
 rejected, and what comes next. Supersedes the "Phase 1–5 / Grand Blueprint" documents,
 which are **historical brainstorming and contain false completion claims** — see §8.
 
-`master` = `f03b571` (+ this doc). No GitHub Actions run exists against it, so every
-result below is a **local exit code**, not CI-verified.
+Stable research conclusions only. Current runtime state (commit, serviceable artifacts,
+archive rows, calibration mode, migration progress) is GENERATED — see §11. Every
+test result below is a **local exit code**, not CI-verified.
 
 ---
 
@@ -254,7 +255,25 @@ this repo, so reconcile file-by-file and never clobber.
 
 ---
 
-## 11. Local validation as of this commit
+## 11. Runtime state is GENERATED, not written here
+
+Sections 1-10 are **stable research conclusions** - they stay true until new evidence
+overturns them. Anything that changes when the recorder starts or a model is retrained
+(commit, serviceable artifacts, archive rows, calibration mode, migration progress) is
+generated, because a hand-written "single source of truth" goes stale silently:
+
+```bash
+python backend/report_master_runtime_state.py
+```
+
+writes `data/reports/MASTER_RUNTIME_STATE.{json,md}`.
+
+`--selftest` is a documentation consistency test wired into both CI jobs. It asserts only
+what code can prove (semantics v3/v2, calibration default off, legacy flag fails closed,
+calibrators non-deployable, loader enforcement NOT wired, max_taker_ask still quadratic)
+and deliberately does **not** assert runtime values, so CI never depends on a recorder.
+
+## 12. Local validation as of this commit
 
 ```text
 compileall                     0        pyflakes                       0
