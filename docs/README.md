@@ -1,6 +1,11 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[POLYMARKET_REPRICING_SHADOW_V1_2026-07-28.md](active/POLYMARKET_REPRICING_SHADOW_V1_2026-07-28.md)** -
+  isolated execution-routing forward shadow for the surviving UP/DOWN ask-worsening
+  heads; four same-denominator policies, baseline-versus-evidence calibration,
+  complete-depth and delay stress, explicit missed-fill accounting, side-specific
+  frozen gates, fail-closed artifacts, and no production or order path.
 - **[EVENT_EXECUTION_AND_ANCHOR_CROSSING_RESULTS_2026-07-28.md](active/EVENT_EXECUTION_AND_ANCHOR_CROSSING_RESULTS_2026-07-28.md)** -
   frozen ten-experiment campaign that tests 5s/15s event predictions as execution,
   contract-repricing, anchor-crossing, and matched-horizon BTC evidence. Event veto/delay,
@@ -211,6 +216,14 @@
   matter. **(2) Next-round opening drift: CLEAN KILL** — continuation −2.74c, reversal −2.08c, random
   −1.98c (n=13,018 pairs); all three land at ≈ minus the spread+fee, the signature of an efficient
   book. The boundary-lag species does NOT generalize from the expiry boundary to the round open.
+- **[ECONOMIC_ALPHA_ENGINES_AND_COMPLETE_SET_ARBITRAGE_V1_2026-07-28.md](active/ECONOMIC_ALPHA_ENGINES_AND_COMPLETE_SET_ARBITRAGE_V1_2026-07-28.md)** -
+  implements the research-only `POLY_COMPLETE_SET_ARBITRAGE_V1` forward scanner without changing
+  the historical NO-EDGE verdict. It uses current per-token fee and market-rule endpoints,
+  synchronized full L2 ladders, exact equal-size VWAP, capacity search, gap duration and
+  250/500/1000 ms pair/failed-leg stress in a separate DuckDB. Current live smoke found zero gaps;
+  promotion is hard-blocked until measured operating costs, real two-leg fills, 500 candidates,
+  eight weeks and the complete locked robustness gate exist. Also records the economic-engine
+  roadmap and explicitly distinguishes implemented work from future campaigns.
 - **[POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md](active/POLYMARKET_STRUCTURAL_EDGES_AND_MODEL_STRADDLES_2026-07-04.md)** -
   fee-aware complement-arbitrage and next-round drift tests, five-model OOS straddle selectors, and the
   restart-safe sequential opposite-side paper strategy. This is a historical research record: the

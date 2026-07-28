@@ -100,7 +100,7 @@ official Polymarket outcome remains the settlement truth.
 
 Canonical run:
 
-`data/research/event_execution_v1/20260728T061043Z`
+`data/research/event_execution_v1/20260728T063909Z`
 
 ### Execution Policies
 
@@ -271,15 +271,12 @@ artifact counts, and production-promotion blocking.
 
 ## Next Gate
 
-Wire E07/E08 only as a forward-shadow recorder output, then require:
+E07/E08 are now wired only into the isolated
+`POLYMARKET_REPRICING_SHADOW_V1` recorder. Its stricter frozen gate requires
+1,000 decisions, 500 per side, eight continuous weeks, incremental calibration
+and monotonicity per side, positive day-block/weekly/latency/size results, and a
+positive untouched final period. See
+`POLYMARKET_REPRICING_SHADOW_V1_2026-07-28.md`.
 
-1. At least 500 independent eligible desired-side entries.
-2. At least four continuous weeks.
-3. Positive average entry-price improvement after missed-fill penalties.
-4. Positive results in at least 75% of weeks.
-5. Positive day-block lower confidence bound.
-6. Positive result under two seconds of added latency.
-7. Actual L2 depth, executable size, and queue-aware fill evidence.
-
-Until those conditions pass, the app should display no new action and make no
-paper or live trade from these models.
+Until those conditions pass and a separate reviewed promotion is made, the app
+displays no new action and makes no paper or live trade from these models.

@@ -1,0 +1,59 @@
+{
+  "protocol_id": "POLY_COMPLETE_SET_ARBITRAGE_V1",
+  "frozen_at_utc": "2026-07-28T10:00:00Z",
+  "promotion_status": "research_only",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "order_submission_enabled": false,
+  "horizons_minutes": [5, 15],
+  "position_sizes": [5.0, 10.0, 50.0],
+  "book": {
+    "sample_interval_ms": 100,
+    "maximum_book_age_ms": 500,
+    "maximum_pair_receive_skew_ms": 250,
+    "maximum_pair_exchange_skew_ms": 250,
+    "maximum_fee_age_seconds": 3600,
+    "subscription_refresh_seconds": 15,
+    "maximum_database_gb": 2.0
+  },
+  "economics": {
+    "minimum_order_size": 5.0,
+    "safety_margin_per_pair_usd": 0.005,
+    "fixed_operational_cost_usd": 0.0,
+    "operational_cost_status": "unmeasured_zero_plus_safety_margin",
+    "maker_rebate_usd": 0.0,
+    "builder_fee_bps": 0.0,
+    "buy_both_terminal_value_per_pair": 1.0,
+    "sell_both_collateral_cost_per_pair": 1.0,
+    "sell_both_requires_prefunded_complete_set_inventory": true,
+    "prefunded_inventory_verified": false
+  },
+  "delay_stress_ms": [250, 500, 1000],
+  "forward_gate": {
+    "minimum_independent_opportunities": 500,
+    "minimum_continuous_weeks": 8,
+    "minimum_positive_week_fraction": 0.75,
+    "minimum_day_block_net_lower_95_usd": 0.0,
+    "minimum_profit_factor": 1.2,
+    "maximum_single_week_profit_share": 0.35,
+    "require_all_delay_stresses_positive": true,
+    "require_zero_rebate_profitability": true,
+    "require_measured_operational_cost": true,
+    "require_real_two_leg_fill_evidence": true,
+    "require_failed_leg_stress_inside_limit": true,
+    "require_final_untouched_period_positive": true
+  },
+  "boundaries": {
+    "may_submit_orders": false,
+    "may_read_credentials": false,
+    "may_change_champion": false,
+    "may_change_paper_ledger": false,
+    "may_change_live_ui": false,
+    "unknown_fee_behavior": "fail_closed",
+    "stale_or_skewed_book_behavior": "fail_closed",
+    "partial_fill_assumption": "never_assume_both_filled",
+    "sell_without_verified_inventory_behavior": "research_only"
+  }
+}
+

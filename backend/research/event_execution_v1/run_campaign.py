@@ -16,7 +16,6 @@ import shutil
 import sys
 import time
 import zipfile
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +43,8 @@ from event_evidence_accumulator.run_accumulator_campaign import (
     load_spot_seconds,
 )
 from polymarket_fee import polymarket_taker_fee_per_share
+
+from event_execution_v1.model_bundle import CalibratedBinary
 
 PROTOCOL_PATH = Path(__file__).with_name("frozen_protocol.json")
 DEFAULT_OUTPUT_ROOT = ROOT / "data" / "research" / "event_execution_v1"
@@ -280,22 +281,6 @@ def assign_development_roles(data: pd.DataFrame, fit_fraction: float) -> pd.Data
         output["condition_id"].isin(fit_ids), "fit", "calibration"
     )
     return output
-
-
-@dataclass
-class CalibratedBinary:
-    features: list[str]
-    medians: pd.Series
-    pipeline: Pipeline
-    calibrator: IsotonicRegression | None
-
-    def predict(self, frame: pd.DataFrame) -> np.ndarray:
-        matrix = frame[self.features].replace([np.inf, -np.inf], np.nan)
-        matrix = matrix.fillna(self.medians)
-        raw = self.pipeline.predict_proba(matrix)[:, 1]
-        if self.calibrator is None:
-            return np.clip(raw, 1e-6, 1.0 - 1e-6)
-        return np.clip(self.calibrator.predict(raw), 1e-6, 1.0 - 1e-6)
 
 
 def fit_calibrated(

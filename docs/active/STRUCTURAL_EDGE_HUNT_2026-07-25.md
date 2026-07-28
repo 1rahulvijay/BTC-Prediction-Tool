@@ -62,3 +62,12 @@ Consecutive round pairs: **13,018**
 - No latency model: the round open is the fastest tape of the round.
 - Historical window; live replication on the recorder remains the only real proof.
 - Nothing here is wired to any live behavior. PAPER research only.
+
+## 2026-07-28 Forward-Scanner Addendum
+
+The historical **NO TRADEABLE ARBITRAGE** verdict is unchanged. A separate
+research-only `POLY_COMPLETE_SET_ARBITRAGE_V1` forward scanner now tests current
+markets with synchronized full-depth books, token-specific fee endpoints,
+same-size VWAP and 250/500/1000 ms failed-leg stress. It has no order path and
+cannot promote from public-book observations alone. See
+`ECONOMIC_ALPHA_ENGINES_AND_COMPLETE_SET_ARBITRAGE_V1_2026-07-28.md`.
