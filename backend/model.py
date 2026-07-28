@@ -441,6 +441,18 @@ except ImportError:
     logger.warning("PyTorch not installed. Deep Learning models disabled.")
 
 
+# Bump when the TRAINING PROCEDURE changes in a way that makes an older bundle
+# non-comparable, even if the feature columns are identical. Distinct from
+# features.FEATURE_SEMANTICS_VERSION, which tracks what the INPUTS mean.
+TRAINING_SEMANTICS_VERSION = 2
+TRAINING_SEMANTICS_CHANGELOG = {
+    2: "2026-07-28 TCN: per-sample weighted loss (was per-class mean, which discarded "
+       "recency) + device-stable inference. Bundles trained under v1 optimised a "
+       "different objective and are not comparable.",
+    1: "original: TCN folded per-sample weights into per-class means",
+}
+
+
 # Saved models live under <project>/data/saved_models (override with BTC_DATA_DIR),
 # keeping all app-generated files in one place.
 MODEL_DIR = os.path.join(

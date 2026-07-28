@@ -297,8 +297,12 @@ def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 1
 # invalidates artifacts under strict mode - but strict mode can be off, and a hash
 # says only "something changed". This constant says WHAT changed, and
 # check_feature_contract.py reports it in plain words.
-FEATURE_SEMANTICS_VERSION = 2
+FEATURE_SEMANTICS_VERSION = 3
 FEATURE_SEMANTICS_CHANGELOG = {
+    3: "2026-07-28 vwap(): bar-count window -> TRUE duration window. The bar count was "
+       "derived from the median timestamp delta, which over-reached across gaps (a 6h gap "
+       "made a '1440 bar' window span 29.98h, not 24h). Now resolved against the clock "
+       "per bar. Models trained under v2 saw the over-reaching window.",
     2: "2026-07-28 vwap(): cumulative-from-bar-0 -> trailing time-anchored window. "
        "Models trained under v1 consumed a near-constant VWAP and MUST be retrained.",
     1: "original: vwap() cumulative from bar 0",
@@ -336,23 +340,55 @@ def vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.nd
     n = len(closes)
     if n == 0:
         return np.array([], dtype=float)
+    tp = (highs + lows + closes) / 3.0
 
+    # ---- true DURATION window (requires timestamps) --------------------------------
     if times is not None and len(times) == n and n >= 2:
         t = np.asarray(times, dtype=np.float64)
         t = np.where(t > 1e11, t / 1000.0, t)          # ms -> s, same rule as _t_s
-        step = float(np.median(np.diff(t)))
-        if step > 0:
-            span = float(window_seconds) if window_seconds else 86_400.0
-            period = max(1, int(round(span / step)))
-    elif window_seconds is not None:
-        raise ValueError("window_seconds requires `times`; bar spacing is unknown without it")
+        # `is not None`, not truthiness: window_seconds=0 is falsy and would otherwise
+        # silently become the 24h default instead of being rejected.
+        span = 86_400.0 if window_seconds is None else float(window_seconds)
+        if span <= 0:
+            raise ValueError(f"window_seconds must be > 0, got {window_seconds}")
 
+        # An earlier version derived a BAR COUNT from the median delta. That silently
+        # over-reaches whenever a gap sits inside the window: with a 6h recorder gap
+        # among 1m bars, a "1440 bar" window covered 29.98 HOURS, not 24. The window is
+        # now resolved against the clock for every bar, so gaps and irregular spacing
+        # cannot stretch it.
+        #
+        # An earlier version repaired a backwards clock with np.maximum.accumulate. That
+        # made the search work but CONCEALED corrupt input: a decreasing timestamp means
+        # the kline history is out of order, and silently repairing it turns corrupt data
+        # into apparently valid model input. Authoritative feature generation rejects it.
+        # Duplicates ARE permitted - two observations can legitimately share a second -
+        # and searchsorted(side="left") treats them as one boundary, deterministically.
+        if not np.isfinite(t).all():
+            raise ValueError("vwap: timestamps must be finite (found NaN or Inf)")
+        diffs = np.diff(t)
+        if np.any(diffs < 0):
+            bad = int(np.argmax(diffs < 0)) + 1
+            raise ValueError(
+                f"vwap: timestamps must be non-decreasing; index {bad} goes backwards "
+                f"({t[bad]:.0f} < {t[bad - 1]:.0f}). Refusing to repair a corrupt clock."
+            )
+        left = np.searchsorted(t, t - span, side="left")
+
+        c_tpv = np.concatenate(([0.0], np.cumsum(tp * volumes)))
+        c_vol = np.concatenate(([0.0], np.cumsum(volumes)))
+        idx = np.arange(n)
+        win_tpv = c_tpv[idx + 1] - c_tpv[left]
+        win_vol = c_vol[idx + 1] - c_vol[left]
+        return np.where(win_vol > 0, win_tpv / np.where(win_vol > 0, win_vol, 1.0), closes)
+
+    # ---- explicit fixed BAR-COUNT window (legacy / no timestamps) --------------------
+    if window_seconds is not None:
+        raise ValueError("window_seconds requires `times`; bar spacing is unknown without it")
     if int(period) < 1:
         raise ValueError(f"vwap period must be >= 1 bar, got {period}")
     # A window longer than the buffer degrades back into the cumulative bug this replaced.
     period = min(int(period), n)
-
-    tp = (highs + lows + closes) / 3.0
     kernel = np.ones(period)
     rolling_tpv = np.convolve(tp * volumes, kernel, mode="full")[:n]
     rolling_vol = np.convolve(volumes, kernel, mode="full")[:n]

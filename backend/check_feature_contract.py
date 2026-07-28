@@ -28,6 +28,18 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from features import FEATURE_SEMANTICS_CHANGELOG, FEATURE_SEMANTICS_VERSION  # noqa: E402
 
+try:
+    from model import TRAINING_SEMANTICS_VERSION  # noqa: E402
+except Exception:
+    TRAINING_SEMANTICS_VERSION = None
+
+# Typed refusal reasons. Serving must be able to say WHICH kind of failure occurred
+# rather than emitting an unexplained absence of prediction.
+MODEL_UNAVAILABLE_MISSING = "MODEL_UNAVAILABLE_MISSING"
+MODEL_UNAVAILABLE_UNKNOWN_IDENTITY = "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY"
+MODEL_UNAVAILABLE_STALE_ARTIFACT = "MODEL_UNAVAILABLE_STALE_ARTIFACT"
+MODEL_UNAVAILABLE_TAMPERED = "MODEL_UNAVAILABLE_TAMPERED"
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 MODELS = os.path.join(DATA, "saved_models")
@@ -41,16 +53,63 @@ ARTIFACTS = [
 ]
 
 
-def artifact_semantics(path: str) -> int | None:
-    """Read the semantics version a bundle was trained under, if it records one."""
+def _manifest(path: str) -> dict | None:
     side = os.path.splitext(path)[0] + ".manifest.json"
-    if os.path.exists(side):
-        try:
-            with open(side, encoding="utf-8") as fh:
-                return json.load(fh).get("feature_semantics_version")
-        except Exception:
-            return None
-    return None
+    if not os.path.exists(side):
+        return None
+    try:
+        with open(side, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def artifact_semantics(path: str) -> int | None:
+    m = _manifest(path)
+    return m.get("feature_semantics_version") if m else None
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for blk in iter(lambda: fh.read(4 * 1024 * 1024), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def verdict_for(path: str) -> tuple[str | None, str]:
+    """(refusal_code, detail). None means the artifact is serviceable.
+
+    This is the function serving should consult. It fails CLOSED: anything it cannot
+    positively verify is refused, because an unverifiable model is exactly the case that
+    silently produced predictions from stale feature semantics.
+    """
+    if not os.path.exists(path):
+        return MODEL_UNAVAILABLE_MISSING, "artifact file absent"
+    m = _manifest(path)
+    if not m:
+        return MODEL_UNAVAILABLE_UNKNOWN_IDENTITY, "no manifest - provenance unprovable"
+    for key in ("artifact_sha256", "feature_semantics_version", "training_semantics_version",
+                "feature_schema_sha256", "training_cutoff", "training_dataset_sha256",
+                "code_commit"):
+        if m.get(key) in (None, ""):
+            return MODEL_UNAVAILABLE_UNKNOWN_IDENTITY, f"manifest missing '{key}'"
+    try:
+        if _sha256(path) != m["artifact_sha256"]:
+            return MODEL_UNAVAILABLE_TAMPERED, "artifact bytes do not match manifest hash"
+    except Exception as exc:
+        return MODEL_UNAVAILABLE_TAMPERED, f"cannot hash artifact ({type(exc).__name__})"
+    if m["feature_semantics_version"] != FEATURE_SEMANTICS_VERSION:
+        return (MODEL_UNAVAILABLE_STALE_ARTIFACT,
+                f"feature semantics v{m['feature_semantics_version']} != "
+                f"current v{FEATURE_SEMANTICS_VERSION}")
+    if (TRAINING_SEMANTICS_VERSION is not None
+            and m["training_semantics_version"] != TRAINING_SEMANTICS_VERSION):
+        return (MODEL_UNAVAILABLE_STALE_ARTIFACT,
+                f"training semantics v{m['training_semantics_version']} != "
+                f"current v{TRAINING_SEMANTICS_VERSION}")
+    return None, "ok"
 
 
 def main() -> int:
@@ -110,5 +169,46 @@ def main() -> int:
     return 1
 
 
+def enforce_serving() -> int:
+    """Serving gate. Exits nonzero unless EVERY required artifact is fully provable.
+
+    `main()` is a human report and stays informational. This mode is the one a launcher
+    or CI step should call, because "reported but not blocked" is exactly how stale
+    models kept serving predictions.
+    """
+    print("=" * 84)
+    print("ARTIFACT ENFORCEMENT (serving gate)")
+    print("=" * 84)
+    print(f"  feature semantics  : v{FEATURE_SEMANTICS_VERSION}")
+    print(f"  training semantics : v{TRAINING_SEMANTICS_VERSION}")
+    print()
+    counts: dict[str, int] = {}
+    print(f"  {'artifact':<32}{'verdict':<36}detail")
+    print("  " + "-" * 80)
+    for name in ARTIFACTS:
+        code, detail = verdict_for(os.path.join(MODELS, name))
+        counts[code or "OK"] = counts.get(code or "OK", 0) + 1
+        print(f"  {name:<32}{(code or 'OK'):<36}{detail[:30]}")
+
+    total = sum(counts.values())
+    ok = counts.get("OK", 0)
+    print()
+    print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    print()
+    if ok == total:
+        print(f"  PASS - all {total} required artifacts prove their identity. Serving may load.")
+        return 0
+    print(f"  BLOCKED - only {ok}/{total} artifacts are serviceable.")
+    print("  Serving must return MODEL_UNAVAILABLE_* and produce NO prediction for the rest.")
+    print("  Retrain with manifests; this script never retrains or promotes.")
+    return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--report", action="store_true", help="human readiness report (default)")
+    ap.add_argument("--enforce-serving", action="store_true",
+                    help="serving gate: nonzero unless every artifact is provable")
+    a = ap.parse_args()
+    raise SystemExit(enforce_serving() if a.enforce_serving else main())

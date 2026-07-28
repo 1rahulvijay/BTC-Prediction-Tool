@@ -130,11 +130,58 @@ def main() -> int:
         raised = True
     chk(raised, "window_seconds without times= RAISES (bar spacing would be a guess)")
 
-    # Irregular / gapped series must still resolve by median spacing, not bar count.
-    t_gap = t1m.copy()
-    t_gap[n // 2:] += 7200.0                                   # a 2h recorder gap
-    v_gap = vwap(highs, lows, closes, vols, times=t_gap)
-    chk(np.isfinite(v_gap).all(), "a gapped timestamp series still produces finite VWAP")
+    # THE GAP BUG: deriving a bar count from the median delta over-reaches whenever a gap
+    # sits inside the window. Measured before the fix: a "1440 bar" window spanned 29.98
+    # HOURS across a 6h gap. The window is now resolved against the clock per bar.
+    ng = 2000
+    tg = np.arange(ng, dtype=np.float64) * 60.0 + epoch0
+    tg[1000:] += 6 * 3600.0                                    # 6h recorder gap
+    cg = 60_000 + np.cumsum(rng.normal(0, 3, ng))
+    hg, lg, vg = cg + 5, cg - 5, np.ones(ng)
+
+    key = np.maximum.accumulate(tg)
+    left = np.searchsorted(key, key - 86_400.0, side="left")
+    covered_h = (tg - tg[left]) / 3600.0
+    chk(covered_h.max() <= 24.0 + 1e-9,
+        f"across a 6h gap the window still covers at most 24h (max {covered_h.max():.2f}h) "
+        f"- the bar-count derivation reached 29.98h")
+
+    w_gap = vwap(hg, lg, cg, vg, times=tg)
+    chk(np.isfinite(w_gap).all() and len(w_gap) == ng,
+        "a gapped series produces a finite VWAP of the right length")
+    w_pref = vwap(hg[:1500], lg[:1500], cg[:1500], vg[:1500], times=tg[:1500])
+    chk(np.allclose(w_gap[:1500], w_pref, atol=1e-9),
+        "prefix causality holds under gaps (truncating the future changes nothing)")
+
+    # Irregular spacing, duplicates and a backwards timestamp must not raise or corrupt.
+    t_irr = np.sort(rng.uniform(0, ng * 60.0, ng)) + epoch0
+    chk(np.isfinite(vwap(hg, lg, cg, vg, times=t_irr)).all(),
+        "irregular (non-uniform) sampling produces a finite series")
+    t_dup = tg.copy()
+    t_dup[500] = t_dup[499]
+    chk(np.isfinite(vwap(hg, lg, cg, vg, times=t_dup)).all(),
+        "duplicate timestamps are handled")
+    t_back = tg.copy()
+    t_back[700] = t_back[690]                                  # clock went backwards
+    raised = False
+    try:
+        vwap(hg, lg, cg, vg, times=t_back)
+    except ValueError:
+        raised = True
+    chk(raised, "a BACKWARDS timestamp RAISES - a corrupt clock is not silently repaired")
+    t_nan = tg.copy(); t_nan[300] = np.nan
+    raised = False
+    try:
+        vwap(hg, lg, cg, vg, times=t_nan)
+    except ValueError:
+        raised = True
+    chk(raised, "a NaN timestamp RAISES rather than producing a silent wrong window")
+    raised = False
+    try:
+        vwap(hg, lg, cg, vg, times=tg, window_seconds=0)
+    except ValueError:
+        raised = True
+    chk(raised, "a non-positive window_seconds raises")
 
     # ---------------------------------------------------- feature-semantics contract
     print("\n[contract] a formula change must be announceable, not silent")
@@ -212,8 +259,88 @@ def main() -> int:
             and np.allclose(p1.sum(1), 1) and np.allclose(p1, p2),
             "probabilities come back as a normalised numpy array, deterministically")
 
+    _artifact_enforcement_tests()
+
     print("\nfeature-and-weight-fixes:", "ALL PASS" if OK else "FAILURES")
     return 0 if OK else 1
+
+
+
+
+def _artifact_enforcement_tests() -> None:
+    """Each typed refusal must actually fire. Appended 2026-07-28."""
+    import hashlib
+    import json as _json
+    import tempfile
+    import check_feature_contract as cfc
+
+    print("\n[artifacts] enforcement fails CLOSED on every unprovable case")
+    tmp = tempfile.mkdtemp()
+
+    def write(name, body=b"MODEL", man=None):
+        p = os.path.join(tmp, name)
+        with open(p, "wb") as fh:
+            fh.write(body)
+        if man is not None:
+            with open(os.path.splitext(p)[0] + ".manifest.json", "w", encoding="utf-8") as fh:
+                _json.dump(man, fh)
+        return p
+
+    def good_manifest(body=b"MODEL"):
+        return {
+            "artifact_id": "x", "artifact_sha256": hashlib.sha256(body).hexdigest(),
+            "model_family": "test",
+            "feature_schema_sha256": "a" * 64,
+            "feature_semantics_version": cfc.FEATURE_SEMANTICS_VERSION,
+            "training_semantics_version": cfc.TRAINING_SEMANTICS_VERSION,
+            "training_cutoff": "2026-07-01", "training_dataset_sha256": "b" * 64,
+            "code_commit": "deadbeef", "protocol_sha256": "c" * 64,
+            "created_at": "2026-07-28T00:00:00Z",
+        }
+
+    code, _ = cfc.verdict_for(os.path.join(tmp, "nope.pkl"))
+    chk(code == cfc.MODEL_UNAVAILABLE_MISSING, "an absent artifact -> MISSING")
+
+    p = write("nomanifest.pkl")
+    code, _ = cfc.verdict_for(p)
+    chk(code == cfc.MODEL_UNAVAILABLE_UNKNOWN_IDENTITY, "no manifest -> UNKNOWN_IDENTITY")
+
+    m = good_manifest(); m.pop("training_dataset_sha256")
+    code, d = cfc.verdict_for(write("noprov.pkl", man=m))
+    chk(code == cfc.MODEL_UNAVAILABLE_UNKNOWN_IDENTITY and "training_dataset_sha256" in d,
+        "a manifest missing provenance NAMES the missing field")
+
+    m = good_manifest(); m["feature_semantics_version"] = 1
+    code, _ = cfc.verdict_for(write("oldfeat.pkl", man=m))
+    chk(code == cfc.MODEL_UNAVAILABLE_STALE_ARTIFACT, "stale FEATURE semantics -> STALE")
+
+    m = good_manifest(); m["training_semantics_version"] = 1
+    code, _ = cfc.verdict_for(write("oldtrain.pkl", man=m))
+    chk(code == cfc.MODEL_UNAVAILABLE_STALE_ARTIFACT,
+        "stale TRAINING semantics -> STALE (columns identical, objective changed)")
+
+    p = write("tampered.pkl", body=b"MODEL", man=good_manifest(b"MODEL"))
+    with open(p, "wb") as fh:
+        fh.write(b"MODEL-EDITED")
+    code, _ = cfc.verdict_for(p)
+    chk(code == cfc.MODEL_UNAVAILABLE_TAMPERED, "edited artifact bytes -> TAMPERED")
+
+    p = write("mantamper.pkl", body=b"MODEL", man=good_manifest(b"MODEL"))
+    side = os.path.splitext(p)[0] + ".manifest.json"
+    mm = _json.load(open(side)); mm["artifact_sha256"] = "f" * 64
+    _json.dump(mm, open(side, "w"))
+    code, _ = cfc.verdict_for(p)
+    chk(code == cfc.MODEL_UNAVAILABLE_TAMPERED, "edited MANIFEST hash -> TAMPERED")
+
+    with open(os.path.splitext(write("corrupt.pkl"))[0] + ".manifest.json", "w") as fh:
+        fh.write("{not json")
+    code, _ = cfc.verdict_for(os.path.join(tmp, "corrupt.pkl"))
+    chk(code == cfc.MODEL_UNAVAILABLE_UNKNOWN_IDENTITY,
+        "an unparseable manifest is UNKNOWN, not a crash")
+
+    code, detail = cfc.verdict_for(write("good.pkl", man=good_manifest()))
+    chk(code is None and detail == "ok",
+        "a fully provable artifact is the ONLY case that passes")
 
 
 if __name__ == "__main__":
