@@ -299,6 +299,8 @@ python backend\test_quarantine_and_feed.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\feed_writer.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+python backend\test_feed_writer_load.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b3. Launcher integrity - every invoked path exists:
 python backend\test_launcher_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b3

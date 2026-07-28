@@ -87,6 +87,9 @@ jobs:
       - name: Quarantined prototypes, fee formula, non-blocking feed
         run: python backend/test_quarantine_and_feed.py
 
+      - name: Feed writer load (REAL parquet handlers, measured capacity)
+        run: python backend/test_feed_writer_load.py
+
       - name: Feed writer (bounded, counted, non-blocking)
         run: python backend/feed_writer.py --selftest
 
@@ -234,6 +237,7 @@ jobs:
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
           python backend/test_quarantine_and_feed.py || exit /b 1
           python backend/feed_writer.py --selftest || exit /b 1
+          python backend/test_feed_writer_load.py || exit /b 1
           python backend/test_launcher_integrity.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1
           python backend/model_artifacts.py --selftest || exit /b 1

@@ -253,6 +253,11 @@ def _write_active_train_boundary(train_boundary_ts=None, *, full_refit: bool = F
 async def lifespan(app: FastAPI):
     logger.info("Initializing Database...")
     database.init_db()
+    # The feed writer is owned HERE, not started at import. An import-time thread starts during
+    # test collection, hot reloads, pre-fork workers and any module that imports server.py merely
+    # to inspect it - and it was never stopped, so queued writes were abandoned at shutdown.
+    FEED_WRITER.start()
+    logger.info("Feed writer started (bounded, non-blocking persistence queue)")
     binance_paper_service.initialize()
     loaded_signals = signal_buffer.load(SIGNAL_HISTORY_PATH)
     logger.info(f"Loaded {loaded_signals} persisted signal-history snapshots")
@@ -349,6 +354,15 @@ async def lifespan(app: FastAPI):
     await cme_basis_client.close()
     await stablecoin_client.close()
     await exchange_flow_client.close()
+    # Stop LAST: the clients above may still hand off writes while they close. The result is
+    # logged rather than discarded, so an incomplete drain is a visible line in the log instead
+    # of a silent gap in the parquet files.
+    _feed_shutdown = FEED_WRITER.stop(timeout=5.0)
+    if _feed_shutdown.clean:
+        logger.info("Feed writer shutdown clean: %s", dict(_feed_shutdown))
+    else:
+        logger.error("Feed writer shutdown INCOMPLETE - queued writes lost: %s",
+                     dict(_feed_shutdown))
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1210,9 +1224,14 @@ def handle_depth(depth: dict) -> None:
     data_state["last_depth_ms"] = data_state["order_flow_updated_ms"]
     data_state["feed_timestamps_ms"]["binance_depth"] = data_state["last_depth_ms"]
 
-    # Log orderbook to Parquet
+    # Log orderbook to Parquet on the DEPTH lane, which coalesces per symbol: a newer snapshot
+    # supersedes an older unwritten one instead of queueing behind it. Depth arrives far faster
+    # than trades, and on one shared queue a depth burst filled the queue and dropped TRADES -
+    # the stream whose loss is unrecoverable.
     import database
-    FEED_WRITER.submit(database.log_depth_parquet, depth)
+    FEED_WRITER.submit_depth(
+        database.log_depth_parquet, depth, key=depth.get("symbol") or "BTCUSDT"
+    )
 
 
 def handle_kline(kline: dict) -> None:
@@ -4322,10 +4341,21 @@ def _system_health_snapshot() -> dict:
     ]
     if disk_hash != BACKEND_BOOT_CODE_HASH:
         blockers.append("backend_code_changed_after_boot")
+    # A dead or dropping feed writer means the parquet archive has gaps. That must appear in
+    # trust state, not only in a stats dict nothing reads: an archive with silent holes is worse
+    # than a missing one, because it still looks like complete evidence.
+    feed_writer_stats = FEED_WRITER.stats()
+    if not feed_writer_stats["worker_alive"]:
+        blockers.append("feed_writer_not_running")
+    if feed_writer_stats["dropped"]:
+        blockers.append(f"feed_writer_dropped:{feed_writer_stats['dropped']}")
+    if feed_writer_stats["failed"]:
+        blockers.append(f"feed_writer_failed:{feed_writer_stats['failed']}")
     complete_trade = complete_trade_forecaster.status()
     return {
         "trust_state": "DATA_OK" if not blockers else "DO_NOT_TRUST",
         "blockers": blockers,
+        "feed_writer": feed_writer_stats,
         "feeds": feeds,
         "recorders": recorders,
         "database_writer": {

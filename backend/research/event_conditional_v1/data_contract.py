@@ -123,6 +123,10 @@ class ArchiveReport:
     family_blockers: dict[str, list[str]]
     total_rows: int
     span_days: float
+    # Set when the archive EXISTS but could not be read - today that means the live recorder
+    # holds DuckDB's single writer lock. Distinct from db_exists=False, which means no data at
+    # all. Readiness is reported as not-ready either way; the two are never conflated.
+    unreadable_reason: str | None = None
 
     @property
     def any_ready(self) -> bool:
@@ -192,13 +196,25 @@ def evaluate_archive(db_path: Path | None = None) -> ArchiveReport:
     path = Path(db_path or VENUE_DB)
     statuses: list[StreamStatus] = []
     total, span = 0, 0.0
+    unreadable: str | None = None
 
-    if not path.exists():
+    con = None
+    if path.exists():
+        import duckdb
+        try:
+            con = duckdb.connect(str(path), read_only=True)
+        except Exception as exc:                           # noqa: BLE001
+            # DuckDB permits ONE writer, and the live recorder holds it. Crashing here made the
+            # readiness report impossible to run during collection - precisely when it is worth
+            # running. Report the condition instead, and never infer readiness from a DB that
+            # could not be opened.
+            unreadable = f"{type(exc).__name__}: archive is held by the live writer"
+            con = None
+
+    if con is None:
         for r in REQUIRED_STREAMS:
             statuses.append(StreamStatus(r.key, r.venue, r.stream, 0, None, None, 0.0, False))
     else:
-        import duckdb
-        con = duckdb.connect(str(path), read_only=True)
         try:
             try:
                 total = con.execute("SELECT COUNT(*) FROM venue_events").fetchone()[0]
@@ -234,5 +250,5 @@ def evaluate_archive(db_path: Path | None = None) -> ArchiveReport:
     return ArchiveReport(
         db_path=str(path), db_exists=path.exists(), streams=statuses,
         family_ready=family_ready, family_blockers=family_blockers,
-        total_rows=total, span_days=span,
+        total_rows=total, span_days=span, unreadable_reason=unreadable,
     )

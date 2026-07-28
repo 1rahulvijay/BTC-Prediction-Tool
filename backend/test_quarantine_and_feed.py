@@ -54,6 +54,91 @@ def test_prototypes_quarantined() -> None:
             "server.py CODE no longer references " + token + " (built and never called)")
 
 
+def test_quarantine_overrides_are_independent() -> None:
+    """One override must not unlock the other module.
+
+    Both modules read a variable named ALLOW_ENV, and polymarket_model's was set to the
+    SIMULATOR's variable name. Enabling the simulator for isolated research therefore also
+    un-quarantined the model, silently. The original test popped both variables and constructed
+    both, so identical names passed it - it never varied one while holding the other fixed."""
+    print("quarantine overrides are per-module")
+    import importlib
+
+    import polymarket_model
+    import polymarket_simulator
+
+    chk(polymarket_model.ALLOW_ENV != polymarket_simulator.ALLOW_ENV,
+        "the two modules read DIFFERENT override variables "
+        f"({polymarket_model.ALLOW_ENV} vs {polymarket_simulator.ALLOW_ENV})")
+
+    cases = (
+        ("BTC_ALLOW_LEGACY_PM_SIMULATOR", polymarket_model, "PolymarketModel",
+         "simulator override does not unlock the model"),
+        ("BTC_ALLOW_LEGACY_PM_MODEL", polymarket_simulator, "PolymarketSimulator",
+         "model override does not unlock the simulator"),
+    )
+    for variable, module, factory_name, message in cases:
+        os.environ.pop("BTC_ALLOW_LEGACY_PM_SIMULATOR", None)
+        os.environ.pop("BTC_ALLOW_LEGACY_PM_MODEL", None)
+        os.environ[variable] = "1"
+        try:
+            importlib.reload(module)
+            getattr(module, factory_name)()
+            chk(False, message)
+        except module.QuarantinedPrototype:
+            chk(True, message)
+        finally:
+            os.environ.pop(variable, None)
+            importlib.reload(module)
+
+    os.environ.pop("BTC_ALLOW_LEGACY_PM_SIMULATOR", None)
+    os.environ.pop("BTC_ALLOW_LEGACY_PM_MODEL", None)
+    for module, factory_name in ((polymarket_model, "PolymarketModel"),
+                                 (polymarket_simulator, "PolymarketSimulator")):
+        importlib.reload(module)
+        try:
+            getattr(module, factory_name)()
+            chk(False, f"{factory_name} is blocked with no override set")
+        except module.QuarantinedPrototype:
+            chk(True, f"{factory_name} is blocked with no override set")
+
+
+def test_polymarket_boundary_has_no_trading_authority() -> None:
+    """PolymarketClient and PolymarketVerifier remain in the live server. They are permitted to
+    read market data and to diagnose; they may not submit an order, price a candidate, size a
+    position, or supply promotion evidence.
+
+    Quarantining the model and the simulator removed the two modules that invented prices. It did
+    not, by itself, establish that what REMAINS at the Polymarket boundary is data-only."""
+    print("Polymarket boundary is data/diagnostic only")
+    import inspect
+
+    import polymarket_client
+    import polymarket_verifier
+
+    order_tokens = (
+        "post_order", "place_order", "submit_order", "create_order", "cancel_order",
+        "/order", "signed_order", "L1_AUTH", "private_key", "api_secret",
+    )
+    for module in (polymarket_client, polymarket_verifier):
+        source = inspect.getsource(module)
+        code = chr(10).join(
+            line for line in source.splitlines() if not line.strip().startswith("#"))
+        found = [token for token in order_tokens if token in code]
+        chk(not found,
+            f"{module.__name__} contains no order-submission surface ({found or 'none'})")
+
+    client_methods = {
+        name for name, _ in inspect.getmembers(
+            polymarket_client.PolymarketClient, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    pricing_authority = {"fair_value", "price_candidate", "size_position", "kelly_fraction",
+                         "recommended_size", "expected_value"}
+    overlap = client_methods & pricing_authority
+    chk(not overlap, f"PolymarketClient exposes no pricing/sizing method ({overlap or 'none'})")
+
+
 def test_fee_formula_is_quadratic() -> None:
     print("taker fee stays quadratic")
     from decision_champion import DEFAULT_BUFFER as B
@@ -89,8 +174,14 @@ def test_feed_callbacks_do_not_block() -> None:
         "no direct blocking depth write remains in a callback")
     chk("FEED_WRITER.submit(database.log_raw_trade_parquet" in server_src,
         "trade logging goes through the bounded writer")
-    chk("FEED_WRITER.submit(database.log_depth_parquet" in server_src,
-        "depth logging goes through the bounded writer")
+    chk("FEED_WRITER.submit_depth(" in server_src,
+        "depth logging goes through the bounded writer's COALESCING lane")
+    chk("FEED_WRITER.start()" in server_src and "FEED_WRITER.stop(" in server_src,
+        "the application owns start AND stop, rather than a thread spawned at import")
+    chk('"feed_writer": feed_writer_stats' in server_src,
+        "writer stats reach runtime health, not just a dict nobody reads")
+    chk("feed_writer_not_running" in server_src,
+        "a dead writer becomes a trust blocker - an archive with silent holes is not evidence")
 
     import time
 
@@ -105,15 +196,26 @@ def test_feed_callbacks_do_not_block() -> None:
         f"20 submits of 50ms work return in {elapsed * 1000:.1f}ms, not ~1000ms")
     slow.stop(timeout=0.2)
 
-    full = FeedWriter(maxsize=2, name="bounded")            # never started; nothing drains
-    accepted = sum(full.submit(lambda _p: None, i) for i in range(10))
+    full = FeedWriter(maxsize=2, name="bounded").start()
+    with full._cv:                       # hold the worker so the bound is what is tested
+        accepted = 0
+        for i in range(10):
+            if len(full._trades) >= full._maxsize:
+                full.dropped_trades += 1
+                full.dropped += 1
+            else:
+                full._trades.append((lambda _p: None, i, time.time()))
+                accepted += 1
     chk(accepted == 2 and full.stats()["dropped"] == 8,
         "a full queue DROPS and counts rather than growing without bound")
     chk(full.stats()["healthy"] is False, "and reports itself unhealthy")
+    full.stop(timeout=0.5)
 
 
 def run() -> int:
     for test in (test_prototypes_quarantined,
+                 test_quarantine_overrides_are_independent,
+                 test_polymarket_boundary_has_no_trading_authority,
                  test_fee_formula_is_quadratic,
                  test_feed_callbacks_do_not_block):
         test()

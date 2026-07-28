@@ -28,10 +28,17 @@ def build_report(db_path=None) -> dict:
         "protocol_sha256": p.sha256(),
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "research_only": True,
-        "status": "READY" if arch.any_ready else "NOT_READY",
+        # UNREADABLE is reported separately from NOT_READY. "the recorder holds the writer lock"
+        # and "there is not enough data" are different facts, and collapsing them would let a
+        # locked archive be read as an empty one.
+        "status": (
+            "ARCHIVE_UNREADABLE" if arch.unreadable_reason
+            else "READY" if arch.any_ready else "NOT_READY"
+        ),
         "archive": {
             "db_path": arch.db_path,
             "db_exists": arch.db_exists,
+            "unreadable_reason": arch.unreadable_reason,
             "total_rows": arch.total_rows,
             "span_days": round(arch.span_days, 3),
             "required_days_min": REQUIRED_DAYS_MIN,

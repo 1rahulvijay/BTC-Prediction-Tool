@@ -3,7 +3,7 @@ import scipy.stats as stats
 import logging
 
 QUARANTINED = True
-ALLOW_ENV = "BTC_ALLOW_LEGACY_PM_SIMULATOR"
+ALLOW_ENV = "BTC_ALLOW_LEGACY_PM_MODEL"
 
 
 class QuarantinedPrototype(RuntimeError):
