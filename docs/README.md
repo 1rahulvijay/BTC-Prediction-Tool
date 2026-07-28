@@ -1,6 +1,17 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[UNIVERSAL_FORECAST_ADAPTERS_V1_2026-07-28.md](active/UNIVERSAL_FORECAST_ADAPTERS_V1_2026-07-28.md)** -
+  provenance-correct read-only adapters from the 1-hour fair-value, 5-second
+  repricing, Binance event/maker and Binance paper research lanes into the
+  immutable universal forecast ledger; exact target contracts, separately
+  resolved labels, explicit zero-row blockers, readiness reporting and DuckDB
+  tamper/leakage/duplicate tests. No ensemble is trained or promoted.
+- **[HIERARCHICAL_TARGET_SPECIFIC_ENSEMBLE_V1_2026-07-28.md](active/HIERARCHICAL_TARGET_SPECIFIC_ENSEMBLE_V1_2026-07-28.md)** -
+  canonical model-ownership architecture, immutable OOF/forward evidence,
+  target-specific constrained stacking, reliability/disagreement controls,
+  conservative executable-EV selection, online shadow weighting and
+  independently promoted multi-alpha allocation.
 - **[BINANCE_MAKER_CONVERSION_V1_2026-07-28.md](active/BINANCE_MAKER_CONVERSION_V1_2026-07-28.md)** -
   forward-only execution campaign for the frozen 5s/15s event-time candidates.
   It reconstructs a sequenced Binance USD-M futures book, compares taker/taker,

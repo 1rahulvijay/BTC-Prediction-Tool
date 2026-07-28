@@ -118,7 +118,9 @@ The shadow owns a separate database:
 
 Tables:
 
-- `repricing_shadow_meta`: frozen protocol and artifact hashes;
+- `repricing_shadow_meta`: frozen protocol, model hashes, contract input-manifest
+  hash, ordered feature-schema hash, development cutoff, source run, Git commit
+  and dirty-worktree state;
 - `repricing_candidates`: original candidate, both baseline/evidence
   probabilities, features, and complete decision ladder;
 - `repricing_routes`: all four route states, limit, TTL, fill quantity, fee,
@@ -131,6 +133,11 @@ Every unfilled or partial route remains in the denominator. A missed winning
 fill receives an explicit missed-opportunity penalty. Settlement PnL and
 execution improvement are both compared with the same immediate-taker
 candidate.
+
+New provenance fields are recorded when the shadow starts. Databases produced
+before this schema enrichment remain valid campaign evidence, but the universal
+forecast adapter blocks their admission because present-day provenance cannot
+be assigned retroactively.
 
 ## Reports
 

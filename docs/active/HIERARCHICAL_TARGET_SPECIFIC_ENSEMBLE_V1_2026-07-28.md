@@ -34,7 +34,7 @@ whether specialist combinations add real information.
 
 | Campaign | Implemented now | Still evidence-gated |
 |---|---|---|
-| `MODEL_FORECAST_LEDGER_V1` | Universal immutable forecast/outcome DuckDB API, provenance, target contracts and integrity verification | Adapters from every existing model must begin writing OOF and forward forecasts |
+| `MODEL_FORECAST_LEDGER_V1` | Universal immutable forecast/outcome DuckDB API, strict provenance, target contracts, integrity verification, and provenance-correct forward adapters | Source recorders must accumulate resolved evidence; unavailable source heads remain explicit blockers |
 | `TARGET_SPECIFIC_STACKING_V1` | Equal, inverse-Brier and non-negative simplex stackers; ledger-row pivot; market-prior floor | A stacker cannot fit until one target has enough aligned OOF/forward forecasts |
 | `REGIME_MIXTURE_OF_EXPERTS_V1` | Global fallback plus per-regime constrained fits and soft regime routing | Regime-specific fits require the frozen minimum sample count |
 | `MODEL_RELIABILITY_HEAD_V1` | Reliability contract, multiplicative quality score, disagreement statistics and fail-closed weight adjustment | A learned reliability classifier requires forward error labels and remains deferred |
@@ -76,6 +76,7 @@ MAGNITUDE
 FILL
 TOXICITY
 COST
+RETURN
 CARRY
 REGIME
 RELIABILITY
@@ -118,13 +119,14 @@ Every resolved outcome records:
 
 ```text
 actual outcome
-gross and net return
-fees and slippage
-fill quantity
-latency
 official resolution source
 immutable payload hash
 ```
+
+Execution economics are nullable because settlement and repricing labels do
+not imply a fill, fee, slippage or return. When a target does own execution
+economics, supplied values must be finite and costs cannot be negative. The
+ledger never fills unavailable economics with zero.
 
 The API rejects:
 
@@ -145,9 +147,36 @@ Default ledger path:
 data/research/model_forecast_ledger_v1.duckdb
 ```
 
-This file is not populated automatically by the live server in V1. Existing
-model adapters must be added target by target after their output semantics and
-provenance are verified.
+The live server does not write this file. The report command runs a one-shot,
+research-only adapter pass that reads each campaign database and appends only
+provenance-complete `FORWARD` forecasts. Source databases remain independently
+owned; adapters never write them.
+
+Adapter code:
+
+```text
+backend/research/forecast_adapters_v1/
+```
+
+Implemented row adapters:
+
+| Source | Forecasts admitted | Resolved label |
+|---|---|---|
+| `POLY_1H_DIGITAL_FAIR_VALUE_V1` | Market prior, distance/time, volatility mixture at the six frozen reporting checkpoints | Finalized Binance 1h side only after Polymarket reconciliation |
+| `POLYMARKET_REPRICING_SHADOW_V1` | Separate UP/DOWN baseline and evidence probabilities for 1c ask worsening within 5s | First valid selected-side +5s quote with measured lag no greater than 1s |
+| `BINANCE_MAKER_CONVERSION_V1` | Separate 5s/15s direction, movement and round-trip event probabilities | Not yet available: exact spot-path outcomes are not persisted by the current maker recorder |
+
+Defined but deliberately blocked:
+
+- UP/DOWN 15-second Polymarket ask-worsening heads do not exist in the source
+  campaign.
+- Polymarket queue-authoritative fill, adverse-selection and taker-cost
+  specialist forecasts do not exist.
+- Binance maker fill, cost and net-return specialist forecasts do not exist.
+- Binance paper confidence and score fields are rule outputs, not calibrated
+  target probabilities; their fill/trade rows are outcomes, not forecasts.
+
+No blocked target falls back to another model or horizon.
 
 ## Target-Specific Stacking
 
@@ -331,11 +360,15 @@ Outputs:
 ```text
 summary.json
 target_readiness.csv
+adapter_readiness.csv
 ```
 
-The report labels a target slice meta-training-ready only when it contains at
-least two models, resolved candidates and eligible OOF/forward evidence. This
-is a data-readiness signal, not a promotion result.
+`adapter_readiness.csv` contains every catalogued adapter, including zero-row
+targets, with source status, blocker, rows seen, forecasts appended and
+outcomes appended. `target_readiness.csv` contains ledger slices that actually
+exist. The report labels a target slice meta-training-ready only when it
+contains at least two models, resolved candidates and eligible OOF/forward
+evidence. This is a data-readiness signal, not a promotion result.
 
 ## Validation
 
@@ -343,6 +376,7 @@ Executable test:
 
 ```powershell
 python -m backend.research.hierarchical_ensemble_v1.selftest
+python -m backend.research.forecast_adapters_v1.selftest
 ```
 
 The test uses temporary real DuckDB files and proves:
@@ -367,19 +401,26 @@ The self-test is included in Linux and Windows CI.
 
 ## What Remains
 
-The next work is evidence integration, not another model family:
+The next work is evidence accumulation and missing source truth, not another
+model family:
 
-1. Add a provenance-correct adapter for the one-hour Polymarket market,
-   distance/time and future path forecasts.
-2. Add separate adapters for ask repricing and fill/toxicity. Never join those
-   into the settlement target.
-3. Generate purged OOF forecasts from frozen base bundles.
-4. Accumulate aligned forward forecasts and outcomes.
-5. Run equal, inverse-Brier and constrained methods on the same frozen splits.
-6. Compare against best standalone, equal weight, market and no-trade baselines.
-7. Fit a reliability head only after enough independent forecast-error labels.
-8. Keep online weights in shadow.
-9. Leave the portfolio empty until two engines independently pass promotion.
+1. Keep the source recorders running with clean committed code so new evidence
+   contains admissible provenance.
+2. Retrain the event bundle explicitly when desired so its new dataset hash,
+   feature hash and training cutoff are embedded. This change does not retrain
+   it automatically.
+3. Persist exact spot-path outcomes for Binance event forecasts before using
+   them in stacking.
+4. Build and freeze real 15-second ask-worsening heads rather than copying 5s
+   probabilities.
+5. Train fill, toxicity, cost and return heads only after defensible
+   queue-aware forward labels exist.
+6. Generate purged OOF forecasts from frozen base bundles.
+7. Accumulate aligned forward forecasts and outcomes.
+8. Run equal, inverse-Brier and constrained methods on the same frozen splits.
+9. Compare against best standalone, equal weight, market and no-trade baselines.
+10. Keep online weights in shadow and the portfolio empty until independent
+    promotion gates pass.
 
 No claim of improved accuracy or profitability is justified by this
 infrastructure alone. It makes future claims harder to fake and prevents

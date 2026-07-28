@@ -59,11 +59,16 @@ features for spot/perpetual aggregate-trade state. This campaign verifies:
 - bundle protocol SHA-256;
 - feature-schema SHA-256;
 - source E09/E10 protocol SHA-256;
+- source training-dataset SHA-256 and chronological calibration cutoff when
+  embedded by the event-bundle trainer;
 - current Git commit plus a dirty-worktree marker;
 - a hash of this package's Python source.
 
-Every candidate stores the protocol, model, feature-schema and code identities.
-A hash mismatch fails startup.
+Every new candidate stores campaign and source protocol hashes, model artifact,
+training dataset, cutoff, feature schema, code commit and dirty state. An older
+event bundle without the newly embedded dataset/cutoff fields may continue in
+this isolated research shadow, but its universal-ledger adapter fails closed
+until the bundle is explicitly retrained. No automatic retraining occurs.
 
 ## Exact Candidate Rule
 
