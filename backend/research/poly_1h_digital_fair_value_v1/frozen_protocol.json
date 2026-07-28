@@ -1,0 +1,94 @@
+{
+  "protocol_id": "POLY_1H_DIGITAL_FAIR_VALUE_V1",
+  "frozen_at_utc": "2026-07-28T12:00:00Z",
+  "promotion_status": "research_only",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "may_submit_orders": false,
+  "market": {
+    "gamma_series_id": "10114",
+    "series_slug": "btc-up-or-down-hourly",
+    "duration_seconds": 3600,
+    "symbol": "BTCUSDT",
+    "settlement_source": "binance_spot_1h_finalized_kline",
+    "ties_resolve_up": true
+  },
+  "sampling": {
+    "interval_seconds": 1.0,
+    "discovery_interval_seconds": 30.0,
+    "maximum_quote_age_seconds": 3.0,
+    "maximum_pair_receive_skew_ms": 750.0,
+    "maximum_binance_age_seconds": 3.0,
+    "maximum_database_bytes": 17179869184
+  },
+  "probability_baselines": {
+    "A": "normalized_polymarket_midpoint",
+    "B": "distance_time_zero_drift_slow_volatility",
+    "C": "distance_time_regime_volatility_mixture",
+    "slow_volatility_minutes": 240,
+    "fast_volatility_minutes": 30,
+    "minimum_annualized_volatility": 0.15,
+    "maximum_annualized_volatility": 2.50,
+    "mixture_weights": {
+      "fast": 0.60,
+      "slow": 0.25,
+      "jump": 0.15
+    },
+    "jump_volatility_multiplier": 2.50,
+    "probability_clip": 0.001,
+    "residual_lambda": 0.0,
+    "residual_models_enabled": false
+  },
+  "economics": {
+    "quantities": [5.0, 10.0, 50.0],
+    "uncertainty_buffer_per_share": 0.03,
+    "minimum_net_edge_per_share": 0.01,
+    "fee_source": "clob_fee_rate_endpoint",
+    "unknown_fee_behavior": "fail_closed",
+    "insufficient_depth_behavior": "fail_closed"
+  },
+  "reporting": {
+    "checkpoints_seconds_left": [3300, 2700, 1800, 900, 300, 60],
+    "price_buckets": [
+      [0.01, 0.05],
+      [0.05, 0.10],
+      [0.10, 0.20],
+      [0.20, 0.40],
+      [0.40, 0.60],
+      [0.60, 0.80],
+      [0.80, 0.90],
+      [0.90, 0.95],
+      [0.95, 0.99]
+    ]
+  },
+  "promotion_gate": {
+    "minimum_settled_rounds": 500,
+    "minimum_continuous_weeks": 8,
+    "minimum_rounds_per_checkpoint": 200,
+    "require_probability_improvement_over_market": true,
+    "require_executable_ev_lower_95_positive": true,
+    "require_positive_up_and_down_ev": true,
+    "require_positive_final_untouched_window": true,
+    "require_binance_polymarket_resolution_match": true,
+    "maximum_resolution_mismatches": 0
+  },
+  "boundaries": {
+    "may_read_credentials": false,
+    "may_submit_orders": false,
+    "may_change_champion": false,
+    "may_change_paper_ledger": false,
+    "may_change_live_ui": false,
+    "may_train_residual_model_before_500_settled_rounds": false,
+    "missing_market_rules_behavior": "fail_closed",
+    "stale_feed_behavior": "fail_closed",
+    "resolution_mismatch_behavior": "fail_closed"
+  },
+  "deferred_campaigns": [
+    "POLY_1H_RESIDUAL_MODEL_V1",
+    "POLY_1H_PATH_AND_CROSSING_MODEL_V1",
+    "POLY_BINANCE_DELTA_HEDGE_V1",
+    "POLY_1H_MARKET_MAKER_V1",
+    "CROSS_HORIZON_PROBABILITY_SURFACE_V1"
+  ]
+}

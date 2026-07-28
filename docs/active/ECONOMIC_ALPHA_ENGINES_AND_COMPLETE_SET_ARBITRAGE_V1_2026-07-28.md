@@ -296,7 +296,9 @@ The broader economic-engine proposal is not falsely marked complete:
 | Polymarket maker inventory engine | not implemented |
 | option-implied binary relative value | not implemented |
 | Polymarket/Binance delta hedge | not implemented |
-| `BINANCE_MAKER_CONVERSION_V1` | not implemented |
+| `BINANCE_MAKER_CONVERSION_V1` | implemented separately as forward research shadow |
+| `POLY_1H_DIGITAL_FAIR_VALUE_V1` | implemented separately as forward research shadow |
+| `POLY_1H_PATH_AND_CROSSING_V1` | causal data/labels implemented; trained model deferred |
 | funding/basis carry | not implemented |
 | liquidity/liquidation specialists | not implemented |
 | cross-market graph residual | not implemented |
@@ -306,10 +308,11 @@ The broader economic-engine proposal is not falsely marked complete:
 
 1. Run this forward scanner continuously without changing its protocol.
 2. Keep `POLYMARKET_REPRICING_SHADOW_V1` collecting independent evidence.
-3. Build `BINANCE_MAKER_CONVERSION_V1` around fill, queue, toxicity and markout,
-   counting every original signal including unfilled orders.
-4. Research funding/basis carry and option-implied Polymarket residuals.
-5. Build a portfolio allocator only after at least two engines independently
+3. Run `BINANCE_MAKER_CONVERSION_V1` and
+   `POLY_1H_DIGITAL_FAIR_VALUE_V1` without changing their frozen protocols.
+4. Train the 1h residual/path models only after 500 settled forward rounds.
+5. Research funding/basis carry and option-implied Polymarket residuals.
+6. Build a portfolio allocator only after at least two engines independently
    pass locked promotion gates.
 
 ## Bottom Line
@@ -319,4 +322,3 @@ guarantee profit and does not establish a current complete-set edge. Its value i
 that a future claim must survive current fees, exact depth, equal-size execution,
 cross-book timing, delayed repricing and failed-leg risk before the app can call
 it an opportunity.
-

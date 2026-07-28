@@ -547,3 +547,24 @@ trade-through queue reconstruction. It has no API-key or order path and cannot
 be promoted before 1,000 candidates, eight weeks, verified account fees and
 all frozen robustness gates. See
 `BINANCE_MAKER_CONVERSION_V1_2026-07-28.md`.
+
+## Research Update: Polymarket One-Hour Fair Value
+
+`POLY_1H_DIGITAL_FAIR_VALUE_V1` is a separate research lane, not a seat in the
+main ensemble and not a live betting model. It records the exact Binance
+BTCUSDT 1h open/current/finalized close, synchronized Polymarket UP/DOWN books,
+dynamic fees, full-depth VWAP and causal anchor-path state.
+
+It compares:
+
+| Baseline | Prediction |
+|---|---|
+| A | normalized Polymarket midpoint |
+| B | probability of close >= open from distance, time and slow volatility |
+| C | the same probability from a fast/slow/jump volatility mixture |
+
+It also exports future crossing, recross, residence and terminal-distance
+labels at fixed checkpoints. Residual ML and trained path heads are disabled
+until at least 500 settled forward rounds exist. No credentials or order path
+are present. See
+`CEILING_BREAKING_MULTI_ENGINE_ARCHITECTURE_2026-07-28.md`.
