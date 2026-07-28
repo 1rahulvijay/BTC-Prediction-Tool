@@ -1,6 +1,20 @@
+"""SYNTHETIC RL execution sandbox - NOT EVIDENCE. Produces no promotable result.
+
+See the module docstring notes in the generated report. Every environment number was
+CHOSEN, not measured. The original version paid a maker REBATE of +1.5 bps; Binance USD-M
+charges a maker FEE of 2.0 bps (event_conditional_v1/frozen_protocol.json). Flipping only
+that sign turns the agent from +0.57 bps to -2.88 bps - the "win" was an invented rebate.
+
+    python backend/ppo_execution_test.py
+"""
 import numpy as np
 import os
 import random
+
+# Sourced from event_conditional_v1/frozen_protocol.json, not invented.
+TAKER_FEE_BPS = 5.0
+MAKER_FEE_BPS = 2.0
+IMPACT_BPS = 1.0
 
 class OrderBookExecutionEnv:
     """
@@ -46,7 +60,7 @@ class OrderBookExecutionEnv:
             done = True
             # Taker fee (e.g. 5 bps) + Slippage (Spread cost)
             slippage = 1.0 if self.spread == 0 else 3.0
-            reward = -5.0 - slippage
+            reward = -TAKER_FEE_BPS - slippage
             
         elif action == 1: # MAKER
             self.queue_pos = 1 # Back of book
@@ -63,8 +77,9 @@ class OrderBookExecutionEnv:
                     if random.random() < fill_chance:
                         self.filled = True
                         done = True
-                        # Maker rebate (e.g. +1.5 bps)
-                        reward = 1.5 
+                        # Maker FEE, not a rebate: Binance USD-M charges 2.0 bps
+                        # at the tier frozen_protocol.json assumes.
+                        reward = -MAKER_FEE_BPS 
             
         # Forced Liquidation if time runs out
         if self.time_left <= 0 and not self.filled:
@@ -130,54 +145,90 @@ def train_and_evaluate():
             ep_reward += r
         rl_rewards.append(ep_reward)
         
-        # Naive Taker (Always crosses spread immediately)
-        env.reset()
-        _, r, _ = env.step(2)
-        naive_rewards.append(r)
+        # Naive Taker - FULL episode, same as the agent. The original compared a single
+        # step against a full episode, which flattered the agent for free.
+        state = env.reset()
+        done = False
+        ep = 0.0
+        while not done:
+            state, r, done = env.step(2)
+            ep += r
+        naive_rewards.append(ep)
         
     return agent.q_table, np.mean(rl_rewards), np.mean(naive_rewards)
 
 def write_results_to_docs(q_table, rl_mean, naive_mean):
-    doc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "ppo_execution_results.md")
-    
-    with open(doc_path, "w") as f:
-        f.write("# Reinforcement Learning (RL) Execution Architecture Results\n\n")
-        f.write("## Overview\n")
-        f.write("This document contains the experimental results of training an RL agent (Q-Learning formulation of PPO) to optimize Maker/Taker routing against a simulated L2 order book.\n\n")
-        
-        f.write("## Performance Benchmark\n")
-        f.write(f"- **Naive Market Taker Average Cost**: `{naive_mean:.2f} bps`\n")
-        f.write(f"- **Trained RL Agent Average Cost**: `{rl_mean:.2f} bps`\n\n")
-        
-        improvement = ((naive_mean - rl_mean) / abs(naive_mean)) * 100
-        f.write(f"**Conclusion**: The RL agent improved execution costs by **{improvement:.1f}%** over naive market orders, successfully capturing Maker rebates without triggering the forced liquidation penalty.\n\n")
-        
-        f.write("## Learned Policy Matrix\n")
-        f.write("The agent learned the following deterministic rules (Action: `0=WAIT, 1=MAKER, 2=TAKER`):\n")
-        f.write("```text\n")
-        f.write("Time    Spread    Queue      -> Action\n")
-        f.write("--------------------------------------\n")
-        
-        time_labels = ["Low", "Medium", "High"]
-        spread_labels = ["Narrow", "Wide"]
-        queue_labels = ["None", "Back", "Top"]
-        action_labels = ["WAIT", "MAKER", "TAKER"]
-        
-        for t in range(3):
-            for s in range(2):
-                for q in range(3):
-                    action_idx = np.argmax(q_table[t, s, q])
-                    action = action_labels[action_idx]
-                    f.write(f"{time_labels[t]:<8}{spread_labels[s]:<10}{queue_labels[q]:<10} -> {action}\n")
-                    
-        f.write("```\n\n")
-        
-        f.write("## Strategic Insights Discovered by Agent\n")
-        f.write("1. **Time-Aware Aggression**: When `Time = High` and `Queue = None`, the agent universally defaults to `MAKER` to capture the rebate. As `Time` transitions to `Low`, the agent forces a `TAKER` crossing if it is not at the top of the queue.\n")
-        f.write("2. **Queue Patience**: If `Queue = Top`, the agent almost always outputs `WAIT` to let the limit order fill, avoiding the penalty of canceling and paying the Taker spread.\n")
-        f.write("3. **Spread Sensitivity**: In `Wide` spreads, the agent is far more patient with `MAKER` orders because the Taker penalty (slippage) is severe.\n")
-        
-    print(f"Successfully generated docs at: {doc_path}")
+    doc_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs",
+                            "ppo_execution_results.md")
+    time_labels = ["Low", "Medium", "High"]
+    spread_labels = ["Narrow", "Wide"]
+    queue_labels = ["None", "Back", "Top"]
+    action_labels = ["WAIT", "MAKER", "TAKER"]
+
+    L = []
+    L.append("# RL Execution Sandbox - SYNTHETIC, NOT EVIDENCE")
+    L.append("")
+    L.append("> **Not promotable. Must not be cited as an edge.** Every environment number")
+    L.append("> - fees, fill probabilities, queue advancement, penalties - was CHOSEN, not")
+    L.append("> measured. The agent learns the environment's author, not the market. The")
+    L.append("> multi-venue archive has 0 rows, so no fill model has been validated against")
+    L.append("> reality.")
+    L.append("")
+    L.append("## What the first version got wrong")
+    L.append("")
+    L.append("It paid a maker **rebate** of +1.5 bps. Binance USD-M charges a maker **fee** of")
+    L.append("2.0 bps at the tier `event_conditional_v1/frozen_protocol.json` assumes.")
+    L.append("Flipping only that one sign, everything else identical:")
+    L.append("")
+    L.append("```text")
+    L.append("maker rebate +1.5 (as written)   agent mean  +0.57 bps")
+    L.append("maker fee    -2.0 (real venue)   agent mean  -2.88 bps")
+    L.append("```")
+    L.append("")
+    L.append("The reported 88% win was an artifact of an invented rebate. The benchmark was")
+    L.append("also unfair - the naive comparator ran ONE step against the agent's full")
+    L.append("episode. Both are corrected below.")
+    L.append("")
+    L.append("## Corrected run: frozen-protocol fees, fair benchmark")
+    L.append("")
+    L.append("| policy | mean episode cost |")
+    L.append("|---|---:|")
+    L.append(f"| naive taker (full episode) | `{naive_mean:+.2f} bps` |")
+    L.append(f"| trained agent | `{rl_mean:+.2f} bps` |")
+    L.append(f"| difference | `{rl_mean - naive_mean:+.2f} bps` |")
+    L.append("")
+    L.append("**Both policies are net NEGATIVE.** Patience reduces cost relative to always")
+    L.append("crossing, but it does not produce profit - there is no rebate to harvest. Any")
+    L.append("apparent edge here is a property of this hand-written simulator.")
+    L.append("")
+    L.append("## What would make this real")
+    L.append("")
+    L.append("Fill probabilities and queue dynamics measured from the recorded L2 tape; the")
+    L.append("venue's actual fee schedule; adverse selection after fill; missed-fill")
+    L.append("opportunity cost; and the TRADE_THROUGH / QUEUE_ESTIMATED fill standards already")
+    L.append("defined in `event_conditional_v1`. None are available at 0 archive rows.")
+    L.append("")
+    L.append("## Policy converged on IN THIS SIMULATOR ONLY")
+    L.append("")
+    L.append("```text")
+    L.append("Time    Spread    Queue      -> Action")
+    L.append("--------------------------------------")
+    for ti in range(3):
+        for s in range(2):
+            for q in range(3):
+                a = action_labels[int(np.argmax(q_table[ti, s, q]))]
+                L.append(f"{time_labels[ti]:<8}{spread_labels[s]:<10}{queue_labels[q]:<10} -> {a}")
+    L.append("```")
+    L.append("")
+    L.append("Read as a description of the toy environment's incentives, not as a trading")
+    L.append("rule. It says: cross when out of time, wait when already at the front of the")
+    L.append("queue. That is what the reward function was written to reward.")
+    L.append("")
+
+    with open(doc_path, "w", encoding="utf-8") as f:
+        f.write(chr(10).join(L))
+    print(f"Wrote {doc_path} (marked SYNTHETIC / NOT EVIDENCE)")
+
 
 if __name__ == "__main__":
     print("Training RL Execution Agent (20,000 episodes)...")

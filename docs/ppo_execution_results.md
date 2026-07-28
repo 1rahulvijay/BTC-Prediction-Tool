@@ -1,16 +1,47 @@
-# Reinforcement Learning (RL) Execution Architecture Results
+# RL Execution Sandbox - SYNTHETIC, NOT EVIDENCE
 
-## Overview
-This document contains the experimental results of training an RL agent (Q-Learning formulation of PPO) to optimize Maker/Taker routing against a simulated L2 order book.
+> **Not promotable. Must not be cited as an edge.** Every environment number
+> - fees, fill probabilities, queue advancement, penalties - was CHOSEN, not
+> measured. The agent learns the environment's author, not the market. The
+> multi-venue archive has 0 rows, so no fill model has been validated against
+> reality.
 
-## Performance Benchmark
-- **Naive Market Taker Average Cost**: `-6.99 bps`
-- **Trained RL Agent Average Cost**: `0.40 bps`
+## What the first version got wrong
 
-**Conclusion**: The RL agent improved execution costs by **-105.8%** over naive market orders, successfully capturing Maker rebates without triggering the forced liquidation penalty.
+It paid a maker **rebate** of +1.5 bps. Binance USD-M charges a maker **fee** of
+2.0 bps at the tier `event_conditional_v1/frozen_protocol.json` assumes.
+Flipping only that one sign, everything else identical:
 
-## Learned Policy Matrix
-The agent learned the following deterministic rules (Action: `0=WAIT, 1=MAKER, 2=TAKER`):
+```text
+maker rebate +1.5 (as written)   agent mean  +0.57 bps
+maker fee    -2.0 (real venue)   agent mean  -2.88 bps
+```
+
+The reported 88% win was an artifact of an invented rebate. The benchmark was
+also unfair - the naive comparator ran ONE step against the agent's full
+episode. Both are corrected below.
+
+## Corrected run: frozen-protocol fees, fair benchmark
+
+| policy | mean episode cost |
+|---|---:|
+| naive taker (full episode) | `-6.98 bps` |
+| trained agent | `-3.76 bps` |
+| difference | `+3.22 bps` |
+
+**Both policies are net NEGATIVE.** Patience reduces cost relative to always
+crossing, but it does not produce profit - there is no rebate to harvest. Any
+apparent edge here is a property of this hand-written simulator.
+
+## What would make this real
+
+Fill probabilities and queue dynamics measured from the recorded L2 tape; the
+venue's actual fee schedule; adverse selection after fill; missed-fill
+opportunity cost; and the TRADE_THROUGH / QUEUE_ESTIMATED fill standards already
+defined in `event_conditional_v1`. None are available at 0 archive rows.
+
+## Policy converged on IN THIS SIMULATOR ONLY
+
 ```text
 Time    Spread    Queue      -> Action
 --------------------------------------
@@ -26,7 +57,7 @@ Medium  Narrow    Top        -> WAIT
 Medium  Wide      None       -> MAKER
 Medium  Wide      Back       -> WAIT
 Medium  Wide      Top        -> WAIT
-High    Narrow    None       -> MAKER
+High    Narrow    None       -> WAIT
 High    Narrow    Back       -> WAIT
 High    Narrow    Top        -> WAIT
 High    Wide      None       -> MAKER
@@ -34,7 +65,6 @@ High    Wide      Back       -> WAIT
 High    Wide      Top        -> WAIT
 ```
 
-## Strategic Insights Discovered by Agent
-1. **Time-Aware Aggression**: When `Time = High` and `Queue = None`, the agent universally defaults to `MAKER` to capture the rebate. As `Time` transitions to `Low`, the agent forces a `TAKER` crossing if it is not at the top of the queue.
-2. **Queue Patience**: If `Queue = Top`, the agent almost always outputs `WAIT` to let the limit order fill, avoiding the penalty of canceling and paying the Taker spread.
-3. **Spread Sensitivity**: In `Wide` spreads, the agent is far more patient with `MAKER` orders because the Taker penalty (slippage) is severe.
+Read as a description of the toy environment's incentives, not as a trading
+rule. It says: cross when out of time, wait when already at the front of the
+queue. That is what the reward function was written to reward.
