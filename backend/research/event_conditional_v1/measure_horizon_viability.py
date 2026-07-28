@@ -1,13 +1,21 @@
-"""Horizon viability - can a BTCUSDT perp move clear the round-trip cost at horizon h?
+"""Endpoint cost-clearance rate - can a BTCUSDT perp move clear the round trip at horizon h?
 
-This is NOT a strategy test. It computes a CEILING on opportunity:
+This is NOT a strategy test and NOT a profitability ceiling. It computes
 
-    P(|move over h| > round_trip_cost)
+    P(|endpoint move over h| > round_trip_cost)
 
-is an upper bound on the fraction of timestamps at which ANY direction model,
-however good, could produce a profitable taker trade. A perfect oracle that always
-picks the correct side still loses on every timestamp where the move is smaller
-than the cost. If that probability is negligible at horizon h, no model rescues h.
+the share of anchor timestamps at which a position held exactly h and closed AT THE
+ENDPOINT would clear the assumed round trip, given perfect direction. It deliberately
+excludes maximum favourable excursion, stop/target exits, variable holding periods,
+spread and depth changes, funding, partial fills, and maker fill probability and
+adverse selection. It screens ONE execution assumption: fixed horizon, endpoint exit.
+
+CAUSAL MATCHING RULES (frozen)
+    price(t)    last aggTrade at or before second t
+    price(t+h)  last aggTrade at or before second t+h - never the first trade AFTER
+                t+h, which would leak information past the endpoint
+    anchors whose endpoint second has no eligible trade are EXCLUDED, never carried
+    horizons never cross a day-file boundary
 
 Motivation: PROFIT_CAMPAIGN_V1 measured profit factor 0.0000 at 30s over 374 trades
 (zero winners), rising to 0.0025 at 180s and 0.0630 at 900s. That pattern says the
@@ -17,15 +25,16 @@ binding constraint may be horizon-vs-cost rather than signal quality. V1's archi
 Causal by construction: the move at t uses only prices at t and t+h, and every
 candidate t is evaluated - no selection on outcome.
 
-    python horizon_viability.py --stride 16          # ~80 days across 2023-2026
-    python horizon_viability.py --stride 1 --out X   # full 1,286 days
+    python backend/research/event_conditional_v1/measure_horizon_viability.py --stride 10
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
+import random
 import sys
 
 import duckdb
@@ -42,6 +51,23 @@ HORIZONS = [30, 60, 180, 300, 900, 1800, 3600]
 #    6.0  maker 2bps + 1bp impact  (Priority-2 maker conversion, base maker rate)
 #    4.0  maker 1bps + 1bp impact  (maker at tier)
 BARRIERS = [12.0, 10.0, 8.0, 6.0, 4.0]
+
+# Admission uses the day-block bootstrap lower bound, never the point estimate: anchors
+# within a day overlap heavily, so row counts vastly overstate independent sample size.
+BOOTSTRAP_SEED = 20260728
+BOOTSTRAP_RESAMPLES = 2000
+
+
+def day_block_lb95(day_values: list[float], seed: int = BOOTSTRAP_SEED,
+                   resamples: int = BOOTSTRAP_RESAMPLES) -> float | None:
+    """5th percentile of the day-resampled mean. Days are the resampling unit."""
+    k = len(day_values)
+    if k < 5:
+        return None
+    rng = random.Random(seed)
+    draws = sorted(sum(day_values[rng.randrange(k)] for _ in range(k)) / k
+                   for _ in range(resamples))
+    return draws[int(0.05 * resamples)]
 
 PER_DAY_SQL = """
 WITH sec AS (
@@ -132,13 +158,23 @@ def main() -> int:
 
     print()
     print("=" * 84)
-    print("HORIZON VIABILITY - ceiling on tradeable fraction (perp, day-averaged)")
+    print("ENDPOINT COST-CLEARANCE RATE (perp, day-averaged, with day-block LB95)")
     print("=" * 84)
-    print(f"{'horizon':>8} {'days':>5} {'med|mv|':>9} {'mean|mv|':>9} {'q90|mv|':>9} "
-          + " ".join(f"{'P>'+str(b):>8}" for b in BARRIERS))
+    print(f"{'horizon':>8} {'days':>5} {'med|mv|':>9} "
+          + " ".join(f"{'P>'+str(b):>8}" for b in BARRIERS)
+          + f" | {'LB95>12':>8} {'LB95>6':>8}")
     print("-" * 84)
 
-    out = {"stride": a.stride, "n_days": len(sample), "barriers": BARRIERS, "horizons": {}}
+    day_ids = sorted(os.path.basename(f)[-14:-4] for f in sample)
+    out = {
+        "stride": a.stride, "n_days": len(sample), "barriers": BARRIERS,
+        "days_available": len(files),
+        "sample_manifest_sha256": hashlib.sha256("|".join(day_ids).encode()).hexdigest(),
+        "sampled_days": day_ids,
+        "bootstrap_seed": BOOTSTRAP_SEED, "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
+        "dataset_role": "DESIGN_ONLY",
+        "horizons": {},
+    }
     for h in HORIZONS:
         rows = acc[h]
         if not rows:
@@ -148,19 +184,24 @@ def main() -> int:
         mean = sum(r["mean_abs"] for r in rows) / nd
         q90 = sum(r["q90_abs"] for r in rows) / nd
         exc = {str(b): sum(r["exceed"][str(b)] for r in rows) / nd for b in BARRIERS}
-        print(f"{h:>7}s {nd:>5} {med:>9.2f} {mean:>9.2f} {q90:>9.2f} "
-              + " ".join(f"{exc[str(b)]*100:>7.2f}%" for b in BARRIERS))
+        lb12 = day_block_lb95([r["exceed"]["12.0"] for r in rows])
+        lb6 = day_block_lb95([r["exceed"]["6.0"] for r in rows])
+        print(f"{h:>7}s {nd:>5} {med:>9.2f} "
+              + " ".join(f"{exc[str(b)]*100:>7.2f}%" for b in BARRIERS)
+              + f" | {lb12*100:>7.2f}% {lb6*100:>7.2f}%")
         out["horizons"][str(h)] = {
             "n_days": nd, "median_abs_bps": med, "mean_abs_bps": mean, "q90_abs_bps": q90,
             "p_exceed": exc,
+            "lb95": {str(b): day_block_lb95([r["exceed"][str(b)] for r in rows])
+                     for b in BARRIERS},
             "per_day": [{"day": r["day"], "median_abs": r["median_abs"],
                          "exceed": r["exceed"]} for r in rows],
         }
 
     print("-" * 84)
-    print("Read as: P>12 is the SHARE OF TIMESTAMPS where a perfect-direction oracle")
-    print("could clear the V1 frozen round-trip cost. It is a ceiling, not an edge.")
-    print("Everything below that barrier is unprofitable regardless of model quality.")
+    print("P>12 is the share of anchors clearing the V1 frozen round trip with PERFECT")
+    print("direction, under fixed-horizon endpoint exit. Not a profitability ceiling.")
+    print("Admission uses LB95 (day-block bootstrap), never the point estimate.")
 
     with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=1)

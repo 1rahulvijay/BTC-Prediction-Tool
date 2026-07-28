@@ -359,20 +359,29 @@ try:
             # the other five classifiers trained balanced. Fold the per-sample weights
             # into per-class weights for CrossEntropyLoss (mean weight per class —
             # exact for our weights, which are class-constant × recency).
+            # v7 fix (2026-07-28): the v6 patch folded per-sample weights into a per-CLASS
+            # mean and called that "exact for our weights, which are class-constant x
+            # recency". It is not. Averaging over a class collapses the recency term:
+            # mean(class_w[c] * recency_i) = class_w[c] * mean(recency), so every sample in
+            # a class trained at the SAME weight and a six-month-old sequence counted as
+            # much as yesterday's. The five tree models used the real per-sample vector, so
+            # only the TCN was blind to recency. Weights are now carried per sample through
+            # the loader and applied inside the loss.
+            _sw_t = None
             if sample_weight is not None and len(sample_weight) == len(y):
-                _cw = np.ones(3, dtype=np.float32)
-                for _c in (0, 1, 2):
-                    _m_ = (np.asarray(y) == _c)
-                    if _m_.any():
-                        _cw[_c] = float(np.mean(np.asarray(sample_weight)[_m_]))
-                _cw = _cw / max(1e-9, _cw.mean())
-                self.criterion = nn.CrossEntropyLoss(
-                    weight=torch.tensor(_cw, dtype=torch.float32).to(self.device))
+                _sw = np.asarray(sample_weight, dtype=np.float32)
+                _sw = _sw / max(1e-9, float(_sw.mean()))   # mean 1.0 -> LR stays comparable
+                _sw_t = torch.tensor(_sw, dtype=torch.float32).to(self.device)
+                # reduction='none' so each sample keeps its own weight; we reduce by hand.
+                self.criterion = nn.CrossEntropyLoss(reduction="none")
 
             X_tensor = torch.tensor(X_3d, dtype=torch.float32).to(self.device)
             y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-            
-            dataset = TensorDataset(X_tensor, y_tensor)
+
+            if _sw_t is not None:
+                dataset = TensorDataset(X_tensor, y_tensor, _sw_t)
+            else:
+                dataset = TensorDataset(X_tensor, y_tensor)
             loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
             
             self.model.train()
@@ -386,10 +395,19 @@ try:
             )
             for epoch in range(self.epochs):
                 epoch_t0 = time.time()
-                for batch_x, batch_y in loader:
+                for _batch in loader:
+                    if len(_batch) == 3:
+                        batch_x, batch_y, batch_w = _batch
+                    else:
+                        batch_x, batch_y = _batch
+                        batch_w = None
                     self.optimizer.zero_grad()
                     outputs = self.model(batch_x)
                     loss = self.criterion(outputs, batch_y)
+                    if batch_w is not None:
+                        # criterion is reduction='none' here: one loss per sample, each
+                        # scaled by ITS OWN weight, then averaged over the batch.
+                        loss = (loss * batch_w).sum() / batch_w.sum().clamp_min(1e-9)
                     loss.backward()
                     self.optimizer.step()
                 logger.info(
@@ -405,11 +423,14 @@ try:
             N = X_flat.shape[0]
             X_3d = X_flat.reshape(N, self.lookback, self.input_dim)
             self.model.eval()
-            self.model.to("cpu")
-            X_tensor = torch.tensor(X_3d, dtype=torch.float32).to("cpu")
+            # v7 (2026-07-28): this used to call self.model.to("cpu") on EVERY call, which
+            # permanently migrated a CUDA-trained model to CPU on the first prediction and
+            # then re-walked every parameter tensor on each subsequent tick. Inference now
+            # stays on self.device and only the finished probability matrix crosses back.
+            X_tensor = torch.tensor(X_3d, dtype=torch.float32).to(self.device)
             with torch.no_grad():
                 outputs = self.model(X_tensor)
-                probs = torch.softmax(outputs, dim=1).numpy()
+                probs = torch.softmax(outputs, dim=1).cpu().numpy()
             return probs
             
         def get_params(self, deep: bool = True) -> Dict:

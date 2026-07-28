@@ -91,15 +91,22 @@ class Protocol:
 
     @property
     def viability_floor(self) -> float:
-        return float(self.raw["horizon_viability_gate"]["minimum_oracle_ceiling"])
+        return float(self.raw["horizon_viability_gate"]["minimum_clearance_lb95"])
 
     @property
-    def oracle_ceilings(self) -> dict[str, dict[str, float]]:
-        return self.raw["horizon_viability_gate"]["measured_evidence"]["oracle_ceiling_by_horizon_s"]
+    def clearance_points(self) -> dict[str, dict[str, float]]:
+        """Point-estimate clearance rates. Reporting only - admission uses LB95."""
+        return (self.raw["horizon_viability_gate"]["measured_evidence"]
+                ["clearance_point_by_horizon_s"])
 
     def admissible_horizons(self, maker: bool) -> tuple[int, ...]:
         key = "maker" if maker else "taker"
         return tuple(int(h) for h in self.raw["admissible_horizons_seconds"][key])
+
+    def selected_horizons(self, maker: bool) -> tuple[int, ...]:
+        """The capped grid actually used. A subset of admissible_horizons."""
+        key = "maker" if maker else "taker"
+        return tuple(int(h) for h in self.raw["selected_horizons_seconds"][key])
 
     def sha256(self) -> str:
         return hashlib.sha256(
@@ -149,7 +156,10 @@ class ActionOutcome:
     holding_time_s: float
     adverse_selection_bps: float = 0.0
     missed_fill_opportunity_usd: float = 0.0
-    promotable: bool = True         # False when only TOUCH_PROXY established the fill
+    # SAFETY DEFAULT: not promotable until something proves it is. A new fill standard, an
+    # unfinished execution path, or a forgotten assignment must fail CLOSED. Promotion is
+    # an earned property, never an inherited one.
+    promotable: bool = False
     reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,6 +181,36 @@ class EventDecision:
     outcomes: list[ActionOutcome]
     selected: Action = Action.WAIT
     selection_reason: str = Reason.NO_POSITIVE_ACTION.value
+
+    def __post_init__(self) -> None:
+        """The canonical WAIT row is ENFORCED, not merely documented.
+
+        Without this, a decision could omit WAIT and the ledger would silently lose the
+        only unbiased benchmark every action must beat. Absence must fail closed.
+        """
+        waits = [o for o in self.outcomes if o.action is Action.WAIT]
+        if len(waits) != 1:
+            raise ValueError(
+                f"EventDecision requires exactly ONE WAIT outcome, found {len(waits)}. "
+                f"WAIT is the benchmark; a decision without it cannot be scored."
+            )
+        w = waits[0]
+        bad = [
+            f"filled={w.filled}" if w.filled else "",
+            f"quantity={w.quantity}" if w.quantity != 0.0 else "",
+            f"gross={w.gross_pnl_usd}" if w.gross_pnl_usd != 0.0 else "",
+            f"fee={w.fee_usd}" if w.fee_usd != 0.0 else "",
+            f"slippage={w.slippage_usd}" if w.slippage_usd != 0.0 else "",
+            f"net={w.net_pnl_usd}" if w.net_pnl_usd != 0.0 else "",
+            "promotable=True" if w.promotable else "",
+        ]
+        bad = [b for b in bad if b]
+        if bad:
+            raise ValueError(
+                "the WAIT outcome must be exactly zero and non-promotable; got " + ", ".join(bad)
+            )
+        if self.selected is not Action.WAIT and self.selected not in {o.action for o in self.outcomes}:
+            raise ValueError(f"selected={self.selected.value} has no priced outcome")
 
     def to_dict(self) -> dict[str, Any]:
         return {

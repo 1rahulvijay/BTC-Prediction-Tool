@@ -11,7 +11,7 @@ the input named. No detector substitutes a proxy, imputes zero, or drops the ter
 """
 from __future__ import annotations
 
-from contracts import DataQuality, EventCandidate, Family
+from .contracts import DataQuality, EventCandidate, Family
 
 # Thresholds are preregistered here and are part of the frozen protocol surface.
 # Changing one after the untouched period opens is prohibited.

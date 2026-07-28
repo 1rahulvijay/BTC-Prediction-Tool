@@ -13,11 +13,11 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from contracts import Family, load_protocol
-from data_contract import (
+from .contracts import Family, load_protocol
+from .data_contract import (
     PREFERRED_DAYS, REQUIRED_DAYS_MIN, evaluate_archive,
 )
-from viability import viability_table
+from .viability import viability_table
 
 
 def build_report(db_path=None) -> dict:
@@ -48,6 +48,10 @@ def build_report(db_path=None) -> dict:
             for f in Family
         },
         "horizon_gate": viability_table(p),
+        "selected_horizons": {"taker": list(p.selected_horizons(False)),
+                              "maker": list(p.selected_horizons(True))},
+        "horizon_selection_dataset_role": (
+            p.raw["horizon_viability_gate"]["measured_evidence"]["dataset_role"]),
         "results": [],
         "results_note": (
             "Empty by design. No family may report a result until its archive "
@@ -88,16 +92,16 @@ def main() -> int:
         for b in st["blockers"]:
             print(f"      blocker: {b}")
     print()
-    print("HORIZON GATE (admissible horizons only)")
+    print("HORIZON GATE - admission on day-block LB95, not the point estimate")
     for r in rep["horizon_gate"]:
-        adm = []
-        if r["taker_admissible"]:
-            adm.append("taker")
-        if r["maker_admissible"]:
-            adm.append("maker")
+        adm = [x for x, ok in (("taker", r["taker_admissible"]),
+                               ("maker", r["maker_admissible"])) if ok]
         if adm:
-            print(f"  {r['horizon_s']:>5}s  taker {r['taker_ceiling']:>6.2%}  "
-                  f"maker {r['maker_ceiling']:>6.2%}   {', '.join(adm)}")
+            print(f"  {r['horizon_s']:>5}s  taker LB {r['taker_lb95']:>6.2%}  "
+                  f"maker LB {r['maker_lb95']:>6.2%}   {', '.join(adm)}")
+    print("  selected grid (capped, deterministic):")
+    for style, hz in rep["selected_horizons"].items():
+        print(f"    {style:<6} {hz}")
     print()
     print(f"RESULTS: {len(rep['results'])}")
     print(f"  {rep['results_note']}")

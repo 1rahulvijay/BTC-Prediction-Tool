@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from contracts import Action, ActionOutcome, FillStandard
+from .contracts import Action, ActionOutcome, FillStandard
 
 # --------------------------------------------------------------------------- costs
 
@@ -128,7 +128,7 @@ def simulate_taker(
         entry_price=entry_px, exit_price=exit_px, quantity=q, notional_usd=entry_notional,
         gross_pnl_usd=gross, fee_usd=fee, slippage_usd=slip,
         net_pnl_usd=gross - fee - slip,
-        holding_time_s=float(horizon_s), promotable=True, reasons=reasons,
+        holding_time_s=float(horizon_s), promotable=True, reasons=reasons,   # taker fill: standard N/A
     )
 
 
@@ -165,6 +165,8 @@ def simulate_maker(
             gross_pnl_usd=0.0, fee_usd=0.0, slippage_usd=0.0, net_pnl_usd=0.0,
             holding_time_s=0.0, adverse_selection_bps=adverse_selection_bps,
             missed_fill_opportunity_usd=missed_fill_opportunity_usd,
+            # An unfilled maker order is a REAL recorded outcome (zero PnL + missed
+            # opportunity), and it is legitimately usable evidence about fill rates.
             promotable=True, reasons=("MAKER_NOT_FILLED",),
         )
 
@@ -210,7 +212,7 @@ def wait_outcome(horizon_s: int) -> ActionOutcome:
         action=Action.WAIT, horizon_s=horizon_s, filled=False, fill_standard=None,
         entry_price=None, exit_price=None, quantity=0.0, notional_usd=0.0,
         gross_pnl_usd=0.0, fee_usd=0.0, slippage_usd=0.0, net_pnl_usd=0.0,
-        holding_time_s=0.0, promotable=True, reasons=("WAIT",),
+        holding_time_s=0.0, promotable=False, reasons=("WAIT",),   # benchmark, never promoted
     )
 
 
@@ -220,5 +222,5 @@ def _unfilled(action: Action, horizon_s: int, notional: float,
         action=action, horizon_s=horizon_s, filled=False, fill_standard=None,
         entry_price=None, exit_price=None, quantity=0.0, notional_usd=0.0,
         gross_pnl_usd=0.0, fee_usd=0.0, slippage_usd=0.0, net_pnl_usd=0.0,
-        holding_time_s=0.0, promotable=True, reasons=reasons,
+        holding_time_s=0.0, promotable=False, reasons=reasons,   # nothing executed
     )

@@ -2,14 +2,15 @@
 
 Phase 1: data contract, event labels, executing tests, readiness report.
 No models, no promotion, no orders. PROFIT_CAMPAIGN_V1 is frozen and untouched.
-"""
-import os as _os
-import sys as _sys
 
-# Package modules import each other by bare name. Under `python -m ...` this package
-# __init__ loads first, so putting both directories on the path here makes every entry
-# point (-m, direct script, and the selftest) resolve identically.
-_HERE = _os.path.dirname(_os.path.abspath(__file__))
-for _p in (_HERE, _os.path.dirname(_HERE)):
-    if _p not in _sys.path:
-        _sys.path.insert(0, _p)
+Modules import each other with explicit relative imports and are run as package
+entry points:
+
+    python -m backend.research.event_conditional_v1.selftest
+    python -m backend.research.event_conditional_v1.readiness
+    python -m backend.research.event_conditional_v1.viability
+
+There is deliberately no sys.path manipulation here: it would hide incorrect
+imports, make script and package execution diverge, and depend on the working
+directory.
+"""

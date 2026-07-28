@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-from contracts import DataQuality, Family
+from .contracts import DataQuality, Family
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = Path(os.environ.get("BTC_DATA_DIR") or (ROOT / "data"))
@@ -37,6 +38,28 @@ PREFERRED_DAYS = 90
 VALID_TRADING_DAYS_MIN = 45
 
 
+class Tier(str, Enum):
+    """How badly a family needs a stream.
+
+    The previous contract said 'no partial-input mode' while calling Bybit and Coinbase
+    'optional-but-declared' inside the REQUIRED list. Those cannot both be true. Tiers
+    make the distinction explicit so the same contract name can never quietly run on a
+    different venue set.
+    """
+    CORE_REQUIRED = "CORE_REQUIRED"              # family cannot run at all without it
+    VARIANT_REQUIRED = "VARIANT_REQUIRED"        # required by a NAMED variant only
+    OPTIONAL_DIAGNOSTIC = "OPTIONAL_DIAGNOSTIC"  # observed, never priced on
+
+
+# A family may not silently swap venue sets. Each variant is its own contract name and
+# gets its own protocol, registry, untouched period and promotion decision.
+VARIANTS: dict[str, tuple[str, ...]] = {
+    "CROSS_VENUE_BINANCE_SPOT_PERP_V1": ("perp_book", "perp_trades", "spot_book", "spot_trades"),
+    "CROSS_VENUE_FOUR_VENUE_V1": ("perp_book", "perp_trades", "spot_book", "spot_trades",
+                                  "bybit_perp", "coinbase_spot"),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class StreamReq:
     key: str
@@ -44,6 +67,7 @@ class StreamReq:
     stream: str
     families: tuple[Family, ...]
     note: str = ""
+    tier: Tier = Tier.CORE_REQUIRED
 
 
 # Which streams each family genuinely needs. A family may not run without ALL of its
@@ -64,9 +88,11 @@ REQUIRED_STREAMS: tuple[StreamReq, ...] = (
     StreamReq("spot_trades", "binance_spot", "aggTrade",
               (Family.CROSS_VENUE_LEAD_LAG,)),
     StreamReq("bybit_perp", "bybit_perp", "orderbook.1",
-              (Family.CROSS_VENUE_LEAD_LAG,), "optional-but-declared second perp venue"),
+              (Family.CROSS_VENUE_LEAD_LAG,), "second perp venue",
+              tier=Tier.VARIANT_REQUIRED),
     StreamReq("coinbase_spot", "coinbase_spot", "ticker",
-              (Family.CROSS_VENUE_LEAD_LAG,), "optional-but-declared second spot venue"),
+              (Family.CROSS_VENUE_LEAD_LAG,), "second spot venue",
+              tier=Tier.VARIANT_REQUIRED),
 )
 
 
@@ -103,17 +129,49 @@ class ArchiveReport:
         return any(self.family_ready.values())
 
 
-def segment_events(timestamps_ms: list[int], gap_ms: int = SEGMENT_GAP_MS) -> list[str]:
-    """Assign a continuity segment id to each timestamp. A gap larger than `gap_ms`
-    starts a new segment, so nothing downstream can join across it."""
+def segment_events(timestamps_ms: list[int], gap_ms: int = SEGMENT_GAP_MS,
+                   sessions: list[str] | None = None,
+                   seqs: list[int | None] | None = None,
+                   schema_versions: list[str] | None = None) -> list[str]:
+    """Assign a continuity segment id per event. A new segment starts on ANY of:
+
+        - a time gap larger than `gap_ms`
+        - a recorder-session change (restart or WebSocket reconnect)
+        - a sequence regression (update id went backwards -> the book was rebuilt)
+        - a schema-version change
+        - a clock regression (timestamps went backwards)
+
+    Time alone is not enough. A reconnect can deliver an event 20ms after the last one
+    while the book in between was never observed; joining across that boundary invents
+    continuity that did not exist. Every non-time condition here represents a moment
+    where the recorder's view of the market was interrupted regardless of the clock.
+    """
     out: list[str] = []
     seg = 0
-    prev: int | None = None
-    for ts in timestamps_ms:
-        if prev is not None and ts - prev > gap_ms:
-            seg += 1
+    prev_ts: int | None = None
+    prev_sess: str | None = None
+    prev_seq: int | None = None
+    prev_schema: str | None = None
+
+    for i, ts in enumerate(timestamps_ms):
+        sess = sessions[i] if sessions and i < len(sessions) else None
+        seq = seqs[i] if seqs and i < len(seqs) else None
+        schema = schema_versions[i] if schema_versions and i < len(schema_versions) else None
+
+        if prev_ts is not None:
+            if ts - prev_ts > gap_ms:
+                seg += 1                                   # gap
+            elif ts < prev_ts:
+                seg += 1                                   # clock regression
+            elif sess is not None and prev_sess is not None and sess != prev_sess:
+                seg += 1                                   # restart / reconnect
+            elif seq is not None and prev_seq is not None and seq < prev_seq:
+                seg += 1                                   # sequence regression
+            elif schema is not None and prev_schema is not None and schema != prev_schema:
+                seg += 1                                   # schema change
+
         out.append(f"seg{seg:04d}")
-        prev = ts
+        prev_ts, prev_sess, prev_seq, prev_schema = ts, sess, seq, schema
     return out
 
 
@@ -165,7 +223,8 @@ def evaluate_archive(db_path: Path | None = None) -> ArchiveReport:
     family_ready: dict[str, bool] = {}
     family_blockers: dict[str, list[str]] = {}
     for fam in Family:
-        needed = [r for r in REQUIRED_STREAMS if fam in r.families]
+        needed = [r for r in REQUIRED_STREAMS
+                  if fam in r.families and r.tier is Tier.CORE_REQUIRED]
         blockers = [f"{r.venue}/{r.stream}" for r in needed if not by_key[r.key].present]
         if span < REQUIRED_DAYS_MIN:
             blockers.append(f"continuous span {span:.2f}d < {REQUIRED_DAYS_MIN}d required")

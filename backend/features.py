@@ -292,13 +292,71 @@ def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 1
     return ema(tr, period)
 
 
-def vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
-    """VWAP — cumulative."""
+# Bump when the NUMERIC MEANING of any feature changes without its name changing.
+# artifact_identity hashes features.py into code_hash, so an edit here already
+# invalidates artifacts under strict mode - but strict mode can be off, and a hash
+# says only "something changed". This constant says WHAT changed, and
+# check_feature_contract.py reports it in plain words.
+FEATURE_SEMANTICS_VERSION = 2
+FEATURE_SEMANTICS_CHANGELOG = {
+    2: "2026-07-28 vwap(): cumulative-from-bar-0 -> trailing time-anchored window. "
+       "Models trained under v1 consumed a near-constant VWAP and MUST be retrained.",
+    1: "original: vwap() cumulative from bar 0",
+}
+
+
+def vwap(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray,
+         period: int = 1440, times: np.ndarray | None = None,
+         window_seconds: float | None = None) -> np.ndarray:
+    """Trailing VWAP. Window is a DURATION when `times` is supplied, else a bar count.
+
+    2026-07-28 fix: this was cumulative from bar 0 (np.cumsum). Over a long buffer the
+    denominator grows so large that recent volume cannot move the line - at 30 days of 1m
+    bars a new bar carries ~1/43,200 of the weight - so the feature flatlines toward a
+    constant and stops carrying information.
+
+    The naive replacement (a fixed 1440-BAR window) silently means 24h on 1m bars but FIVE
+    DAYS on 5m bars. Pass `times` (epoch seconds or ms, auto-detected) and the window is
+    resolved in real time instead:
+
+        vwap(h, l, c, v, times=t)                      -> trailing 24 hours
+        vwap(h, l, c, v, times=t, window_seconds=3600) -> trailing 1 hour
+        vwap(h, l, c, v, period=1440)                  -> trailing 1440 BARS (legacy)
+
+    With `times` the bar spacing is measured from the median delta, so irregular or gapped
+    series resolve to the intended duration rather than an accidental multiple of it.
+
+    LIMIT: the ms->s detection is magnitude-based (> 1e11), the same rule features._t_s
+    uses. It needs real epoch values. Relative offsets starting near 0 are ambiguous
+    between units by construction and are treated as seconds.
+
+    Causal by construction: element k of a 'full' convolution sums only inputs j <= k, so
+    no bar sees the future. The first `period-1` bars are a natural expanding window.
+    """
+    n = len(closes)
+    if n == 0:
+        return np.array([], dtype=float)
+
+    if times is not None and len(times) == n and n >= 2:
+        t = np.asarray(times, dtype=np.float64)
+        t = np.where(t > 1e11, t / 1000.0, t)          # ms -> s, same rule as _t_s
+        step = float(np.median(np.diff(t)))
+        if step > 0:
+            span = float(window_seconds) if window_seconds else 86_400.0
+            period = max(1, int(round(span / step)))
+    elif window_seconds is not None:
+        raise ValueError("window_seconds requires `times`; bar spacing is unknown without it")
+
+    if int(period) < 1:
+        raise ValueError(f"vwap period must be >= 1 bar, got {period}")
+    # A window longer than the buffer degrades back into the cumulative bug this replaced.
+    period = min(int(period), n)
+
     tp = (highs + lows + closes) / 3.0
-    cum_tpv = np.cumsum(tp * volumes)
-    cum_vol = np.cumsum(volumes)
-    result = np.where(cum_vol > 0, cum_tpv / cum_vol, closes)
-    return result
+    kernel = np.ones(period)
+    rolling_tpv = np.convolve(tp * volumes, kernel, mode="full")[:n]
+    rolling_vol = np.convolve(volumes, kernel, mode="full")[:n]
+    return np.where(rolling_vol > 0, rolling_tpv / rolling_vol, closes)
 
 
 def heikin_ashi_trend(opens: np.ndarray, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> np.ndarray:
@@ -669,7 +727,9 @@ def build_features_from_klines(
     _, _, macd_hist = macd(closes)
     _, _, _, bb_pos = bollinger_bands(closes)
     atr_arr = atr(highs, lows, closes)
-    vwap_arr = vwap(highs, lows, closes, volumes)
+    # Pass `times` so the VWAP window is a real trailing 24 HOURS. Without it the window
+    # is a bar count, which silently becomes five days if this is ever fed 5m bars.
+    vwap_arr = vwap(highs, lows, closes, volumes, times=times)
     adx_arr = adx(highs, lows, closes)
     obv_arr = obv(closes, volumes)
     wr_arr = williams_r(highs, lows, closes)
