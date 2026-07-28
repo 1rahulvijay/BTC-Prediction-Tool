@@ -128,8 +128,11 @@ jobs:
       - name: Feature + model weight fixes (VWAP window, TCN per-sample weights)
         run: python backend/test_feature_and_weight_fixes.py
 
+      - name: P(hold) calibration adoption gate (default-off, fails open to raw)
+        run: python backend/phold_calibrator.py --selftest
+
       - name: Feature-contract readiness (stale artifacts vs current semantics)
-        run: python backend/check_feature_contract.py || true
+        run: python backend/check_feature_contract.py --report || true
 
       - name: Event-conditional V1 (fees, fills, horizon gate, fail-closed detectors)
         run: python -m backend.research.event_conditional_v1.selftest
@@ -221,6 +224,7 @@ jobs:
           python -m backend.research.profit_campaign_v1.selftest || exit /b 1
           python backend/test_kline_time_contract.py || exit /b 1
           python backend/test_feature_and_weight_fixes.py || exit /b 1
+          python backend/phold_calibrator.py --selftest || exit /b 1
           python backend/check_feature_contract.py
           python -m backend.research.event_conditional_v1.selftest || exit /b 1
           python -m backend.research.event_conditional_v1.readiness || exit /b 1
