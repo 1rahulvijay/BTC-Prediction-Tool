@@ -141,6 +141,17 @@ class PlattCalibrator:
     def params(self):
         return {"kind": self.kind, "a": round(self.a, 6), "b": round(self.b, 6)}
 
+    def to_dict(self):
+        """Full state. `params()` is for the human-readable report; this is what
+        serving reconstructs from, so it must be lossless."""
+        return {"kind": self.kind, "a": self.a, "b": self.b}
+
+    @classmethod
+    def from_dict(cls, d):
+        c = cls()
+        c.a, c.b = float(d["a"]), float(d["b"])
+        return c
+
 
 class IsotonicCalibrator:
     """Monotone step calibration. Flexible, so it is only allowed a large sample."""
@@ -157,10 +168,38 @@ class IsotonicCalibrator:
         return self
 
     def predict(self, p):
+        if getattr(self, "_ir", None) is None:      # rebuilt from stored knots
+            return self._predict_from_knots(p)
         return np.clip(self._ir.predict(np.asarray(p, float)), 0.0, 1.0)
 
     def params(self):
         return {"kind": self.kind, "knots": int(len(getattr(self._ir, "X_thresholds_", [])))}
+
+    def to_dict(self):
+        """The knots THEMSELVES, not just how many. Reporting a count made the artifact
+        un-deployable: serving could see that a calibrator won and still not rebuild it."""
+        return {
+            "kind": self.kind,
+            "x": [float(v) for v in getattr(self._ir, "X_thresholds_", [])],
+            "y": [float(v) for v in getattr(self._ir, "y_thresholds_", [])],
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        """Rebuild by interpolation over the stored knots - no sklearn needed at serving,
+        and the mapping is identical because IsotonicRegression IS a step/linear interp
+        over exactly these points with out_of_bounds='clip'."""
+        c = cls()
+        c._x = np.asarray(d["x"], dtype=float)
+        c._y = np.asarray(d["y"], dtype=float)
+        c._ir = None
+        return c
+
+    def _predict_from_knots(self, p):
+        p = np.clip(np.asarray(p, float), 0.0, 1.0)
+        if self._x is None or len(self._x) == 0:
+            return p
+        return np.clip(np.interp(p, self._x, self._y), 0.0, 1.0)
 
 
 # ---------------------------------------------------------------- the challenge
@@ -214,7 +253,10 @@ def challenge(p_raw, y, ts=None, group_label="all"):
     # ADOPTION REQUIRES WINNING ON ALL THREE. A calibrator that improves ECE while worsening
     # log-loss has moved the bias into the tails, which is not an improvement.
     (best, best_m), wins = _select_candidate(scored, raw)
-    res["challenger"] = {"kind": best.kind, "params": best.params(),
+    # params_full is the LOSSLESS state serving rebuilds from; params() stays the short
+    # human-readable summary in the report.
+    res["challenger"] = {"kind": best.kind, "params_full": best.to_dict(),
+                         "params": best.params(),
                          **{k: round(v, 6) for k, v in best_m.items()}}
     res["calibrator_hash"] = _sha({"kind": best.kind, "params": best.params(),
                                    "protocol": PROTOCOL_VERSION, "group": group_label})
@@ -387,6 +429,17 @@ def main():
     with open(os.path.join(a.out, "phold_challenger.json"), "w", encoding="utf-8") as fh:
         json.dump(rep, fh, indent=2)
     print(f"\nwrote -> {a.out}")
+
+    # Also emit the DEPLOYABLE artifact (winning `overall` groups only). Writing it does
+    # NOT enable it: serving still requires BTC_APPLY_PHOLD_CALIBRATION=1.
+    try:
+        from phold_calibrator import ARTIFACT, export_from_report
+        dep = export_from_report(rep, ARTIFACT)
+        hz = ", ".join(f"{k}m" for k in dep.get("horizons", {})) or "none"
+        print(f"deployable calibrators: {hz}  -> {ARTIFACT}")
+        print("NOT active until BTC_APPLY_PHOLD_CALIBRATION=1 (an operator decision).")
+    except Exception as exc:
+        print(f"deployable export skipped ({type(exc).__name__}: {exc})")
     return 0
 
 
