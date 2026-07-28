@@ -929,6 +929,23 @@ requested size and bounded maker queue scenarios. This layer is not part of the 
 does not place orders. It can veto opportunities whose apparent edge disappears after depth, fee and
 latency assumptions. See `docs/active/POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md`.
 
+### Binance Maker-Conversion Research Layer
+
+`backend/research/binance_maker_conversion_v1/` is an isolated, forward-only
+execution experiment for the frozen E09/E10 5s/15s event-time candidates. It
+uses public Binance USD-M diff depth and aggregate trades to build a
+sequence-validated local book, compares the same original candidates under
+taker/taker, maker/taker, maker-fallback/taker and maker/maker routes, and
+records conservative queue, partial-fill, adverse-selection, latency and
+visible-depth evidence in
+`data/research/binance_maker_conversion_v1/shadow.duckdb`.
+
+The layer has no API-key support and no order-submission path. Its source event
+bundle, protocol, feature schema and code identities are hashed into every
+candidate. Fees are explicit but remain unverified for the user's account, so
+promotion is hard-blocked. See
+`docs/active/BINANCE_MAKER_CONVERSION_V1_2026-07-28.md`.
+
 ### Canonical Model Inventory
 
 The authoritative model-by-model map, including activation status, targets, algorithms, features,

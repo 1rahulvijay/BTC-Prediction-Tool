@@ -1,0 +1,87 @@
+{
+  "protocol_id": "BINANCE_MAKER_CONVERSION_V1",
+  "frozen_at_utc": "2026-07-28T12:00:00Z",
+  "promotion_status": "research_only",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "may_submit_orders": false,
+  "instrument": {
+    "venue": "binance_usdm",
+    "symbol": "BTCUSDT",
+    "rest_depth_url": "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=1000",
+    "depth_stream": "wss://fstream.binance.com/public/ws/btcusdt@depth@100ms",
+    "perp_trade_stream": "wss://fstream.binance.com/market/ws/btcusdt@aggTrade",
+    "spot_trade_stream": "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
+    "tick_size": 0.1
+  },
+  "source_model": {
+    "bundle": "data/research/polymarket_repricing_shadow_v1/event_model_bundle.joblib",
+    "bundle_protocol": "backend/research/polymarket_repricing_shadow_v1/frozen_protocol.json",
+    "candidate_source": "EVENT_EXECUTION_AND_ANCHOR_CROSSING_V1 E09/E10",
+    "horizons_seconds": [5, 15],
+    "minimum_movement_probability": 0.5,
+    "minimum_direction_margin": 0.1,
+    "nonoverlap_by_horizon": true
+  },
+  "execution": {
+    "notional_usd": 100.0,
+    "decision_latency_ms": 0,
+    "maximum_book_age_ms": 1000,
+    "primary_maker_ttl_ms": 1000,
+    "maker_fill_checkpoints_ms": [100, 250, 500, 1000],
+    "exit_maker_ttl_ms": 1000,
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 5.0,
+    "account_fee_verified": false,
+    "queue_fill_model": "conservative_trade_through_after_displayed_queue",
+    "credit_cancellations_as_fills": false,
+    "policies": [
+      "A_TAKER_TAKER",
+      "B_MAKER_TAKER",
+      "C_MAKER_TTL_FALLBACK_TAKER",
+      "D_MAKER_MAKER",
+      "E_TOXICITY_GATED_MAKER_TAKER"
+    ],
+    "policy_e_status": "labels_required_fail_closed"
+  },
+  "stress_tests": {
+    "latency_ms": [0, 250, 500],
+    "fee_multipliers": [1.0, 2.0],
+    "notional_multipliers": [1.0, 2.0],
+    "one_tick_worse": true,
+    "zero_maker_rebate": true
+  },
+  "promotion_gate": {
+    "minimum_original_candidates": 1000,
+    "minimum_calendar_days": 56,
+    "preserve_all_original_candidates": true,
+    "account_fee_must_be_verified": true,
+    "day_block_expectancy_lower_95_bps": 0.0,
+    "minimum_profit_factor": 1.2,
+    "one_tick_worse_positive": true,
+    "latency_250ms_positive": true,
+    "latency_500ms_positive": true,
+    "long_expectancy_positive": true,
+    "short_expectancy_positive": true,
+    "maximum_best_week_profit_share": 0.35,
+    "final_untouched_window_positive": true
+  },
+  "reliability": {
+    "heartbeat_seconds": 5,
+    "stale_alarm_seconds": 5,
+    "daily_database_rotation": false,
+    "maximum_database_bytes": 10737418240,
+    "reconnect_maximum_seconds": 30,
+    "mark_unresolved_interrupted_on_start": true
+  },
+  "prohibitions": [
+    "no_api_keys",
+    "no_order_submission",
+    "no_candidate_filter_tuning",
+    "no_fill_model_training_before_defensible_forward_labels",
+    "no_promotion_from_gross_direction_accuracy",
+    "no_promotion_without_account_specific_fees",
+    "no_claim_of_profitability_from_public_queue_reconstruction"
+  ]
+}

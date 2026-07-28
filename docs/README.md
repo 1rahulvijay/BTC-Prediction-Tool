@@ -1,6 +1,14 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[BINANCE_MAKER_CONVERSION_V1_2026-07-28.md](active/BINANCE_MAKER_CONVERSION_V1_2026-07-28.md)** -
+  forward-only execution campaign for the frozen 5s/15s event-time candidates.
+  It reconstructs a sequenced Binance USD-M futures book, compares taker/taker,
+  maker/taker, maker-fallback/taker and maker/maker routes on one preserved
+  denominator, records conservative queue and adverse-selection evidence,
+  enforces artifact provenance and frozen promotion gates, and contains no
+  API-key or order-submission path. The initial live smoke was operationally
+  clean but is not profitability evidence.
 - **[POLYMARKET_REPRICING_SHADOW_V1_2026-07-28.md](active/POLYMARKET_REPRICING_SHADOW_V1_2026-07-28.md)** -
   isolated execution-routing forward shadow for the surviving UP/DOWN ask-worsening
   heads; four same-denominator policies, baseline-versus-evidence calibration,

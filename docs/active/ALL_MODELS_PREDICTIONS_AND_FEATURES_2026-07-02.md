@@ -525,3 +525,25 @@ only for 15m line-cross risk, but its P(Hold veto discarded 166 correct calls to
 PCA systemic absorption reduced AUC for all tested 5m/15m big-move and big-drop models and did not
 improve P(Hold retention. Full evidence:
 `ROUND_ORB_AND_SYSTEMIC_ABSORPTION_RESULTS_2026-07-02.md`.
+
+## Research Update: Event-Time Heads And Maker Conversion
+
+The later event-time research adds a separate 86-feature spot/perpetual
+aggregate-trade bundle with direction, movement and round-trip heads at 5
+seconds and 15 seconds. These models are **RESEARCH**, not additional seats in
+the main 5m/15m ensemble. The frozen maker-conversion lane reuses only their
+predeclared direction/movement candidates and adds no model:
+
+| Component | Status | Output |
+|---|---|---|
+| event direction head | RESEARCH | P(UP first) at 5s/15s |
+| event movement head | RESEARCH | P(material movement) at 5s/15s |
+| event round-trip head | RESEARCH INFO | P(two-sided path) at 5s/15s |
+| maker-conversion simulator | FORWARD SHADOW | fill, queue, adverse selection and after-fee PnL for A-E policies |
+| toxicity gate | GATED | fail-closed until forward fill/toxicity labels exist |
+
+The maker conversion uses exact public USD-M visible depth and conservative
+trade-through queue reconstruction. It has no API-key or order path and cannot
+be promoted before 1,000 candidates, eight weeks, verified account fees and
+all frozen robustness gates. See
+`BINANCE_MAKER_CONVERSION_V1_2026-07-28.md`.
