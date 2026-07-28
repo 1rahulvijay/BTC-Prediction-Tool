@@ -2,10 +2,33 @@ import time
 import logging
 import database
 
+QUARANTINED = True
+ALLOW_ENV = "BTC_ALLOW_LEGACY_PM_SIMULATOR"
+
+
+class QuarantinedPrototype(RuntimeError):
+    """This module may not be used for anything that informs a decision."""
+
+
+def _refuse(reason: str) -> None:
+    import os
+
+    if os.environ.get(ALLOW_ENV) == "1":
+        print("[polymarket_simulator] QUARANTINE OVERRIDDEN via " + ALLOW_ENV
+              + " - output is NOT evidence: " + reason, flush=True)
+        return
+    raise QuarantinedPrototype(
+        "polymarket_simulator is QUARANTINED (2026-07-28). " + reason + " Set "
+        + ALLOW_ENV + "=1 only for isolated research; its output may never inform a "
+        "decision, a backtest result or a promotion.")
+
+
+
 logger = logging.getLogger(__name__)
 
 class PolymarketSimulator:
     def __init__(self, min_edge_threshold=0.04):
+        _refuse('It charges a 1% notional fee that does not exist (Polymarket taker fee is rate*p*(1-p)), synthesises the NO ask as (1 - YES bid) instead of reading the NO token book, hardcodes size=100, adds a flat 0.5c slippage on top of a price it never walked a ladder to obtain, and cannot express a partial or absent fill.')
         self.min_edge_threshold = min_edge_threshold
         
     def layer_4_trade_filter(self, fair_prob: float, executable_ask: float, executable_bid: float, features: dict) -> dict:
