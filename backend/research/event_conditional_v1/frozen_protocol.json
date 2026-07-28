@@ -1,0 +1,164 @@
+{
+  "protocol_id": "BINANCE_EVENT_CONDITIONAL_PROFIT_V1",
+  "status": "FROZEN",
+  "frozen_on": "2026-07-28",
+  "research_only": true,
+  "supersedes_nothing": true,
+  "predecessor": {
+    "protocol_id": "PROFIT_CAMPAIGN_V1",
+    "verdict": "NEGATIVE - frozen permanently, never to be altered or rerun",
+    "why_this_campaign_differs": [
+      "V1 sampled regular 15-second timestamps; this campaign evaluates sparse economic events only.",
+      "V1 evaluated taker execution only; this campaign evaluates maker and taker as competing actions.",
+      "V1 used a 24h L2 archive; this campaign requires a continuous 60-90 day multi-venue archive.",
+      "V1 did not gate horizons on cost feasibility; this campaign refuses infeasible horizons up front."
+    ]
+  },
+
+  "instrument": {
+    "symbol": "BTCUSDT",
+    "venue": "binance",
+    "market": "usdm_perpetual"
+  },
+
+  "alpha_families": [
+    "LIQUIDATION_CONTINUATION",
+    "LIQUIDATION_EXHAUSTION",
+    "CROSS_VENUE_LEAD_LAG",
+    "FUNDING_BASIS_OI"
+  ],
+  "family_independence": {
+    "blending_permitted": false,
+    "fallback_between_families_permitted": false,
+    "shared_trial_registry": false,
+    "note": "Each family carries its own protocol section, trial registry, model, result and promotion decision. A family that fails is closed; its budget does not transfer."
+  },
+
+  "execution": {
+    "taker_fee_bps_per_leg": 5.0,
+    "maker_fee_bps_per_leg": 2.0,
+    "additional_impact_bps_per_leg": 1.0,
+    "taker_round_trip_bps": 12.0,
+    "maker_round_trip_bps": 6.0,
+    "fee_basis": "notional_usd * bps / 10000",
+    "fee_basis_note": "Binance perpetual fees are a rate on NOTIONAL. The Polymarket contract-price formula rate*p*(1-p) is INVALID here and must never be used; it clamps p to [0,1] and silently returns zero fees at a 60000 price.",
+    "capital_usd": 1000.0,
+    "latencies_ms": [100, 250, 500, 1000],
+    "primary_latency_ms": 500
+  },
+
+  "horizon_viability_gate": {
+    "enforced": true,
+    "minimum_oracle_ceiling": 0.20,
+    "rationale": "P(|move over h| > round_trip_cost) upper-bounds the fraction of timestamps at which a PERFECT-direction oracle could profit. Below this floor a non-oracle model has no room, regardless of signal quality.",
+    "measured_evidence": {
+      "source": "BTCUSDT perp aggTrades, data/backfill_cache",
+      "span": "2023-01-16 .. 2026-07-24",
+      "days_sampled": 129,
+      "method": "1s last-price grid, endpoint move over horizon, day-averaged; endpoint (not MFE) so the ceiling is conservative",
+      "oracle_ceiling_by_horizon_s": {
+        "30":   {"taker_12bps": 0.0249, "maker_6bps": 0.1212, "maker_4bps": 0.2297, "median_abs_bps": 1.97},
+        "60":   {"taker_12bps": 0.0594, "maker_6bps": 0.2146, "maker_4bps": 0.3515, "median_abs_bps": 2.93},
+        "180":  {"taker_12bps": 0.1697, "maker_6bps": 0.4044, "maker_4bps": 0.5512, "median_abs_bps": 5.18},
+        "300":  {"taker_12bps": 0.2455, "maker_6bps": 0.4984, "maker_4bps": 0.6349, "median_abs_bps": 6.69},
+        "900":  {"taker_12bps": 0.4404, "maker_6bps": 0.6770, "maker_4bps": 0.7769, "median_abs_bps": 11.59},
+        "1800": {"taker_12bps": 0.5569, "maker_6bps": 0.7566, "maker_4bps": 0.8342, "median_abs_bps": 16.14},
+        "3600": {"taker_12bps": 0.6644, "maker_6bps": 0.8238, "maker_4bps": 0.8807, "median_abs_bps": 22.65}
+      },
+      "regime_stability": "30s taker ceiling by year: 2023 1.94%, 2024 3.36%, 2025 2.08%, 2026 2.60%. The infeasibility of short taker horizons is structural, not regime-specific.",
+      "consequence": "30s and 60s TAKER horizons are DISQUALIFIED (ceiling 2.5% and 5.9%). This is the same wall PROFIT_CAMPAIGN_V1 hit: it traded every 15s at a 30s horizon, so ~97.5% of its entries could not profit under any model, which is why its profit factor was exactly 0.0000."
+    }
+  },
+
+  "admissible_horizons_seconds": {
+    "_derivation": "NOT hand-written. Every entry is a horizon whose measured oracle ceiling is >= minimum_oracle_ceiling for that execution style. selftest asserts this list agrees with the gate, so the two can never drift apart.",
+    "taker": [300, 900, 1800, 3600],
+    "taker_excluded": {
+      "30": "ceiling 2.49% - the wall PROFIT_CAMPAIGN_V1 hit",
+      "60": "ceiling 5.94%",
+      "180": "ceiling 16.97% - below the 20% floor. Close, but a near-miss is a miss; the floor is not moved to admit it."
+    },
+    "maker": [60, 180, 300, 900, 1800, 3600],
+    "maker_excluded": {
+      "30": "ceiling 12.12% at 6bps round trip"
+    }
+  },
+
+  "actions": ["MAKER_LONG", "MAKER_SHORT", "TAKER_LONG", "TAKER_SHORT", "WAIT"],
+  "default_action": "WAIT",
+
+  "maker_fill_standards": {
+    "TOUCH_PROXY": {"promotable": false, "note": "price touched the level; diagnostic only, never sufficient for promotion"},
+    "TRADE_THROUGH": {"promotable": true, "note": "minimum credible label - a trade printed through the resting price"},
+    "QUEUE_ESTIMATED": {"promotable": true, "note": "promotion-quality - queue position modelled from displayed size ahead and consumption"}
+  },
+
+  "required_predictions": [
+    "net_pnl_q10", "net_pnl_q20", "net_pnl_q50", "net_pnl_q80", "net_pnl_q90",
+    "p_net_pnl_positive", "fill_probability", "maker_wait_time_s",
+    "missed_fill_opportunity_cost", "adverse_selection_bps", "slippage_bps",
+    "expected_shortfall", "holding_time_s", "capacity_usd"
+  ],
+
+  "validation": {
+    "scheme": "purged_chronological_walk_forward",
+    "embargo_bars": 1,
+    "untouched_final_period_fraction": 0.20,
+    "block_bootstrap": {"unit": "day", "resamples": 2000, "seed": 20260728, "min_days": 5},
+    "week_block_bootstrap": {"unit": "iso_week", "resamples": 2000, "seed": 20260728},
+    "pbo_cscv": true,
+    "deflated_sharpe": true,
+    "parameter_neighbourhood_stability": true,
+    "trial_registry_required": true,
+    "stress": {
+      "fee_multipliers": [1.0, 1.5, 2.0],
+      "slippage_multipliers": [1.0, 1.5, 2.0],
+      "latency_ms": [500, 1000]
+    }
+  },
+
+  "matched_controls": {
+    "LIQUIDATION_CONTINUATION": ["same_volatility_without_liquidation", "random_event_timestamps", "inverted_event_side", "time_shifted_features"],
+    "LIQUIDATION_EXHAUSTION": ["same_volatility_without_liquidation", "random_event_timestamps", "inverted_event_side", "time_shifted_features"],
+    "CROSS_VENUE_LEAD_LAG": ["same_price_move_without_cross_venue_lead", "random_event_timestamps", "inverted_event_side", "time_shifted_features"],
+    "FUNDING_BASIS_OI": ["same_funding_level_without_oi_dislocation", "random_event_timestamps", "inverted_event_side", "time_shifted_features"]
+  },
+
+  "promotion_gates": {
+    "forward_decisions_min": 1000,
+    "executed_forward_trades_min": 500,
+    "observed_days_min": 30,
+    "forward_weeks_min": 8,
+    "mean_net_pnl_positive": true,
+    "day_block_lower_bound_positive": true,
+    "profit_factor_min": 1.20,
+    "untouched_period_positive": true,
+    "positive_under_fee_stress_1_5x": true,
+    "positive_under_slippage_stress_1_5x": true,
+    "positive_under_latency_1000ms": true,
+    "majority_of_weeks_positive": true,
+    "best_day_share_of_positive_pnl_max": 0.20,
+    "single_regime_profit_share_max": 0.50,
+    "queue_aware_maker_result_positive": true,
+    "touch_proxy_alone_sufficient": false
+  },
+
+  "stopping_rule": {
+    "declared_in_advance": true,
+    "condition": "If all four families fail their promotion gates on the untouched period, BTCUSDT perpetual direction at retail cost structure is recorded as not tractable by this program, and no V3 may reuse these families with adjusted parameters.",
+    "rationale": "A framework that is good at rejecting invites an unbounded V2/V3/V4 sequence, each explaining the last failure. The stopping condition is preregistered alongside the promotion gates."
+  },
+
+  "prohibitions": [
+    "Do not alter, rerun, retune or re-report PROFIT_CAMPAIGN_V1.",
+    "Do not blend alpha families or fall back between them.",
+    "Do not synthesize unavailable data.",
+    "Do not forward-fill across a recorder gap.",
+    "Do not claim sub-second latency evidence from batched observations.",
+    "Do not promote on TOUCH_PROXY alone.",
+    "Do not headline accuracy or win rate.",
+    "Do not use the Polymarket contract-price fee formula for Binance perpetuals.",
+    "Do not change any parameter after the untouched period is opened.",
+    "Do not place live orders, promote to paper, or modify production models."
+  ]
+}

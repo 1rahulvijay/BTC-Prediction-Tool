@@ -122,6 +122,12 @@ jobs:
       - name: Profit campaign execution and validation invariants
         run: python -m backend.research.profit_campaign_v1.selftest
 
+      - name: Event-conditional V1 (fees, fills, horizon gate, fail-closed detectors)
+        run: python -m backend.research.event_conditional_v1.selftest
+
+      - name: Event-conditional V1 readiness report (must run, may be empty)
+        run: python -m backend.research.event_conditional_v1.readiness
+
       # --- repo-wide consistency ------------------------------------------------------------
       - name: Strategy registry consistency
         run: python backend/research/audit_strategy_registry.py
@@ -204,6 +210,8 @@ jobs:
           python -m backend.research.hierarchical_ensemble_v1.selftest || exit /b 1
           python -m backend.research.forecast_adapters_v1.selftest || exit /b 1
           python -m backend.research.profit_campaign_v1.selftest || exit /b 1
+          python -m backend.research.event_conditional_v1.selftest || exit /b 1
+          python -m backend.research.event_conditional_v1.readiness || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1
