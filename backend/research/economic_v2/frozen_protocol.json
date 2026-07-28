@@ -1,0 +1,72 @@
+{
+  "protocol_id": "economic-v2-blueprint-2026-07-28-v1",
+  "status": "frozen_before_locked_test",
+  "experiment_budget": {
+    "core_experiments": 2,
+    "refinements": 0,
+    "policy_variations": 2
+  },
+  "experiments": [
+    {
+      "id": "E1_LONG_SHORT_FACTOR_DECOMPOSITION",
+      "hypothesis": "The common LONG/SHORT logit component predicts magnitude while their logit difference contains stable signed information.",
+      "inputs": [
+        "120d causal OOF trade-policy predictions",
+        "180d older-era locked-test predictions"
+      ],
+      "selection": "none",
+      "pass_requirements": [
+        "direction IC has the same sign in both eras",
+        "direction IC is positive in at least 75% of time blocks",
+        "signed returns are monotonic across direction buckets",
+        "highest-confidence side selection is positive after recorded costs in both eras"
+      ]
+    },
+    {
+      "id": "E2_POLYMARKET_MARKET_RESIDUAL",
+      "hypothesis": "Causal BTC and book context improves settlement probability beyond the contemporaneous normalized market midpoint.",
+      "instrument": "Polymarket BTC Up/Down",
+      "position_size_shares": 1.0,
+      "checkpoints_seconds_left": {
+        "5": [240, 180, 120, 60, 30, 15],
+        "15": [600, 300, 120, 60, 30, 15]
+      },
+      "checkpoint_tolerance_seconds": 6.0,
+      "split": {
+        "train_market_fraction": 0.6,
+        "calibration_market_fraction": 0.2,
+        "locked_test_market_fraction": 0.2,
+        "group_key": "slug",
+        "ordering": "anchor_ts ascending within horizon"
+      },
+      "models": [
+        "ridge residual",
+        "hist-gradient-boosting residual"
+      ],
+      "fee": "0.07 * price * (1-price) per share",
+      "required_edge_buffer_per_share": 0.03,
+      "execution_delay_seconds": [0, 1, 2, 5, 10],
+      "slippage_stress_per_share": [0.0, 0.01],
+      "one_trade_per_market": true,
+      "pass_requirements": [
+        "residual ensemble Brier is lower than calibrated market baseline",
+        "residual ensemble log loss is lower than calibrated market baseline",
+        "positive mean settlement PnL after fee and 3c decision buffer",
+        "positive mean PnL at 2-second delay and 1c slippage stress",
+        "at least 200 locked-test trades",
+        "day-block or market bootstrap lower confidence bound above zero",
+        "profit factor above 1.10"
+      ]
+    }
+  ],
+  "negative_controls": [
+    "shuffled residual target",
+    "train-versus-test adversarial validation"
+  ],
+  "production_permissions": {
+    "may_write_saved_models": false,
+    "may_change_live_policy": false,
+    "may_place_orders": false,
+    "may_promote": false
+  }
+}

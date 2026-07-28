@@ -1,0 +1,99 @@
+{
+  "protocol_id": "event-evidence-accumulator-2026-07-28-v1",
+  "status": "frozen_before_accumulator_locked_test",
+  "purpose": "Test whether persistent multi-horizon event-time evidence improves 5m/15m settlement probabilities and produces independent candidate episodes.",
+  "inputs": {
+    "development_predictions": "data/research/event_time_specialists/20260728T050314Z/locked_predictions.parquet",
+    "locked_predictions": "data/research/event_time_specialists/20260728T050036Z/locked_predictions.parquet",
+    "price_source": "historical Binance spot aggregate trades reconstructed to causal one-second last prices"
+  },
+  "micro_horizons_seconds": [5, 15, 30, 60],
+  "market_horizons_minutes": [5, 15],
+  "base_direction_rate": 0.5,
+  "weight_schemes": {
+    "short_dominant": {
+      "5": 0.65,
+      "15": 0.25,
+      "30": 0.1,
+      "60": 0.0
+    },
+    "decay": {
+      "5": 0.55,
+      "15": 0.3,
+      "30": 0.1,
+      "60": 0.05
+    },
+    "balanced": {
+      "5": 0.45,
+      "15": 0.3,
+      "30": 0.15,
+      "60": 0.1
+    }
+  },
+  "persistence_half_lives_seconds": [5, 10, 20],
+  "state_machine": {
+    "cadence_seconds": 5,
+    "watch_absolute_score": 0.08,
+    "confirm_absolute_score": 0.12,
+    "minimum_weighted_movement_probability": 0.25,
+    "agreement_observations": 10,
+    "minimum_agreement_ratio": 0.8,
+    "maximum_adverse_score_slope": 0.03,
+    "long_30s_veto_below": 0.4,
+    "short_30s_veto_above": 0.6,
+    "long_60s_veto_below": 0.35,
+    "short_60s_veto_above": 0.65,
+    "one_candidate_per_market": true,
+    "reset_at_market_boundary": true
+  },
+  "development_round_split": {
+    "fit_fraction": 0.6,
+    "calibration_fraction": 0.2,
+    "selection_fraction": 0.2,
+    "group_key": "market_id",
+    "chronological": true
+  },
+  "aggregators": {
+    "baseline_features": [
+      "z_distance",
+      "seconds_ratio",
+      "current_side",
+      "rv_60s_bps"
+    ],
+    "evidence_features": [
+      "z_distance",
+      "seconds_ratio",
+      "current_side",
+      "rv_60s_bps",
+      "persistent_score",
+      "late_evidence",
+      "movement_score"
+    ],
+    "model": "standardized logistic regression",
+    "calibration": "isotonic on complete calibration markets",
+    "market_equal_sample_weight": true
+  },
+  "selection": {
+    "configuration_count": 9,
+    "primary_metric": "selection evidence Brier minus baseline Brier",
+    "tie_breaker": "selection evidence log loss",
+    "minimum_selection_candidates_per_market_horizon": 25
+  },
+  "locked_continuation_gates": [
+    "at least 200 independent locked candidates overall",
+    "at least 50 locked candidates for each 5m and 15m horizon",
+    "evidence Brier lower than baseline overall and for both horizons",
+    "evidence log loss lower than baseline overall and for both horizons",
+    "candidate direction accuracy above 50 percent overall and for both horizons",
+    "episode-block Wilson lower bound above 50 percent overall",
+    "positive candidate accuracy in at least 75 percent of locked days"
+  ],
+  "economic_limit": "No executable Polymarket ask/depth exists for the later locked period, so this campaign cannot establish profitability or promote a trading policy.",
+  "production_permissions": {
+    "may_save_research_aggregator": true,
+    "may_save_event_time_serving_heads": false,
+    "may_change_live_policy": false,
+    "may_place_orders": false,
+    "may_promote": false
+  }
+}

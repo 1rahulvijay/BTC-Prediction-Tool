@@ -1,6 +1,25 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[EVENT_EXECUTION_AND_ANCHOR_CROSSING_RESULTS_2026-07-28.md](active/EVENT_EXECUTION_AND_ANCHOR_CROSSING_RESULTS_2026-07-28.md)** -
+  frozen ten-experiment campaign that tests 5s/15s event predictions as execution,
+  contract-repricing, anchor-crossing, and matched-horizon BTC evidence. Event veto/delay,
+  crossing augmentation, and BTC microtrades were rejected. UP/DOWN 5-second contract
+  repricing passed the research gate and remains forward-shadow only.
+- **[EVENT_EVIDENCE_ACCUMULATOR_RESULTS_2026-07-28.md](active/EVENT_EVIDENCE_ACCUMULATOR_RESULTS_2026-07-28.md)** -
+  frozen nine-configuration replay of persistent 5s/15s/30s/60s evidence into
+  independent 5m/15m candidates. Episode construction worked, but its 64.56%
+  side accuracy trailed the 74.83% distance/time baseline and worsened Brier/log
+  loss, so the incremental direction hypothesis and all promotion gates failed.
+- **[ECONOMIC_V2_BLUEPRINT_RESULTS_2026-07-28.md](active/ECONOMIC_V2_BLUEPRINT_RESULTS_2026-07-28.md)** -
+  frozen tests of the proposed LONG/SHORT common-factor decomposition and Polymarket
+  market-price residual. Magnitude was repeatable, residual direction lost after costs,
+  the market residual underperformed the market baseline, all promotion gates failed,
+  and no serving or paper-policy artifact changed.
+- **[EVENT_TIME_SPECIALIST_HEADS_2026-07-28.md](active/EVENT_TIME_SPECIALIST_HEADS_2026-07-28.md)** -
+  two independent one-second event-time experiments covering direction, movement,
+  round-trip and ACT/SKIP heads. Short-horizon ranking was repeatable, but no economic
+  selector cleared the frozen support and cost requirements.
 - **[ECONOMIC_POLICY_CAMPAIGN_180D_PROTOCOL_2026-07-28.md](active/ECONOMIC_POLICY_CAMPAIGN_180D_PROTOCOL_2026-07-28.md)** -
   frozen standalone test of direct economic LONG/SHORT heads, expected-net and
   q20 specialists, ACT/SKIP, and one causal dynamic-exit challenger. It declares

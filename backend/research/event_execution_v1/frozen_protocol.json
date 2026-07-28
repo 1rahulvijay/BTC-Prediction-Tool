@@ -1,0 +1,72 @@
+{
+  "protocol_id": "EVENT_EXECUTION_AND_ANCHOR_CROSSING_V1",
+  "frozen_at_utc": "2026-07-28T06:00:00Z",
+  "research_only": true,
+  "maximum_experiments": 10,
+  "inputs": {
+    "development_event_predictions": "data/research/event_execution_v1/prerequisite_event_heads/20260728T055042Z/locked_predictions.parquet",
+    "locked_event_predictions": "data/research/event_execution_v1/prerequisite_event_heads/20260728T055245Z/locked_predictions.parquet",
+    "polymarket_archive": "Kaggle Data/archive (7).zip"
+  },
+  "data_rules": {
+    "development_market_split": [0.7, 0.3],
+    "development_roles": ["fit", "calibration"],
+    "locked_role": "test_only",
+    "polymarket_horizon_minutes": 5,
+    "official_outcomes_only": true,
+    "binance_anchor_is_proxy": true,
+    "event_prediction_tolerance_seconds": 5,
+    "minimum_seconds_left": 15,
+    "maximum_seconds_left": 120
+  },
+  "event_evidence": {
+    "score": "0.70*logit(p_up_5)*p_move_5 + 0.30*logit(p_up_15)*p_move_15",
+    "persistence_half_life_seconds": 5,
+    "disagreement_minimum_absolute_score": 0.12,
+    "movement_gate": 0.5,
+    "never_flips_settlement_side": true
+  },
+  "execution": {
+    "taker_fee_rate": 0.07,
+    "required_edge_buffer": 0.03,
+    "delay_seconds": 5,
+    "one_entry_per_market": true,
+    "same_original_candidates_for_all_policies": true
+  },
+  "btc_proxy_execution": {
+    "minimum_direction_margin": 0.1,
+    "minimum_movement_probability": 0.5,
+    "round_trip_cost_stress_bps": [2, 4, 8, 12],
+    "promotion_blocked_without_historical_executable_bid_ask": true
+  },
+  "experiments": [
+    {"id": "E01", "family": "execution", "name": "immediate_entry"},
+    {"id": "E02", "family": "execution", "name": "event_disagreement_veto"},
+    {"id": "E03", "family": "execution", "name": "event_disagreement_delay_5s"},
+    {"id": "E04", "family": "crossing", "name": "anchor_cross_within_5s"},
+    {"id": "E05", "family": "crossing", "name": "anchor_cross_within_15s"},
+    {"id": "E06", "family": "crossing", "name": "cross_then_recross_within_15s"},
+    {"id": "E07", "family": "contract_repricing", "name": "up_ask_worsens_1c_within_5s"},
+    {"id": "E08", "family": "contract_repricing", "name": "down_ask_worsens_1c_within_5s"},
+    {"id": "E09", "family": "btc_proxy", "name": "event_5s_microtrade"},
+    {"id": "E10", "family": "btc_proxy", "name": "event_15s_microtrade"}
+  ],
+  "incremental_model_gate": {
+    "minimum_locked_rows": 500,
+    "minimum_auc_delta": 0.01,
+    "maximum_brier_delta": -0.002,
+    "minimum_day_block_brier_improvement_lower_95": 0.0
+  },
+  "execution_policy_gate": {
+    "minimum_original_candidates": 200,
+    "minimum_total_pnl_delta": 0.0,
+    "minimum_day_block_pnl_delta_lower_95": 0.0
+  },
+  "prohibitions": [
+    "no_locked_period_tuning",
+    "no_live_or_paper_trading_wiring",
+    "no_event_signal_settlement_side_flip",
+    "no_claim_of_executable_btc_profit_without_bid_ask",
+    "no_promotion_from_auc_alone"
+  ]
+}
