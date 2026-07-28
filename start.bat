@@ -325,6 +325,8 @@ if errorlevel 1 goto :selftest_failed_e
 echo [selftest] f. Venue admissibility - backlog/lead-lag/identity gates:
 python backend\venues\venue_admissibility.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
+python backend\venues\rl_data_readiness.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
 echo [selftest] g. Collector evidence integrity - D1-D5:
 python backend\venues\test_collector_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_g

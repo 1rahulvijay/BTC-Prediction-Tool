@@ -127,6 +127,9 @@ jobs:
       - name: Venue admissibility (backlog / lead-lag / identity)
         run: python backend/venues/venue_admissibility.py --selftest
 
+      - name: RL data readiness (refuses execution RL without depth)
+        run: python backend/venues/rl_data_readiness.py
+
       - name: Collector evidence integrity (D1-D5)
         run: python backend/venues/test_collector_integrity.py
 
@@ -254,6 +257,7 @@ jobs:
           python backend/preflight_longwindow.py --selftest || exit /b 1
           python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
+          python backend/venues/rl_data_readiness.py || exit /b 1
           python -m backend.quant_platform.test_kernel || exit /b 1
           python -m backend.binance_paper.test_engine || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
