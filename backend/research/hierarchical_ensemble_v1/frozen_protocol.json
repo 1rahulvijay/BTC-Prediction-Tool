@@ -1,0 +1,94 @@
+{
+  "protocol_id": "HIERARCHICAL_TARGET_SPECIFIC_ENSEMBLE_V1",
+  "frozen_at_utc": "2026-07-28T18:00:00Z",
+  "status": "research_infrastructure",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "may_submit_orders": false,
+  "campaigns": [
+    "MODEL_FORECAST_LEDGER_V1",
+    "TARGET_SPECIFIC_STACKING_V1",
+    "REGIME_MIXTURE_OF_EXPERTS_V1",
+    "MODEL_RELIABILITY_HEAD_V1",
+    "EXECUTABLE_EV_ENSEMBLE_V1",
+    "ONLINE_EXPERT_WEIGHTING_SHADOW_V1",
+    "MULTI_ALPHA_PORTFOLIO_V1"
+  ],
+  "target_ensembles": [
+    "polymarket_settlement",
+    "polymarket_ask_repricing",
+    "binance_cost_aware_direction",
+    "binance_fill_toxicity",
+    "movement_magnitude"
+  ],
+  "stacking": {
+    "eligible_evidence": [
+      "OOF",
+      "FORWARD"
+    ],
+    "methods": [
+      "EQUAL",
+      "INVERSE_BRIER",
+      "CONSTRAINED"
+    ],
+    "non_negative_weights": true,
+    "weights_sum_to_one": true,
+    "deep_stacker_enabled": false,
+    "market_prior_floor_required_for_settlement": true,
+    "purge_required": true,
+    "embargo_required": true,
+    "chronological_calibration_required": true,
+    "locked_test_open_once": true
+  },
+  "online_weights": {
+    "mode": "shadow_only",
+    "eligible_evidence": [
+      "FORWARD"
+    ],
+    "maximum_learning_rate": 0.1,
+    "minimum_resolved_updates": 50,
+    "rollback_by_event_cutoff": true
+  },
+  "action_selection": {
+    "objective": "q20_net_return_minus_tail_risk_reserve",
+    "default_action": "WAIT",
+    "require_positive_q20": true,
+    "require_reliability": true,
+    "require_data_quality": true,
+    "require_execution_feasibility": true,
+    "require_risk_approval": true
+  },
+  "portfolio": {
+    "minimum_independently_promoted_alpha_engines": 2,
+    "minimum_forward_weeks": 8,
+    "minimum_independent_decisions": 1000,
+    "missing_correlation_behavior": "fail_closed",
+    "venue_and_exposure_caps_required": true
+  },
+  "promotion": {
+    "minimum_forward_weeks": 8,
+    "minimum_independent_decisions": 1000,
+    "positive_day_week_block_lower_bound": true,
+    "profit_factor_minimum": 1.2,
+    "deflated_sharpe_required": true,
+    "pbo_required": true,
+    "fee_slippage_latency_stress_required": true,
+    "best_standalone_baseline_required": true,
+    "equal_weight_baseline_required": true,
+    "market_baseline_required": true,
+    "no_trade_baseline_required": true
+  },
+  "boundaries": {
+    "may_read_credentials": false,
+    "may_submit_orders": false,
+    "may_change_champion": false,
+    "may_change_existing_model_weights": false,
+    "may_retrain_existing_models": false,
+    "target_mismatch_behavior": "fail_closed",
+    "in_sample_meta_training_behavior": "fail_closed",
+    "missing_evidence_behavior": "WAIT",
+    "poor_data_quality_behavior": "WAIT",
+    "non_positive_conservative_ev_behavior": "WAIT"
+  }
+}

@@ -5,6 +5,19 @@ Date: 2026-07-28
 Status: **first 1h campaign implemented as forward research; no trading edge
 proved; no order path**
 
+The shared target-specific combination layer is now implemented as
+research-only infrastructure:
+
+```text
+docs/active/HIERARCHICAL_TARGET_SPECIFIC_ENSEMBLE_V1_2026-07-28.md
+```
+
+It enforces model-role ownership, logs immutable OOF/forward forecasts, fits
+only same-target constrained ensembles, selects actions on conservative
+post-cost return distributions and leaves the multi-alpha portfolio empty
+until at least two engines independently pass promotion. It does not activate
+new trading behavior.
+
 ## Decision
 
 The proposal is directionally correct: the app should not add another generic
