@@ -1,6 +1,12 @@
 # Documentation Index
 
 ## Latest canonical implementation
+- **[PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md](active/PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md)** -
+  two frozen Binance economic campaigns using exact L2 ladder execution, fees,
+  funding, impact reserve, fill/depth accounting, purged walk-forward tests,
+  untouched evaluation, capacity/latency surfaces and a fail-closed result
+  validator. Cost-aware q20 abstained; dynamic exit lost and underperformed
+  identical-entry hold. Both remain research-only and unpromoted.
 - **[UNIVERSAL_FORECAST_ADAPTERS_V1_2026-07-28.md](active/UNIVERSAL_FORECAST_ADAPTERS_V1_2026-07-28.md)** -
   provenance-correct read-only adapters from the 1-hour fair-value, 5-second
   repricing, Binance event/maker and Binance paper research lanes into the

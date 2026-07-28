@@ -376,3 +376,22 @@ The engineering branches were consolidated into `master` only after the full
 local deterministic matrix passed. Remote GitHub Actions still requires an
 available runner to provide independent CI evidence. Strategy profitability
 remains a separate forward-evidence question after code consolidation.
+
+## 2026-07-28 Profit Campaign V1
+
+The standalone `PROFIT_CAMPAIGN_V1` research lane is implemented and validated.
+It adds no serving or order path. Two campaigns were run on exact Binance
+BTCUSDT L2 ladders:
+
+- the q20 cost-aware LONG/SHORT selector emitted zero untouched trades;
+- every forced taker baseline lost after fees, spread, depth and impact reserve;
+- the dynamic-exit model lost `$481.04` across 398 untouched trades and
+  underperformed identical-entry maximum hold by `$2.42`;
+- the result validator reconciled 18,116 saved trade rows and all 240 registered
+  trials;
+- both campaigns remain research-only and not promotable.
+
+See
+[PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md](PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md)
+for the frozen contract, source limits, feature list, model outputs, audit
+corrections, exact metrics and commands.
