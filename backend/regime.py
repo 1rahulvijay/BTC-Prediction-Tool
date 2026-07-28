@@ -143,9 +143,33 @@ class MarketRegime:
             return coarse
         try:
             obs = self._make_obs(closes, volumes)  # aligned to closes[1:]
+            # CAUSAL FORWARD FILTER, identical in form to the one serving uses in
+            # _hmm_classify. This previously took argmax of the emission log-likelihood alone,
+            # which made the fitted transition matrix contribute NOTHING - a Gaussian mixture
+            # classifier, not sequential HMM inference.
+            #
+            # That mattered more than an isolated accuracy question. This function exists to
+            # label TRAINING rows with "the SAME partition serving routes by", and serving
+            # routes by the forward-filtered state. Emission-only labels are a different
+            # partition, so the alignment this primitive was written to guarantee did not hold.
+            #
+            # Local belief, never self._belief: this runs over historical arrays and must not
+            # disturb the live filter's state.
+            #
+            # Forward filtering only - alpha_t uses observations up to t and no later. Viterbi
+            # and forward-backward smoothing revise earlier states using LATER observations, so
+            # labelling training rows with either would leak the future into a training target.
+            n_states = len(self._means)
+            belief = np.full(n_states, 1.0 / n_states)
             for j in range(len(obs)):
-                fine = self.state_labels.get(int(np.argmax(self._emission_loglik(obs[j]))),
-                                             self.RANGE)
+                ll = self._emission_loglik(obs[j])
+                prior = belief @ self._transmat
+                logp = np.log(prior + 1e-12) + ll
+                logp -= logp.max()
+                post = np.exp(logp)
+                post /= (post.sum() + 1e-12)
+                belief = post
+                fine = self.state_labels.get(int(np.argmax(post)), self.RANGE)
                 if fine in (self.TRENDING_UP, self.TRENDING_DOWN):
                     coarse[j + 1] = "TREND"
                 elif fine == self.HIGH_VOLATILITY:

@@ -96,6 +96,68 @@ class TradingSimulator:
         self._consecutive_losses = 0
         self._max_consecutive_losses = 0
         
+    HARD_MAX_KELLY = 0.50          # search ceiling; the 2% cap below is the operative limit
+    BOOTSTRAP_DRAWS = 200
+    LOWER_CONFIDENCE = 0.05        # 5th percentile of bootstrapped growth at the chosen fraction
+
+    @staticmethod
+    def expected_log_growth(fraction: float, returns: list) -> float:
+        """Mean log wealth multiplier at `fraction`. -inf if any outcome would wipe the stake."""
+        total = 0.0
+        for r in returns:
+            multiplier = 1.0 + fraction * r
+            if multiplier <= 0.0:
+                return float("-inf")
+            total += math.log(multiplier)
+        return total / len(returns)
+
+    def kelly_maximiser(self, returns: list) -> float:
+        """The fraction that maximises in-sample expected log growth. NOT a size on its own.
+
+        Kept separate from `_empirical_kelly` because the two answer different questions: this is
+        the optimum, that is what may be risked given the strength of the evidence. Returning a
+        de-risked number from a function named for the maximiser makes the optimality property
+        untestable and invites the two from being confused at the call site."""
+        if not returns:
+            return 0.0
+        grid = [i / 200.0 * self.HARD_MAX_KELLY for i in range(201)]
+        best_f, best_growth = 0.0, 0.0
+        for f in grid:
+            growth = self.expected_log_growth(f, returns)
+            if growth > best_growth:
+                best_f, best_growth = f, growth
+        return best_f
+
+    def _empirical_kelly(self, returns: list, live_mode: bool = False) -> float:
+        """Kelly fraction gated by a day-block bootstrap lower confidence bound.
+
+        The point estimate alone overfits the sample: the maximiser of in-sample log growth is
+        positive for most return series, including ones with no real edge. The lower bound is
+        what distinguishes edge from noise, and if it is not positive the honest size is ZERO."""
+        best_f = self.kelly_maximiser(returns)
+        if best_f <= 0.0:
+            return 0.0
+
+        # Day-block bootstrap: resample CONTIGUOUS blocks, because consecutive trades share a
+        # regime and an i.i.d. resample would understate the true variance.
+        import random
+
+        rng = random.Random(20260728)
+        block = max(1, len(returns) // 10)
+        growths = []
+        for _ in range(self.BOOTSTRAP_DRAWS):
+            sample = []
+            while len(sample) < len(returns):
+                start = rng.randrange(0, max(1, len(returns) - block + 1))
+                sample.extend(returns[start:start + block])
+            growths.append(self.expected_log_growth(best_f, sample[:len(returns)]))
+        growths.sort()
+        lower_bound = growths[int(self.LOWER_CONFIDENCE * len(growths))]
+        if lower_bound <= 0.0:
+            # No demonstrable edge at the chosen fraction. In live mode that means no position.
+            return 0.0 if live_mode else best_f * 0.5
+        return best_f
+
     def _compute_kelly_fraction(self) -> float:
         """
         Half-Kelly position sizing based on historical trade outcomes.
@@ -109,23 +171,31 @@ class TradingSimulator:
         if len(recent) < 30:
             return 0.01  # highly conservative default
 
-        wins = [t for t in recent if t["net_pnl_usd"] > 0]
-        losses = [t for t in recent if t["net_pnl_usd"] < 0]
-
-        if not wins or not losses:
+        # EMPIRICAL LOG-GROWTH KELLY over actual after-cost returns.
+        #
+        # The previous binary form mis-priced SCRATCHES. It set
+        #     win_rate = len(wins) / len(recent)          # denominator includes scratches
+        #     kelly    = (p*b - (1-p)) / b                # so (1-p) carries the scratches
+        # while b = avg_win/avg_loss was built only from REAL losses. A trade that returned
+        # exactly zero was therefore charged the average LOSING magnitude, and sizing was
+        # understated whenever scratches were common.
+        #
+        # Simply removing scratches from the denominator - p = wins/(wins+losses) - is not the
+        # repair either: it discards the fact that capital was committed for no return, which
+        # genuinely lowers growth, and it OVERSTATES size.
+        #
+        # Maximising empirical expected log growth handles it with no special case: a zero
+        # return contributes log(1 + f*0) = 0 to the sum while still counting in the mean, so
+        # it dilutes growth without being charged as a loss - which is exactly what it is.
+        returns = []
+        for t in recent:
+            size = float(t.get("position_size") or 0.0)
+            if size > 0:
+                returns.append(float(t["net_pnl_usd"]) / size)
+        if len(returns) < 30:
             return 0.02
 
-        win_rate = len(wins) / len(recent)
-        avg_win = sum(t["net_pnl_usd"] for t in wins) / len(wins)
-        avg_loss = abs(sum(t["net_pnl_usd"] for t in losses) / len(losses))
-
-        if avg_loss <= 0:
-            return 0.02
-
-        win_loss_ratio = avg_win / avg_loss
-        # Kelly formula: f* = (p * b - q) / b  where p=win_rate, q=1-p, b=win_loss_ratio
-        kelly = (win_rate * win_loss_ratio - (1 - win_rate)) / win_loss_ratio
-
+        kelly = self._empirical_kelly(returns)
         half_kelly = max(0.0, kelly / 2.0)
         # PROBE FLOOR (recovery path): a hard 0 here meant no trades opened, so the
         # history never updated and Kelly stayed 0 PERMANENTLY — even after a retrain
