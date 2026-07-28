@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,37 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_json(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def code_identity() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip().lower()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", True
+    return commit, dirty
+
+
 def resolve(path_text: str) -> Path:
     path = Path(path_text)
     return path if path.is_absolute() else ROOT / path
@@ -68,7 +100,7 @@ def load_inputs() -> tuple[
     dict[str, Any],
     dict[str, Any],
     dict[str, Any],
-    dict[str, str],
+    dict[str, Any],
 ]:
     protocol = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     boundaries = protocol["boundaries"]
@@ -85,7 +117,10 @@ def load_inputs() -> tuple[
     ):
         raise RuntimeError("research-only protocol boundary was weakened")
     event_path = resolve(protocol["models"]["event_bundle"])
-    contract_root = resolve(protocol["models"]["contract_run"]) / "models"
+    contract_run = resolve(protocol["models"]["contract_run"])
+    contract_root = contract_run / "models"
+    input_manifest_path = contract_run / "input_manifest.json"
+    split_manifest_path = contract_run / "split_manifest.json"
     if not event_path.is_file():
         raise FileNotFoundError(
             f"missing event bundle: {event_path}; run train_event_bundle.py explicitly"
@@ -93,6 +128,9 @@ def load_inputs() -> tuple[
     up_path = contract_root / "E07_up_ask_worsens_1c_within_5s.joblib"
     down_path = contract_root / "E08_down_ask_worsens_1c_within_5s.joblib"
     for path in (up_path, down_path):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    for path in (input_manifest_path, split_manifest_path):
         if not path.is_file():
             raise FileNotFoundError(path)
     event_bundle = joblib.load(event_path)
@@ -111,11 +149,34 @@ def load_inputs() -> tuple[
     for name, bundle in (("UP", up_bundle), ("DOWN", down_bundle)):
         if "evidence" not in bundle or not hasattr(bundle["evidence"], "predict"):
             raise ValueError(f"{name} repricing artifact is not portable")
+    split_manifest = json.loads(
+        split_manifest_path.read_text(encoding="utf-8")
+    )
+    feature_contract = {
+        "up_baseline": list(getattr(up_bundle["baseline"], "features", ())),
+        "up_evidence": list(getattr(up_bundle["evidence"], "features", ())),
+        "down_baseline": list(
+            getattr(down_bundle["baseline"], "features", ())
+        ),
+        "down_evidence": list(
+            getattr(down_bundle["evidence"], "features", ())
+        ),
+    }
+    if any(not values for values in feature_contract.values()):
+        raise ValueError("repricing model feature contract is missing")
+    commit, dirty = code_identity()
     identities = {
         "protocol_sha256": protocol_hash,
         "event_bundle_sha256": sha256_file(event_path),
         "up_model_sha256": sha256_file(up_path),
         "down_model_sha256": sha256_file(down_path),
+        "contract_dataset_sha256": sha256_file(input_manifest_path),
+        "contract_feature_schema_sha256": sha256_json(feature_contract),
+        "training_cutoff_ns": int(split_manifest["development_max"])
+        * 1_000_000_000,
+        "source_run_id": contract_run.name,
+        "code_commit": commit,
+        "code_dirty": dirty,
     }
     return protocol, event_bundle, up_bundle, down_bundle, identities
 
@@ -173,7 +234,7 @@ class LiveShadow:
         event_bundle: dict[str, Any],
         up_bundle: dict[str, Any],
         down_bundle: dict[str, Any],
-        identities: dict[str, str],
+        identities: dict[str, Any],
         store: ShadowStore,
         quote_path: Path,
     ):
@@ -462,7 +523,18 @@ def selftest() -> None:
     assert hasattr(up_bundle["evidence"], "predict")
     assert hasattr(down_bundle["baseline"], "predict")
     assert hasattr(down_bundle["evidence"], "predict")
-    assert len(identities) == 4
+    assert {
+        "protocol_sha256",
+        "event_bundle_sha256",
+        "up_model_sha256",
+        "down_model_sha256",
+        "contract_dataset_sha256",
+        "contract_feature_schema_sha256",
+        "training_cutoff_ns",
+        "source_run_id",
+        "code_commit",
+        "code_dirty",
+    }.issubset(identities)
     print("polymarket repricing live-shadow self-test: ALL PASS")
 
 

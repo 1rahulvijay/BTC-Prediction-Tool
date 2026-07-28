@@ -116,6 +116,9 @@ jobs:
       - name: Hierarchical target-specific ensemble invariants
         run: python -m backend.research.hierarchical_ensemble_v1.selftest
 
+      - name: Universal forecast adapter DuckDB invariants
+        run: python -m backend.research.forecast_adapters_v1.selftest
+
       # --- repo-wide consistency ------------------------------------------------------------
       - name: Strategy registry consistency
         run: python backend/research/audit_strategy_registry.py
@@ -196,6 +199,7 @@ jobs:
           python -m backend.binance_paper.test_engine || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
           python -m backend.research.hierarchical_ensemble_v1.selftest || exit /b 1
+          python -m backend.research.forecast_adapters_v1.selftest || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1

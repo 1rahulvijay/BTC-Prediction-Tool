@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,45 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_named_arrays(values: dict[str, np.ndarray]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(values):
+        digest.update(name.encode())
+        value = values[name]
+        array = np.ascontiguousarray(value)
+        digest.update(str(array.dtype).encode())
+        digest.update(json.dumps(array.shape).encode())
+        view = memoryview(array).cast("B")
+        for start in range(0, len(view), 4 * 1024 * 1024):
+            digest.update(view[start : start + 4 * 1024 * 1024])
+    return digest.hexdigest()
+
+
+def code_identity() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip().lower()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", True
+    return commit, dirty
+
+
 def train(output: Path) -> Path:
     protocol = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     config = protocol["models"]
@@ -77,6 +117,17 @@ def train(output: Path) -> Path:
         raise ValueError("offline and live event feature schemas differ")
     matrix = features.to_numpy(np.float32)
     timestamps = events["timestamp_s"][anchors]
+    dataset_sha256 = sha256_named_arrays(events)
+    calibration_cutoffs = []
+    for horizon in config["event_horizons_seconds"]:
+        masks = period_masks(timestamps, horizon=int(horizon))
+        calibration_index = np.flatnonzero(masks["calibration"])
+        if not len(calibration_index):
+            raise ValueError(f"{horizon}s calibration split is empty")
+        calibration_cutoffs.append(
+            int(timestamps[calibration_index].max()) + int(horizon)
+        )
+    commit, dirty = code_identity()
     bundle: dict[str, Any] = {
         "bundle_version": "polymarket-repricing-event-v1",
         "promotion_status": "research_only",
@@ -90,6 +141,15 @@ def train(output: Path) -> Path:
         "models": {},
         "training_start": config["event_training_start"],
         "training_end": config["event_training_end"],
+        "training_cutoff_ns": max(calibration_cutoffs) * 1_000_000_000,
+        "dataset_sha256": dataset_sha256,
+        "feature_schema_sha256": hashlib.sha256(
+            json.dumps(
+                FEATURE_NAMES, separators=(",", ":"), ensure_ascii=True
+            ).encode()
+        ).hexdigest(),
+        "code_commit": commit,
+        "code_dirty": dirty,
         "protocol_sha256": sha256_file(PROTOCOL_PATH),
     }
     barriers = {5: 1.0, 15: 1.5}
@@ -134,6 +194,11 @@ def train(output: Path) -> Path:
         "feature_count": len(FEATURE_NAMES),
         "horizons_seconds": bundle["horizons_seconds"],
         "heads": bundle["heads"],
+        "training_cutoff_ns": bundle["training_cutoff_ns"],
+        "dataset_sha256": bundle["dataset_sha256"],
+        "feature_schema_sha256": bundle["feature_schema_sha256"],
+        "code_commit": bundle["code_commit"],
+        "code_dirty": bundle["code_dirty"],
         "promotion_status": "research_only",
         "serving_enabled": False,
         "paper_enabled": False,

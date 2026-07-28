@@ -173,9 +173,13 @@ def test_evidence_store_deduplicates_candidates(tmp_path: Path) -> None:
         "book_received_ts_ms": top.received_ts_ms,
         "book_age_ms": 0,
         "protocol_hash": "p",
+        "source_protocol_hash": "s",
         "model_bundle_hash": "m",
+        "dataset_sha256": "d",
+        "training_cutoff_ns": 1,
         "feature_schema_hash": "f",
         "code_commit": "c",
+        "code_dirty": False,
         "created_ts_ms": 1000,
     }
     assert store.candidate(row)

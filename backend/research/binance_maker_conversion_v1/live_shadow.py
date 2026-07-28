@@ -69,7 +69,7 @@ def resolve(path_text: str) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-def code_identity() -> tuple[str, str]:
+def code_identity() -> tuple[str, bool, str]:
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -87,17 +87,17 @@ def code_identity() -> tuple[str, str]:
             text=True,
             timeout=5,
         ).stdout.strip()
-        commit = f"{commit}-dirty" if dirty else commit
     except (OSError, subprocess.SubprocessError):
         commit = "unknown"
+        dirty = True
     digest = hashlib.sha256()
     for path in sorted(Path(__file__).parent.glob("*.py")):
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
-    return commit, digest.hexdigest()
+    return commit.lower(), dirty, digest.hexdigest()
 
 
-def load_inputs() -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
+def load_inputs() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     protocol = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     unsafe = (
         protocol["serving_enabled"],
@@ -143,14 +143,20 @@ def load_inputs() -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
     bundle_protocol_hash = sha256_file(bundle_protocol_path)
     if bundle.get("protocol_sha256") != bundle_protocol_hash:
         raise ValueError("source event bundle protocol hash mismatch")
-    commit, code_hash = code_identity()
+    commit, dirty, code_hash = code_identity()
     identities = {
         "protocol_hash": sha256_file(PROTOCOL_PATH),
         "source_protocol_hash": sha256_file(SOURCE_PROTOCOL_PATH),
         "event_bundle_protocol_hash": bundle_protocol_hash,
         "model_bundle_hash": sha256_file(bundle_path),
-        "feature_schema_hash": sha256_json(FEATURE_NAMES),
+        "dataset_sha256": str(bundle.get("dataset_sha256") or ""),
+        "training_cutoff_ns": int(bundle.get("training_cutoff_ns") or 0),
+        "feature_schema_hash": str(
+            bundle.get("feature_schema_sha256")
+            or sha256_json(FEATURE_NAMES)
+        ),
         "code_commit": commit,
+        "code_dirty": dirty,
         "code_hash": code_hash,
     }
     return protocol, bundle, identities
@@ -161,7 +167,7 @@ class MakerConversionShadow:
         self,
         protocol: dict[str, Any],
         bundle: dict[str, Any],
-        identities: dict[str, str],
+        identities: dict[str, Any],
         store: EvidenceStore,
     ):
         self.protocol = protocol
@@ -423,9 +429,17 @@ class MakerConversionShadow:
                 "book_received_ts_ms": top.received_ts_ms,
                 "book_age_ms": book_age,
                 "protocol_hash": self.identities["protocol_hash"],
+                "source_protocol_hash": self.identities[
+                    "event_bundle_protocol_hash"
+                ],
                 "model_bundle_hash": self.identities["model_bundle_hash"],
+                "dataset_sha256": self.identities["dataset_sha256"],
+                "training_cutoff_ns": self.identities[
+                    "training_cutoff_ns"
+                ],
                 "feature_schema_hash": self.identities["feature_schema_hash"],
                 "code_commit": self.identities["code_commit"],
+                "code_dirty": self.identities["code_dirty"],
                 "created_ts_ms": now_ms,
             }
             if not self.store.candidate(row):

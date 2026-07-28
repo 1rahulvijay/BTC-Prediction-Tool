@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -55,6 +56,31 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def code_identity() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip().lower()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", True
+    return commit, dirty
 
 
 def parse_timestamp_ms(value: str) -> int:
@@ -200,6 +226,7 @@ class OneHourFairValueShadow:
         self.last_discovery = 0.0
         self.last_vol_refresh: dict[str, float] = {}
         self.samples = 0
+        commit, dirty = code_identity()
         self.store.set_meta("protocol", protocol)
         self.store.set_meta(
             "provenance",
@@ -210,6 +237,8 @@ class OneHourFairValueShadow:
                 "binance_klines": BINANCE_KLINES_URL,
                 "binance_agg_trades": BINANCE_AGG_TRADES_URL,
                 "protocol_sha256": hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest(),
+                "code_commit": commit,
+                "code_dirty": dirty,
                 "code_sha256": sha256_json(
                     {
                         path.name: hashlib.sha256(path.read_bytes()).hexdigest()

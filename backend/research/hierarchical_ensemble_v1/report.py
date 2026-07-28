@@ -8,8 +8,51 @@ from pathlib import Path
 
 import duckdb
 
+from backend.research.forecast_adapters_v1.catalog import TARGET_SPECS
 
-def build_report(ledger_path: Path) -> dict[str, object]:
+
+def _adapter_readiness(path: Path | None) -> list[dict[str, object]]:
+    if path is not None and path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("campaign") != "MODEL_FORECAST_ADAPTERS_V1":
+            raise ValueError("invalid forecast-adapter readiness report")
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError("forecast-adapter readiness rows are missing")
+        return [dict(row) for row in rows]
+    return [
+        {
+            "adapter_id": spec.adapter_id,
+            "source_campaign": spec.source_campaign,
+            "source_head": spec.source_head,
+            "model_id": spec.model_id,
+            "contract_key": spec.contract.key,
+            "target_name": spec.contract.target_name,
+            "target_role": spec.contract.role.value,
+            "venue": spec.contract.venue,
+            "instrument": spec.contract.instrument,
+            "horizon_seconds": spec.contract.horizon_seconds,
+            "adapter_implemented": spec.adapter_implemented,
+            "status": (
+                "NOT_IMPLEMENTED"
+                if not spec.adapter_implemented
+                else "NOT_RUN"
+            ),
+            "blocker": spec.static_blocker,
+            "source_rows": 0,
+            "forecasts_seen": 0,
+            "forecasts_inserted": 0,
+            "outcomes_seen": 0,
+            "outcomes_inserted": 0,
+        }
+        for spec in TARGET_SPECS
+    ]
+
+
+def build_report(
+    ledger_path: Path,
+    adapter_readiness_path: Path | None = None,
+) -> dict[str, object]:
     if not ledger_path.is_file():
         raise FileNotFoundError(f"forecast ledger not found:{ledger_path}")
     with duckdb.connect(str(ledger_path), read_only=True) as con:
@@ -92,6 +135,10 @@ def build_report(ledger_path: Path) -> dict[str, object]:
         and int(item["models"]) >= 2
         and int(item["aligned_resolved_candidates"]) >= 20
     ]
+    adapters = _adapter_readiness(adapter_readiness_path)
+    adapter_keys = {str(item["contract_key"]) for item in adapters}
+    ledger_keys = {str(item["contract_key"]) for item in targets}
+    unknown_contracts = sorted(ledger_keys - adapter_keys)
     return {
         "campaign": "HIERARCHICAL_TARGET_SPECIFIC_ENSEMBLE_V1",
         "status": (
@@ -103,6 +150,8 @@ def build_report(ledger_path: Path) -> dict[str, object]:
         "resolved_forecasts": resolved,
         "eligible_target_slices": len(eligible),
         "targets": targets,
+        "adapter_readiness": adapters,
+        "uncatalogued_contract_keys": unknown_contracts,
         "restrictions": {
             "serving_enabled": False,
             "paper_enabled": False,
@@ -133,6 +182,13 @@ def write_report(report: dict[str, object], output_dir: Path) -> None:
                 "resolved_forecasts,resolved_candidates,"
                 "aligned_resolved_candidates\n"
             )
+    adapters = list(report["adapter_readiness"])
+    with (output_dir / "adapter_readiness.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(adapters[0]))
+        writer.writeheader()
+        writer.writerows(adapters)
 
 
 def main() -> int:
@@ -147,10 +203,25 @@ def main() -> int:
         type=Path,
         default=Path("data/research/hierarchical_ensemble_v1/report"),
     )
+    parser.add_argument(
+        "--adapter-readiness",
+        type=Path,
+        default=Path(
+            "data/research/model_forecast_adapters_v1/readiness.json"
+        ),
+    )
     args = parser.parse_args()
-    report = build_report(args.ledger)
+    report = build_report(args.ledger, args.adapter_readiness)
     write_report(report, args.output)
-    print(json.dumps({key: value for key, value in report.items() if key != "targets"}))
+    print(
+        json.dumps(
+            {
+                key: value
+                for key, value in report.items()
+                if key not in {"targets", "adapter_readiness"}
+            }
+        )
+    )
     return 0
 
 

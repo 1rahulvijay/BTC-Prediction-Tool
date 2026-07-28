@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Iterator
 
@@ -25,6 +26,10 @@ class EvidenceKind(StrEnum):
     @property
     def meta_training_eligible(self) -> bool:
         return self in {EvidenceKind.OOF, EvidenceKind.FORWARD}
+
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +76,15 @@ class ForecastRecord:
             raise ValueError("forecast and training-cutoff timestamps must be positive")
         if self.training_cutoff_ns >= self.forecast_at_ns:
             raise ValueError("training_cutoff_ns must precede forecast_at_ns")
+        if not _GIT_COMMIT_PATTERN.fullmatch(self.code_commit):
+            raise ValueError("code_commit must be a clean 40-character Git commit")
+        for name in (
+            "dataset_sha256",
+            "feature_schema_sha256",
+            "protocol_sha256",
+        ):
+            if not _SHA256_PATTERN.fullmatch(str(getattr(self, name))):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
         if not math.isfinite(self.data_quality) or not 0 <= self.data_quality <= 1:
             raise ValueError("data_quality must be in [0, 1]")
         outputs = (
@@ -110,21 +124,22 @@ class ForecastOutcome:
     forecast_id: str
     resolved_at_ns: int
     actual_outcome: float
-    gross_return: float
-    net_return: float
-    fees: float
-    slippage: float
-    fill_quantity: float
-    latency_ms: float
     resolution_source: str
+    gross_return: float | None = None
+    net_return: float | None = None
+    fees: float | None = None
+    slippage: float | None = None
+    fill_quantity: float | None = None
+    latency_ms: float | None = None
 
     def __post_init__(self) -> None:
         if not self.forecast_id.strip() or not self.resolution_source.strip():
             raise ValueError("forecast_id and resolution_source are required")
         if self.resolved_at_ns <= 0:
             raise ValueError("resolved_at_ns must be positive")
-        values = (
-            self.actual_outcome,
+        if not math.isfinite(self.actual_outcome):
+            raise ValueError("actual_outcome must be finite")
+        economics = (
             self.gross_return,
             self.net_return,
             self.fees,
@@ -132,9 +147,15 @@ class ForecastOutcome:
             self.fill_quantity,
             self.latency_ms,
         )
-        if not all(math.isfinite(value) for value in values):
-            raise ValueError("outcome economics must be finite")
-        if min(self.fees, self.slippage, self.fill_quantity, self.latency_ms) < 0:
+        if not all(value is None or math.isfinite(value) for value in economics):
+            raise ValueError("supplied outcome economics must be finite")
+        nonnegative = (
+            self.fees,
+            self.slippage,
+            self.fill_quantity,
+            self.latency_ms,
+        )
+        if any(value is not None and value < 0 for value in nonnegative):
             raise ValueError("costs, fill quantity, and latency cannot be negative")
 
 
@@ -178,17 +199,32 @@ CREATE TABLE IF NOT EXISTS model_forecast_outcomes(
     forecast_id VARCHAR PRIMARY KEY,
     resolved_at_ns BIGINT NOT NULL,
     actual_outcome DOUBLE NOT NULL,
-    gross_return DOUBLE NOT NULL,
-    net_return DOUBLE NOT NULL,
-    fees DOUBLE NOT NULL,
-    slippage DOUBLE NOT NULL,
-    fill_quantity DOUBLE NOT NULL,
-    latency_ms DOUBLE NOT NULL,
+    gross_return DOUBLE,
+    net_return DOUBLE,
+    fees DOUBLE,
+    slippage DOUBLE,
+    fill_quantity DOUBLE,
+    latency_ms DOUBLE,
     resolution_source VARCHAR NOT NULL,
     payload_json VARCHAR NOT NULL,
     payload_sha256 VARCHAR NOT NULL UNIQUE
 )
 """
+
+_OUTCOME_COLUMNS = (
+    "forecast_id",
+    "resolved_at_ns",
+    "actual_outcome",
+    "gross_return",
+    "net_return",
+    "fees",
+    "slippage",
+    "fill_quantity",
+    "latency_ms",
+    "resolution_source",
+    "payload_json",
+    "payload_sha256",
+)
 
 
 def _canonical_payload(value: object) -> tuple[str, str]:
@@ -219,10 +255,57 @@ class ForecastLedger:
         with self._connect() as con:
             con.execute(_FORECAST_SCHEMA)
             con.execute(_OUTCOME_SCHEMA)
+            self._migrate_nullable_outcome_economics(con)
             con.execute(
                 "CREATE INDEX IF NOT EXISTS model_forecast_training_idx "
                 "ON model_forecasts(contract_key, evidence_kind, forecast_at_ns)"
             )
+
+    @staticmethod
+    def _migrate_nullable_outcome_economics(
+        con: duckdb.DuckDBPyConnection,
+    ) -> None:
+        info = con.execute(
+            "PRAGMA table_info('model_forecast_outcomes')"
+        ).fetchall()
+        required_nullable = {
+            "gross_return",
+            "net_return",
+            "fees",
+            "slippage",
+            "fill_quantity",
+            "latency_ms",
+        }
+        nonnullable = {
+            str(row[1]) for row in info if bool(row[3])
+        }
+        if not required_nullable.intersection(nonnullable):
+            return
+        replacement_schema = _OUTCOME_SCHEMA.replace(
+            "model_forecast_outcomes(",
+            "model_forecast_outcomes_v2(",
+            1,
+        )
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(
+                "DROP TABLE IF EXISTS model_forecast_outcomes_v2"
+            )
+            con.execute(replacement_schema)
+            columns = ",".join(_OUTCOME_COLUMNS)
+            con.execute(
+                f"INSERT INTO model_forecast_outcomes_v2 ({columns}) "
+                f"SELECT {columns} FROM model_forecast_outcomes"
+            )
+            con.execute("DROP TABLE model_forecast_outcomes")
+            con.execute(
+                "ALTER TABLE model_forecast_outcomes_v2 "
+                "RENAME TO model_forecast_outcomes"
+            )
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        con.execute("COMMIT")
 
     @contextmanager
     def _connect(self) -> Iterator[duckdb.DuckDBPyConnection]:
@@ -232,7 +315,10 @@ class ForecastLedger:
         finally:
             con.close()
 
-    def append_forecast(self, record: ForecastRecord) -> str:
+    @staticmethod
+    def _forecast_values(
+        record: ForecastRecord,
+    ) -> tuple[list[object], str]:
         payload_json, digest = _canonical_payload(record)
         contract = record.contract
         values = [
@@ -267,6 +353,10 @@ class ForecastLedger:
             payload_json,
             digest,
         ]
+        return values, digest
+
+    def append_forecast(self, record: ForecastRecord) -> str:
+        values, digest = self._forecast_values(record)
         with self._lock, self._connect() as con:
             existing = con.execute(
                 "SELECT payload_sha256 FROM model_forecasts WHERE forecast_id = ?",
@@ -285,6 +375,50 @@ class ForecastLedger:
                 values,
             )
         return digest
+
+    def append_forecasts(self, records: list[ForecastRecord]) -> int:
+        """Append one immutable batch using a single database transaction."""
+        if not records:
+            return 0
+        prepared = [self._forecast_values(record) for record in records]
+        by_identity: dict[str, str] = {}
+        for record, (_values, digest) in zip(records, prepared, strict=True):
+            existing = by_identity.setdefault(record.forecast_id, digest)
+            if existing != digest:
+                raise ValueError(
+                    "forecast_id collision inside batch with different content"
+                )
+        inserted = 0
+        with self._lock, self._connect() as con:
+            con.execute("BEGIN TRANSACTION")
+            try:
+                for record, (values, digest) in zip(
+                    records, prepared, strict=True
+                ):
+                    existing = con.execute(
+                        "SELECT payload_sha256 FROM model_forecasts "
+                        "WHERE forecast_id = ?",
+                        [record.forecast_id],
+                    ).fetchone()
+                    if existing is not None:
+                        if str(existing[0]) != digest:
+                            raise ValueError(
+                                "forecast_id collision with different "
+                                "immutable content"
+                            )
+                        continue
+                    con.execute(
+                        "INSERT INTO model_forecasts VALUES ("
+                        + ",".join("?" for _ in values)
+                        + ")",
+                        values,
+                    )
+                    inserted += 1
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+            con.execute("COMMIT")
+        return inserted
 
     def resolve(self, outcome: ForecastOutcome) -> str:
         payload_json, digest = _canonical_payload(outcome)
@@ -326,6 +460,75 @@ class ForecastLedger:
                 ],
             )
         return digest
+
+    def resolve_many(self, outcomes: list[ForecastOutcome]) -> int:
+        """Append resolved labels separately from forecasts in one transaction."""
+        if not outcomes:
+            return 0
+        prepared = [
+            (outcome, *_canonical_payload(outcome)) for outcome in outcomes
+        ]
+        by_identity: dict[str, str] = {}
+        for outcome, _payload_json, digest in prepared:
+            existing = by_identity.setdefault(outcome.forecast_id, digest)
+            if existing != digest:
+                raise ValueError(
+                    "forecast outcome collision inside batch with different content"
+                )
+        inserted = 0
+        with self._lock, self._connect() as con:
+            con.execute("BEGIN TRANSACTION")
+            try:
+                for outcome, payload_json, digest in prepared:
+                    parent = con.execute(
+                        "SELECT forecast_at_ns FROM model_forecasts "
+                        "WHERE forecast_id = ?",
+                        [outcome.forecast_id],
+                    ).fetchone()
+                    if parent is None:
+                        raise KeyError(
+                            f"unknown forecast_id:{outcome.forecast_id}"
+                        )
+                    if outcome.resolved_at_ns <= int(parent[0]):
+                        raise ValueError(
+                            "outcome must resolve after its forecast"
+                        )
+                    existing = con.execute(
+                        "SELECT payload_sha256 FROM model_forecast_outcomes "
+                        "WHERE forecast_id = ?",
+                        [outcome.forecast_id],
+                    ).fetchone()
+                    if existing is not None:
+                        if str(existing[0]) != digest:
+                            raise ValueError(
+                                "forecast outcome collision with different "
+                                "immutable content"
+                            )
+                        continue
+                    con.execute(
+                        "INSERT INTO model_forecast_outcomes VALUES "
+                        "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        [
+                            outcome.forecast_id,
+                            outcome.resolved_at_ns,
+                            outcome.actual_outcome,
+                            outcome.gross_return,
+                            outcome.net_return,
+                            outcome.fees,
+                            outcome.slippage,
+                            outcome.fill_quantity,
+                            outcome.latency_ms,
+                            outcome.resolution_source,
+                            payload_json,
+                            digest,
+                        ],
+                    )
+                    inserted += 1
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+            con.execute("COMMIT")
+        return inserted
 
     def training_rows(
         self,

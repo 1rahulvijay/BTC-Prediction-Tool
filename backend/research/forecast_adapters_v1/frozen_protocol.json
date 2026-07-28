@@ -1,0 +1,42 @@
+{
+  "protocol_id": "MODEL_FORECAST_ADAPTERS_V1",
+  "frozen_at_utc": "2026-07-28T18:00:00Z",
+  "promotion_status": "research_only",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "may_submit_orders": false,
+  "evidence": {
+    "admitted_kinds": [
+      "FORWARD"
+    ],
+    "meta_training_kinds": [
+      "OOF",
+      "FORWARD"
+    ],
+    "missing_economics": "store_null",
+    "missing_provenance": "fail_closed",
+    "dirty_code": "fail_closed",
+    "target_fallback": "forbidden",
+    "source_database_access": "read_only"
+  },
+  "one_hour": {
+    "use_frozen_reporting_checkpoints_only": true,
+    "require_binance_polymarket_resolution_match": true
+  },
+  "repricing": {
+    "implemented_horizon_seconds": [
+      5
+    ],
+    "maximum_observation_lag_seconds": 1.0,
+    "worsening_increment": 0.01
+  },
+  "boundaries": {
+    "may_train_models": false,
+    "may_promote_models": false,
+    "may_change_champion": false,
+    "may_change_paper_decisions": false,
+    "may_write_source_databases": false,
+    "may_allocate_capital": false
+  }
+}

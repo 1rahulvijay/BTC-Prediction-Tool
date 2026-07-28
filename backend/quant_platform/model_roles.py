@@ -16,6 +16,7 @@ class ModelRole(StrEnum):
     FILL = "FILL"
     TOXICITY = "TOXICITY"
     COST = "COST"
+    RETURN = "RETURN"
     CARRY = "CARRY"
     REGIME = "REGIME"
     RELIABILITY = "RELIABILITY"

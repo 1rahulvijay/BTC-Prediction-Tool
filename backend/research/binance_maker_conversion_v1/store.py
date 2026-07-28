@@ -59,9 +59,13 @@ class EvidenceStore:
                 book_received_ts_ms BIGINT NOT NULL,
                 book_age_ms BIGINT NOT NULL,
                 protocol_hash VARCHAR NOT NULL,
+                source_protocol_hash VARCHAR NOT NULL,
                 model_bundle_hash VARCHAR NOT NULL,
+                dataset_sha256 VARCHAR NOT NULL,
+                training_cutoff_ns BIGINT NOT NULL,
                 feature_schema_hash VARCHAR NOT NULL,
                 code_commit VARCHAR NOT NULL,
+                code_dirty BOOLEAN NOT NULL,
                 created_ts_ms BIGINT NOT NULL,
                 resolution_status VARCHAR NOT NULL DEFAULT 'OPEN',
                 UNIQUE(decision_second, horizon_seconds)
@@ -168,6 +172,17 @@ class EvidenceStore:
                 f"ALTER TABLE routes ADD COLUMN IF NOT EXISTS {name} "
                 "DOUBLE DEFAULT 0"
             )
+        candidate_migrations = {
+            "source_protocol_hash": "VARCHAR",
+            "dataset_sha256": "VARCHAR",
+            "training_cutoff_ns": "BIGINT",
+            "code_dirty": "BOOLEAN",
+        }
+        for name, definition in candidate_migrations.items():
+            self.db.execute(
+                f"ALTER TABLE candidates ADD COLUMN IF NOT EXISTS "
+                f"{name} {definition}"
+            )
 
     def _recover_interrupted(self) -> None:
         now = int(time.time() * 1000)
@@ -232,11 +247,12 @@ class EvidenceStore:
                 quantity, notional_usd, best_bid, best_ask, bid_quantity,
                 ask_quantity, spread_bps, book_update_id, book_event_ts_ms,
                 book_received_ts_ms, book_age_ms, protocol_hash,
-                model_bundle_hash, feature_schema_hash, code_commit,
+                source_protocol_hash, model_bundle_hash, dataset_sha256,
+                training_cutoff_ns, feature_schema_hash, code_commit, code_dirty,
                 created_ts_ms, resolution_status
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, 'OPEN'
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN'
             )
             ON CONFLICT DO NOTHING
             RETURNING candidate_id
@@ -263,9 +279,13 @@ class EvidenceStore:
                 row["book_received_ts_ms"],
                 row["book_age_ms"],
                 row["protocol_hash"],
+                row["source_protocol_hash"],
                 row["model_bundle_hash"],
+                row["dataset_sha256"],
+                row["training_cutoff_ns"],
                 row["feature_schema_hash"],
                 row["code_commit"],
+                row["code_dirty"],
                 row["created_ts_ms"],
             ],
         ).fetchone()
