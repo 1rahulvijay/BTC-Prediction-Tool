@@ -185,7 +185,20 @@ def calibration_state(horizon: int = 5) -> tuple[bool, str, str | None]:
 
 
 def _current_source_identity() -> dict:
-    """The identity a calibrator must have been fitted against to remain valid."""
+    """SEMANTIC-VERSION binding - deliberately NOT yet exact source-model binding.
+
+    This proves the calibrator was fitted under the same feature/training CONTRACTS. It
+    does NOT prove it was fitted against the exact bundle that generates the raw scores
+    today: two different retrains under v3/v2 would both satisfy this check while
+    producing different score distributions.
+
+    Exact binding needs fields that do not exist yet (no artifact carries a manifest):
+        source_model_artifact_sha256, source_model_manifest_sha256, source_bundle_id,
+        source_feature_schema_sha256, source_training_dataset_sha256,
+        source_training_cutoff, source_code_commit, target_contract_sha256
+    Those arrive with the manifest work. Until then this is a necessary condition, not a
+    sufficient one - which is also why every current calibrator is deployable=false.
+    """
     ident = {}
     try:
         from features import FEATURE_SEMANTICS_VERSION

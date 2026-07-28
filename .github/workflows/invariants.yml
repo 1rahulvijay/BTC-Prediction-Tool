@@ -128,7 +128,7 @@ jobs:
       - name: Feature + model weight fixes (VWAP window, TCN per-sample weights)
         run: python backend/test_feature_and_weight_fixes.py
 
-      - name: P(hold) calibration adoption gate (default-off, fails open to raw)
+      - name: P(hold) calibration gate (default-off; required mode fails closed)
         run: python backend/phold_calibrator.py --selftest
 
       - name: Feature-contract readiness (stale artifacts vs current semantics)
