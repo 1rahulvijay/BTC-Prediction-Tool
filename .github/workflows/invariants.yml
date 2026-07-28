@@ -90,6 +90,18 @@ jobs:
       - name: Feed writer (bounded, counted, non-blocking)
         run: python backend/feed_writer.py --selftest
 
+      # start.bat is the launch gate for every evidence run, but nothing read its bytes. Two
+      # invocations had been corrupted into control characters (`backend<FF>eed_writer.py`),
+      # which aborted startup on every launch.
+      - name: Launcher integrity (every invoked path exists)
+        run: python backend/test_launcher_integrity.py
+
+      - name: Model registry (single source of artifact identity)
+        run: python backend/model_registry.py --selftest
+
+      - name: Artifact bundles (verify-before-deserialize, atomic publish)
+        run: python backend/model_artifacts.py --selftest
+
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
 
@@ -222,6 +234,9 @@ jobs:
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
           python backend/test_quarantine_and_feed.py || exit /b 1
           python backend/feed_writer.py --selftest || exit /b 1
+          python backend/test_launcher_integrity.py || exit /b 1
+          python backend/model_registry.py --selftest || exit /b 1
+          python backend/model_artifacts.py --selftest || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
           python backend/preflight_longwindow.py --selftest || exit /b 1
