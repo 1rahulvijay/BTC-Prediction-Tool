@@ -84,6 +84,12 @@ jobs:
             from trade_forecast.scenario_engine import selftest as b; a(); b()"
 
       # --- decision + deployment gates ------------------------------------------------------
+      - name: Quarantined prototypes, fee formula, non-blocking feed
+        run: python backend/test_quarantine_and_feed.py
+
+      - name: Feed writer (bounded, counted, non-blocking)
+        run: python backend/feed_writer.py --selftest
+
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
 
@@ -214,6 +220,8 @@ jobs:
           python -m backend.trade_forecast.test_serving_integration || exit /b 1
           python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
+          python backend/test_quarantine_and_feed.py || exit /b 1
+          python backend/feed_writer.py --selftest || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
           python backend/preflight_longwindow.py --selftest || exit /b 1

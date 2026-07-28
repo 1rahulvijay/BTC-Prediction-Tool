@@ -2,10 +2,33 @@ import numpy as np
 import scipy.stats as stats
 import logging
 
+QUARANTINED = True
+ALLOW_ENV = "BTC_ALLOW_LEGACY_PM_SIMULATOR"
+
+
+class QuarantinedPrototype(RuntimeError):
+    """This module may not be used for anything that informs a decision."""
+
+
+def _refuse(reason: str) -> None:
+    import os
+
+    if os.environ.get(ALLOW_ENV) == "1":
+        print("[polymarket_model] QUARANTINE OVERRIDDEN via " + ALLOW_ENV
+              + " - output is NOT evidence: " + reason, flush=True)
+        return
+    raise QuarantinedPrototype(
+        "polymarket_model is QUARANTINED (2026-07-28). " + reason + " Set "
+        + ALLOW_ENV + "=1 only for isolated research; its output may never inform a "
+        "decision, a backtest result or a promotion.")
+
+
+
 logger = logging.getLogger(__name__)
 
 class PolymarketModel:
     def __init__(self):
+        _refuse('layer_2_residual_correction returns a placeholder 0.0, missing reference prices return 0.5, and "calibration" is only clipping to [0.01, 0.99]. Adding a residual trained on one horizon to a baseline for another is not a valid probability operation.')
         self.residual_models = {
             '5m': None,
             '15m': None

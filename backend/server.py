@@ -64,8 +64,6 @@ from institutional_feeds import (
 )
 from ab_testing import ABTestRunner, ModelVariant
 from polymarket_client import PolymarketClient
-from polymarket_model import PolymarketModel
-from polymarket_simulator import PolymarketSimulator
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
 from binance_paper import BinancePaperService
@@ -74,6 +72,7 @@ from binance_paper.routes import (
     router as binance_paper_router,
 )
 from historical_replay import run_replay as run_historical_replay
+from feed_writer import FEED_WRITER
 import database
 
 logging.basicConfig(
@@ -477,8 +476,11 @@ def restore_full_refit_shadow() -> bool:
         return False
 
 # Polymarket Value Engine
-pm_model = PolymarketModel()
-pm_simulator = PolymarketSimulator()
+# pm_model / pm_simulator REMOVED 2026-07-28: both were instantiated here and
+# never called. polymarket_simulator invents a 1% notional fee that does not
+# exist and synthesises the NO ask as (1 - YES bid); polymarket_model returns a
+# placeholder residual of 0.0. Neither may sit on the live import surface. They
+# now raise on construction - see the guards in those modules.
 pm_verifier = PolymarketVerifier()
 fsr_ppo_strategy = FSRPPOStrategy()
 # v6 R3: mothballed by default — a strategy challenger is premature pre-edge.
@@ -1189,7 +1191,10 @@ def handle_trade(trade):
 
     # Fire and forget parquet log
     import database
-    database.log_raw_trade_parquet(trade)
+    # Hand off, do not block the feed. This was a plain blocking call under a
+    # "fire and forget" comment; a slow disk or a parquet flush stalled the
+    # callback and therefore the feed itself.
+    FEED_WRITER.submit(database.log_raw_trade_parquet, trade)
 
 
 def handle_depth(depth: dict) -> None:
@@ -1207,7 +1212,7 @@ def handle_depth(depth: dict) -> None:
 
     # Log orderbook to Parquet
     import database
-    database.log_depth_parquet(depth)
+    FEED_WRITER.submit(database.log_depth_parquet, depth)
 
 
 def handle_kline(kline: dict) -> None:

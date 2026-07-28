@@ -294,6 +294,11 @@ if errorlevel 1 goto :selftest_failed_a
 echo [selftest] b. Frozen-artifact pinning - no model swap mid-evidence-run:
 python backend\trade_forecast\freeze_guard.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+echo [selftest] b2. Quarantined prototypes + non-blocking feed callbacks:
+python backend	est_quarantine_and_feed.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
+python backendeed_writer.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 echo [selftest] c. Head permissions - a head that cannot price may not price:
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
