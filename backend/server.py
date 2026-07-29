@@ -1668,10 +1668,25 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     volumes = np.array([k["volume"] for k in kl_snapshot])
     atr_arr = compute_atr(highs, lows, closes)
 
-    # Fit data-driven temporal (HMM) regimes on the full history — replaces fixed thresholds.
+    # Fit the HMM on the TRAINING PORTION ONLY, then freeze it and filter the whole series.
+    #
+    # Fitting on the full history leaked the future. The forward filter is causal GIVEN the
+    # parameters, but the parameters themselves - means, covariances, state labels and the
+    # transition matrix - were estimated using validation and test observations. Future regime
+    # distributions therefore helped define the past regime partition, which makes historical
+    # validation optimistic. It is unsupervised leakage, weaker than target leakage but real.
+    #
+    # Fit on train -> freeze -> filter forward through validation and test is the same
+    # discipline every other artifact here follows.
+    _hmm_split = float(os.getenv("BTC_TRAIN_SPLIT_FRAC", "0.8"))
+    _hmm_cut = max(200, int(len(closes) * min(max(_hmm_split, 0.5), 0.98)))
+    _hmm_cut = min(_hmm_cut, len(closes))
     try:
-        logger.info("[TRAIN] Fitting market regime engine...")
-        regime_engine.fit_hmm(closes, volumes)
+        logger.info("[TRAIN] Fitting market regime engine on the training slice "
+                    "(%s of %s bars; validation and test are filtered with FROZEN parameters)...",
+                    _hmm_cut, len(closes))
+        regime_engine.fit_hmm(closes[:_hmm_cut], volumes[:_hmm_cut])
+        regime_engine.hmm_fit_rows = _hmm_cut
     except Exception as e:
         logger.warning(f"HMM regime fit skipped: {e}")
 
@@ -3514,7 +3529,18 @@ async def main_loop():
 
                 adx_arr = compute_adx(highs, lows, closes)
                 atr_arr = compute_atr(highs, lows, closes)
-                regime = regime_engine.detect_regime(closes, adx_arr, atr_arr, volumes)
+                # The HMM advances ONCE PER CLOSED BAR, never once per main-loop tick. The
+                # transition matrix counts one transition per one-minute kline, while this loop
+                # runs every BTC_MAIN_LOOP_SEC (default 2.0s) - so an unguarded call applied
+                # ~30 transitions per minute and re-filtered the still-forming candle each time.
+                # recent_klines[-1] is that unfinished bar, so the id and the observation both
+                # come from [-2], the newest CLOSED bar.
+                _closed = recent_klines[:-1] if len(recent_klines) > 1 else recent_klines
+                _obs_id = _closed[-1].get("time") if _closed else None
+                regime = regime_engine.detect_regime(
+                    closes[:len(_closed)], adx_arr, atr_arr, volumes[:len(_closed)],
+                    observation_id=_obs_id,
+                )
             data_state["regime_info"] = regime
 
             predictions = []

@@ -182,8 +182,171 @@ def main() -> int:
     test_train_and_serve_use_the_same_partition()
     test_live_belief_is_not_disturbed()
     test_unfitted_engine_falls_back_safely()
+    test_one_advance_per_closed_bar()
+    test_belief_resets_across_a_gap()
+    test_replay_is_deterministic()
+    test_fitting_does_not_see_the_future()
+    test_volume_scale_is_a_fitted_parameter()
     print("\nREGIME CAUSAL FILTER", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
+
+
+
+
+# ---------------------------------------------------------------------------------------------
+# COMMIT A additions: the observation clock, and fit-time leakage.
+#
+# The tests above only prove the filter is causal GIVEN fitted parameters. They cannot see
+# either of the two defects below, both of which live outside the filtering recursion.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_one_advance_per_closed_bar() -> None:
+    """The main loop ticks every 2s; the transition matrix counts one transition per BAR."""
+    print("the filter advances once per bar, not once per main-loop tick")
+    engine, closes, volumes, fitted = _fitted_engine()
+    if not fitted or not engine.hmm_ready:
+        chk(False, "engine did not fit")
+        return
+
+    bar_id = 1_700_000_000_000
+    first = engine._hmm_classify(closes, volumes, observation_id=bar_id)
+    belief_after_first = engine._belief.copy()
+    advances_after_first = engine.hmm_advances
+
+    # 30 main-loop calls within the same minute, exactly as BTC_MAIN_LOOP_SEC=2.0 produces.
+    for _ in range(29):
+        again = engine._hmm_classify(closes, volumes, observation_id=bar_id)
+        chk_silent = again == first
+        if not chk_silent:
+            break
+    chk(engine.hmm_advances == advances_after_first,
+        f"30 calls on the SAME bar advanced the filter {engine.hmm_advances - advances_after_first} "
+        f"extra times (must be 0)")
+    chk(np.allclose(belief_after_first, engine._belief),
+        "the posterior is byte-identical after 30 repeat calls")
+    chk(engine.hmm_repeat_observations == 29,
+        f"the 29 repeats are counted, not silently ignored ({engine.hmm_repeat_observations})")
+
+    engine._hmm_classify(closes, volumes, observation_id=bar_id + 60_000)
+    chk(engine.hmm_advances == advances_after_first + 1,
+        "one NEW closed bar advances the filter exactly once")
+
+
+def test_belief_resets_across_a_gap() -> None:
+    print("a sequence break resets the belief instead of asserting continuity")
+    engine, closes, volumes, fitted = _fitted_engine()
+    if not fitted or not engine.hmm_ready:
+        chk(False, "engine did not fit")
+        return
+
+    base = 1_700_000_000_000
+    engine._hmm_classify(closes, volumes, observation_id=base)
+    resets_before = engine.hmm_resets
+    engine._hmm_classify(closes, volumes, observation_id=base + 60_000 * 50)   # 50-bar hole
+    chk(engine.hmm_resets == resets_before + 1,
+        "a 50-bar gap resets the posterior (restart / reconnect / backfill)")
+
+    resets_before = engine.hmm_resets
+    engine._hmm_classify(closes, volumes, observation_id=base + 60_000 * 51)
+    chk(engine.hmm_resets == resets_before,
+        "a normal consecutive bar does NOT reset")
+
+
+def test_replay_is_deterministic() -> None:
+    print("replaying the same bar sequence reproduces the same posterior")
+    engine_a, closes, volumes, fitted = _fitted_engine()
+    engine_b, _, _, _ = _fitted_engine()
+    if not fitted:
+        chk(False, "engine did not fit")
+        return
+
+    base = 1_700_000_000_000
+    for i in range(20):
+        engine_a._hmm_classify(closes[:200 + i], volumes[:200 + i], observation_id=base + i * 60_000)
+    # Same sequence, but every bar also presented several times as the live loop would.
+    for i in range(20):
+        for _ in range(3):
+            engine_b._hmm_classify(closes[:200 + i], volumes[:200 + i],
+                                   observation_id=base + i * 60_000)
+    chk(np.allclose(engine_a._belief, engine_b._belief),
+        "repeat presentations do not change the final posterior - replay is deterministic")
+
+
+def test_fitting_does_not_see_the_future() -> None:
+    """Parameters must be estimated from training observations only.
+
+    The causality test above fits on the WHOLE series and then checks the filter. That cannot
+    detect fit-time leakage, because by then the future has already shaped the means,
+    covariances, state labels and transition matrix."""
+    print("HMM parameters do not depend on future observations")
+    from regime import MarketRegime
+
+    rng = np.random.default_rng(3)
+    quiet = rng.normal(0.0, 0.0006, 400)
+    trend = rng.normal(0.0035, 0.0008, 400)
+    train_returns = np.concatenate([quiet, trend])
+    closes_train = 60000.0 * np.exp(np.cumsum(train_returns))
+    vols_train = np.abs(rng.normal(120.0, 30.0, len(closes_train))) + 10.0
+
+    # Two DIFFERENT futures appended to the same training period.
+    future_a = rng.normal(0.0, 0.0002, 400)
+    future_b = rng.normal(0.0, 0.0250, 400)        # a violent regime the training period lacks
+    closes_a = np.concatenate([closes_train, closes_train[-1] * np.exp(np.cumsum(future_a))])
+    closes_b = np.concatenate([closes_train, closes_train[-1] * np.exp(np.cumsum(future_b))])
+    vols_a = np.concatenate([vols_train, np.abs(rng.normal(120.0, 30.0, 400)) + 10.0])
+    vols_b = np.concatenate([vols_train, np.abs(rng.normal(900.0, 90.0, 400)) + 10.0])
+
+    cut = len(closes_train)
+
+    # FOLD-LOCAL fit: parameters come from [:cut] only, in both worlds.
+    a, b = MarketRegime(), MarketRegime()
+    a.fit_hmm(closes_a[:cut], vols_a[:cut])
+    b.fit_hmm(closes_b[:cut], vols_b[:cut])
+    chk(np.allclose(a._transmat, b._transmat) and np.allclose(a._means, b._means),
+        "two different futures yield IDENTICAL parameters when the fit is fold-local")
+
+    labels_a = a.classify_series(closes_a, vols_a)[:cut]
+    labels_b = b.classify_series(closes_b, vols_b)[:cut]
+    chk(labels_a == labels_b,
+        "and identical training-period labels - the future cannot rewrite the training partition")
+
+    # The defect, for contrast: fitting on the FULL series lets the future move training labels.
+    leaky_a, leaky_b = MarketRegime(), MarketRegime()
+    leaky_a.fit_hmm(closes_a, vols_a)
+    leaky_b.fit_hmm(closes_b, vols_b)
+    leaked = (not np.allclose(leaky_a._transmat, leaky_b._transmat)) or (
+        leaky_a.classify_series(closes_a, vols_a)[:cut]
+        != leaky_b.classify_series(closes_b, vols_b)[:cut])
+    chk(leaked,
+        "control: fitting on the FULL series DOES let the future change training-period "
+        "parameters or labels, which is the leak this fold-local fit removes")
+
+
+def test_volume_scale_is_a_fitted_parameter() -> None:
+    """The observation's third feature must mean the same thing at train and serve time."""
+    print("the volume scale is fitted once, not recomputed per call")
+    engine, closes, volumes, fitted = _fitted_engine()
+    if not fitted or not engine.hmm_ready:
+        chk(False, "engine did not fit")
+        return
+
+    chk(engine._median_volume is not None, "fitting stores the training volume median")
+
+    # Serving passes only the last few bars. Under the old per-call median, vol_ratio was each
+    # bar against FIVE bars' median while the Gaussians were fitted against ~900 bars'.
+    full = engine._make_obs(closes, volumes)
+    tail = engine._make_obs(closes[-5:], volumes[-5:])
+    chk(np.allclose(full[-1], tail[-1]),
+        "the last observation is IDENTICAL whether built from the full array or a 5-bar tail")
+
+    # And the scale must not drift when a different future is appended.
+    louder = np.concatenate([volumes, volumes[-50:] * 40.0])
+    longer = np.concatenate([closes, closes[-50:]])
+    engine_obs_before = engine._make_obs(closes, volumes)[10]
+    engine_obs_after = engine._make_obs(longer, louder)[10]
+    chk(np.allclose(engine_obs_before, engine_obs_after),
+        "a high-volume FUTURE does not rescale a past observation")
 
 
 if __name__ == "__main__":

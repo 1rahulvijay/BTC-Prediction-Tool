@@ -12,6 +12,9 @@ except ImportError:
     HAS_GMM = False
 
 class MarketRegime:
+    # A jump larger than this many bars breaks the sequence the transition matrix
+    # describes, so the belief is reset rather than propagated across the hole.
+    MAX_GAP_BARS = 3
     """
     Market Regime Engine for classifying current market conditions.
     Provides states: TRENDING_UP, TRENDING_DOWN, RANGE, HIGH_VOLATILITY, LOW_VOLATILITY
@@ -40,16 +43,46 @@ class MarketRegime:
         self._inv_covs = None
         self._logdets = None
         self._transmat = None
+        self._median_volume = None              # FITTED volume scale; see _make_obs
+        # OBSERVATION CLOCK. The transition matrix counts one transition per BAR, so the filter
+        # must advance once per bar - not once per main-loop tick.
+        self._last_observation_id = None
+        self._last_hmm_regime = self.RANGE
+        self._last_hmm_confidence = 0.5
+        self.hmm_repeat_observations = 0        # main-loop calls that correctly did NOT advance
+        self.hmm_advances = 0                   # actual filter advances
+        self.hmm_resets = 0                     # belief resets after a gap or session break
+        self.bar_interval_ms = 60_000           # klines are one-minute bars
         self._belief = None
         self._k = 3
 
     def _make_obs(self, closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
-        """Observation matrix for GMM: [log_return, |log_return|, volume_ratio]."""
+        """Observation matrix for GMM: [log_return, |log_return|, volume_ratio].
+
+        THE VOLUME SCALE IS FROZEN AT FIT TIME, and that matters twice over.
+
+        This used to be `np.median(volumes)` over whatever array was handed in, which meant the
+        third feature had no fixed meaning:
+
+          * SERVING passed volumes[-5:], so vol_ratio was each bar against the median of FIVE
+            bars, while the Gaussians had been fitted against the median of ~1500. The emission
+            likelihoods were therefore evaluated on a scale the model was never fitted to - a
+            train/serve mismatch inside the observation itself, not merely in the filtering.
+          * TRAINING passed the whole series, so a bar's vol_ratio depended on volumes that
+            arrived AFTER it. Appending a high-volume future silently rescaled every past
+            observation and could change historical regime labels - leakage that survives even
+            a fold-local fit, because it lives in feature construction rather than in fitting.
+
+        Freezing the median as a fitted parameter fixes both: the scale is estimated once, from
+        training volumes only, and every later observation is measured against that same ruler."""
         closes = np.asarray(closes, dtype=np.float64)
         volumes = np.asarray(volumes, dtype=np.float64)
         logret = np.zeros(len(closes))
         logret[1:] = np.diff(np.log(closes + 1e-9))
-        med_vol = np.median(volumes) if len(volumes) else 1.0
+        if self._median_volume is not None:
+            med_vol = self._median_volume
+        else:
+            med_vol = np.median(volumes) if len(volumes) else 1.0
         vol_ratio = np.clip(volumes / (med_vol + 1e-9), 0, 10)
         obs = np.column_stack([logret, np.abs(logret), vol_ratio])
         return obs[1:]  # drop the leading zero-return row
@@ -85,6 +118,11 @@ class MarketRegime:
         if not HAS_GMM or len(closes) < 500:
             return False
         try:
+            # Estimate the volume scale from TRAINING volumes, then freeze it. Every later
+            # observation - validation, test and live - is measured against this same ruler.
+            # Cleared first so a refit re-estimates rather than inheriting the previous fit's.
+            self._median_volume = None
+            self._median_volume = float(np.median(volumes)) if len(volumes) else 1.0
             obs = self._make_obs(closes, volumes)
             if len(obs) < 200:
                 return False
@@ -191,11 +229,45 @@ class MarketRegime:
             ll[s] = -0.5 * (self._k * np.log(2 * np.pi) + self._logdets[s] + maha)
         return ll
 
-    def _hmm_classify(self, closes: np.ndarray, volumes: np.ndarray):
-        """Online forward filter: belief_t ∝ (belief_{t-1} · T) × emission(x_t)."""
+    def _hmm_classify(self, closes: np.ndarray, volumes: np.ndarray,
+                      observation_id=None):
+        """Online forward filter: belief_t = (belief_{t-1} . T) x emission(x_t), ONCE PER BAR.
+
+        THE OBSERVATION CLOCK IS PART OF THE MODEL.
+            `_transmat` is estimated from gmm.predict() over consecutive one-minute klines, so
+            one application of T means one MINUTE has passed. The server's main loop calls
+            detect_regime every BTC_MAIN_LOOP_SEC (default 2.0s), so without this guard a single
+            minute applied roughly 60/2 = 30 transitions where training applied exactly one.
+
+            That is not a small error. Repeatedly multiplying by T drives the belief toward T's
+            stationary distribution, so the live posterior was systematically more diffuse (or,
+            for a sticky T, more entrenched) than any posterior the training labels ever saw -
+            breaking the train/serve parity that classify_series was just fixed to provide.
+
+            It also re-filtered the SAME bar ~30 times while that bar was still forming, so the
+            unfinished candle's mutating close was treated as ~30 independent observations.
+
+        `observation_id` identifies the bar. Pass the open time of a CLOSED bar. Re-presenting
+        the same id returns the current posterior unchanged; only a new id advances the filter.
+        Passing None preserves the old always-advance behaviour for callers that have no clock,
+        which is why every live caller must supply one."""
         obs = self._make_obs(closes[-5:], volumes[-5:])
         if len(obs) == 0:
             return self.current_regime, 0.5
+
+        if observation_id is not None:
+            if observation_id == self._last_observation_id:
+                self.hmm_repeat_observations += 1
+                return self._last_hmm_regime, self._last_hmm_confidence
+            if self._last_observation_id is not None:
+                gap = observation_id - self._last_observation_id
+                # A backwards or oversized jump means the sequence the transition matrix
+                # describes was broken (restart, reconnect, backfill). Propagating the old
+                # belief across it would assert continuity that did not happen.
+                if gap <= 0 or gap > self.bar_interval_ms * self.MAX_GAP_BARS:
+                    self._belief = np.full(len(self._means), 1.0 / len(self._means))
+                    self.hmm_resets += 1
+
         x = obs[-1]
         ll = self._emission_loglik(x)
         prior = self._belief @ self._transmat
@@ -205,7 +277,12 @@ class MarketRegime:
         post /= (post.sum() + 1e-12)
         self._belief = post
         s = int(np.argmax(post))
-        return self.state_labels.get(s, self.RANGE), float(post[s])
+        label, confidence = self.state_labels.get(s, self.RANGE), float(post[s])
+        if observation_id is not None:
+            self._last_observation_id = observation_id
+        self.hmm_advances += 1
+        self._last_hmm_regime, self._last_hmm_confidence = label, confidence
+        return label, confidence
 
     def _next_regime_forecast(self) -> dict:
         """Most likely next regime based on observed transition frequencies."""
@@ -296,7 +373,8 @@ class MarketRegime:
             "vol_forecast_15m": round(norm(vol_15m), 4),
         }
 
-    def detect_regime(self, closes: np.ndarray, adx_arr: np.ndarray, atr_arr: np.ndarray, volumes: np.ndarray) -> dict:
+    def detect_regime(self, closes: np.ndarray, adx_arr: np.ndarray, atr_arr: np.ndarray,
+                      volumes: np.ndarray, observation_id=None) -> dict:
         """
         Classifies the market regime using the latest indicators.
         Requires at least 100 historical points for robust baseline stats.
@@ -337,7 +415,7 @@ class MarketRegime:
 
         if self.hmm_ready:
             # Learned temporal regimes (HMM forward filter) take precedence.
-            new_regime, conf = self._hmm_classify(closes, volumes)
+            new_regime, conf = self._hmm_classify(closes, volumes, observation_id)
         elif volatility_ratio > 2.0 or volume_spike > 5.0:
             new_regime = self.HIGH_VOLATILITY
             conf = min(volatility_ratio / 4.0, 1.0)
