@@ -201,6 +201,9 @@ jobs:
         run: python -m backend.research.event_conditional_v1.readiness
 
       # --- repo-wide consistency ------------------------------------------------------------
+      - name: Research claim audit (flags assumed/declared/unbounded results)
+        run: python backend/research/audit_research_claims.py
+
       - name: Strategy registry consistency
         run: python backend/research/audit_strategy_registry.py
 
