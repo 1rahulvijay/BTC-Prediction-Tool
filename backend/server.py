@@ -72,6 +72,7 @@ from binance_paper.routes import (
     router as binance_paper_router,
 )
 from historical_replay import run_replay as run_historical_replay
+from control_auth import allowed_origins as _allowed_origins
 from feed_writer import FEED_WRITER
 import database
 
@@ -366,9 +367,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# EXPLICIT ORIGINS. `allow_origins=["*"]` let any site the operator had open in the same browser
+# issue cross-origin requests to this API - and until now the paper-trading control endpoints
+# required no authentication, so that was a drive-by control plane. Override with
+# BTC_ALLOWED_ORIGINS (comma-separated); the default is loopback only.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

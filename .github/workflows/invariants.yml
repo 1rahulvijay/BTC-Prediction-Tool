@@ -114,6 +114,12 @@ jobs:
       - name: Artifact bundles (verify-before-deserialize, atomic publish)
         run: python backend/model_artifacts.py --selftest
 
+      - name: Control-plane auth (fail-closed, no default token)
+        run: python backend/control_auth.py --selftest
+
+      - name: Control-plane security over real HTTP
+        run: python backend/test_control_plane_security.py
+
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
 
@@ -256,6 +262,8 @@ jobs:
           python backend/test_launcher_integrity.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1
           python backend/model_artifacts.py --selftest || exit /b 1
+          python backend/control_auth.py --selftest || exit /b 1
+          python backend/test_control_plane_security.py || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
           python backend/preflight_longwindow.py --selftest || exit /b 1

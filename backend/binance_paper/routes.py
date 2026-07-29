@@ -3,7 +3,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+import sys as _sys
+from pathlib import Path as _Path
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+
+_backend = str(_Path(__file__).resolve().parents[1])
+if _backend not in _sys.path:
+    _sys.path.insert(0, _backend)
+from control_auth import HEADER_NAME, check as _check_token  # noqa: E402
+
+
+def require_control_token(
+    x_control_token: str | None = Header(default=None, alias=HEADER_NAME),
+) -> None:
+    """Gate for every STATE-CHANGING route. Read-only GETs carry no authority and stay open.
+
+    These endpoints start, pause and flatten the engine. They had no dependency at all while the
+    app allowed every origin, so any page open in the operator's browser could drive them."""
+    allowed, status, reason = _check_token(x_control_token)
+    if not allowed:
+        raise HTTPException(status_code=status, detail=reason)
 from pydantic import BaseModel, Field
 
 
@@ -157,7 +177,7 @@ def events(limit: int = Query(100, ge=1, le=1000)):
         _translate(exc)
 
 
-@router.post("/start", response_model=StatusResponse)
+@router.post("/start", response_model=StatusResponse, dependencies=[Depends(require_control_token)])
 def start():
     try:
         return service().start_engine()
@@ -165,7 +185,7 @@ def start():
         _translate(exc)
 
 
-@router.post("/pause", response_model=StatusResponse)
+@router.post("/pause", response_model=StatusResponse, dependencies=[Depends(require_control_token)])
 def pause():
     try:
         return service().pause_engine()
@@ -173,7 +193,7 @@ def pause():
         _translate(exc)
 
 
-@router.post("/positions/{position_id}/close", response_model=ActionResponse)
+@router.post("/positions/{position_id}/close", response_model=ActionResponse, dependencies=[Depends(require_control_token)])
 def close_position(position_id: str, request: ConfirmRequest):
     try:
         result = service().close_position(position_id, confirm=request.confirm)
@@ -182,7 +202,7 @@ def close_position(position_id: str, request: ConfirmRequest):
         _translate(exc)
 
 
-@router.post("/close-all", response_model=ActionResponse)
+@router.post("/close-all", response_model=ActionResponse, dependencies=[Depends(require_control_token)])
 def close_all(request: ConfirmRequest):
     try:
         result = service().close_all(confirm=request.confirm)
@@ -191,7 +211,7 @@ def close_all(request: ConfirmRequest):
         _translate(exc)
 
 
-@router.patch("/strategies/{strategy_id}")
+@router.patch("/strategies/{strategy_id}", dependencies=[Depends(require_control_token)])
 def patch_strategy(strategy_id: str, request: StrategyPatchRequest):
     try:
         return service().update_strategy(

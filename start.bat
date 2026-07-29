@@ -315,6 +315,10 @@ python backend\model_registry.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b4
 python backend\model_artifacts.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b4
+python backend\control_auth.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
+python backend\test_control_plane_security.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 echo [selftest] c. Head permissions - a head that cannot price may not price:
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c

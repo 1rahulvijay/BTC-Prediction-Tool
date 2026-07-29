@@ -11,11 +11,20 @@ from .selftest import FakeFuturesClient, config
 from .service import BinancePaperService
 
 
+# Control endpoints are authenticated. This harness supplies the token on every request via the
+# client's default headers, so the selftest exercises the REAL gated routes rather than an
+# unprotected copy of them - and a regression that drops the gate still shows up here as a 401.
+_TEST_TOKEN = "s" * 40
+
+
 def app_for(service) -> TestClient:
     configure_service(service)
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    import os
+
+    os.environ["BTC_CONTROL_TOKEN"] = _TEST_TOKEN
+    return TestClient(app, headers={"X-Control-Token": _TEST_TOKEN})
 
 
 def run() -> None:
