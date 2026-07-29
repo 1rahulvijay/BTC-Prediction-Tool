@@ -323,6 +323,8 @@ python backend\task_supervisor.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_close_only_authority.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+python backend\artifact_migration_status.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 python backend\control_auth.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_control_plane_security.py >nul 2>&1

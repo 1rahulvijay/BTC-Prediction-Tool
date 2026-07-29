@@ -114,6 +114,9 @@ jobs:
       - name: Artifact bundles (verify-before-deserialize, atomic publish)
         run: python backend/model_artifacts.py --selftest
 
+      - name: Artifact migration ratchet (raw save/load sites may not grow)
+        run: python backend/artifact_migration_status.py --selftest
+
       - name: Control-plane auth (fail-closed, no default token)
         run: python backend/control_auth.py --selftest
 
@@ -274,6 +277,7 @@ jobs:
           python backend/test_launcher_integrity.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1
           python backend/model_artifacts.py --selftest || exit /b 1
+          python backend/artifact_migration_status.py --selftest || exit /b 1
           python backend/control_auth.py --selftest || exit /b 1
           python backend/test_close_only_authority.py || exit /b 1
           python backend/task_supervisor.py --selftest || exit /b 1

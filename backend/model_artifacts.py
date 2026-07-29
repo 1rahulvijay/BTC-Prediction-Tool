@@ -244,7 +244,24 @@ def publish_bundle(
         try:
             os.rename(str(staging), str(published))
         except OSError as exc:
+            # LOSING A PUBLISH RACE IS NOT TAMPERING.
+            #
+            # `published.exists()` above is a check, and the rename is the use - so two
+            # publishers of the SAME content can both see it absent and both attempt the
+            # rename. One wins; on Windows the loser's rename raises because the destination
+            # directory now exists. Reporting MODEL_UNAVAILABLE_TAMPERED there is wrong twice
+            # over: nothing was tampered with, and the publish actually SUCCEEDED - the winner
+            # wrote it.
+            #
+            # The content is identical by construction, because the directory NAME is the
+            # content identity. So if the destination now exists and verifies, adopt it.
             shutil.rmtree(staging, ignore_errors=True)
+            if published.is_dir():
+                try:
+                    verify_bundle(published, expect_name=name)
+                    return read_manifest(published)
+                except ArtifactRefusal:
+                    raise                       # it exists but is NOT valid - a real failure
             raise ArtifactRefusal(MODEL_UNAVAILABLE_TAMPERED,
                                   f"atomic publish failed: {exc}") from None
         _fsync_dir(root)
@@ -620,9 +637,14 @@ def selftest() -> int:
         stop_publishing = threading.Event()
 
         def publish_forever() -> None:
-            index = 100
-            while not stop_publishing.is_set():
-                index += 1
+            # BOUNDED, and it must finish. An unbounded loop that outlived its join kept
+            # creating bundle directories while the champion test walked root.iterdir(), so a
+            # directory could appear or vanish between listing and reading it. That produced an
+            # intermittent failure which passed standalone and failed under full-suite load -
+            # a race in the TEST, reported as a product defect.
+            for index in range(101, 141):
+                if stop_publishing.is_set():
+                    return
                 try:
                     publish_bundle(root, "magnitude", {"magnitude_model.pkl": b"RACE BYTES"},
                                    target="move_magnitude",
@@ -646,7 +668,9 @@ def selftest() -> int:
         for t in readers:
             t.join(timeout=180)
         stop_publishing.set()
-        publisher.join(timeout=10)
+        publisher.join(timeout=120)
+        chk(not publisher.is_alive(),
+            'the background publisher finished before later tests read the root')
         chk(all(r is True for r in concurrent_readers),
             f"readers verified cleanly DURING continuous publication ({concurrent_readers})")
 
