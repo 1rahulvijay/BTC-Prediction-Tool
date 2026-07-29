@@ -73,6 +73,12 @@ from binance_paper.routes import (
 )
 from historical_replay import run_replay as run_historical_replay
 from control_auth import allowed_origins as _allowed_origins
+from task_supervisor import (
+    BEST_EFFORT as TASK_BEST_EFFORT,
+    CRITICAL as TASK_CRITICAL,
+    IMPORTANT as TASK_IMPORTANT,
+    SUPERVISOR,
+)
 from feed_writer import FEED_WRITER
 import database
 
@@ -326,19 +332,36 @@ async def lifespan(app: FastAPI):
     # Gamma discovery uses requests. Keep that blocking HTTP call off the event
     # loop so startup WebSocket/price tasks are not delayed by a slow response.
     await asyncio.to_thread(polymarket_client.discover_markets)
-    asyncio.create_task(main_loop())
-    asyncio.create_task(fast_price_broadcaster())
-    asyncio.create_task(_supervised(pyth_price_poller, "pyth_price_poller"))   # anchor feed, auto-restart
-    asyncio.create_task(_supervised(price_to_beat_ticker, "price_to_beat_ticker"))
-    asyncio.create_task(ws_client.connect())
-    asyncio.create_task(coinbase_client.connect())
-    asyncio.create_task(futures_ws_client.connect())
-    asyncio.create_task(binance_paper_service.run())
-    asyncio.create_task(polymarket_client.connect_ws())
-    asyncio.create_task(cross_asset_client.connect())
+    # OWNED, NOT DETACHED. These were bare create_task calls with no retained handle: the loop
+    # keeps only a WEAK reference, so a task could be garbage-collected mid-flight, an exception
+    # inside one was never observed, and shutdown never awaited any of them. A dead feed then
+    # coexisted with a server answering 200.
+    #
+    # Criticality is declared here. A dead or flapping CRITICAL task becomes a trust blocker.
+    for _name, _factory, _crit in (
+        ("main_loop", main_loop, TASK_CRITICAL),
+        ("fast_price_broadcaster", fast_price_broadcaster, TASK_IMPORTANT),
+        ("pyth_price_poller", pyth_price_poller, TASK_CRITICAL),
+        ("price_to_beat_ticker", price_to_beat_ticker, TASK_IMPORTANT),
+        ("binance_spot_ws", ws_client.connect, TASK_CRITICAL),
+        ("coinbase_ws", coinbase_client.connect, TASK_BEST_EFFORT),
+        ("binance_futures_ws", futures_ws_client.connect, TASK_CRITICAL),
+        ("binance_paper_service", binance_paper_service.run, TASK_IMPORTANT),
+        ("polymarket_ws", polymarket_client.connect_ws, TASK_IMPORTANT),
+        ("cross_asset_ws", cross_asset_client.connect, TASK_BEST_EFFORT),
+    ):
+        SUPERVISOR.spawn(_name, _factory, criticality=_crit)
+    logger.info("Task supervisor owns %s long-running tasks", SUPERVISOR.status()["total"])
 
     yield
 
+    # Stop supervised tasks FIRST and await them, so no feed callback is still running while
+    # the clients below are torn down.
+    _task_shutdown = await SUPERVISOR.shutdown(timeout=5.0)
+    if _task_shutdown["clean"]:
+        logger.info("Task supervisor shutdown clean: %s", _task_shutdown)
+    else:
+        logger.error("Task supervisor shutdown INCOMPLETE: %s", _task_shutdown)
     ws_client.stop()
     coinbase_client.stop()
     futures_ws_client.stop()
@@ -4375,6 +4398,8 @@ def _system_health_snapshot() -> dict:
     # A dead or dropping feed writer means the parquet archive has gaps. That must appear in
     # trust state, not only in a stats dict nothing reads: an archive with silent holes is worse
     # than a missing one, because it still looks like complete evidence.
+    supervisor_status = SUPERVISOR.status()
+    blockers.extend(supervisor_status["blockers"])
     feed_writer_stats = FEED_WRITER.stats()
     if not feed_writer_stats["worker_alive"]:
         blockers.append("feed_writer_not_running")
@@ -4387,6 +4412,7 @@ def _system_health_snapshot() -> dict:
         "trust_state": "DATA_OK" if not blockers else "DO_NOT_TRUST",
         "blockers": blockers,
         "feed_writer": feed_writer_stats,
+        "tasks": supervisor_status,
         "feeds": feeds,
         "recorders": recorders,
         "database_writer": {
