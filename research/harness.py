@@ -153,3 +153,64 @@ def report(name: str, in_sample: Backtest, out_of_sample: Backtest,
           f"stake = {in_sample.risk_fraction * 100:.0f}% of capital")
     return {"name": name, "in_sample": in_sample.summary(),
             "out_of_sample": oos, "verdict": verdict}
+
+
+def causal_frame(rows: int = 200_000, horizon: int = 15):
+    """Real BTC bars plus a standard causal feature set and a forward return.
+
+    Every feature uses only information available AT that bar. `fwd` is the outcome and is the
+    ONLY column shifted from the future - it is the label, never an input."""
+    frame = load_btc(rows).copy()
+    close = frame["close"]
+    frame["ret_1"] = close.pct_change(1)
+    frame["ret_5"] = close.pct_change(5)
+    frame["ret_15"] = close.pct_change(15)
+    frame["ret_60"] = close.pct_change(60)
+    frame["vol_30"] = frame["ret_1"].rolling(30).std()
+    frame["vol_240"] = frame["ret_1"].rolling(240).std()
+    frame["rng"] = (frame["high"] - frame["low"]) / close
+    frame["z_60"] = (close - close.rolling(60).mean()) / close.rolling(60).std()
+    frame["z_240"] = (close - close.rolling(240).mean()) / close.rolling(240).std()
+    frame["vol_z"] = ((frame["vol_30"] - frame["vol_30"].rolling(240).mean())
+                      / frame["vol_30"].rolling(240).std())
+    frame["rng_z"] = ((frame["rng"] - frame["rng"].rolling(240).mean())
+                      / frame["rng"].rolling(240).std())
+    if "volume" in frame:
+        frame["vol_ratio"] = frame["volume"] / frame["volume"].rolling(240).median()
+    frame["fwd"] = forward_returns(frame, horizon)
+    return frame.dropna().reset_index(drop=True)
+
+
+def run_signal(part, signal_fn) -> Backtest:
+    """Trade a causal signal. `signal_fn(part) -> Series in {-1, 0, +1}`, aligned to `part`."""
+    book = Backtest()
+    direction = signal_fn(part)
+    active = direction != 0
+    for gross, side in zip(part.loc[active, "fwd"], direction[active]):
+        book.trade(float(gross) * float(side))
+    return book
+
+
+def evaluate(name: str, signal_fn, notes: str = "", rows: int = 200_000,
+             horizon: int = 15) -> dict:
+    """Standard end to end: causal features -> chronological split -> IS/OOS report."""
+    frame = causal_frame(rows, horizon)
+    train, test = split(frame)
+    return report(name, run_signal(train, signal_fn), run_signal(test, signal_fn), notes)
+
+
+BLOCKED_TEMPLATE = """This test CANNOT be run: {reason}
+
+Reporting a number here would require inventing the missing data, which is how the original
+scripts produced results that reversed under measurement. The honest output is a refusal."""
+
+
+def blocked(name: str, reason: str, needs: str) -> int:
+    """Print an explicit refusal instead of a fabricated result."""
+    print("=" * 78)
+    print(f"{name}")
+    print("=" * 78)
+    print(BLOCKED_TEMPLATE.format(reason=reason))
+    print(f"  REQUIRED TO UNBLOCK: {needs}")
+    print("  STATUS: BLOCKED - no result produced, and none should be quoted.")
+    return 0
