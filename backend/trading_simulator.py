@@ -158,6 +158,80 @@ class TradingSimulator:
                 best_f, best_growth = f, growth
         return best_f
 
+    @staticmethod
+    def average_fill_price(ask_levels: list, notional: float):
+        """Walk the ask ladder. Returns (vwap, shares, fully_filled).
+
+        `ask_levels` is [(price, size_shares), ...] ascending. The AVERAGE fill price across all
+        consumed depth is what the position actually costs - not the marginal price at the last
+        level touched, which understates the cost of the whole order."""
+        if notional <= 0:
+            return 0.0, 0.0, True
+        spent = 0.0
+        shares = 0.0
+        for price, size in ask_levels:
+            price = float(price)
+            if price <= 0.0:
+                continue
+            level_cost = price * float(size)
+            if spent + level_cost >= notional:
+                take = (notional - spent) / price
+                shares += take
+                spent = notional
+                return spent / shares, shares, True
+            spent += level_cost
+            shares += float(size)
+        return (spent / shares if shares > 0 else 0.0), shares, False
+
+    def endogenous_kelly(self, p_win: float, ask_levels: list, bankroll: float):
+        """Kelly sizing where OUR OWN ORDER moves the price against us.
+
+        Standard Kelly assumes exogenous odds - that the bet does not change the payout. For a
+        thin Polymarket book that is false: buying size walks the ask up, so the realised entry
+        is worse than the quoted top of book, and the error grows WITH size. Sizing on the quoted
+        price therefore overstates the edge exactly where overstating it is most expensive.
+
+            g(f) = p*log(1 + f*b(f)) + (1-p)*log(1 - f)
+            b(f) = (1 - q(f)) / q(f)        q(f) = VWAP of the depth consumed by f*bankroll
+
+        b decays as f grows, so g turns over at a finite f even when the top-of-book edge looks
+        large. That turning point is the capacity the book actually supports.
+
+        Returns (endogenous_fraction, exogenous_fraction) so the difference is visible."""
+        p = min(max(float(p_win), 0.0), 1.0)
+        if not ask_levels or bankroll <= 0 or p <= 0.0:
+            return 0.0, 0.0
+
+        def growth(fraction: float, price: float) -> float:
+            if price <= 0.0 or price >= 1.0 or fraction <= 0.0 or fraction >= 1.0:
+                return float("-inf")
+            odds = (1.0 - price) / price
+            win = 1.0 + fraction * odds
+            lose = 1.0 - fraction
+            if win <= 0.0 or lose <= 0.0:
+                return float("-inf")
+            return p * math.log(win) + (1.0 - p) * math.log(lose)
+
+        top_price = float(ask_levels[0][0])
+        grid = [i / 500.0 for i in range(1, 500)]
+
+        best_endo, best_endo_g = 0.0, 0.0
+        for f in grid:
+            vwap, _shares, complete = self.average_fill_price(ask_levels, f * bankroll)
+            if not complete:
+                # The book cannot absorb this size. Larger f is worse, so stop.
+                break
+            value = growth(f, vwap)
+            if value > best_endo_g:
+                best_endo, best_endo_g = f, value
+
+        best_exo, best_exo_g = 0.0, 0.0
+        for f in grid:
+            value = growth(f, top_price)
+            if value > best_exo_g:
+                best_exo, best_exo_g = f, value
+        return best_endo, best_exo
+
     def assess_kelly(self, returns_with_time: list, live_mode: bool = False):
         """Return the point estimate, the evidence verdict and the authorized size SEPARATELY.
 
