@@ -8,3 +8,6 @@ Kaggle Data/
 
 # Recorded market data - large binary artifacts, never in git.
 microstructure/
+
+# Research scratch data outputs (scripts and harness ARE tracked)
+research/sequence_results.json
