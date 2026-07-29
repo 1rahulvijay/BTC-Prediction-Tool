@@ -585,13 +585,15 @@ def selftest() -> int:
         print("REAL concurrency, not sequential republishing")
         import threading
 
-        barrier = threading.Barrier(6)
+        # Generous, because this barrier exists to force overlap, not to measure latency.
+        # At 10s it broke under full-suite load and reported a product failure.
+        barrier = threading.Barrier(6, timeout=120)
         outcomes: list = []
         errors: list = []
 
         def race(index: int) -> None:
             try:
-                barrier.wait(timeout=10)
+                barrier.wait()
                 # Three publishers of IDENTICAL content, three with DIFFERENT provenance.
                 prov = (_demo_provenance(dataset_sha256="R" * 64)
                         if index % 2 == 0
@@ -606,7 +608,7 @@ def selftest() -> int:
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=30)
+            t.join(timeout=180)
         chk(not errors, f"six simultaneous publishers all succeeded ({errors[:2]})")
         chk(len(outcomes) == 6, f"every publisher returned a manifest ({len(outcomes)}/6)")
         chk(len(set(outcomes)) == 4,
@@ -642,7 +644,7 @@ def selftest() -> int:
         for t in readers:
             t.start()
         for t in readers:
-            t.join(timeout=30)
+            t.join(timeout=180)
         stop_publishing.set()
         publisher.join(timeout=10)
         chk(all(r is True for r in concurrent_readers),

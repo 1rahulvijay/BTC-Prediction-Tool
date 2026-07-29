@@ -315,6 +315,8 @@ python backend\model_registry.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b4
 python backend\model_artifacts.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b4
+python backend\trading_authority.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 python backend\task_supervisor.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_close_only_authority.py >nul 2>&1
