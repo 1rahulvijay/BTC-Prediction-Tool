@@ -14,6 +14,31 @@ logger = logging.getLogger(__name__)
 # zero-fee venues can set this near 0; conservative live trading can raise it.
 TAKER_FEE_BPS = float(os.environ.get("BTC_TAKER_FEE_BPS", "4.0"))
 
+
+class KellyAssessment:
+    """Kelly evidence, with the three questions kept apart.
+
+    point_estimate          what the sample's log-growth maximiser suggests
+    lower_bound_passed      whether a UTC-day-block lower bound cleared zero
+    authorized_fraction     what may be risked - ZERO unless the bound passed
+    research_probe_fraction paper-only probe to keep evidence flowing; NOT authorization
+    """
+
+    __slots__ = ("point_estimate", "lower_bound_passed", "authorized_fraction",
+                 "research_probe_fraction", "day_count", "reason")
+
+    def __init__(self, point_estimate, lower_bound_passed, authorized_fraction,
+                 research_probe_fraction, day_count, reason):
+        self.point_estimate = float(point_estimate)
+        self.lower_bound_passed = bool(lower_bound_passed)
+        self.authorized_fraction = float(authorized_fraction)
+        self.research_probe_fraction = float(research_probe_fraction)
+        self.day_count = int(day_count)
+        self.reason = str(reason)
+
+    def as_dict(self) -> dict:
+        return {name: getattr(self, name) for name in self.__slots__}
+
 class AlgorithmicExecutionRouter:
     """
     Simulates Institutional Execution Routing (TWAP / VWAP / Maker-Taker Optimization).
@@ -79,6 +104,8 @@ class TradingSimulator:
             "Latency": "Estimated unless measured end-to-end",
             "Queue position": "Approximate L2, not true L3",
             "Kelly sizing": "Research only; capped conservatively",
+            "Promotion status": "HEURISTIC_RESEARCH_ONLY / NON_PROMOTABLE",
+            "Fill realization": "fill_prob is COMPUTED BUT NOT APPLIED - every accepted signal opens a full position",
         }
         
         self.router = AlgorithmicExecutionRouter(use_twap=True, slices=5)
@@ -95,9 +122,12 @@ class TradingSimulator:
         self._pnl_times: deque = deque(maxlen=200)
         self._consecutive_losses = 0
         self._max_consecutive_losses = 0
+        self.last_kelly_assessment = None   # most recent KellyAssessment, for reporting
         
     HARD_MAX_KELLY = 0.50          # search ceiling; the 2% cap below is the operative limit
     BOOTSTRAP_DRAWS = 200
+    MIN_BOOTSTRAP_DAYS = 5       # fewer distinct days than this cannot support a bound
+    RESEARCH_PROBE_FRACTION = 0.005   # paper probe only; never an authorized size
     LOWER_CONFIDENCE = 0.05        # 5th percentile of bootstrapped growth at the chosen fraction
 
     @staticmethod
@@ -128,35 +158,71 @@ class TradingSimulator:
                 best_f, best_growth = f, growth
         return best_f
 
-    def _empirical_kelly(self, returns: list, live_mode: bool = False) -> float:
-        """Kelly fraction gated by a day-block bootstrap lower confidence bound.
+    def assess_kelly(self, returns_with_time: list, live_mode: bool = False):
+        """Return the point estimate, the evidence verdict and the authorized size SEPARATELY.
 
-        The point estimate alone overfits the sample: the maximiser of in-sample log growth is
-        positive for most return series, including ones with no real edge. The lower bound is
-        what distinguishes edge from noise, and if it is not positive the honest size is ZERO."""
-        best_f = self.kelly_maximiser(returns)
-        if best_f <= 0.0:
-            return 0.0
+        A single float conflated three different things: what the sample suggests, whether the
+        evidence supports it, and what may actually be risked. That let a de-risked research
+        number be read as a statistically authorized size. They are now distinct fields, and
+        `authorized_fraction` is the ONLY one any sizing decision may consult.
 
-        # Day-block bootstrap: resample CONTIGUOUS blocks, because consecutive trades share a
-        # regime and an i.i.d. resample would understate the true variance.
+        `returns_with_time` is [(net_return_fraction, timestamp_ms), ...]."""
+        returns = [float(r) for r, _t in returns_with_time]
+        point = self.kelly_maximiser(returns)
+        if point <= 0.0:
+            return KellyAssessment(0.0, False, 0.0, 0.0, 0, "no positive in-sample maximiser")
+
+        lower_bound, day_count = self._day_block_lower_bound(returns_with_time, point)
+        passed = lower_bound > 0.0
+        if passed:
+            return KellyAssessment(point, True, point, 0.0, day_count,
+                                   f"lower bound {lower_bound:.6g} > 0 over {day_count} days")
+        # Evidence failed. NOTHING is authorized. A research probe may still be run to keep
+        # evidence flowing, but it is labelled as a probe and never as an authorized size.
+        probe = 0.0 if live_mode else self.RESEARCH_PROBE_FRACTION
+        return KellyAssessment(point, False, 0.0, probe, day_count,
+                               f"lower bound {lower_bound:.6g} <= 0 over {day_count} days")
+
+    def _day_block_lower_bound(self, returns_with_time: list, fraction: float):
+        """Lower confidence bound on growth, resampling whole UTC DAYS.
+
+        Previously this resampled contiguous TRADE-INDEX blocks of len(returns)//10 and called
+        itself a day-block bootstrap. Trade-index blocks are not days: a quiet day and a busy
+        day contribute different numbers of trades, so a fixed index block spans a varying and
+        unknown amount of calendar time. Grouping by UTC day and resampling whole days keeps
+        every trade that shares a day together, which is the dependence the method exists to
+        respect."""
+        import datetime
         import random
 
+        by_day: dict = {}
+        for value, timestamp in returns_with_time:
+            day = datetime.datetime.fromtimestamp(
+                float(timestamp) / 1000.0, datetime.timezone.utc).date()
+            by_day.setdefault(day, []).append(float(value))
+        days = sorted(by_day)
+        if len(days) < self.MIN_BOOTSTRAP_DAYS:
+            # Too few distinct days to bootstrap over. Refuse rather than resample noise.
+            return -1.0, len(days)
+
         rng = random.Random(20260728)
-        block = max(1, len(returns) // 10)
+        total = sum(len(by_day[d]) for d in days)
         growths = []
         for _ in range(self.BOOTSTRAP_DRAWS):
-            sample = []
-            while len(sample) < len(returns):
-                start = rng.randrange(0, max(1, len(returns) - block + 1))
-                sample.extend(returns[start:start + block])
-            growths.append(self.expected_log_growth(best_f, sample[:len(returns)]))
+            sample: list = []
+            while len(sample) < total:
+                sample.extend(by_day[days[rng.randrange(len(days))]])
+            growths.append(self.expected_log_growth(fraction, sample[:total]))
         growths.sort()
-        lower_bound = growths[int(self.LOWER_CONFIDENCE * len(growths))]
-        if lower_bound <= 0.0:
-            # No demonstrable edge at the chosen fraction. In live mode that means no position.
-            return 0.0 if live_mode else best_f * 0.5
-        return best_f
+        return growths[int(self.LOWER_CONFIDENCE * len(growths))], len(days)
+
+    def _empirical_kelly(self, returns: list, live_mode: bool = False) -> float:
+        """Backwards-compatible scalar wrapper. Prefer assess_kelly, which does not conflate
+        an authorized size with a research probe."""
+        spaced = [(r, 1_700_000_000_000 + i * 86_400_000 // max(1, len(returns) // 10 or 1))
+                  for i, r in enumerate(returns)]
+        assessment = self.assess_kelly(spaced, live_mode=live_mode)
+        return assessment.authorized_fraction or assessment.research_probe_fraction
 
     def _compute_kelly_fraction(self) -> float:
         """
@@ -187,21 +253,27 @@ class TradingSimulator:
         # Maximising empirical expected log growth handles it with no special case: a zero
         # return contributes log(1 + f*0) = 0 to the sum while still counting in the mean, so
         # it dilutes growth without being charged as a loss - which is exactly what it is.
-        returns = []
+        returns_with_time = []
         for t in recent:
             size = float(t.get("position_size") or 0.0)
             if size > 0:
-                returns.append(float(t["net_pnl_usd"]) / size)
-        if len(returns) < 30:
+                returns_with_time.append(
+                    (float(t["net_pnl_usd"]) / size, t.get("timestamp") or 0))
+        if len(returns_with_time) < 30:
             return 0.02
 
-        kelly = self._empirical_kelly(returns)
-        half_kelly = max(0.0, kelly / 2.0)
-        # PROBE FLOOR (recovery path): a hard 0 here meant no trades opened, so the
-        # history never updated and Kelly stayed 0 PERMANENTLY — even after a retrain
-        # improved the model. A 0.5% paper-probe keeps evidence flowing so sizing can
-        # recover; this is a research simulator, not live money. Cap stays 2%.
-        return min(max(half_kelly, 0.005), 0.02)
+        assessment = self.assess_kelly(returns_with_time)
+        self.last_kelly_assessment = assessment
+        if assessment.lower_bound_passed:
+            half_kelly = max(0.0, assessment.authorized_fraction / 2.0)
+            return min(max(half_kelly, self.RESEARCH_PROBE_FRACTION), 0.02)
+
+        # EVIDENCE FAILED. Nothing is authorized. What is returned here is a PAPER PROBE and
+        # must never be described as a Kelly size: a hard 0 meant no trades opened, so history
+        # never updated and sizing stayed 0 permanently even after a retrain improved the model.
+        # The probe keeps evidence flowing in this research simulator. Live sizing is separate
+        # and remains disabled; assess_kelly(live_mode=True) returns 0.0 in this branch.
+        return self.RESEARCH_PROBE_FRACTION
 
     def _compute_dynamic_slippage(self, current_price: float, position_size_btc: float,
                                    spread_expansion: float = 1.0, avg_volume: float = 1.0) -> float:
@@ -409,10 +481,21 @@ class TradingSimulator:
                     
                 # Fees (entry + exit)
                 fees_usd = (size_btc * entry_price * eff_fee) + (size_btc * current_price * eff_fee)
-                
-                slippage_usd = (current_price * slippage_factor * size_btc) * 2 
-                
-                net_pnl_usd = pnl_usd - fees_usd - slippage_usd
+
+                # SLIPPAGE IS ALREADY IN pnl_usd. entry_price was marked UP by slippage_factor
+                # and exit_price marked DOWN by it, so the price difference above already carries
+                # both legs. Subtracting slippage_usd again charged every round trip TWICE, which
+                # biased every realized return downward - and those returns are exactly the
+                # Kelly inputs, so sizing was fitted to costs that were never paid.
+                #
+                # Method A (execution-adjusted prices) is what this simulator uses:
+                #     net = adjusted-price PnL - fees
+                # Method B would use reference prices and subtract explicit slippage. Either is
+                # defensible; combining them is not. slippage_usd is still computed and recorded
+                # so the cost remains visible in the trade log and in reconciliation.
+                slippage_usd = (current_price * slippage_factor * size_btc) * 2
+
+                net_pnl_usd = pnl_usd - fees_usd
                 self.equity += net_pnl_usd
                 
                 # Track PnL for rolling metrics

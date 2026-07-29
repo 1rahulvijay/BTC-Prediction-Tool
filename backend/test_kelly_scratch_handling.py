@@ -57,8 +57,18 @@ def _simulator():
     return TradingSimulator()
 
 
+DAY_MS = 86_400_000
+
+
 def _trade(net: float, size: float = 1000.0, index: int = 0) -> dict:
-    return {"net_pnl_usd": net, "position_size": size, "timestamp": 1_700_000_000_000 + index}
+    """One trade, spread across DISTINCT UTC days.
+
+    Spacing these 1 ms apart put every trade in a single UTC day, so the day-block bootstrap
+    correctly refused for want of days - and the assertions below then passed on the research
+    PROBE rather than on the quantity they claim to measure. Test data has to satisfy the
+    method's preconditions or the test proves nothing."""
+    return {"net_pnl_usd": net, "position_size": size,
+            "timestamp": 1_700_000_000_000 + index * (DAY_MS // 8)}
 
 
 def _legacy_binary_kelly(recent: list) -> float:
@@ -81,16 +91,17 @@ def test_scratches_are_not_charged_as_losses() -> None:
     sim = _simulator()
 
     # 40 wins of +2%, 20 losses of -2%, 40 scratches of exactly 0. A clear positive edge.
-    trades = []
-    for i in range(40):
-        trades.append(_trade(+20.0, index=i))
-    for i in range(20):
-        trades.append(_trade(-20.0, index=40 + i))
-    for i in range(40):
-        trades.append(_trade(0.0, index=60 + i))
+    #
+    # INTERLEAVED, because the bootstrap resamples whole UTC days. Laying all the wins first,
+    # then all the losses, then all the scratches makes every day a single pure outcome, so a
+    # resample can draw an all-loss universe and the bound correctly refuses. That is the method
+    # working, not a bug - but it is not the property this test is about. Real trading mixes
+    # outcomes within a day, so the fixture does too.
+    pattern = [+20.0] * 4 + [-20.0] * 2 + [0.0] * 4      # one day's worth, repeated
+    trades = [_trade(pattern[i % len(pattern)], index=i) for i in range(100)]
 
-    returns = [t["net_pnl_usd"] / t["position_size"] for t in trades]
-    new = sim._empirical_kelly(returns)
+    paired = [(t["net_pnl_usd"] / t["position_size"], t["timestamp"]) for t in trades]
+    new = sim.assess_kelly(paired).authorized_fraction
     legacy = _legacy_binary_kelly(trades)
 
     print(f"       legacy binary half-Kelly = {legacy:.4f}")
@@ -178,6 +189,88 @@ def test_end_to_end_sizing_stays_capped() -> None:
         "fewer than 30 trades returns the conservative 1% default")
 
 
+def test_bootstrap_resamples_UTC_DAYS_not_trade_indices() -> None:
+    """It was called a day-block bootstrap while resampling trade-INDEX blocks of n//10.
+
+    Trade-index blocks are not days. A quiet day and a busy day contribute different numbers of
+    trades, so a fixed index block spans a varying and unknown amount of calendar time - and the
+    dependence the method exists to respect is calendar dependence."""
+    print("the bootstrap groups by UTC day, not by trade index")
+    sim = _simulator()
+
+    # Same returns, same count, but compressed into ONE day. Days, not indices, must decide.
+    one_day = [(0.02 if i % 3 else -0.02, 1_700_000_000_000 + i) for i in range(120)]
+    verdict = sim.assess_kelly(one_day)
+    chk(verdict.day_count == 1, f"120 trades one millisecond apart are ONE day ({verdict.day_count})")
+    chk(verdict.lower_bound_passed is False,
+        "a single day cannot support a day-block bound, so nothing is authorized")
+    chk(verdict.authorized_fraction == 0.0, "authorized fraction is exactly zero")
+    chk("days" in verdict.reason, f"and the reason names the constraint ({verdict.reason})")
+
+    spread = [(0.02 if i % 3 else -0.02, 1_700_000_000_000 + i * DAY_MS // 4) for i in range(120)]
+    spread_verdict = sim.assess_kelly(spread)
+    chk(spread_verdict.day_count > sim.MIN_BOOTSTRAP_DAYS,
+        f"the identical returns spread over calendar time give {spread_verdict.day_count} days")
+
+
+def test_assessment_separates_estimate_from_authorization() -> None:
+    print("point estimate, evidence and authorization are separate fields")
+    sim = _simulator()
+
+    one_day = [(0.05, 1_700_000_000_000 + i) for i in range(60)]     # strong but ONE day
+    verdict = sim.assess_kelly(one_day)
+    chk(verdict.point_estimate > 0.0,
+        f"the sample still HAS a positive maximiser ({verdict.point_estimate:.4f})")
+    chk(verdict.authorized_fraction == 0.0,
+        "but nothing is authorized, because the evidence did not clear the bound")
+    chk(verdict.research_probe_fraction > 0.0,
+        f"a labelled research probe remains ({verdict.research_probe_fraction})")
+    chk(sim.assess_kelly(one_day, live_mode=True).research_probe_fraction == 0.0,
+        "and in LIVE mode even the probe is zero")
+
+
+def test_pnl_ledger_reconciles_with_no_double_counting() -> None:
+    """Realized PnL must equal the adjusted-price difference minus fees, and nothing else."""
+    print("realized PnL reconciles exactly (slippage counted once)")
+    size_btc = 0.5
+    price_in, price_out = 60000.0, 60600.0
+    slip, fee = 0.0002, 0.0004
+
+    entry_price = price_in * (1 + slip)          # UP: buy worse
+    exit_price = price_out * (1 - slip)          # UP: sell worse
+    gross = (exit_price - entry_price) * size_btc
+    fees = (size_btc * entry_price * fee) + (size_btc * price_out * fee)
+
+    correct = gross - fees
+    doubled = gross - fees - (price_out * slip * size_btc) * 2
+
+    print(f"       adjusted-price PnL - fees      = {correct:.4f}")
+    print(f"       with slippage charged AGAIN    = {doubled:.4f}")
+    chk(abs(correct - doubled) > 1e-9,
+        f"the two differ by {abs(correct - doubled):.4f} USD per round trip")
+
+    # The slippage embedded in the adjusted prices equals the amount that was being re-subtracted.
+    embedded = (price_in * slip + price_out * slip) * size_btc
+    chk(abs(embedded - (price_out * slip * size_btc) * 2) < 2.0,
+        "the embedded cost and the re-subtracted amount are the same quantity, to rounding")
+
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent / "trading_simulator.py").read_text(encoding="utf-8")
+    chk("net_pnl_usd = pnl_usd - fees_usd" in src
+        and "net_pnl_usd = pnl_usd - fees_usd - slippage_usd" not in src,
+        "the simulator subtracts fees only - slippage is already inside the adjusted prices")
+
+
+def test_simulator_declares_itself_non_promotable() -> None:
+    print("the simulator states its own standing")
+    sim = _simulator()
+    status = sim.calibration_status
+    chk(status.get("Promotion status") == "HEURISTIC_RESEARCH_ONLY / NON_PROMOTABLE",
+        f"promotion status is declared ({status.get('Promotion status')})")
+    chk("NOT APPLIED" in (status.get("Fill realization") or ""),
+        "and it states that fill_prob is computed but never applied to the fill outcome")
+
+
 def main() -> int:
     test_scratches_are_not_charged_as_losses()
     test_scratches_still_dilute_growth()
@@ -185,6 +278,10 @@ def main() -> int:
     test_a_ruinous_outcome_is_excluded()
     test_growth_is_maximised_not_guessed()
     test_end_to_end_sizing_stays_capped()
+    test_bootstrap_resamples_UTC_DAYS_not_trade_indices()
+    test_assessment_separates_estimate_from_authorization()
+    test_pnl_ledger_reconciles_with_no_double_counting()
+    test_simulator_declares_itself_non_promotable()
     print("\nKELLY SCRATCH HANDLING", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 
