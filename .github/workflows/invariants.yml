@@ -93,6 +93,9 @@ jobs:
       - name: Endogenous Kelly (own-order impact caps size)
         run: python backend/test_endogenous_kelly.py
 
+      - name: Kelly scratch semantics (argmax invariance; naming discipline)
+        run: python backend/test_kelly_scratch_semantics.py
+
       - name: Kelly sizing (scratches are not losses; LCB gate)
         run: python backend/test_kelly_scratch_handling.py
 
@@ -273,6 +276,7 @@ jobs:
           python backend/test_feed_writer_load.py || exit /b 1
           python backend/test_regime_causal_filter.py || exit /b 1
           python backend/test_kelly_scratch_handling.py || exit /b 1
+          python backend/test_kelly_scratch_semantics.py || exit /b 1
           python backend/test_endogenous_kelly.py || exit /b 1
           python backend/test_launcher_integrity.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1

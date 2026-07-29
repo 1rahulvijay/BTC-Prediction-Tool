@@ -303,6 +303,8 @@ python backend\test_regime_causal_filter.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_endogenous_kelly.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+python backend\test_kelly_scratch_semantics.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 python backend\test_kelly_scratch_handling.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_feed_writer_load.py >nul 2>&1
