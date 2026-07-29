@@ -120,6 +120,9 @@ jobs:
       - name: Control-plane security over real HTTP
         run: python backend/test_control_plane_security.py
 
+      - name: Order lifecycle (a timeout is UNKNOWN, never REJECTED)
+        run: python backend/order_lifecycle.py --selftest
+
       - name: Trading authority (real orders refused by default)
         run: python backend/trading_authority.py --selftest
 
@@ -275,6 +278,7 @@ jobs:
           python backend/test_close_only_authority.py || exit /b 1
           python backend/task_supervisor.py --selftest || exit /b 1
           python backend/trading_authority.py --selftest || exit /b 1
+          python backend/order_lifecycle.py --selftest || exit /b 1
           python backend/test_control_plane_security.py || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
