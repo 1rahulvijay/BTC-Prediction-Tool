@@ -208,7 +208,16 @@ class FeedWriter:
     # -- worker ------------------------------------------------------------------------------
 
     def _next_job(self, budget: list[int]) -> Any:
-        """Caller holds the lock. Returns a job tuple, _SENTINEL, or None if both lanes empty."""
+        """Caller holds the lock. Returns a job tuple, _SENTINEL, or None if both lanes empty.
+
+        THE SENTINEL ENDS BOTH LANES, SO IT MAY ONLY BE CONSUMED ONCE BOTH ARE EMPTY.
+            stop() appends the sentinel to the TRADE lane. Consuming it as soon as the trade lane
+            reached it abandoned every coalesced depth job still pending: measured, 20 queued
+            depth writes produced 0 writes and 20 abandoned. The loss was reported rather than
+            silent, but a shutdown that CAN drain must drain."""
+        if self._trades and self._trades[0] is _SENTINEL and self._depth:
+            _key, job = self._depth.popitem(last=False)
+            return job
         take_depth = (budget[0] <= 0 and self._depth) or not self._trades
         if take_depth and self._depth:
             budget[0] = TRADE_BUDGET
