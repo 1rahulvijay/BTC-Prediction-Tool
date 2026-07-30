@@ -118,7 +118,7 @@ book state or a materially different fee/maker-cost structure.
 Full experiment:
 
 ```powershell
-.\run_120d_trade_policy_heads.bat
+.\research\launchers\run_120d_trade_policy_heads.bat
 ```
 
 Focused unit tests:

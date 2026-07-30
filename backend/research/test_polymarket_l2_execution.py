@@ -214,7 +214,10 @@ def report(db_path: Path, output_dir: Path, max_orders: int, order_size: float,
            window_seconds: float, submit_latency_ms: float) -> int:
     if not db_path.exists():
         print(f"No L2 database yet: {db_path}")
-        print("Start run_polymarket_l2_recorder.bat, then rerun this report after data accrues.")
+        print(
+            "Start run_polymarket_l2_recorder.bat, then rerun "
+            "tests\\launchers\\run_polymarket_l2_execution_test.bat after data accrues."
+        )
         return 2
     try:
         conn = duckdb.connect(str(db_path), read_only=True)

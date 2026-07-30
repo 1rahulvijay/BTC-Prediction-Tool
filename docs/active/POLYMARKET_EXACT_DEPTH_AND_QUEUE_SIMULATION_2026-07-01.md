@@ -26,7 +26,7 @@ Protocol references: [market WebSocket](https://docs.polymarket.com/market-data/
 | `backend/polymarket/l2_recorder.py` | Public WebSocket recorder for current/next BTC 5m and 15m UP/DOWN tokens |
 | `backend/research/test_polymarket_l2_execution.py` | Deterministic tests plus recorded-data VWAP and queue report |
 | `run_polymarket_l2_recorder.bat` | Standalone continuous recorder |
-| `run_polymarket_l2_execution_test.bat` | Read-only report runner |
+| `tests\launchers\run_polymarket_l2_execution_test.bat` | Read-only report runner |
 
 The recorder writes only `data/polymarket_l2.duckdb`. It does not contend with
 `analytics.duckdb`, `execution_layer.duckdb`, or saved model artifacts.
@@ -109,10 +109,10 @@ second per token to control growth. Default sizes are 1, 10, 50, 100 and 500 sha
 .\run_polymarket_l2_recorder.bat --sizes 1,10,25,50,100 --sample-ms 1000
 
 # Network-free deterministic tests
-.\run_polymarket_l2_execution_test.bat --selftest
+.\tests\launchers\run_polymarket_l2_execution_test.bat --selftest
 
 # Report after briefly stopping the standalone recorder
-.\run_polymarket_l2_execution_test.bat --order-size 10 --window-seconds 30 --submit-latency-ms 250
+.\tests\launchers\run_polymarket_l2_execution_test.bat --order-size 10 --window-seconds 30 --submit-latency-ms 250
 ```
 
 Outputs:

@@ -99,6 +99,6 @@ Each: ~68–93 MB/day/source cached; validate one day first. All three verified 
 exact size-specific taker VWAP into `data/polymarket_l2.duckdb`. Calculated states are sampled at one
 second per token while causal level updates remain event-by-event for queue replay.
 
-Run `.\run_polymarket_l2_recorder.bat`; analyze with `.\run_polymarket_l2_execution_test.bat`.
+Run `.\run_polymarket_l2_recorder.bat`; analyze with `.\tests\launchers\run_polymarket_l2_execution_test.bat`.
 Queue output is conservative/base/optimistic because public L2 does not reveal order IDs or true rank.
 See [POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md](POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md).

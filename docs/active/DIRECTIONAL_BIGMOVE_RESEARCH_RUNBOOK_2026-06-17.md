@@ -28,7 +28,7 @@ backend/research/train_180d_directional_bigmove.py
 One-click runner:
 
 ```powershell
-.\run_180d_directional_bigmove.bat
+.\research\launchers\run_180d_directional_bigmove.bat
 ```
 
 Manual command:

@@ -37,7 +37,7 @@ this archive.
 Command:
 
 ```powershell
-.\run_profit_campaign_v1.bat
+.\research\launchers\run_profit_campaign_v1.bat
 ```
 
 Final run directory:
@@ -377,7 +377,7 @@ backend/research/profit_campaign_v1/run_campaigns.py
 backend/research/profit_campaign_v1/selftest.py
 backend/research/profit_campaign_v1/validate_result.py
 backend/research/profit_campaign_v1/validation.py
-run_profit_campaign_v1.bat
+research\launchers\run_profit_campaign_v1.bat
 ```
 
 CI runs:

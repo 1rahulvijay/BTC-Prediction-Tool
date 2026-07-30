@@ -1681,7 +1681,7 @@ docs/active/COMPLETE_TRADE_FORECAST_V1_IMPLEMENTATION_2026-07-26.md
 Runner:
 
 ```text
-run_complete_trade_forecast_research.bat
+research\launchers\run_complete_trade_forecast_research.bat
 ```
 
 Do not call the complete-trade output profitable until the report shows valid

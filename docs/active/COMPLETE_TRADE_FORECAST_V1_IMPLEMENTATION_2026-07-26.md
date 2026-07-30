@@ -284,7 +284,7 @@ Run the complete research lane only when the recorder/export files are closed
 and stable:
 
 ```bat
-run_complete_trade_forecast_research.bat
+research\launchers\run_complete_trade_forecast_research.bat
 ```
 
 The runner performs dataset build, the three trainers, outcome resolution and

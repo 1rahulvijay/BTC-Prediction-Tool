@@ -8,7 +8,7 @@ Purpose: test deeper sequence architectures on the 180-day BTC 5m/15m research d
 
 ```text
 backend/research/train_180d_advanced_sequence_models.py
-run_180d_advanced_sequence_models.bat
+research\launchers\run_180d_advanced_sequence_models.bat
 docs/active/ADVANCED_SEQUENCE_RESEARCH_RUNBOOK_2026-06-17.md
 ```
 
@@ -83,7 +83,7 @@ but not enough to compile mamba-ssm from source.
 Default batch behavior:
 
 ```text
-run_180d_advanced_sequence_models.bat now runs:
+research\launchers\run_180d_advanced_sequence_models.bat now runs:
 VLSTM
 LPatchTST
 PatchTST
@@ -95,7 +95,7 @@ It does not include Mamba/Mamba2/VSN+Mamba2 by default on this machine.
 ## Run
 
 ```powershell
-.\run_180d_advanced_sequence_models.bat
+.\research\launchers\run_180d_advanced_sequence_models.bat
 ```
 
 Monitor:
@@ -176,7 +176,7 @@ return MAE
 Completed baseline sequence run:
 
 ```text
-run_180d_sequence_only.bat
+research\launchers\run_180d_sequence_only.bat
 ```
 
 Models tested:
@@ -254,7 +254,7 @@ RF 15m UP/DOWN AUC: 0.526
 Completed run:
 
 ```text
-run_180d_advanced_sequence_models.bat
+research\launchers\run_180d_advanced_sequence_models.bat
 ```
 
 Actual run settings:

@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, causal 180-day test, paper only  
 Implementation: `backend/research/test_180d_decision_heads.py`  
-Runner: `run_180d_decision_heads.bat`  
+Runner: `research\launchers\run_180d_decision_heads.bat`
 Output: `data/research/decision_heads_180d_30s/`
 
 ## Executive Decision
@@ -266,7 +266,7 @@ The output directory contains:
 ## Reproduction
 
 ```powershell
-.\run_180d_decision_heads.bat
+.\research\launchers\run_180d_decision_heads.bat
 ```
 
 The command is paper-only and does not retrain or replace the live application ensemble.

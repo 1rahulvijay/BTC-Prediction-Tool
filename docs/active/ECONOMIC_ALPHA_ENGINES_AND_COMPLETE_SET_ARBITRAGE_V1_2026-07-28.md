@@ -214,19 +214,19 @@ process.
 Continuous forward shadow:
 
 ```powershell
-.\run_poly_complete_set_arbitrage_shadow.bat
+.\research\launchers\run_poly_complete_set_arbitrage_shadow.bat
 ```
 
 Bounded diagnostic run:
 
 ```powershell
-.\run_poly_complete_set_arbitrage_shadow.bat --duration 300
+.\research\launchers\run_poly_complete_set_arbitrage_shadow.bat --duration 300
 ```
 
 Report:
 
 ```powershell
-.\report_poly_complete_set_arbitrage_shadow.bat
+.\research\launchers\report_poly_complete_set_arbitrage_shadow.bat
 ```
 
 The launcher reads public data only. The package has no credential import and no

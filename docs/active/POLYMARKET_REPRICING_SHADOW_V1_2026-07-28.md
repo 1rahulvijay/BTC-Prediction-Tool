@@ -192,7 +192,7 @@ promotion change would be required.
 Train or rebuild the isolated event bundle explicitly:
 
 ```powershell
-.\train_polymarket_repricing_shadow.bat
+.\research\launchers\train_polymarket_repricing_shadow.bat
 ```
 
 Run the existing public Polymarket recorder in one terminal:
@@ -204,13 +204,13 @@ Run the existing public Polymarket recorder in one terminal:
 Run the repricing shadow in another terminal:
 
 ```powershell
-.\run_polymarket_repricing_shadow.bat
+.\research\launchers\run_polymarket_repricing_shadow.bat
 ```
 
 Generate the forward report:
 
 ```powershell
-.\report_polymarket_repricing_shadow.bat
+.\research\launchers\report_polymarket_repricing_shadow.bat
 ```
 
 The shadow launcher fails closed if any model artifact is absent, stale against

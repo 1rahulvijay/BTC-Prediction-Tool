@@ -27,7 +27,7 @@ No result in this document authorizes live betting.
 The standalone lane is implemented in:
 
 - `backend/research/test_180d_anchor_roundtrip_strategy.py`
-- `run_180d_anchor_roundtrip_strategy.bat`
+- `research\launchers\run_180d_anchor_roundtrip_strategy.bat`
 
 The experiment uses 180 cached days of Binance one-second trades, resampled to 30-second OHLCV bars. It creates exact clock-aligned 5-minute and 15-minute rounds. The anchor is the first bar open at the round boundary, matching the intended price-to-beat structure as closely as Binance data permits.
 
@@ -229,7 +229,7 @@ The result directory contains:
 ## Reproduction
 
 ```powershell
-.\run_180d_anchor_roundtrip_strategy.bat
+.\research\launchers\run_180d_anchor_roundtrip_strategy.bat
 ```
 
 The default run uses 180 days, 30-second bars, four threads, sequential models and no model persistence. It does not modify live app models or place orders.

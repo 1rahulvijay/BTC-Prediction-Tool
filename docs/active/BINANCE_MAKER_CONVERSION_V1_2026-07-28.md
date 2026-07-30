@@ -231,7 +231,7 @@ Unfilled candidates contribute zero, rather than disappearing from expectancy.
 Run:
 
 ```powershell
-.\report_binance_maker_conversion_shadow.bat
+.\research\launchers\report_binance_maker_conversion_shadow.bat
 ```
 
 The report calculates:
@@ -292,7 +292,7 @@ Validate without network:
 Start the long-running shadow:
 
 ```powershell
-.\run_binance_maker_conversion_shadow.bat
+.\research\launchers\run_binance_maker_conversion_shadow.bat
 ```
 
 The launcher restarts after an unexpected non-zero exit and exits normally

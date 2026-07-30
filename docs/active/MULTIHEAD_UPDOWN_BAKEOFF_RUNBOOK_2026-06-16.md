@@ -18,7 +18,7 @@ This is research-only. It does not modify live app models, saved models, DuckDB 
 ```text
 backend/build_binance_updown_feature_dataset.py
 backend/run_updown_multihead_bakeoff.py
-run_120d_updown_bakeoff.bat
+research\launchers\run_120d_updown_bakeoff.bat
 docs/active/MULTIHEAD_UPDOWN_BAKEOFF_RUNBOOK_2026-06-16.md
 ```
 
@@ -29,7 +29,7 @@ docs/active/MULTIHEAD_UPDOWN_BAKEOFF_RUNBOOK_2026-06-16.md
 From the project root:
 
 ```powershell
-.\run_120d_updown_bakeoff.bat
+.\research\launchers\run_120d_updown_bakeoff.bat
 ```
 
 It launches a separate terminal window and writes logs to:

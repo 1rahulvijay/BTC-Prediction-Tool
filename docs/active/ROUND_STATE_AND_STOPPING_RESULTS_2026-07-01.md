@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, causal 180-day historical research, paper only  
 Implementation: `backend/research/test_180d_round_state_and_stopping.py`  
-Runner: `run_180d_round_state_stopping.bat`  
+Runner: `research\launchers\run_180d_round_state_stopping.bat`
 Output: `data/research/round_state_stopping_180d_30s/`
 
 ## Purpose

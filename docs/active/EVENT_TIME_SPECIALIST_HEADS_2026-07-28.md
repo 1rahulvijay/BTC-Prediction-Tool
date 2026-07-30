@@ -34,7 +34,7 @@ Standalone trainer:
 
 Convenience launcher:
 
-`run_event_time_specialists.bat`
+`research\launchers\run_event_time_specialists.bat`
 
 Outputs:
 
@@ -278,7 +278,7 @@ Self-test:
 Latest 30 paired days:
 
 ```powershell
-.\run_event_time_specialists.bat
+.\research\launchers\run_event_time_specialists.bat
 ```
 
 Explicit non-overlapping era:

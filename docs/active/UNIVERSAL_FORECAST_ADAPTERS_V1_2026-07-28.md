@@ -197,7 +197,7 @@ python -m backend.research.forecast_adapters_v1.run_adapters
 Populate and produce the hierarchical report:
 
 ```powershell
-.\report_hierarchical_ensemble.bat
+.\research\launchers\report_hierarchical_ensemble.bat
 ```
 
 Outputs:

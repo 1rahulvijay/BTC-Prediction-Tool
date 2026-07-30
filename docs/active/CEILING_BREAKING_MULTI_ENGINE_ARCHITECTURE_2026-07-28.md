@@ -79,9 +79,9 @@ backend/research/poly_1h_digital_fair_value_v1/
 Launchers:
 
 ```powershell
-.\run_poly_1h_fair_value_shadow.bat
-.\run_poly_1h_fair_value_shadow.bat --duration 300
-.\report_poly_1h_fair_value_shadow.bat
+.\research\launchers\run_poly_1h_fair_value_shadow.bat
+.\research\launchers\run_poly_1h_fair_value_shadow.bat --duration 300
+.\research\launchers\report_poly_1h_fair_value_shadow.bat
 ```
 
 Default evidence:

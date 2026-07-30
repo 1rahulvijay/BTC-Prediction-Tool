@@ -19,7 +19,7 @@ profit after the executable ask and fees. This lane therefore tests structurally
 Run:
 
 ```powershell
-.\run_polymarket_structural_edges_test.bat
+.\tests\launchers\run_polymarket_structural_edges_test.bat
 ```
 
 Implementation:

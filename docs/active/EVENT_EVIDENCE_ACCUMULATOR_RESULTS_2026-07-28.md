@@ -28,7 +28,7 @@ Polymarket ask/depth history.
 | Frozen protocol | `backend/research/event_evidence_accumulator/frozen_protocol.json` |
 | Standalone runner | `backend/research/event_evidence_accumulator/run_accumulator_campaign.py` |
 | Artifact validator | `backend/research/event_evidence_accumulator/validate_result.py` |
-| Windows launcher | `run_event_evidence_accumulator.bat` |
+| Windows launcher | `research\launchers\run_event_evidence_accumulator.bat` |
 | Completed run | `data/research/event_evidence_accumulator/20260728T053541Z/` |
 
 No serving model, paper policy or production artifact was changed.

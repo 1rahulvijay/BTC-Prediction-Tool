@@ -344,13 +344,13 @@ order type or order-submission method exists.
 Run:
 
 ```powershell
-.\report_hierarchical_ensemble.bat
+.\research\launchers\report_hierarchical_ensemble.bat
 ```
 
 Optional paths:
 
 ```powershell
-.\report_hierarchical_ensemble.bat `
+.\research\launchers\report_hierarchical_ensemble.bat `
   --ledger data\research\model_forecast_ledger_v1.duckdb `
   --output data\research\hierarchical_ensemble_v1\report
 ```

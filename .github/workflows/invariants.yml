@@ -111,6 +111,9 @@ jobs:
       - name: Launcher integrity (every invoked path exists)
         run: python backend/test_launcher_integrity.py
 
+      - name: Repository launcher layout
+        run: python tests/test_repository_layout.py
+
       - name: Model registry (single source of artifact identity)
         run: python backend/model_registry.py --selftest
 
@@ -285,6 +288,7 @@ jobs:
           python backend/test_kelly_scratch_semantics.py || exit /b 1
           python backend/test_endogenous_kelly.py || exit /b 1
           python backend/test_launcher_integrity.py || exit /b 1
+          python tests/test_repository_layout.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1
           python backend/model_artifacts.py --selftest || exit /b 1
           python backend/verified_io.py --selftest || exit /b 1

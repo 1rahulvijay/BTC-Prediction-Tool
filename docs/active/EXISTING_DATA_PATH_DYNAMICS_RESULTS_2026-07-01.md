@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, causal 180-day test, paper only  
 Implementation: `backend/research/test_180d_path_dynamics.py`  
-Runner: `run_180d_path_dynamics.bat`  
+Runner: `research\launchers\run_180d_path_dynamics.bat`
 Output: `data/research/path_dynamics_180d_30s/`
 
 ## Purpose
@@ -247,7 +247,7 @@ Do not deploy:
 ## Reproduction
 
 ```powershell
-.\run_180d_path_dynamics.bat
+.\research\launchers\run_180d_path_dynamics.bat
 ```
 
 The command uses existing historical files only and does not replace live models.

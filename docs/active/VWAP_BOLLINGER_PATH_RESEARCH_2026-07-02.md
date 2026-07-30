@@ -21,13 +21,13 @@ The experiment deliberately did **not** test the retail rule "above VWAP means s
 ## Reproducible Command
 
 ```powershell
-.\run_vwap_bollinger_path_research.bat
+.\research\launchers\run_vwap_bollinger_path_research.bat
 ```
 
 Implementation:
 
 - `backend/research/test_vwap_bollinger_path_features.py`
-- `run_vwap_bollinger_path_research.bat`
+- `research\launchers\run_vwap_bollinger_path_research.bat`
 
 Outputs:
 

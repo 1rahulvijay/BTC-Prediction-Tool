@@ -248,7 +248,7 @@ Files:
 ```text
 backend/target_windows.py
 backend/research/multiwindow_experiment.py
-run_multiwindow_experts_1265d.bat
+research\launchers\run_multiwindow_experts_1265d.bat
 ```
 
 Experts:
@@ -323,7 +323,7 @@ After a valid multi-window run exists and the research matrix has acquired new
 rows, run:
 
 ```powershell
-.\run_multiwindow_shadow.bat
+.\research\launchers\run_multiwindow_shadow.bat
 ```
 
 `backend/research/window_expert_shadow.py` verifies the run artifact hash,
@@ -383,7 +383,7 @@ Do not close the terminal during this process.
 Only after the matrix manifest says 1,265 days and all quality gates pass:
 
 ```powershell
-.\run_multiwindow_experts_1265d.bat
+.\research\launchers\run_multiwindow_experts_1265d.bat
 ```
 
 This is a separate research process. It does not promote or modify production
@@ -394,7 +394,7 @@ decisions.
 After new rows have been rebuilt into the research matrix:
 
 ```powershell
-.\run_multiwindow_shadow.bat
+.\research\launchers\run_multiwindow_shadow.bat
 ```
 
 Run it again after the 5m/15m outcomes exist so unresolved predictions are

@@ -10,7 +10,7 @@ Run:
 
 ```powershell
 cd C:\Users\rahul\Documents\BTC-Prediction-Tool
-.\train_180d_all_models_overnight.bat
+.\research\launchers\train_180d_all_models_overnight.bat
 ```
 
 This wrapper sets:

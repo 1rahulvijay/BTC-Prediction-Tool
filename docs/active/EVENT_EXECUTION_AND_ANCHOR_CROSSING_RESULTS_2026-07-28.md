@@ -241,7 +241,7 @@ over the existing repricing model.
 Run:
 
 ```powershell
-.\run_event_execution_anchor_crossing.bat
+.\research\launchers\run_event_execution_anchor_crossing.bat
 ```
 
 Implementation:
@@ -249,7 +249,7 @@ Implementation:
 - `backend/research/event_execution_v1/frozen_protocol.json`
 - `backend/research/event_execution_v1/run_campaign.py`
 - `backend/research/event_execution_v1/validate_result.py`
-- `run_event_execution_anchor_crossing.bat`
+- `research\launchers\run_event_execution_anchor_crossing.bat`
 
 Canonical outputs:
 

@@ -19,8 +19,8 @@ also show that neither currently deserves a live fragility veto.
 |---|---|
 | `backend/research/test_round_orb_features.py` | causal 5m/15m round-ORB path lift and P(Hold) veto test |
 | `backend/research/test_systemic_absorption_fragility.py` | synchronized BTC/ETH/SOL PCA absorption and fragility test |
-| `run_round_orb_research.bat` | reproduce ORB experiment |
-| `run_systemic_absorption_research.bat` | reproduce systemic absorption experiment |
+| `research\launchers\run_round_orb_research.bat` | reproduce ORB experiment |
+| `research\launchers\run_systemic_absorption_research.bat` | reproduce systemic absorption experiment |
 
 Outputs:
 
@@ -202,15 +202,15 @@ calls for each miss avoided in the extended top-decile policy.
 ## Reproduce
 
 ```powershell
-.\run_round_orb_research.bat
-.\run_systemic_absorption_research.bat --days 180
+.\research\launchers\run_round_orb_research.bat
+.\research\launchers\run_systemic_absorption_research.bat --days 180
 ```
 
 Network-free tests:
 
 ```powershell
-.\run_round_orb_research.bat --selftest
-.\run_systemic_absorption_research.bat --selftest
+.\research\launchers\run_round_orb_research.bat --selftest
+.\research\launchers\run_systemic_absorption_research.bat --selftest
 ```
 
 ## Final Interpretation

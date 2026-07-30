@@ -93,7 +93,7 @@ A near miss is a failure. Thresholds are not lowered after results.
 ## Run
 
 ```powershell
-.\run_120d_conditional_ev_pipeline.bat
+.\research\launchers\run_120d_conditional_ev_pipeline.bat
 ```
 
 Outputs are isolated under `data/research/conditional_ev_120d/`. Nothing is

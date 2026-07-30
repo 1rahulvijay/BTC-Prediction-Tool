@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, PAPER research only  
 Implementation: `backend/research/test_polymarket_shock_trade_replay.py`  
-Runner: `run_polymarket_shock_trade_replay.bat`  
+Runner: `tests\launchers\run_polymarket_shock_trade_replay.bat`
 Output: `data/research/polymarket_shock_trade_replay/`
 
 ## Question
@@ -175,7 +175,7 @@ Decision: no promotion. The rule remains useful as a predefined future recorder 
 Keep this test frozen and rerun it as the recorder grows:
 
 ```powershell
-.\run_polymarket_shock_trade_replay.bat
+.\tests\launchers\run_polymarket_shock_trade_replay.bat
 ```
 
 Do not tune thresholds from each small update. Review at these checkpoints:

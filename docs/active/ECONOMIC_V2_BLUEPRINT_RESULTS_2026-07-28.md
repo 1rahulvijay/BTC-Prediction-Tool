@@ -22,7 +22,7 @@ paper policy, place an order, or promote itself.
 | Frozen protocol | `backend/research/economic_v2/frozen_protocol.json` |
 | Campaign runner | `backend/research/economic_v2/run_blueprint_campaign.py` |
 | Post-run validator | `backend/research/economic_v2/validate_result.py` |
-| Windows launcher | `run_economic_v2_blueprint.bat` |
+| Windows launcher | `research\launchers\run_economic_v2_blueprint.bat` |
 | Completed run | `data/research/economic_v2/20260728T052508Z/` |
 
 The completed run took 6.4 seconds because it reused causal OOF/locked predictions and the

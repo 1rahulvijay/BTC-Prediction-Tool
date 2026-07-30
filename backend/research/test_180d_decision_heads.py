@@ -565,7 +565,10 @@ def run(args) -> int:
     anchor_dir = Path(args.anchor_dir) if args.anchor_dir else ROOT / "data" / "research" / "anchor_roundtrip_180d_30s"
     open_path = anchor_dir / "open_rounds.parquet"
     if not open_path.exists():
-        raise SystemExit(f"Missing prerequisite: {open_path}. Run run_180d_anchor_roundtrip_strategy.bat first.")
+        raise SystemExit(
+            f"Missing prerequisite: {open_path}. Run "
+            "research\\launchers\\run_180d_anchor_roundtrip_strategy.bat first."
+        )
     open_df = pd.read_parquet(open_path)
     feature_contract = json.loads((anchor_dir / "feature_names.json").read_text(encoding="utf-8"))
     features = feature_contract["open_70"]

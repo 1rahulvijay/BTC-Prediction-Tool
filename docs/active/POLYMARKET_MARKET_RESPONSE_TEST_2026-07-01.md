@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, descriptive PAPER research  
 Implementation: `backend/research/test_polymarket_market_response.py`  
-Runner: `run_polymarket_market_response_test.bat`  
+Runner: `tests\launchers\run_polymarket_market_response_test.bat`
 Output: `data/research/polymarket_market_response/`
 
 ## Purpose
@@ -185,7 +185,7 @@ Decision: the recorder can support a top-of-book size gate for PAPER diagnostics
 ## 8. Reproduction
 
 ```powershell
-.\run_polymarket_market_response_test.bat
+.\tests\launchers\run_polymarket_market_response_test.bat
 ```
 
 The run takes seconds, reads the live DuckDB when available and falls back to periodic parquet exports when the database is locked.

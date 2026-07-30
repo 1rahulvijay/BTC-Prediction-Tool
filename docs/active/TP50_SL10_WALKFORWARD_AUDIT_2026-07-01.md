@@ -3,7 +3,7 @@
 Date: 2026-07-01  
 Status: completed, promising BTC-path policy, PAPER only  
 Implementation: `backend/research/test_180d_stopping_overfit_audit.py`  
-Runner: `run_180d_stopping_overfit_audit.bat`  
+Runner: `research\launchers\run_180d_stopping_overfit_audit.bat`
 Output: `data/research/stopping_overfit_audit_180d/`
 
 ## Purpose
@@ -183,7 +183,7 @@ The policy should not be wired as an automatic bet from this historical audit.
 ## 7. Reproduction
 
 ```powershell
-.\run_180d_stopping_overfit_audit.bat
+.\research\launchers\run_180d_stopping_overfit_audit.bat
 ```
 
 Runtime on the current laptop was approximately 1.5 minutes with four threads. Models are trained sequentially and no production artifact is replaced.

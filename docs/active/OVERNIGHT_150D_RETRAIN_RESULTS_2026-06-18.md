@@ -1,6 +1,6 @@
 # Overnight 150-Day Full Retrain — Results & Validation (2026-06-18)
 
-Operator-run overnight retrain on **150 days** of data via `train_180d_all_models_overnight.bat`
+Operator-run overnight retrain on **150 days** of data via `research\launchers\train_180d_all_models_overnight.bat`
 (the bat is named "180d" but was configured for `BTC_HISTORICAL_DAYS=150`). This is the first run
 that exercises the **single-knob days pipeline** + the **98/2 train/test split** end-to-end, *and*
 retrains the full main ensemble (`BTC_FORCE_MAIN_RETRAIN=1`).

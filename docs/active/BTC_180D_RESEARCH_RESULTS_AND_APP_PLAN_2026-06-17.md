@@ -19,10 +19,10 @@ backend/research/train_360d_multitarget_forecaster.py
 Launchers:
 
 ```text
-run_180d_all_models_forecaster.bat
-run_180d_remaining_quantile_only.bat
-run_180d_sequence_only.bat
-run_360d_multitarget_forecaster.bat
+research\launchers\run_180d_all_models_forecaster.bat
+research\launchers\run_180d_remaining_quantile_only.bat
+research\launchers\run_180d_sequence_only.bat
+research\launchers\run_360d_multitarget_forecaster.bat
 ```
 
 Purpose:
@@ -36,8 +36,8 @@ Save model-by-model metrics, predictions, and inventory.
 ### 2. CUDA PyTorch Research Environment
 
 ```text
-setup_research_cuda_pytorch_env.bat
-check_research_cuda_pytorch_env.bat
+research\launchers\setup_research_cuda_pytorch_env.bat
+research\launchers\check_research_cuda_pytorch_env.bat
 ```
 
 Purpose:
@@ -59,7 +59,7 @@ Default PyTorch is CPU-only: torch 2.12.0+cpu.
 
 ```text
 backend/research/train_180d_advanced_sequence_models.py
-run_180d_advanced_sequence_models.bat
+research\launchers\run_180d_advanced_sequence_models.bat
 docs/active/ADVANCED_SEQUENCE_RESEARCH_RUNBOOK_2026-06-17.md
 ```
 
@@ -507,7 +507,7 @@ Important:
 ```text
 The completed big-move tests do not yet prove big-drop prediction.
 They only prove the model can detect whether a larger-than-normal move may happen.
-The directional research pass is implemented in `backend/research/train_180d_directional_bigmove.py` and completed with `.\run_180d_directional_bigmove.bat`.
+The directional research pass is implemented in `backend/research/train_180d_directional_bigmove.py` and completed with `.\research\launchers\run_180d_directional_bigmove.bat`.
 
 Directional big-move results:
 
@@ -681,7 +681,7 @@ avoid when direction is coin-flip
 Completed run:
 
 ```text
-run_180d_sequence_only.bat
+research\launchers\run_180d_sequence_only.bat
 ```
 
 Output files:
@@ -859,7 +859,7 @@ ElasticNet high/low/range MAE
 Completed run:
 
 ```text
-run_180d_advanced_sequence_models.bat
+research\launchers\run_180d_advanced_sequence_models.bat
 ```
 
 Important:

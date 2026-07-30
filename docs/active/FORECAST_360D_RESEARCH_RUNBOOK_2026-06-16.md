@@ -18,7 +18,7 @@ frontend app behavior
 
 ```text
 backend/research/train_360d_multitarget_forecaster.py
-run_360d_multitarget_forecaster.bat
+research\launchers\run_360d_multitarget_forecaster.bat
 docs/active/FORECAST_360D_RESEARCH_RUNBOOK_2026-06-16.md
 ```
 
@@ -27,7 +27,7 @@ docs/active/FORECAST_360D_RESEARCH_RUNBOOK_2026-06-16.md
 From the project root:
 
 ```powershell
-.\run_360d_multitarget_forecaster.bat
+.\research\launchers\run_360d_multitarget_forecaster.bat
 ```
 
 It opens a separate terminal and writes logs to:
