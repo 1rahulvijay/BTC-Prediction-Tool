@@ -1,5 +1,11 @@
 # Documentation Index
 
+## Production
+
+- **[PRODUCTION_READINESS_AUDIT_2026-07-30.md](active/PRODUCTION_READINESS_AUDIT_2026-07-30.md)** -
+  canonical production gate, current blockers, secure launcher and promotion sequence. Current
+  status is paper/shadow code-ready but artifact/environment blocked; real orders remain disabled.
+
 ## Latest canonical implementation
 - **[PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md](active/PROFIT_CAMPAIGN_V1_IMPLEMENTATION_AND_RESULTS_2026-07-28.md)** -
   two frozen Binance economic campaigns using exact L2 ladder execution, fees,

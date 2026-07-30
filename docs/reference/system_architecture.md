@@ -1,16 +1,11 @@
-# BTC Quantum Trader: Current System Architecture
+# BTC Quantum Trader: Architecture Reference
 
-> ⚠️ **STALE — partially out of date as of 2026-06-12.** This document describes the
-> ~109-feature v3 era. Since then: **130 features** (trend-persistence batch),
-> **v5 class-balanced training** (arch `v5-classbal-130`), Pyth price-to-beat anchor,
-> sign-truth grading rebuild, `lean_hit` column, out-of-sample backtest boundary, and
-> the venue tabs. For current truth read `docs/active/V3_CHANGES_AND_AUDIT.md` (what
-> happened) and `docs/active/MODEL_ROSTER_PLAN.md` (what's next). A full rewrite is
-> queued AFTER the v5 measurement settles the model roster — no point documenting an
-> architecture about to change. The maturity scores below also predate the discovery
-> that `hit`-based accuracy panels were inflated (§5z) — read them skeptically.
-
-This document is the canonical source of truth for the current codebase. It replaces the older four-model / 61-feature architecture description.
+> **Historical reference, not a deployment checklist.** This file contains architecture history
+> from several model eras and must not decide whether the current process or artifacts are
+> production-ready. The canonical deployment gate is
+> `docs/active/PRODUCTION_READINESS_AUDIT_2026-07-30.md`; executable contracts in
+> `model_contract.py`, `model_registry.py`, `production_readiness.py` and serving loaders take
+> precedence over narrative documentation.
 
 **Current correction, 2026-06-15 pre-restart:** the raw app feature schema is **136** columns.
 The main ensemble now applies a model-local pruning mask and trains/predicts on **69** model
@@ -1031,3 +1026,15 @@ to `UI_GUIDE.md` for screen details.
 **Data flow (one line):** live feeds → `features.py` → `model.py` ensemble → quality filters in
 `server.py` → DuckDB persistence + WS `payload` → `main.js` render → `UI_GUIDE.md`-documented UI;
 verifiers (`*_verifier.py`, `price_to_beat.py`) resolve outcomes back into DuckDB → `analytics.py`.
+## Production Boundary (2026-07-30)
+
+The deployable boundary is a **paper/shadow decision-support service**, not a real-order service.
+`start_production.bat` serves the immutable frontend and FastAPI API from one Uvicorn worker after
+`backend/production_readiness.py` verifies environment, artifact, feature-contract and champion
+gates. `/healthz` is liveness; `/readyz` fails closed on missing models, unhealthy feeds, writers,
+tasks or required complete-trade heads. Real Binance and Polymarket execution adapters remain
+unavailable and unauthorized.
+
+See
+[Production Readiness Audit](../active/PRODUCTION_READINESS_AUDIT_2026-07-30.md)
+for the current blockers and operator sequence.
