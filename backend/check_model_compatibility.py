@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sys
 
-import joblib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -24,7 +23,7 @@ def main() -> int:
         return 3
 
     try:
-        saved = joblib.load(VERSION_PATH)
+        saved = _verified_load(VERSION_PATH)
     except Exception as exc:
         print(f"[model-preflight] Cannot read saved architecture: {exc}")
         return 4
@@ -37,7 +36,7 @@ def main() -> int:
 
     schema_path = os.path.join(DATA_DIR, "saved_models", "model_feature_schema.pkl")
     try:
-        schema = joblib.load(schema_path)
+        schema = _verified_load(schema_path)
     except Exception as exc:
         print(f"[model-preflight] Cannot read saved feature schema: {exc}")
         return 6
@@ -52,7 +51,7 @@ def main() -> int:
     for horizon in (5, 15):
         component = os.path.join(DATA_DIR, "saved_models", "GLOBAL", f"xgb_{horizon}.pkl")
         try:
-            model = joblib.load(component)
+            model = _verified_load(component)
             # Metadata validation is enough for this short-lived preflight. Calling
             # native XGBoost prediction here intermittently crashes Python 3.13 at
             # process teardown on Windows (0xC0000005), despite a successful result.
@@ -78,3 +77,20 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration carry no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)

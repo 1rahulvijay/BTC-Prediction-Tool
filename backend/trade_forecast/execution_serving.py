@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 
 from .model_common import artifact_issues, predict_classifier, predict_member_mean
@@ -80,7 +79,7 @@ def load_model(force: bool = False):
         # refused and the pinned one kept, rather than silently spliced into the middle of a run.
         if not _PIN.check(manifest.get("artifact_sha256")):
             return _BUNDLE
-        bundle = joblib.load(MODEL_PATH)
+        bundle = _verified_load(MODEL_PATH)
         if bundle.get("version") != CONFIG_VERSION or bundle.get("mode") != MODE:
             _BUNDLE, _MANIFEST, _ERROR = None, manifest, "bundle version/mode mismatch"
             return None
@@ -170,6 +169,24 @@ def score(horizon: int, values: dict[str, Any]) -> dict[str, Any]:
     if not base["promotable"]:
         base["reason_codes"].append("insufficient_forward_evidence")
     return base
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    Deserialization executes arbitrary code, so validating after loading has already lost.
+    Pre-migration artifacts carry no manifest; they load while BTC_STRICT_ARTIFACT_IDENTITY
+    is off and are counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    for _up in (1, 2, 3):
+        _cand = str(_Path(__file__).resolve().parents[_up - 1])
+        if (_Path(_cand) / "verified_io.py").is_file() and _cand not in _sys.path:
+            _sys.path.insert(0, _cand)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)
 
 
 if __name__ == "__main__":

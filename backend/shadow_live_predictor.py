@@ -19,6 +19,7 @@ Flow:
 Usage:  python backend/shadow_live_predictor.py --start --hours 10
         python backend/shadow_live_predictor.py --selftest
 """
+import joblib   # still used for joblib.dump; loads go via _verified_load
 import argparse
 import json
 import os
@@ -60,7 +61,6 @@ def train_and_save(train_days=14):
     from train_beat_classifier import _ohlc_for_dates, build_beat_features, beat_labels, FEATURE_NAMES
     from train_beat_classifier import resolve_dates as _rd
     from model_bakeoff import make_light_models
-    import joblib
     from sklearn.isotonic import IsotonicRegression
 
     class _A:
@@ -206,6 +206,24 @@ def selftest():
     print("shadow_live_predictor self-test: ALL PASS (predict + resolution logic sound)")
 
 
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    Deserialization executes arbitrary code, so validating after loading has already lost.
+    Pre-migration artifacts carry no manifest; they load while BTC_STRICT_ARTIFACT_IDENTITY
+    is off and are counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    for _up in (1, 2, 3):
+        _cand = str(_Path(__file__).resolve().parents[_up - 1])
+        if (_Path(_cand) / "verified_io.py").is_file() and _cand not in _sys.path:
+            _sys.path.insert(0, _cand)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", action="store_true")
@@ -217,9 +235,8 @@ if __name__ == "__main__":
     if a.selftest:
         selftest()
     elif a.start:
-        import joblib
         if os.path.exists(MODEL_PATH):
-            bundle = joblib.load(MODEL_PATH)
+            bundle = _verified_load(MODEL_PATH)
             print(f"loaded shadow models <- {MODEL_PATH}")
         else:
             bundle = train_and_save(a.train_days)

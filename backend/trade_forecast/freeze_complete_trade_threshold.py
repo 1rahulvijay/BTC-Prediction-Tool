@@ -8,7 +8,6 @@ import os
 import time
 from pathlib import Path
 
-import joblib
 import numpy as np
 
 try:
@@ -87,8 +86,8 @@ def freeze_threshold(
         if str(manifest.get("policy_hash") or "") != policy_hash():
             raise RuntimeError(f"{name} artifact policy hash does not match")
 
-    share = joblib.load(share_path)
-    execution = joblib.load(execution_path)
+    share = _verified_load(share_path)
+    execution = _verified_load(execution_path)
     split = chronological_purged_split(frame)
     scores: list[np.ndarray] = []
     timestamps: list[np.ndarray] = []
@@ -215,6 +214,24 @@ def main() -> int:
         indent=2,
     ))
     return 0
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    Deserialization executes arbitrary code, so validating after loading has already lost.
+    Pre-migration artifacts carry no manifest; they load while BTC_STRICT_ARTIFACT_IDENTITY
+    is off and are counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    for _up in (1, 2, 3):
+        _cand = str(_Path(__file__).resolve().parents[_up - 1])
+        if (_Path(_cand) / "verified_io.py").is_file() and _cand not in _sys.path:
+            _sys.path.insert(0, _cand)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)
 
 
 if __name__ == "__main__":

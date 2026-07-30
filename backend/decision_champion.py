@@ -97,7 +97,6 @@ def _load_meta_model():
         return _META_MODEL
     _META_CHECKED = True
     try:
-        import joblib
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(root, "data")
         path = os.path.join(data_dir, "saved_models", "champion_meta_model.pkl")
@@ -106,7 +105,7 @@ def _load_meta_model():
             if not identity_ok:
                 _META_ERROR = "artifact identity mismatch: " + "; ".join(reasons)
                 return None
-            _META_MODEL = joblib.load(path)
+            _META_MODEL = _verified_load(path)
     except Exception as exc:
         _META_ERROR = str(exc)
         _META_MODEL = None
@@ -563,3 +562,20 @@ def champion_decision(
         f"P(hold) is only {p_hold * 100:.0f}% on the {position} side. Too close to act.",
         invalidate="P(hold) strengthens above 85%.",
     )
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration carry no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)

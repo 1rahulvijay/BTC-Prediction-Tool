@@ -133,7 +133,6 @@ def _load_persistence_model():
         return _PERSIST_MODEL                       # throttle: re-check the file at most every 30s
     _PERSIST_MODEL_CHECKED = now
     try:
-        import joblib
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "persistence_model.pkl")
@@ -152,7 +151,7 @@ def _load_persistence_model():
             _PERSIST_MODEL_ERROR = "artifact identity mismatch"
             _PERSIST_MODEL_MTIME = mt
             return _PERSIST_MODEL
-        loaded = joblib.load(path)                   # only reaches here when the file CHANGED
+        loaded = _verified_load(path)                   # only reaches here when the file CHANGED
         _PERSIST_MODEL = loaded; _PERSIST_MODEL_MTIME = mt; _PERSIST_MODEL_ERROR = ""
         logger.info("A1 persistence model (re)loaded (P(hold) live): test_auc="
                     f"{_PERSIST_MODEL.get('test_auc')}, features={_PERSIST_MODEL.get('features')}")
@@ -179,13 +178,12 @@ def _load_bigmove_keeper_model():
         return _BIGMOVE_MODEL
     _BIGMOVE_CHECKED = True
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "bigmove_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "bigmove_keeper"):
-            _BIGMOVE_MODEL = joblib.load(path)
+            _BIGMOVE_MODEL = _verified_load(path)
             logger.info(f"Big-move keeper head loaded: AUC={_BIGMOVE_MODEL.get('auc'):.3f}, "
                         f"features={_BIGMOVE_MODEL.get('features')}")
     except Exception as _e:
@@ -204,13 +202,12 @@ def _load_bigdrop_keeper_model():
         return _BIGDROP_MODEL
     _BIGDROP_CHECKED = True
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "bigdrop_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "bigdrop_keeper"):
-            _BIGDROP_MODEL = joblib.load(path)
+            _BIGDROP_MODEL = _verified_load(path)
             logger.info(f"Big-drop keeper head loaded: AUC={_BIGDROP_MODEL.get('auc'):.3f}, "
                         f"top5%={_BIGDROP_MODEL.get('top5_prec'):.2f}")
     except Exception as _e:
@@ -229,13 +226,12 @@ def _load_directional_keeper_model():
         return _DIRECTIONAL_MODEL
     _DIRECTIONAL_CHECKED = True
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "directional_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "directional_keeper"):
-            _DIRECTIONAL_MODEL = joblib.load(path)
+            _DIRECTIONAL_MODEL = _verified_load(path)
             logger.info("Directional keeper heads loaded: %s", list((_DIRECTIONAL_MODEL.get("models") or {}).keys()))
     except Exception as _e:
         logger.debug(f"directional keeper model load skipped: {_e}")
@@ -253,13 +249,12 @@ def _load_activity_keeper_model():
         return _ACTIVITY_MODEL
     _ACTIVITY_CHECKED = True
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "activity_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "activity_keeper"):
-            _ACTIVITY_MODEL = joblib.load(path)
+            _ACTIVITY_MODEL = _verified_load(path)
             logger.info(f"Activity keeper head loaded: AUC={_ACTIVITY_MODEL.get('auc'):.3f}")
     except Exception as _e:
         logger.debug(f"activity keeper model load skipped: {_e}")
@@ -284,7 +279,6 @@ def _load_path_forecaster():
         return _PATH_FORECASTER
     _PATH_MODEL_CHECKED = now
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
@@ -302,7 +296,7 @@ def _load_path_forecaster():
             _PATH_MODEL_MTIME = mt
             _PATH_MODEL_ERROR = "artifact identity mismatch"
             return _PATH_FORECASTER
-        loaded = joblib.load(path)
+        loaded = _verified_load(path)
         if loaded.get("threshold_units") != "usd":   # accept any usd-barriers bundle (v2/v3); units is the real safety guard
             _PATH_MODEL_MTIME = mt
             _PATH_MODEL_ERROR = "incompatible path-forecaster schema"
@@ -348,7 +342,6 @@ def _load_fade_model():
         return _FADE_MODEL
     _FADE_CHECKED = now
     try:
-        import joblib
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
@@ -365,7 +358,7 @@ def _load_fade_model():
         if _identity_blocks_load(path, "fade_model"):
             _FADE_ERROR = "artifact identity mismatch"
             return _FADE_MODEL
-        loaded = joblib.load(path)
+        loaded = _verified_load(path)
         from train_fade_model import HEAD_VERSION as expected_version
         if not (loaded.get("features") and loaded.get("horizons")):
             _FADE_MODEL = None
@@ -1055,7 +1048,6 @@ def _load_signed_quantile_model():
         return _SIGNED_QMODEL
     _SIGNED_QMODEL_CHECKED = now
     try:
-        import joblib
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "data")
         path = os.path.join(data_dir, "saved_models", "signed_quantile_model.pkl")
@@ -1072,7 +1064,7 @@ def _load_signed_quantile_model():
         if _identity_blocks_load(path, "signed_quantile_model"):
             _SIGNED_QMODEL_MTIME = mt
             return _SIGNED_QMODEL
-        _SIGNED_QMODEL = joblib.load(path); _SIGNED_QMODEL_MTIME = mt
+        _SIGNED_QMODEL = _verified_load(path); _SIGNED_QMODEL_MTIME = mt
         logger.info(f"Signed-quantile band (re)loaded: horizons={_SIGNED_QMODEL.get('horizons')}, "
                     f"features={_SIGNED_QMODEL.get('features')}")
     except Exception as e:
@@ -2555,3 +2547,20 @@ class PriceToBeatTracker:
                 "pending": sum(1 for p in self.pending if p["horizon"] == h),
             }
         return out
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration carry no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)

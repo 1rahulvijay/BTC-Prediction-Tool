@@ -25,6 +25,7 @@ WHY THE COUNT MATTERS
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -57,14 +58,21 @@ def scan() -> dict:
         except OSError:
             continue
         rel = path.relative_to(REPO).as_posix()
-        for number, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("#"):
+        # AST, not regex: a docstring that MENTIONS joblib.load is prose, not a call site.
+        # The regex version counted this module's own warning text as a bypass.
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
-            if SAVE.search(line):
-                saves.append(f"{rel}:{number}")
-            if LOAD.search(line):
-                loads.append(f"{rel}:{number}")
+            owner = getattr(node.func.value, "id", "")
+            name = f"{owner}.{node.func.attr}"
+            if name in ("joblib.dump", "pickle.dump", "torch.save"):
+                saves.append(f"{rel}:{node.lineno}")
+            elif name in ("joblib.load", "pickle.load", "torch.load"):
+                loads.append(f"{rel}:{node.lineno}")
     return {
         "save_sites": saves,
         "load_sites": loads,

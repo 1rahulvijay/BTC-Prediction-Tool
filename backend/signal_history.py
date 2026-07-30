@@ -389,7 +389,7 @@ class LiveSignalHistoryBuffer:
             return 0
         try:
             with open(path, "rb") as f:
-                payload = pickle.load(f)
+                payload = _verified_load(f)
             maxlen = int(payload.get("maxlen") or self.order.maxlen or 140000)
             order = payload.get("order") or []
             by_ts = payload.get("by_ts") or {}
@@ -404,3 +404,20 @@ class LiveSignalHistoryBuffer:
 
     def __len__(self):
         return len(self.order)
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration carry no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)

@@ -30,7 +30,6 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
-import joblib
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")   # Windows cp1252 can't encode ≤ / ·
@@ -130,7 +129,7 @@ def _score_quantile_coverage(df):
     path = os.path.join(SM, "signed_quantile_model.pkl")
     if not os.path.exists(path):
         return None
-    bundle = joblib.load(path)
+    bundle = _verified_load(path)
     feats = bundle["features"]
     models = bundle.get("models", {})
     h = 5 if 5 in models else (next(iter(models)) if models else None)
@@ -198,7 +197,7 @@ def main():
     # bigmove
     try:
         import train_bigmove_keeper as bm
-        _b = joblib.load(os.path.join(SM, "bigmove_keeper_model.pkl"))
+        _b = _verified_load(os.path.join(SM, "bigmove_keeper_model.pkl"))
         _thr = _b.get("move_threshold_usd_by_horizon") or {}
         t5 = float(_thr.get(5) or _thr.get("5") or 30.0)   # the threshold the head ACTUALLY trained on
         sv = _b.get("auc")
@@ -214,7 +213,7 @@ def main():
     # bigdrop
     try:
         import train_bigdrop_keeper as bd
-        _b = joblib.load(os.path.join(SM, "bigdrop_keeper_model.pkl"))
+        _b = _verified_load(os.path.join(SM, "bigdrop_keeper_model.pkl"))
         _thr = _b.get("drop_threshold_usd_by_horizon") or {}
         t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_bd = df.copy()
@@ -235,14 +234,14 @@ def main():
     # directional confirmation heads
     try:
         import train_directional_keeper as dh
-        _thr = joblib.load(os.path.join(SM, "directional_keeper_model.pkl")).get("move_threshold_usd_by_horizon") or {}
+        _thr = _verified_load(os.path.join(SM, "directional_keeper_model.pkl")).get("move_threshold_usd_by_horizon") or {}
         t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_dh = df.copy()
         delta = df_dh["close"].shift(-5) - df_dh["close"]
         df_dh["_delta_usd"] = delta
         df_dh["_big_up_label"] = (delta >= t5).astype(int)
         df_dh["_big_down_label"] = (delta <= -t5).astype(int)
-        bundle = joblib.load(os.path.join(SM, "directional_keeper_model.pkl"))
+        bundle = _verified_load(os.path.join(SM, "directional_keeper_model.pkl"))
         h5 = (bundle.get("models") or {}).get(5) or (bundle.get("models") or {}).get("5") or {}
         sv_up = (h5.get("big_up") or {}).get("auc")
         sv_down = (h5.get("big_down") or {}).get("auc")
@@ -257,7 +256,7 @@ def main():
     # activity/range proxy
     try:
         import train_activity_keeper as ah
-        _b = joblib.load(os.path.join(SM, "activity_keeper_model.pkl"))
+        _b = _verified_load(os.path.join(SM, "activity_keeper_model.pkl"))
         _thr = _b.get("range_threshold_usd_by_horizon") or {}
         t5 = float(_thr.get(5) or _thr.get("5") or 30.0)
         df_ah = df.copy()
@@ -305,3 +304,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration carry no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)
