@@ -1,5 +1,5 @@
 {
   "save_count": 39,
-  "load_count": 53,
+  "load_count": 43,
   "note": "Ratchet ceiling. May only ever DECREASE. Lower it with --accept after migrating call sites to model_artifacts."
 }

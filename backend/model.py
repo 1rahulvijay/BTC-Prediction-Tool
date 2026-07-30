@@ -192,17 +192,25 @@ def _balanced_sequence_indices(
 
 
 def _atomic_joblib_dump(value, path: str) -> None:
-    """Write one model artifact atomically so an interrupted save keeps the prior file."""
-    tmp = f"{path}.tmp.{os.getpid()}"
-    try:
-        joblib.dump(value, tmp)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    """Write one model artifact atomically AND record its integrity manifest.
+
+    Every save in this file funnels through here, so recording the hash in one place gives the
+    whole trainer verify-before-deserialize on the way back in. The matching read path is
+    _verified_joblib_load below - never call joblib.load directly here again."""
+    from verified_io import atomic_dump
+
+    atomic_dump(value, path)
+
+
+def _verified_joblib_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing.
+
+    joblib.load executes arbitrary code while unpickling, so validating after loading has
+    already lost. Artifacts written before this migration have no manifest; they still load
+    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is COUNTED as remaining debt."""
+    from verified_io import verified_load
+
+    return verified_load(path)
 
 
 # Optional LightGBM
@@ -263,12 +271,12 @@ if HAS_CATBOOST:
         CAT_DEVICE = "CPU"
         logger.info("CatBoost GPU not available — training on CPU.")
 
-# Optional joblib for model persistence
-try:
-    import joblib
-    HAS_JOBLIB = True
-except ImportError:
-    HAS_JOBLIB = False
+# Availability probe only. Serialization goes through verified_io via _atomic_joblib_dump
+# and _verified_joblib_load, so joblib is never imported or called directly in this module -
+# find_spec answers "is it installed?" without binding a name nothing here uses.
+import importlib.util as _importlib_util
+
+HAS_JOBLIB = _importlib_util.find_spec("joblib") is not None
 
 # Optional PyTorch for Deep Learning sequence models
 try:
@@ -2899,32 +2907,32 @@ class MultiModelEnsemble:
                     for h in self.horizons:
                         path = os.path.join(reg_dir, f"{name}_{h}.pkl")
                         if os.path.exists(path):
-                            self.models_by_regime[reg][name][h] = joblib.load(path)
+                            self.models_by_regime[reg][name][h] = _verified_joblib_load(path)
                             loaded_any = True
                             loaded_count += 1
 
             acc_path = os.path.join(model_dir, "accuracies.pkl")
             if os.path.exists(acc_path):
-                self.model_accuracies = joblib.load(acc_path)
+                self.model_accuracies = _verified_joblib_load(acc_path)
             
             res_path = os.path.join(model_dir, "conformal_residuals.pkl")
             if os.path.exists(res_path):
                 try:
-                    self.conformal_residuals = joblib.load(res_path)
+                    self.conformal_residuals = _verified_joblib_load(res_path)
                 except Exception:
                     self.conformal_residuals = {reg: {} for reg in self.regimes}
 
             ref_path = os.path.join(model_dir, "feature_reference.pkl")
             if os.path.exists(ref_path):
                 try:
-                    self.feature_reference = joblib.load(ref_path)
+                    self.feature_reference = _verified_joblib_load(ref_path)
                 except Exception:
                     self.feature_reference = {}
 
             ref_names_path = os.path.join(model_dir, "feature_reference_names.pkl")
             if os.path.exists(ref_names_path):
                 try:
-                    loaded_names = joblib.load(ref_names_path)
+                    loaded_names = _verified_joblib_load(ref_names_path)
                     if isinstance(loaded_names, list):
                         self.feature_reference_names = loaded_names
                 except Exception:
@@ -2933,21 +2941,21 @@ class MultiModelEnsemble:
             priors_path = os.path.join(model_dir, "class_priors.pkl")
             if os.path.exists(priors_path):
                 try:
-                    self.class_priors = joblib.load(priors_path)
+                    self.class_priors = _verified_joblib_load(priors_path)
                 except Exception:
                     self.class_priors = {}
 
             stats_path = os.path.join(model_dir, "move_size_stats.pkl")
             if os.path.exists(stats_path):
                 try:
-                    self.move_size_stats = joblib.load(stats_path)
+                    self.move_size_stats = _verified_joblib_load(stats_path)
                 except Exception:
                     self.move_size_stats = {reg: {} for reg in self.regimes}
 
             stackers_path = os.path.join(model_dir, "stackers.pkl")
             if os.path.exists(stackers_path):
                 try:
-                    loaded_stackers = joblib.load(stackers_path)
+                    loaded_stackers = _verified_joblib_load(stackers_path)
                     if isinstance(loaded_stackers, dict):
                         self.stackers_by_regime = {
                             reg: loaded_stackers.get(reg, {})
@@ -2968,7 +2976,7 @@ class MultiModelEnsemble:
             provenance_path = os.path.join(model_dir, "calibration_provenance.pkl")
             if os.path.exists(provenance_path):
                 try:
-                    loaded_provenance = joblib.load(provenance_path)
+                    loaded_provenance = _verified_joblib_load(provenance_path)
                     if isinstance(loaded_provenance, dict):
                         self.calibration_provenance = loaded_provenance
                 except Exception:
@@ -2977,7 +2985,7 @@ class MultiModelEnsemble:
             metadata_path = os.path.join(model_dir, "bundle_metadata.pkl")
             if os.path.exists(metadata_path):
                 try:
-                    metadata = joblib.load(metadata_path)
+                    metadata = _verified_joblib_load(metadata_path)
                     if isinstance(metadata, dict):
                         self.model_bundle_id = str(
                             metadata.get("model_bundle_id") or self.model_bundle_id
@@ -2997,7 +3005,7 @@ class MultiModelEnsemble:
                 saved_version = None
                 if os.path.exists(version_path):
                     try:
-                        saved_version = joblib.load(version_path)
+                        saved_version = _verified_joblib_load(version_path)
                     except Exception:
                         saved_version = None
                 if saved_version != MODEL_ARCH_VERSION:
