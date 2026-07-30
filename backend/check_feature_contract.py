@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding="utf-8")
@@ -44,24 +45,35 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 MODELS = os.path.join(DATA, "saved_models")
 
-ARTIFACTS = [
-    "persistence_model.pkl", "path_forecaster.pkl", "fade_model.pkl",
-    "signed_quantile_model.pkl", "round_state_heads.pkl",
-    "bigmove_keeper_model.pkl", "bigdrop_keeper_model.pkl",
-    "directional_keeper_model.pkl", "activity_keeper_model.pkl",
-    "selectivity_models.pkl", "champion_meta_model.pkl", "magnitude_model.pkl",
+from model_registry import REGISTRY  # noqa: E402
+
+ARTIFACTS = [entry.filename for entry in REGISTRY]
+SERVING_ARTIFACTS = [
+    entry.filename
+    for entry in REGISTRY
+    if entry.required_for_serving or entry.may_price or entry.may_rank or entry.may_size
 ]
 
 
 def _manifest(path: str) -> dict | None:
-    side = os.path.splitext(path)[0] + ".manifest.json"
-    if not os.path.exists(side):
-        return None
-    try:
-        with open(side, encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return None
+    # Standalone heads use artifact_identity's appended suffix. Complete-trade artifacts
+    # historically used the replacement suffix; keep it as a read-only fallback.
+    candidates = [
+        Path(f"{path}.manifest.json"),
+        Path(path).with_suffix(".manifest.json"),
+    ]
+    for side in candidates:
+        if not side.is_file():
+            continue
+        try:
+            with side.open(encoding="utf-8") as fh:
+                value = json.load(fh)
+            # Ignore the old integrity-only schema. Integrity now has its own suffix.
+            if isinstance(value, dict) and value.get("integrity_only") is not True:
+                return value
+        except Exception:
+            return None
+    return None
 
 
 def artifact_semantics(path: str) -> int | None:
@@ -92,9 +104,14 @@ def verdict_for(path: str) -> tuple[str | None, str]:
         return MODEL_UNAVAILABLE_UNKNOWN_IDENTITY, "no manifest - provenance unprovable"
     for key in ("artifact_sha256", "feature_semantics_version", "training_semantics_version",
                 "feature_schema_sha256", "training_cutoff", "training_dataset_sha256",
-                "code_commit"):
+                "code_commit", "code_dirty", "runtime_dependency_hash"):
         if m.get(key) in (None, ""):
             return MODEL_UNAVAILABLE_UNKNOWN_IDENTITY, f"manifest missing '{key}'"
+    if m.get("code_dirty") is not False:
+        return (
+            MODEL_UNAVAILABLE_UNKNOWN_IDENTITY,
+            "artifact was trained from a dirty working tree",
+        )
     try:
         if _sha256(path) != m["artifact_sha256"]:
             return MODEL_UNAVAILABLE_TAMPERED, "artifact bytes do not match manifest hash"
@@ -185,7 +202,7 @@ def enforce_serving() -> int:
     counts: dict[str, int] = {}
     print(f"  {'artifact':<32}{'verdict':<36}detail")
     print("  " + "-" * 80)
-    for name in ARTIFACTS:
+    for name in SERVING_ARTIFACTS:
         code, detail = verdict_for(os.path.join(MODELS, name))
         counts[code or "OK"] = counts.get(code or "OK", 0) + 1
         print(f"  {name:<32}{(code or 'OK'):<36}{detail[:30]}")
@@ -196,7 +213,7 @@ def enforce_serving() -> int:
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     print()
     if ok == total:
-        print(f"  PASS - all {total} required artifacts prove their identity. Serving may load.")
+        print(f"  PASS - all {total} active serving artifacts prove their identity. Serving may load.")
         return 0
     print(f"  BLOCKED - only {ok}/{total} artifacts are serviceable.")
     print("  Serving must return MODEL_UNAVAILABLE_* and produce NO prediction for the rest.")

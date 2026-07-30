@@ -132,6 +132,15 @@ jobs:
       - name: Control-plane security over real HTTP
         run: python backend/test_control_plane_security.py
 
+      - name: Production preflight policy
+        run: python backend/production_readiness.py --selftest
+
+      - name: Production HTTP and WebSocket boundary
+        run: python backend/test_production_http_surface.py
+
+      - name: Frozen-start model preflight entry point
+        run: python backend/check_model_compatibility.py --selftest
+
       - name: Order lifecycle (a timeout is UNKNOWN, never REJECTED)
         run: python backend/order_lifecycle.py --selftest
 

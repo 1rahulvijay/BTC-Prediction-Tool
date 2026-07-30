@@ -307,6 +307,25 @@ def main() -> int:
             "a missing archive yields NOT_READY for every family")
         chk(all(rep.family_blockers[f.value] for f in Family),
             "every family names its blockers rather than silently passing")
+        import duckdb
+        db = os.path.join(td, "seconds.duckdb")
+        con = duckdb.connect(db)
+        con.execute("CREATE TABLE venue_events(venue VARCHAR, stream VARCHAR, recv_ts DOUBLE)")
+        start_s = 1_700_000_000.0
+        for req in REQUIRED_STREAMS:
+            con.execute(
+                "INSERT INTO venue_events VALUES (?, ?, ?), (?, ?, ?)",
+                [
+                    req.venue, req.stream, start_s,
+                    req.venue, req.stream, start_s + 86_400.0,
+                ],
+            )
+        con.close()
+        rep = evaluate_archive(db)
+        chk(abs(rep.span_days - 1.0) < 1e-9,
+            "epoch seconds are normalized correctly (one day is not reported as 0.001d)")
+        chk(all(stream.present for stream in rep.streams),
+            "the contract names the streams the recorder actually writes")
 
     print("\nevent-conditional-v1:", "ALL PASS" if OK else "FAILURES")
     return 0 if OK else 1

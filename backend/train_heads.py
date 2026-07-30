@@ -26,14 +26,19 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 from artifact_identity import (
     artifact_compatibility,
     current_training_identity,
+    hash_file,
     training_identity_issues,
     write_artifact_manifest,
 )
+from features import FEATURE_SEMANTICS_VERSION
+from model import TRAINING_SEMANTICS_VERSION
+from verified_io import write_manifest as write_integrity_manifest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -60,9 +65,46 @@ def _head_identity(head: dict) -> dict:
     trainer_path = head["cmd"][1] if len(head.get("cmd") or []) > 1 else __file__
     return current_training_identity(
         requested_days=_requested_days(),
-        code_paths=[trainer_path],
+        code_paths=[
+            trainer_path,
+            __file__,
+            os.path.join(ROOT, "backend", "features.py"),
+            os.path.join(ROOT, "backend", "model_contract.py"),
+        ],
         full_refit=False,
     )
+
+
+def _git_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def _git_dirty() -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
+def _training_cutoff(identity: dict) -> str:
+    raw = identity.get("actual_end_ts_ms")
+    try:
+        return datetime.fromtimestamp(
+            float(raw) / 1000.0, tz=timezone.utc
+        ).isoformat()
+    except (TypeError, ValueError, OSError):
+        return str(raw or "")
 
 
 def _identity_status(head: dict) -> tuple[bool, list[str]]:
@@ -85,6 +127,7 @@ def _identity_changes(before: dict, after: dict) -> list[str]:
         "source_manifest_hash",
         "feature_schema_hash",
         "code_hash",
+        "runtime_dependency_hash",
         "matrix_monthly_quality_passed",
     )
     return [key for key in keys if before.get(key) != after.get(key)]
@@ -112,6 +155,13 @@ def main():
     ap.add_argument("--force", action="store_true", help="retrain every head regardless of version")
     ap.add_argument("--dry-run", action="store_true", help="print decisions only; do not train")
     args = ap.parse_args()
+
+    if _git_dirty() and os.environ.get("BTC_ALLOW_DIRTY_TRAINING", "0") != "1":
+        print(
+            "[heads] ERROR: repository has uncommitted code changes. "
+            "Commit the exact training code first so artifact provenance is reproducible."
+        )
+        return 2
 
     current_identity = current_training_identity(requested_days=_requested_days())
     identity_issues = training_identity_issues(current_identity)
@@ -233,6 +283,9 @@ def main():
                         "(data/code identity changed during fit; artifact not stamped)"
                     )
                     continue
+                # Integrity must be recorded separately from provenance. The loader hashes this
+                # sidecar before joblib is allowed to deserialize the artifact.
+                write_integrity_manifest(h["out"])
                 manifest_path = write_artifact_manifest(
                     h["out"],
                     training_identity,
@@ -241,6 +294,18 @@ def main():
                         "head_name": h["name"],
                         "head_version": h["ver"],
                         "trainer_command": h["cmd"],
+                        "artifact_sha256": hash_file(h["out"]),
+                        "feature_semantics_version": FEATURE_SEMANTICS_VERSION,
+                        "training_semantics_version": TRAINING_SEMANTICS_VERSION,
+                        "feature_schema_sha256": training_identity.get(
+                            "feature_schema_hash"
+                        ),
+                        "training_cutoff": _training_cutoff(training_identity),
+                        "training_dataset_sha256": training_identity.get(
+                            "training_data_hash"
+                        ),
+                        "code_commit": _git_commit(),
+                        "code_dirty": _git_dirty(),
                     },
                 )
                 print(

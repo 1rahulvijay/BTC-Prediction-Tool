@@ -25,9 +25,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 from artifact_identity import (  # noqa: E402
     artifact_manifest_path,
     artifact_matches_current_training,
+    configured_model_training_days,
     current_training_identity,
     training_identity_issues,
 )
+from model_registry import REGISTRY  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -36,11 +38,9 @@ MODELS = os.path.join(DATA, "saved_models")
 # Artifacts the serving path gates on identity (price_to_beat._identity_blocks_load) plus the
 # main bundle. Anything absent is reported rather than skipped silently.
 ARTIFACTS = [
-    "persistence_model.pkl", "path_forecaster.pkl", "fade_model.pkl",
-    "signed_quantile_model.pkl", "round_state_heads.pkl",
-    "bigmove_keeper_model.pkl", "bigdrop_keeper_model.pkl",
-    "directional_keeper_model.pkl", "activity_keeper_model.pkl",
-    "selectivity_models.pkl", "champion_meta_model.pkl", "magnitude_model.pkl",
+    entry.filename
+    for entry in REGISTRY
+    if entry.required_for_serving or entry.may_price or entry.may_rank or entry.may_size
 ]
 
 
@@ -52,7 +52,7 @@ def main() -> int:
     env_strict = os.environ.get("BTC_STRICT_ARTIFACT_IDENTITY", "1").lower() not in ("0", "false", "no")
     strict = True if a.strict else env_strict
 
-    days = os.environ.get("BTC_HISTORICAL_DAYS") or os.environ.get("BTC_BACKFILL_DAYS")
+    days = configured_model_training_days()
     print("=" * 88)
     print("ARTIFACT IDENTITY STATUS")
     print(f"  BTC_HISTORICAL_DAYS            {days or '(unset)'}")
@@ -62,7 +62,7 @@ def main() -> int:
 
     # Is the CURRENT matrix even able to satisfy a training run?
     try:
-        ident = current_training_identity(requested_days=int(days) if days else None)
+        ident = current_training_identity(requested_days=days)
         issues = training_identity_issues(ident)
         print("\nTRAINING contract (blocks a retrain from starting):")
         if issues:

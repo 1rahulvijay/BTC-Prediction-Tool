@@ -7,8 +7,10 @@ existing joblib/pickle formats do not need to change.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,6 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
 MATRIX_PATH = DATA_DIR / "research_matrix_1m.parquet"
 MATRIX_MANIFEST_PATH = DATA_DIR / "research_matrix_1m.manifest.json"
+MODEL_RUNTIME_DISTRIBUTIONS = (
+    "numpy",
+    "scikit-learn",
+    "xgboost",
+    "lightgbm",
+    "catboost",
+    "joblib",
+    "torch",
+)
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -118,6 +129,28 @@ def feature_schema_hash(feature_names: Iterable[str] | None) -> str:
     return hash_json(list(feature_names or []))
 
 
+def configured_model_training_days() -> int | None:
+    """Return the optional model span, independent of live boot-candle history."""
+    raw = os.environ.get("BTC_MODEL_TRAINING_DAYS")
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+def model_runtime_versions() -> dict[str, str]:
+    versions = {
+        "python": platform.python_version(),
+        "implementation": platform.python_implementation(),
+    }
+    for distribution in MODEL_RUNTIME_DISTRIBUTIONS:
+        try:
+            versions[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            versions[distribution] = "missing"
+    return versions
+
+
 def current_training_identity(
     *,
     requested_days: int | None = None,
@@ -146,6 +179,7 @@ def current_training_identity(
         else matrix_manifest.get("feature_schema_hash")
     )
     code_files = list(code_paths or [])
+    runtime_versions = model_runtime_versions()
     return {
         "manifest_version": 1,
         "requested_days": int(
@@ -168,6 +202,8 @@ def current_training_identity(
         "source_manifest_hash": hash_json(source_identity),
         "feature_schema_hash": schema_hash,
         "code_hash": hash_paths(code_files) if code_files else None,
+        "runtime_versions": runtime_versions,
+        "runtime_dependency_hash": hash_json(runtime_versions),
         "split_timestamps": split_timestamps or {},
         "calibration_timestamps": calibration_timestamps or {},
         "full_refit": bool(full_refit),
@@ -202,6 +238,7 @@ def training_identity_issues(identity: dict[str, Any]) -> list[str]:
         "training_data_hash",
         "source_manifest_hash",
         "feature_schema_hash",
+        "runtime_dependency_hash",
     ):
         if not identity.get(key):
             issues.append(f"{key} is missing")
@@ -271,6 +308,7 @@ def artifact_compatibility(
         "source_manifest_hash",
         "feature_schema_hash",
         "code_hash",
+        "runtime_dependency_hash",
     )
     for key in keys:
         expected_value = expected.get(key)
@@ -310,13 +348,7 @@ def artifact_matches_current_training(
             "BTC_STRICT_ARTIFACT_IDENTITY", "1"
         ).strip().lower() not in ("0", "false", "no")
     if requested_days is None:
-        raw = os.environ.get("BTC_HISTORICAL_DAYS") or os.environ.get(
-            "BTC_BACKFILL_DAYS"
-        )
-        try:
-            requested_days = int(raw) if raw else None
-        except (TypeError, ValueError):
-            requested_days = None
+        requested_days = configured_model_training_days()
     expected = current_training_identity(requested_days=requested_days)
     return artifact_compatibility(
         artifact_path, expected, strict=bool(strict)
@@ -324,6 +356,23 @@ def artifact_matches_current_training(
 
 
 def selftest() -> None:
+    old_boot_days = os.environ.get("BTC_HISTORICAL_DAYS")
+    old_model_days = os.environ.get("BTC_MODEL_TRAINING_DAYS")
+    try:
+        os.environ["BTC_HISTORICAL_DAYS"] = "3"
+        os.environ.pop("BTC_MODEL_TRAINING_DAYS", None)
+        assert configured_model_training_days() is None
+        os.environ["BTC_MODEL_TRAINING_DAYS"] = "1265"
+        assert configured_model_training_days() == 1265
+    finally:
+        if old_boot_days is None:
+            os.environ.pop("BTC_HISTORICAL_DAYS", None)
+        else:
+            os.environ["BTC_HISTORICAL_DAYS"] = old_boot_days
+        if old_model_days is None:
+            os.environ.pop("BTC_MODEL_TRAINING_DAYS", None)
+        else:
+            os.environ["BTC_MODEL_TRAINING_DAYS"] = old_model_days
     with tempfile.TemporaryDirectory() as tmp:
         artifact = Path(tmp) / "model.pkl"
         artifact.write_bytes(b"model")
@@ -334,6 +383,7 @@ def selftest() -> None:
             "source_manifest_hash": "sources",
             "feature_schema_hash": "schema",
             "code_hash": "code-v1",
+            "runtime_dependency_hash": "runtime-v1",
         }
         write_artifact_manifest(artifact, identity, artifact_type="selftest")
         ok, reasons = artifact_compatibility(artifact, identity)
@@ -341,6 +391,11 @@ def selftest() -> None:
         changed_code = {**identity, "code_hash": "code-v2"}
         ok, reasons = artifact_compatibility(artifact, changed_code)
         assert not ok and any("code_hash mismatch" in reason for reason in reasons)
+        changed_runtime = {**identity, "runtime_dependency_hash": "runtime-v2"}
+        ok, reasons = artifact_compatibility(artifact, changed_runtime)
+        assert not ok and any(
+            "runtime_dependency_hash mismatch" in reason for reason in reasons
+        )
         artifact.write_bytes(b"tampered")
         ok, reasons = artifact_compatibility(artifact, identity)
         assert not ok and "artifact hash mismatch" in reasons

@@ -47,11 +47,16 @@ def configured_token() -> str | None:
     return value or None
 
 
-def token_is_usable(token: str | None) -> tuple[bool, str]:
+def token_is_usable(
+    token: str | None,
+    *,
+    env_name: str = TOKEN_ENV,
+    min_length: int = MIN_TOKEN_LENGTH,
+) -> tuple[bool, str]:
     if not token:
-        return False, f"{TOKEN_ENV} is not set in the deployment environment"
-    if len(token) < MIN_TOKEN_LENGTH:
-        return False, f"{TOKEN_ENV} is shorter than {MIN_TOKEN_LENGTH} characters"
+        return False, f"{env_name} is not set in the deployment environment"
+    if len(token) < min_length:
+        return False, f"{env_name} is shorter than {min_length} characters"
     return True, "ok"
 
 
@@ -92,6 +97,21 @@ def allowed_origins() -> list[str]:
         "http://localhost:3000", "http://127.0.0.1:3000",
         "http://localhost:8000", "http://127.0.0.1:8000",
     ]
+
+
+def origin_is_allowed(origin: str | None) -> bool:
+    """Apply the same explicit-origin policy to WebSockets.
+
+    CORS middleware does not protect WebSocket handshakes. Browser clients always send
+    `Origin`; native monitoring clients may omit it and are allowed because they are not
+    subject to browser cross-site request abuse.
+    """
+    if origin is None or not str(origin).strip():
+        return True
+    normalized = str(origin).strip().rstrip("/")
+    if normalized == "null":
+        return False
+    return normalized in {item.rstrip("/") for item in allowed_origins()}
 
 
 def selftest() -> int:
@@ -142,6 +162,12 @@ def selftest() -> int:
         os.environ["BTC_ALLOWED_ORIGINS"] = "https://a.example, https://b.example"
         chk(allowed_origins() == ["https://a.example", "https://b.example"],
             "an explicit list overrides the default")
+        chk(origin_is_allowed("https://a.example"),
+            "the WebSocket origin gate accepts an explicitly allowed browser origin")
+        chk(not origin_is_allowed("https://evil.example"),
+            "the WebSocket origin gate rejects an unlisted browser origin")
+        chk(not origin_is_allowed("null"), "opaque browser origins are rejected")
+        chk(origin_is_allowed(None), "native clients may omit Origin")
     finally:
         os.environ.pop("BTC_ALLOWED_ORIGINS", None)
         if original is None:

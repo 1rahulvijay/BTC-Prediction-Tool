@@ -10,9 +10,9 @@ WHY THIS EXISTS
     startup health and tests must all read from here, so "not in the registry" becomes an
     explicit refusal rather than an invisible gap.
 
-STATUS: FOUNDATION_ONLY.
-    This module defines identity. It does not yet enforce anything at a production save or load
-    site - that is a later, separate commit. Nothing here changes serving behaviour.
+STATUS: ACTIVE_CONTRACT.
+    Readiness derives the serving artifact set from this registry. Active standalone loaders
+    enforce provenance and integrity before deserializing.
 
     python backend/model_registry.py            # print the registry
     python backend/model_registry.py --selftest
@@ -78,7 +78,11 @@ REGISTRY: tuple[ModelRegistryEntry, ...] = (
                        notes="P(hold) is measurably overconfident live; pricing stays off"),
     ModelRegistryEntry("path_forecaster", "path_forecaster.pkl", "path_quantiles", "train_heads",
                        may_rank=True),
-    ModelRegistryEntry("fade", "fade_model.pkl", "fade_roundtrip", "train_heads", may_rank=True),
+    ModelRegistryEntry(
+        "fade", "fade_model.pkl", "fade_roundtrip", "research_only",
+        may_rank=False,
+        notes="Dormant: causal 1m and honest 1s challengers missed frozen promotion gates",
+    ),
     ModelRegistryEntry("signed_quantile", "signed_quantile_model.pkl", "signed_move_quantiles",
                        "train_signed_quantiles", may_rank=True),
     ModelRegistryEntry("round_state", "round_state_heads.pkl", "round_state",
@@ -194,7 +198,9 @@ def selftest() -> int:
         chk(code.startswith("MODEL_UNAVAILABLE_"), f"{code} is a typed refusal")
     chk(len(REFUSAL_CODES) == 8, f"all eight refusal kinds are defined ({len(REFUSAL_CODES)})")
 
-    print("\nSTATUS: FOUNDATION_ONLY - identity is defined, nothing is enforced yet.")
+    chk(authority("fade")["may_rank"] is False,
+        "the rejected fade challenger has no serving authority")
+    print("\nSTATUS: ACTIVE_CONTRACT - readiness and serving permissions derive here.")
     print("SELFTEST", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -206,7 +212,7 @@ def main() -> int:
     for entry in REGISTRY:
         print(f"{entry.name:<20}{entry.filename:<32}{entry.target:<22}"
               f"{str(entry.may_rank):<6}{str(entry.may_price):<6}")
-    print(f"\n{len(REGISTRY)} registered models. STATUS: FOUNDATION_ONLY.")
+    print(f"\n{len(REGISTRY)} registered models. STATUS: ACTIVE_CONTRACT.")
     return 0
 
 

@@ -13,9 +13,21 @@ import logging
 import os
 import uuid
 import hashlib
+import hmac
+from logging.handlers import RotatingFileHandler
 from types import SimpleNamespace
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException
+from fastapi import (
+    FastAPI,
+    WebSocket,
+    WebSocketDisconnect,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import numpy as np
 from contextlib import asynccontextmanager
 
@@ -72,7 +84,11 @@ from binance_paper.routes import (
     router as binance_paper_router,
 )
 from historical_replay import run_replay as run_historical_replay
-from control_auth import allowed_origins as _allowed_origins
+from control_auth import (
+    allowed_origins as _allowed_origins,
+    origin_is_allowed as _origin_is_allowed,
+    token_is_usable as _token_is_usable,
+)
 from task_supervisor import (
     BEST_EFFORT as TASK_BEST_EFFORT,
     CRITICAL as TASK_CRITICAL,
@@ -107,6 +123,20 @@ MAX_KLINES = HISTORICAL_DAYS * 24 * 60 + 1500
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+LOG_DIR = (os.getenv("BTC_LOG_DIR") or "").strip()
+if LOG_DIR:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        os.path.join(LOG_DIR, "backend.log"),
+        maxBytes=max(1, _env_int("BTC_LOG_MAX_MB", 20)) * 1024 * 1024,
+        backupCount=max(1, _env_int("BTC_LOG_BACKUP_COUNT", 10)),
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s:%(name)s:%(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    ))
+    logging.getLogger().addHandler(file_handler)
 
 _BACKEND_CODE_FILES = (
     "server.py",
@@ -157,17 +187,31 @@ DEPLOYMENT_ENV = (os.getenv("BTC_DEPLOYMENT_ENV") or "development").strip().lowe
 REQUIRE_ADMIN_TOKEN = (
     os.getenv("BTC_REQUIRE_ADMIN_TOKEN", "1" if DEPLOYMENT_ENV == "production" else "0") == "1"
 )
-if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN:
+ADMIN_TOKEN_USABLE, ADMIN_TOKEN_ISSUE = _token_is_usable(
+    ADMIN_TOKEN or None,
+    env_name="BTC_ADMIN_TOKEN",
+)
+if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN_USABLE:
     raise RuntimeError(
-        "BTC_ADMIN_TOKEN is required when BTC_REQUIRE_ADMIN_TOKEN=1 "
+        f"{ADMIN_TOKEN_ISSUE} when BTC_REQUIRE_ADMIN_TOKEN=1 "
         f"(BTC_DEPLOYMENT_ENV={DEPLOYMENT_ENV!r})."
     )
 
 
 def _require_admin(token: str | None) -> None:
-    if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN:
-        raise HTTPException(status_code=503, detail="Admin actions are disabled: token not configured.")
-    if ADMIN_TOKEN and (token or "").strip() != ADMIN_TOKEN:
+    if ADMIN_TOKEN and not ADMIN_TOKEN_USABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin actions are disabled: configured token is not usable.",
+        )
+    if REQUIRE_ADMIN_TOKEN and not ADMIN_TOKEN_USABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin actions are disabled: token not configured.",
+        )
+    if ADMIN_TOKEN_USABLE and not hmac.compare_digest(
+        (token or "").strip(), ADMIN_TOKEN
+    ):
         raise HTTPException(status_code=403, detail="Admin passcode required for this action.")
 FORCE_MAIN_RETRAIN = (
     os.getenv("BTC_FORCE_MAIN_RETRAIN", "0") == "1"
@@ -389,7 +433,12 @@ async def lifespan(app: FastAPI):
                      dict(_feed_shutdown))
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None if DEPLOYMENT_ENV == "production" else "/docs",
+    redoc_url=None if DEPLOYMENT_ENV == "production" else "/redoc",
+    openapi_url=None if DEPLOYMENT_ENV == "production" else "/openapi.json",
+)
 # EXPLICIT ORIGINS. `allow_origins=["*"]` let any site the operator had open in the same browser
 # issue cross-origin requests to this API - and until now the paper-trading control endpoints
 # required no authentication, so that was a drive-by control plane. Override with
@@ -401,6 +450,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 
 # Connected Frontend Clients
 clients: list[WebSocket] = []
@@ -4408,6 +4486,14 @@ def _system_health_snapshot() -> dict:
     if feed_writer_stats["failed"]:
         blockers.append(f"feed_writer_failed:{feed_writer_stats['failed']}")
     complete_trade = complete_trade_forecaster.status()
+    if os.getenv(
+        "BTC_REQUIRE_COMPLETE_TRADE",
+        "1" if DEPLOYMENT_ENV == "production" else "0",
+    ) == "1":
+        for name in ("share_model", "btc_model", "execution_model"):
+            status = complete_trade.get(name) or {}
+            if not status.get("loaded") or status.get("bundle_verified") is not True:
+                blockers.append(f"complete_trade_{name}_unavailable")
     return {
         "trust_state": "DATA_OK" if not blockers else "DO_NOT_TRUST",
         "blockers": blockers,
@@ -4430,6 +4516,11 @@ def _system_health_snapshot() -> dict:
         "live_execution": {
             "available": False,
             "reason": "real-order adapters are not implemented or loaded",
+        },
+        "control_plane": {
+            "browser_admin_enabled": DEPLOYMENT_ENV != "production",
+            "admin_header": "X-Admin-Token",
+            "paper_header": "X-Control-Token",
         },
         "generated_at_s": time.time(),
     }
@@ -4457,6 +4548,38 @@ async def runtime_status():
 @app.get("/api/system-health")
 async def api_system_health():
     return _system_health_snapshot()
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Process liveness only. Readiness is deliberately stricter."""
+    return {
+        "status": "alive",
+        "started_at_s": backend_state.get("startup_start_time"),
+        "code_hash": BACKEND_BOOT_CODE_HASH,
+    }
+
+
+@app.get("/readyz", include_in_schema=False)
+async def readyz():
+    """Fail-closed readiness for a service manager or reverse proxy."""
+    snapshot = _system_health_snapshot()
+    blockers = list(snapshot.get("blockers") or [])
+    if backend_state.get("ready_time", 0) <= 0:
+        blockers.append("startup_not_ready")
+    if not getattr(model, "is_trained", False):
+        blockers.append("main_model_not_trained")
+    blockers = sorted(set(blockers))
+    ready = not blockers and snapshot.get("trust_state") == "DATA_OK"
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "blockers": blockers,
+            "trust_state": snapshot.get("trust_state"),
+            "model_trained": bool(getattr(model, "is_trained", False)),
+        },
+    )
 
 
 @app.get("/api/paper-ledger")
@@ -4502,8 +4625,11 @@ async def api_backtest(x_admin_token: str | None = Header(default=None)):
 
 
 @app.post("/api/historical-replay/run")
-async def api_historical_replay_run(days: int = 7, max_samples: int = 1000,
-                                    step: int = 1, stateful: bool = False,
+async def api_historical_replay_run(
+                                    days: int = Query(default=7, ge=1, le=30),
+                                    max_samples: int = Query(default=1000, ge=1, le=10_000),
+                                    step: int = Query(default=1, ge=1, le=60),
+                                    stateful: bool = False,
                                     horizons: str = "5,15",
                                     x_admin_token: str | None = Header(default=None)):
     _require_admin(x_admin_token)
@@ -4680,6 +4806,11 @@ async def get_scorecard():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    origin = websocket.headers.get("origin")
+    if not _origin_is_allowed(origin):
+        logger.warning("Rejected WebSocket origin: %s", origin)
+        await websocket.close(code=1008, reason="origin not allowed")
+        return
     await websocket.accept()
     clients.append(websocket)
     try:
@@ -4691,6 +4822,18 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in clients:
             clients.remove(websocket)
+
+
+if os.getenv("BTC_SERVE_FRONTEND", "0") == "1":
+    frontend_dist = os.path.join(PROJECT_ROOT, "dist")
+    frontend_index = os.path.join(frontend_dist, "index.html")
+    if not os.path.isfile(frontend_index):
+        raise RuntimeError(
+            f"BTC_SERVE_FRONTEND=1 but the production frontend is absent at "
+            f"{frontend_index}. Run `npm run build` first."
+        )
+    # Registered last so /api/*, /healthz, /readyz and /ws retain authority.
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
 
 if __name__ == "__main__":

@@ -66,20 +66,20 @@ def collect() -> dict:
 
     # --- artifacts -----------------------------------------------------------------
     try:
-        from check_feature_contract import ARTIFACTS, MODELS, verdict_for
+        from check_feature_contract import MODELS, SERVING_ARTIFACTS, verdict_for
         rows, counts = [], {}
-        for name in ARTIFACTS:
+        for name in SERVING_ARTIFACTS:
             code, detail = verdict_for(os.path.join(MODELS, name))
             counts[code or "SERVICEABLE"] = counts.get(code or "SERVICEABLE", 0) + 1
             rows.append({"artifact": name, "verdict": code or "SERVICEABLE",
                          "detail": detail})
         st["artifacts"] = {
-            "total": len(ARTIFACTS),
+            "total": len(SERVING_ARTIFACTS),
             "serviceable": counts.get("SERVICEABLE", 0),
             "by_verdict": counts,
             "detail": rows,
         }
-        st["serving_status"] = ("MODELS_READY" if counts.get("SERVICEABLE", 0) == len(ARTIFACTS)
+        st["serving_status"] = ("MODELS_READY" if counts.get("SERVICEABLE", 0) == len(SERVING_ARTIFACTS)
                                 else "DEGRADED_MODEL_BLOCKED")
     except Exception as exc:
         st["artifacts"] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -115,19 +115,42 @@ def collect() -> dict:
         st["archive"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     logs = [os.path.join(DATA, f"multi_venue_recorder.{k}.log") for k in ("stdout", "stderr")]
+    archive_started = bool(
+        (st.get("archive") or {}).get("db_exists")
+        and (st.get("archive") or {}).get("total_rows", 0) > 0
+    )
     st["recorder"] = {
         "log_files_present": [os.path.basename(p) for p in logs if os.path.exists(p)],
-        "ever_started": any(os.path.exists(p) for p in logs),
+        "ever_started": archive_started or any(os.path.exists(p) for p in logs),
     }
 
-    # --- migration progress (the open P0) -------------------------------------------
+    # --- migration progress ----------------------------------------------------------
+    from artifact_migration_status import read_baseline, scan
+    migration = scan()
+    baseline = read_baseline() or migration
+    price_loader = open(
+        os.path.join(ROOT, "backend", "price_to_beat.py"),
+        encoding="utf-8",
+    ).read()
+    enforcement = (
+        "feature_contract_verdict(path)" in price_loader
+        and "_verified_load(path)" in price_loader
+    )
     st["artifact_migration"] = {
-        "phase": "NOT_STARTED",
-        "save_paths_total": 25, "save_paths_migrated": 0,
-        "load_paths_total": 57, "load_paths_migrated": 0,
-        "enforcement_wired_into_loaders": False,
-        "note": "check_feature_contract.verdict_for() exists and --enforce-serving "
-                "reports, but NO loader calls it. The P0 is open.",
+        "phase": (
+            "COMPLETE"
+            if migration["load_count"] == 0 and migration["save_count"] == 0
+            else "PRODUCTION_LOADERS_ENFORCED_RESEARCH_DEBT_REMAINS"
+        ),
+        "save_paths_baseline": int(baseline.get("save_count", migration["save_count"])),
+        "save_paths_remaining": migration["save_count"],
+        "load_paths_baseline": int(baseline.get("load_count", migration["load_count"])),
+        "load_paths_remaining": migration["load_count"],
+        "enforcement_wired_into_loaders": enforcement,
+        "note": (
+            "Active standalone serving loaders enforce provenance plus verify-before-"
+            "deserialize. Remaining raw sites are migration debt and stay ratcheted by CI."
+        ),
     }
     return st
 
@@ -158,11 +181,13 @@ def render(st: dict) -> str:
         f"| streams present | {ar.get('streams_present', '?')} / {ar.get('streams_total', '?')} |",
         f"| recorder ever started | {st['recorder']['ever_started']} |",
         "",
-        "## Artifact migration (open P0)",
+        "## Artifact migration",
         "",
         f"- phase: **{m['phase']}**",
-        f"- save paths migrated: {m['save_paths_migrated']} / {m['save_paths_total']}",
-        f"- load paths migrated: {m['load_paths_migrated']} / {m['load_paths_total']}",
+        f"- raw save paths remaining: {m['save_paths_remaining']} "
+        f"(baseline {m['save_paths_baseline']})",
+        f"- raw load paths remaining: {m['load_paths_remaining']} "
+        f"(baseline {m['load_paths_baseline']})",
         f"- enforcement wired into loaders: **{m['enforcement_wired_into_loaders']}**",
         f"- {m['note']}",
         "",
@@ -227,10 +252,8 @@ def selftest() -> int:
         chk(deployables and not any(deployables),
             "every current calibrator is non-deployable (source models pending retrain)")
 
-    # The document says the P0 is OPEN. If a loader ever starts enforcing, this must be
-    # updated deliberately rather than drifting.
-    chk(not st["artifact_migration"]["enforcement_wired_into_loaders"],
-        "document correctly states loader enforcement is NOT wired (P0 open)")
+    chk(st["artifact_migration"]["enforcement_wired_into_loaders"],
+        "active standalone loaders enforce feature provenance before deserialization")
 
     # max_taker_ask must remain quadratic - proposed as 'linear' four times, refuted each.
     dc = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),

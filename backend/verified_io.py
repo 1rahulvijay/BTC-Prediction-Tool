@@ -45,7 +45,15 @@ try:
 except Exception:
     pass
 
-MANIFEST_SUFFIX = ".manifest.json"
+# Integrity and provenance are different contracts and must not share a filename.
+# `artifact_identity` owns `<artifact>.manifest.json` (data/code/schema provenance).
+# This module owns `<artifact>.integrity.json` (bytes checked before deserializing).
+#
+# Older integrity-only sidecars used `.manifest.json`. They remain readable when their
+# payload explicitly says `integrity_only=true`, but every new write uses the unambiguous
+# `.integrity.json` suffix.
+INTEGRITY_SUFFIX = ".integrity.json"
+LEGACY_MANIFEST_SUFFIX = ".manifest.json"
 CHUNK = 1 << 20
 
 # Counters, so the migration debt is observable at runtime rather than inferred.
@@ -69,7 +77,11 @@ def file_sha256(path: str | Path) -> str:
 
 
 def manifest_path(path: str | Path) -> Path:
-    return Path(str(path) + MANIFEST_SUFFIX)
+    return Path(str(path) + INTEGRITY_SUFFIX)
+
+
+def _legacy_integrity_path(path: str | Path) -> Path:
+    return Path(str(path) + LEGACY_MANIFEST_SUFFIX)
 
 
 def write_manifest(path: str | Path) -> dict[str, Any]:
@@ -112,6 +124,43 @@ def verified_load(path: str | Path, *, loader=None) -> Any:
 
     path = str(path)
     record_path = manifest_path(path)
+    record_kind = "integrity"
+    if not record_path.is_file():
+        legacy_path = _legacy_integrity_path(path)
+        if legacy_path.is_file():
+            try:
+                candidate = json.loads(legacy_path.read_text(encoding="utf-8"))
+            except Exception:
+                candidate = None
+            # A full provenance manifest may use the legacy filename. Never interpret it as
+            # an integrity record unless it explicitly declares the old integrity-only schema.
+            if isinstance(candidate, dict) and candidate.get("integrity_only") is True:
+                record_path = legacy_path
+    if not record_path.is_file():
+        # Full provenance manifests also bind the artifact bytes. Two conventions exist:
+        # artifact_identity appends `.manifest.json`; complete-trade artifacts replace `.pkl`.
+        # Either is sufficient for verify-before-deserialize when it carries a sha256.
+        provenance_candidates = [
+            Path(f"{path}.manifest.json"),
+            Path(path).with_suffix(".manifest.json"),
+        ]
+        for candidate_path in provenance_candidates:
+            if not candidate_path.is_file():
+                continue
+            try:
+                candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+            except Exception:
+                STATS["refused"] += 1
+                raise ArtifactIntegrityError(
+                    f"{Path(path).name}: provenance manifest is unreadable. "
+                    "Nothing has been unpickled."
+                ) from None
+            if isinstance(candidate, dict) and (
+                candidate.get("artifact_sha256") or candidate.get("artifact_hash")
+            ):
+                record_path = candidate_path
+                record_kind = "provenance"
+                break
 
     if record_path.is_file():
         try:
@@ -124,12 +173,17 @@ def verified_load(path: str | Path, *, loader=None) -> Any:
             ) from None
 
         actual_size = os.path.getsize(path)
-        if actual_size != record.get("size"):
+        if record_kind == "integrity" and actual_size != record.get("size"):
             STATS["refused"] += 1
             raise ArtifactIntegrityError(
                 f"{Path(path).name}: size {actual_size} != recorded {record.get('size')}")
         actual_hash = file_sha256(path)
-        if actual_hash != record.get("sha256"):
+        expected_hash = (
+            record.get("sha256")
+            if record_kind == "integrity"
+            else record.get("artifact_sha256") or record.get("artifact_hash")
+        )
+        if actual_hash != expected_hash:
             STATS["refused"] += 1
             raise ArtifactIntegrityError(
                 f"{Path(path).name}: sha256 does not match its manifest - refusing to "
@@ -177,6 +231,50 @@ def selftest() -> int:  # noqa: C901
 
         print("a matching artifact loads")
         chk(verified_load(target) == {"weights": [1, 2, 3]}, "round trip returns the object")
+
+        print("integrity and provenance sidecars coexist")
+        from artifact_identity import write_artifact_manifest
+        write_artifact_manifest(
+            target,
+            {
+                "requested_days": 90,
+                "training_data_hash": "data",
+                "source_manifest_hash": "sources",
+                "feature_schema_hash": "schema",
+                "code_hash": "code",
+            },
+            artifact_type="selftest",
+        )
+        chk(manifest_path(target).is_file(), "integrity remains in .integrity.json")
+        chk(
+            Path(f"{target}.manifest.json").is_file(),
+            "provenance uses the separate .manifest.json",
+        )
+        chk(
+            verified_load(target) == {"weights": [1, 2, 3]},
+            "a provenance sidecar cannot shadow the verified integrity record",
+        )
+        provenance_only = root / "provenance-only.pkl"
+        atomic_dump({"verified": True}, provenance_only)
+        manifest_path(provenance_only).unlink()
+        write_artifact_manifest(
+            provenance_only,
+            {"training_data_hash": "data", "feature_schema_hash": "schema"},
+            artifact_type="selftest",
+            extra={"artifact_sha256": file_sha256(provenance_only)},
+        )
+        old_strict_for_provenance = os.environ.get("BTC_STRICT_ARTIFACT_IDENTITY")
+        os.environ["BTC_STRICT_ARTIFACT_IDENTITY"] = "1"
+        try:
+            chk(
+                verified_load(provenance_only) == {"verified": True},
+                "a full provenance hash is sufficient in strict mode",
+            )
+        finally:
+            if old_strict_for_provenance is None:
+                os.environ.pop("BTC_STRICT_ARTIFACT_IDENTITY", None)
+            else:
+                os.environ["BTC_STRICT_ARTIFACT_IDENTITY"] = old_strict_for_provenance
 
         print("A TAMPERED ARTIFACT IS REFUSED WITHOUT DESERIALIZING")
         deserialized = []

@@ -15,6 +15,7 @@ ALLOWED_ROOT_BATCH = {
     "run_polymarket_l2_recorder.bat",
     "start.bat",
     "start_instant.bat",
+    "start_production.bat",
     "start_microstructure_recorder.bat",
     "start_recorder.bat",
 }

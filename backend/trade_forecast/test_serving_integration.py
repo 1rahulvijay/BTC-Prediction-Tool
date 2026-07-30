@@ -25,6 +25,7 @@ from pathlib import Path
 
 import joblib
 
+from ..verified_io import file_sha256, write_manifest as write_integrity_manifest
 from .trade_schema import CONFIG_VERSION, MODE
 
 _OK = True
@@ -42,7 +43,8 @@ def _write_bundle(directory: Path, artifact: str, marker: str, mtime: float) -> 
     path = directory / artifact
     joblib.dump({"version": CONFIG_VERSION, "mode": MODE, "marker": marker,
                  "horizons": {}}, path)
-    manifest = {"artifact_sha256": marker, "policy_hash": "p" * 64,
+    write_integrity_manifest(path)
+    manifest = {"artifact_sha256": file_sha256(path), "policy_hash": "p" * 64,
                 "feature_columns": [], "training_status": "TEST"}
     # NOTE: model_common.artifact_issues() resolves the manifest with .with_suffix(), i.e.
     # "x.manifest.json" (suffix REPLACED), while artifact_identity.artifact_manifest_path()
@@ -51,7 +53,7 @@ def _write_bundle(directory: Path, artifact: str, marker: str, mtime: float) -> 
     manifest_path = path.with_suffix(".manifest.json")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     # Identical mtimes on BOTH bundles is the whole point of this fixture.
-    for target in (path, manifest_path):
+    for target in (path, manifest_path, Path(f"{path}.integrity.json")):
         os.utime(target, (mtime, mtime))
     return path
 

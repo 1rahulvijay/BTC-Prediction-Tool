@@ -32,6 +32,7 @@ from model_contract import (
 from artifact_identity import (
     artifact_compatibility,
     artifact_manifest_path,
+    configured_model_training_days,
     current_training_identity,
     training_identity_issues,
     write_artifact_manifest,
@@ -2709,7 +2710,8 @@ class MultiModelEnsemble:
         target_dir = os.path.abspath(model_dir or self.model_dir)
         try:
             requested_days = _env_int(
-                "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
+                "BTC_MODEL_TRAINING_DAYS",
+                _env_int("BTC_BACKFILL_DAYS", _env_int("BTC_HISTORICAL_DAYS", 0)),
             )
             current_identity = current_training_identity(
                 requested_days=requested_days,
@@ -2741,6 +2743,7 @@ class MultiModelEnsemble:
                 "source_manifest_hash",
                 "feature_schema_hash",
                 "code_hash",
+                "runtime_dependency_hash",
                 "matrix_monthly_quality_passed",
             )
             changed = [
@@ -2876,9 +2879,7 @@ class MultiModelEnsemble:
                 )
                 return False
             expected_identity = current_training_identity(
-                requested_days=_env_int(
-                    "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
-                ),
+                requested_days=configured_model_training_days(),
                 feature_names=self.model_feature_names,
                 code_paths=[
                     __file__,

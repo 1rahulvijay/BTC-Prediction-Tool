@@ -75,12 +75,12 @@ class StreamReq:
 REQUIRED_STREAMS: tuple[StreamReq, ...] = (
     StreamReq("perp_book", "binance_perp", "bookTicker",
               tuple(Family), "executable quotes - every family prices through these"),
-    StreamReq("perp_trades", "binance_perp", "aggTrade",
-              tuple(Family), "aggressive flow and trade-through maker labels"),
+    StreamReq("perp_trades", "binance_perp", "aggTrade_rest",
+              tuple(Family), "Class-B delayed perp trade flow; replay at receive time"),
     StreamReq("liquidations", "binance_perp", "forceOrder",
               (Family.LIQUIDATION_CONTINUATION, Family.LIQUIDATION_EXHAUSTION)),
-    StreamReq("mark_index", "binance_perp", "markPrice",
-              (Family.FUNDING_BASIS_OI,), "mark, index and funding rate"),
+    StreamReq("mark_index", "binance_perp", "premiumIndex",
+              (Family.FUNDING_BASIS_OI,), "Class-B mark, index and funding rate"),
     StreamReq("open_interest", "binance_perp", "openInterest",
               (Family.FUNDING_BASIS_OI,)),
     StreamReq("spot_book", "binance_spot", "bookTicker",
@@ -90,7 +90,7 @@ REQUIRED_STREAMS: tuple[StreamReq, ...] = (
     StreamReq("bybit_perp", "bybit_perp", "orderbook.1",
               (Family.CROSS_VENUE_LEAD_LAG,), "second perp venue",
               tier=Tier.VARIANT_REQUIRED),
-    StreamReq("coinbase_spot", "coinbase_spot", "ticker",
+    StreamReq("coinbase_spot", "coinbase", "ticker",
               (Family.CROSS_VENUE_LEAD_LAG,), "second spot venue",
               tier=Tier.VARIANT_REQUIRED),
 )
@@ -191,6 +191,19 @@ def quality_for(missing: list[str], stale: list[str], spans_gap: bool) -> DataQu
     return DataQuality.OK
 
 
+def _timestamp_ms(value: float | int | None) -> int | None:
+    """Normalize the recorder's epoch-seconds storage to the contract's ms fields.
+
+    Legacy/research fixtures may already contain epoch milliseconds, so infer by magnitude.
+    """
+    if value is None:
+        return None
+    numeric = float(value)
+    if not numeric:
+        return None
+    return int(round(numeric if abs(numeric) >= 100_000_000_000 else numeric * 1000.0))
+
+
 def evaluate_archive(db_path: Path | None = None) -> ArchiveReport:
     """Read the live archive and report what it can and cannot support today."""
     path = Path(db_path or VENUE_DB)
@@ -228,8 +241,10 @@ def evaluate_archive(db_path: Path | None = None) -> ArchiveReport:
                 except Exception:
                     row = (0, None, None)
                 n = int(row[0] or 0)
-                lo, hi = row[1], row[2]
-                days = ((hi - lo) / 86_400_000.0) if (lo and hi and hi > lo) else 0.0
+                lo, hi = _timestamp_ms(row[1]), _timestamp_ms(row[2])
+                days = ((hi - lo) / 86_400_000.0) if (
+                    lo is not None and hi is not None and hi > lo
+                ) else 0.0
                 span = max(span, days)
                 statuses.append(StreamStatus(r.key, r.venue, r.stream, n, lo, hi, days, n > 0))
         finally:

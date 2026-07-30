@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# The serving bundle contains a PyTorch sequence-model seat. CUDA builds may be installed
+# from PyTorch's official CUDA index instead, but the version must remain identical.
+torch==2.12.0

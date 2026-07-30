@@ -33,6 +33,7 @@ import decision_champion
 import round_state_panel
 from trade_forecast import live_forecaster as complete_trade_forecaster
 from artifact_identity import artifact_matches_current_training
+from check_feature_contract import verdict_for as feature_contract_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,18 @@ def _freeze_blocks_reload(path, mtime, label):
 
 def _identity_blocks_load(path, label):
     """Fail closed when an artifact was trained on different or unidentified data."""
+    contract_code, contract_detail = feature_contract_verdict(path)
+    if contract_code:
+        alert_key = (path, contract_code, contract_detail)
+        if alert_key not in _IDENTITY_ALERTED:
+            _IDENTITY_ALERTED.add(alert_key)
+            logger.error(
+                "[feature contract] refusing %s: %s (%s)",
+                label,
+                contract_code,
+                contract_detail,
+            )
+        return True
     ok, reasons = artifact_matches_current_training(path)
     if ok:
         return False

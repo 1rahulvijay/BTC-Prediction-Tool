@@ -49,8 +49,14 @@ let binancePaperPollTimer = null;
 let binancePaperEquityChart = null;
 let binancePaperEquitySeries = null;
 
-const API_URL = 'ws://127.0.0.1:8000/ws';
-const HTTP_API_BASE = 'http://127.0.0.1:8000';
+const DEFAULT_HTTP_API_BASE = import.meta.env.DEV
+  ? 'http://127.0.0.1:8000'
+  : window.location.origin;
+const HTTP_API_BASE = (
+  import.meta.env.VITE_API_BASE_URL || DEFAULT_HTTP_API_BASE
+).replace(/\/+$/, '');
+const API_URL = import.meta.env.VITE_WS_URL
+  || `${HTTP_API_BASE.replace(/^http/i, 'ws')}/ws`;
 
 // ══════════════════════════════════════════════
 //  DOM Elements
@@ -542,6 +548,7 @@ async function triggerRelearn() {
   try {
     const res = await fetch(`${HTTP_API_BASE}/api/relearn`, { method: 'POST' });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
     if (!data.scheduled && data.status?.message) {
       els.relearnStatus.textContent = data.status.message;
     }
@@ -559,6 +566,7 @@ async function triggerBacktest() {
   try {
     const res = await fetch(`${HTTP_API_BASE}/api/backtest`, { method: 'POST' });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
     if (!data.scheduled && data.status?.message) {
       els.backtestStatus.textContent = data.status.message;
     }
@@ -580,6 +588,7 @@ async function triggerReplay() {
   try {
     const res = await fetch(`${HTTP_API_BASE}/api/historical-replay/run?days=7&horizons=5,15&max_samples=1000`, { method: 'POST' });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
     if (!data.scheduled && data.status?.message && els.replayStatus) {
       els.replayStatus.textContent = data.status.message;
     }
@@ -639,6 +648,17 @@ function renderSystemHealthStatus(payload) {
   const trusted = payload.trust_state === 'DATA_OK';
   const color = trusted ? 'var(--green)' : 'var(--red)';
   const blockers = payload.blockers || [];
+  if (payload.control_plane?.browser_admin_enabled === false) {
+    [
+      [els.relearnButton, 'Operator API only in production'],
+      [els.backtestButton, 'Operator API only in production'],
+      [els.replayRunButton, 'Operator API only in production'],
+    ].forEach(([button, title]) => {
+      if (!button) return;
+      button.disabled = true;
+      button.title = title;
+    });
+  }
   summary.innerHTML = `
     <div style="border-left:4px solid ${color};padding:.7rem;background:rgba(255,255,255,.02)">
       <strong style="color:${color}">${trusted ? 'DATA OK' : 'DO NOT TRUST SIGNALS'}</strong>

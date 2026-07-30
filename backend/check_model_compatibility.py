@@ -10,6 +10,19 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 VERSION_PATH = os.path.join(DATA_DIR, "saved_models", "architecture_version.pkl")
 
 
+def _verified_load(path):
+    """Hash-check against the sidecar manifest BEFORE deserializing."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import verified_load as _vl
+
+    return _vl(path)
+
+
 def main() -> int:
     try:
         from features import LOOKBACK
@@ -76,21 +89,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        source = open(__file__, encoding="utf-8").read()
+        helper_before_entry = source.index("def _verified_load") < source.index(
+            'if __name__ == "__main__"'
+        )
+        print(
+            f"  {'PASS' if helper_before_entry else 'FAIL'} "
+            "_verified_load is defined before the script entry point"
+        )
+        sys.exit(0 if helper_before_entry else 1)
     sys.exit(main())
-
-
-def _verified_load(path):
-    """Hash-check against the sidecar manifest BEFORE deserializing.
-
-    joblib.load executes arbitrary code while unpickling, so validating after loading has
-    already lost. Artifacts written before this migration carry no manifest; they still load
-    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _backend = str(_Path(__file__).resolve().parent)
-    if _backend not in _sys.path:
-        _sys.path.insert(0, _backend)
-    from verified_io import verified_load as _vl
-
-    return _vl(path)

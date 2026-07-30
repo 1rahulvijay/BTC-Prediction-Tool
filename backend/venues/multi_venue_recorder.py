@@ -56,10 +56,13 @@ BATCH, FLUSH_S = 500, 2.0
 STREAMS = {
     "binance_spot": ("wss://stream.binance.com:9443/stream?streams="
                      "btcusdt@bookTicker/btcusdt@aggTrade"),
-    # Perp WS carries bookTicker ONLY from this host - aggTrade and markPrice@1s deliver zero
-    # messages (measured 2026-07-26). Those two arrive via _binance_perp_rest instead. Do not
-    # "fix" this by re-adding them here; it fails silently, which is how the gap went unnoticed.
-    "binance_perp": "wss://fstream.binance.com/stream?streams=btcusdt@bookTicker",
+    # Perp WS carries bookTicker here; aggTrade and markPrice@1s deliver zero messages and
+    # therefore arrive through _binance_perp_rest. forceOrder is event-driven and can be quiet
+    # for an entire episode, so it is collected but is deliberately NOT part of EXPECTED health.
+    "binance_perp": (
+        "wss://fstream.binance.com/stream?streams="
+        "btcusdt@bookTicker/btcusdt@forceOrder"
+    ),
     "bybit_perp": "wss://stream.bybit.com/v5/public/linear",
     "coinbase": "wss://ws-feed.exchange.coinbase.com",
 }
@@ -205,6 +208,45 @@ def parse_binance(msg: dict, recv: float, venue: str):
                  "price": float(d.get("p") or 0.0),
                  "extra": json.dumps({"index": d.get("i"), "funding": d.get("r"),
                                       "next_funding_ts": d.get("T")}, separators=(",", ":"))}]
+    if e == "forceOrder":
+        order = d.get("o") or {}
+        order_ts = order.get("T") or d.get("E")
+        price = order.get("ap") or order.get("p")
+        size = order.get("z") or order.get("q")
+        if not order_ts or not price or not size:
+            return []
+        identity_payload = {
+            "time": order_ts,
+            "symbol": order.get("s") or d.get("s") or "BTCUSDT",
+            "side": order.get("S"),
+            "price": price,
+            "size": size,
+            "status": order.get("X"),
+        }
+        return [{
+            "recv_ts": recv,
+            "exch_ts": float(order_ts) / 1000.0,
+            "venue": venue,
+            "stream": "forceOrder",
+            "source_mode": "WS",
+            "symbol": identity_payload["symbol"],
+            "event": "liquidation",
+            "event_key": _stamp_key(
+                identity_payload,
+                ("symbol", "side", "price", "size", "status"),
+            ),
+            "price": float(price),
+            "size": float(size),
+            "side": str(order.get("S") or "").lower() or None,
+            "extra": json.dumps(
+                {
+                    "order_type": order.get("o"),
+                    "time_in_force": order.get("f"),
+                    "status": order.get("X"),
+                },
+                separators=(",", ":"),
+            ),
+        }]
     return []
 
 
@@ -912,6 +954,23 @@ def selftest():
                                 "p": "60002", "i": "60001", "r": "0.0001"}}, 1.0, "binance_perp")
     c3 = m and json.loads(m[0]["extra"])["funding"] == "0.0001"
     print(f"  {'OK  ' if c3 else 'FAIL'} binance markPrice -> funding captured"); ok &= c3
+    liq = parse_binance(
+        {"data": {"e": "forceOrder", "E": 1700000000123, "o": {
+            "s": "BTCUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC",
+            "q": "0.7", "p": "59999", "ap": "59998.5", "X": "FILLED",
+            "z": "0.7", "T": 1700000000122,
+        }}},
+        1700000000.5,
+        "binance_perp",
+    )
+    c3b = (
+        liq
+        and liq[0]["event"] == "liquidation"
+        and liq[0]["side"] == "sell"
+        and liq[0]["event_key"]
+    )
+    print(f"  {'OK  ' if c3b else 'FAIL'} binance forceOrder -> stable liquidation row")
+    ok &= bool(c3b)
     y = parse_bybit({"topic": "orderbook.1.BTCUSDT", "ts": 1700000000000,
                      "data": {"s": "BTCUSDT", "u": 9, "b": [["60000", "3"]],
                               "a": [["60001", "4"]]}}, 1.0)
@@ -930,7 +989,7 @@ def selftest():
     c7 = not parse_coinbase({"type": "subscriptions"}, 1.0) and not parse_bybit({"topic": "x"}, 1.0)
     print(f"  {'OK  ' if c7 else 'FAIL'} non-data control frames ignored"); ok &= c7
     con = init_db(":memory:")
-    rows = b + t + m + y + yt + cb
+    rows = b + t + m + liq + y + yt + cb
     con.executemany("INSERT INTO venue_events (" + ",".join(COLS) + ") VALUES (" +
                     ",".join("?" * len(COLS)) + ")", [[r.get(c) for c in COLS] for r in rows])
     c8 = con.execute("SELECT COUNT(*) FROM venue_events").fetchone()[0] == len(rows)
@@ -1040,7 +1099,7 @@ def selftest():
     # `seq` is for GAP DETECTION; `event_key` is what dedupe partitions on, and it must come from
     # the VENUE. A poll-local counter resets on reconnect and could never recognise a re-fetched
     # observation as a repeat - which is the whole failure this guards.
-    parsed = b + t + y + yt + cb
+    parsed = b + t + liq + y + yt + cb
     c21 = all(r.get("event_key") for r in parsed)
     print(f"  {'OK  ' if c21 else 'FAIL'} every WS parser emits a venue-supplied event_key")
     ok &= bool(c21)
@@ -1048,6 +1107,7 @@ def selftest():
     c22 = (keys.get("bookTicker") == "u:42" and keys.get("aggTrade") == "a:7"
            and keys.get("orderbook.1") == "u:9" and keys.get("ticker") == "s:5"
            and keys.get("publicTrade") == "i:2290000000123"
+           and keys.get("forceOrder", "").startswith("t:1700000000122#h:")
            and m[0].get("event_key") == "t:1700000000000")
     print(f"  {'OK  ' if c22 else 'FAIL'} event_key derives from the venue's own id, not a counter")
     ok &= bool(c22)
@@ -1062,7 +1122,7 @@ def selftest():
     ok &= bool(c23)
     c24 = _stamp_key({"time": 1700000000123}) == _stamp_key({"time": 1700000000123})
     print(f"  {'OK  ' if c24 else 'FAIL'} identity survives a restart (same publication -> same key)")
-    ok &= bool(c20)
+    ok &= bool(c24)
 
     # A smoke run must never stamp the evidence clock.
     w3.mark_start()

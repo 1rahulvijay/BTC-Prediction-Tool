@@ -40,6 +40,8 @@ REM MULTI-DAY (2-5 day) run on this laptop; files are cached and reused by all b
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
 if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1265"
+REM Keep model provenance separate from the small candle window used by instant/production boot.
+if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?

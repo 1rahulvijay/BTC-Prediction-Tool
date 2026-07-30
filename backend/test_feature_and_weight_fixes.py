@@ -294,7 +294,9 @@ def _artifact_enforcement_tests() -> None:
             "feature_semantics_version": cfc.FEATURE_SEMANTICS_VERSION,
             "training_semantics_version": cfc.TRAINING_SEMANTICS_VERSION,
             "training_cutoff": "2026-07-01", "training_dataset_sha256": "b" * 64,
-            "code_commit": "deadbeef", "protocol_sha256": "c" * 64,
+            "code_commit": "deadbeef", "code_dirty": False,
+            "protocol_sha256": "c" * 64,
+            "runtime_dependency_hash": "d" * 64,
             "created_at": "2026-07-28T00:00:00Z",
         }
 
