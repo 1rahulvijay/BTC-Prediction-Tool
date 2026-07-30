@@ -21,7 +21,7 @@ No model or validation result guarantees profit.
 
 | Gate | Current result | Required resolution |
 |---|---|---|
-| Main ensemble compatibility | **FAIL**: legacy bundle is v11 while code is v12, and it has no strict integrity sidecar | Retrain and promote the current architecture |
+| Main ensemble compatibility | **FAIL**: strict preflight refuses the legacy architecture artifact before deserialization because it has no integrity manifest | Retrain and promote the current architecture |
 | Active specialist feature contract | **FAIL**: 0/11 serviceable | Retrain through `train_heads.py`; it now writes semantics, provenance and integrity |
 | Active specialist training identity | **FAIL**: 0/11 have full manifests | Same retrain; never backfill identity onto old bytes |
 | Complete-trade serving | **FAIL**: no verified `champion.json` bundle | Train/evaluate/promote a verified champion; evidence mode refuses legacy models |
@@ -36,6 +36,123 @@ environment in place; use `.venv-prod`.
 
 The old artifacts must not be restamped. A manifest generated after training cannot prove which
 data, code, feature semantics or dependency stack created old bytes.
+
+## Second Hardening Pass - 2026-07-30
+
+The external stop-ship audit was checked against executable code. The following defects were
+confirmed and fixed without retraining or rewriting evidence:
+
+### Canonical Polymarket market state
+
+- The app-facing client now uses the current raw CLOB market stream, application-level `PING`,
+  rolling subscribe/unsubscribe, and the tested Decimal `L2Book`.
+- A `book` event is the only event that establishes synchronized state. Incremental
+  `price_change` messages received first are refused and counted.
+- Zero-size increments delete levels instead of leaving stale liquidity behind.
+- Raw CLOB and SDK-style nested payloads are normalized; tick-size, top-of-book, trade and market
+  resolution events have explicit handlers.
+- Market metadata retains condition/event/market IDs, outcome-token identity, fee fields, tick
+  size, order minimum, rules and resolution source.
+- Human-readable question text is never parsed into the price-to-beat. That authority remains in
+  the dedicated oracle/round tracker.
+- Socket liveness and valid-book freshness are separate. Production readiness fails on a
+  disconnected socket, stale valid book, excessive parse failures, or repeated increments before
+  a snapshot.
+
+Protocol source: `https://docs.polymarket.com/market-data/realtime-data#market-stream`.
+
+### Feed content health
+
+- Binance spot, Binance futures and Coinbase parsers no longer silently swallow malformed public
+  frames.
+- Each parser reports socket state, valid/unknown/error counts, recent parse-error rate, last-valid
+  age, typed stream counts and its latest error.
+- Rejected public frames are written as bounded previews under `data/quarantine/*.jsonl`.
+- `/api/system-health` exposes protocol health. Production requires healthy Binance spot/futures
+  content and healthy Polymarket content, not merely open sockets.
+
+### Order, authority and risk contracts
+
+- The adapter-neutral order lifecycle is now durable and transition-matrix driven. Every
+  nonterminal state reserves the instrument, terminal states are immutable, cumulative fills are
+  monotonic and bounded, and restart restores unresolved reservations and history.
+- Local timeout/connection/5xx outcomes remain `UNKNOWN` until explicit venue reconciliation.
+- Future real-order authority is no longer a boolean. A capability is control-token authenticated,
+  release-bound, venue/strategy scoped, notional capped, operator attributed, short-lived and
+  append/fsync audited.
+- No real adapter exists or is authorized; active capability checks alone cannot change that.
+- Reduce-only is proven from signed current position, side, quantity and price. Oversized,
+  wrong-side, position-flipping, unknown-position and venue-unenforced derivative requests are
+  refused. A verified close may still pass through a kill switch/stale feed as an audited degraded
+  action so safety logic cannot trap a known position.
+
+### Artifact and research semantics
+
+- `verified_io.stats()` now separates process-local observed loads from repository-wide migration
+  state. A fresh process with zero old loads no longer reports migration complete.
+- Current measured migration debt remains **39 raw save sites and 14 raw load sites**, all outside
+  production serving. The ratchet prevents either count from increasing.
+- `research/run_all_sequence.py` now includes the authoritative ceiling/maker scripts, hashes every
+  executed script, records runner/Python identity, reports child failures/timeouts and exits
+  nonzero when any required child fails. It is still a research suite, not a promotion authority.
+- The 98/2 offline gate remains a **shadow-admission gate**. The full-data refit can become primary
+  only after independent live paired evidence, minimum calendar duration, positive bootstrap
+  lower bound, sufficient economic samples, profit factor and positive expectancy all pass.
+
+### Launch-path validation defect
+
+The full `start.bat` invariant path exposed a pre-existing test bug: the launcher correctly exports
+`BTC_FREEZE_MODEL=1`, while the serving pointer-swap test assumed an unfrozen environment. The
+standalone test passed and the real launcher test failed. The test now explicitly runs its normal
+pointer-swap phase unfrozen, runs the freeze phase frozen, and restores the caller environment.
+
+`BTC_SELFTEST_ONLY=1` now executes the launcher gate and exits before any data download, training,
+server startup or database mutation.
+
+## Validation Evidence - Second Pass
+
+The following completed successfully on the modified source:
+
+- repository-wide Python compile and Pyflakes checks;
+- `git diff --check`;
+- Vite production build;
+- canonical Polymarket protocol tests;
+- feed content-health/quarantine tests;
+- order lifecycle durability/transition tests;
+- authenticated authority tests;
+- reduce-only adversarial tests;
+- control-plane tests over real HTTP;
+- production liveness/readiness/WebSocket-origin tests;
+- low-level and full Binance paper execution/accounting suites;
+- artifact verify-before-deserialize and migration-ratchet tests;
+- production-preflight policy selftest;
+- the complete `start.bat` invariant gate in selftest-only mode.
+
+The actual strict production preflight was also run. It correctly refused to start and reported:
+
+```text
+complete-trade heads: 3/3 refused (unverified legacy directory; no champion pointer)
+main ensemble: refused before deserialization (missing integrity manifest)
+specialist heads: 0/11 serviceable (missing provenance manifests)
+```
+
+This is the intended fail-closed outcome. Do not create manifests for old bytes. Complete a clean
+manifest-writing retrain, evaluate the untouched tail, promote only through the frozen gates, and
+rerun strict preflight.
+
+## Accuracy And Profit Contract
+
+Code correctness protects measurements; it does not create market edge. The production target is
+therefore ordered:
+
+1. preserve causal labels, feature parity and probability calibration;
+2. abstain when data, model identity, expected value or execution evidence is weak;
+3. measure precision and calibration by horizon, regime, action and price bucket;
+4. measure executable PnL with actual ask/bid, fees, slippage, fills and settlement;
+5. promote only on independent forward evidence.
+
+No accuracy percentage, win rate or profitability is guaranteed. Real-money execution remains
+unimplemented and unauthorized.
 
 ## Production Hardening Implemented
 

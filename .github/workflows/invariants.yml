@@ -153,11 +153,20 @@ jobs:
       - name: Close-only authority (a fault must not trap a position)
         run: python backend/test_close_only_authority.py
 
+      - name: Canonical Polymarket incremental protocol
+        run: python backend/test_polymarket_client_protocol.py
+
+      - name: Feed protocol content health and quarantine
+        run: python backend/test_feed_protocol_health.py
+
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
 
       - name: Challenger promotion gates
         run: python backend/promote_challenger.py --selftest
+
+      - name: Research suite coverage and failure propagation
+        run: python research/run_all_sequence.py --selftest
 
       - name: Long-window preflight classification
         run: python backend/preflight_longwindow.py --selftest
@@ -304,12 +313,15 @@ jobs:
           python backend/artifact_migration_status.py --selftest || exit /b 1
           python backend/control_auth.py --selftest || exit /b 1
           python backend/test_close_only_authority.py || exit /b 1
+          python backend/test_polymarket_client_protocol.py || exit /b 1
+          python backend/test_feed_protocol_health.py || exit /b 1
           python backend/task_supervisor.py --selftest || exit /b 1
           python backend/trading_authority.py --selftest || exit /b 1
           python backend/order_lifecycle.py --selftest || exit /b 1
           python backend/test_control_plane_security.py || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
+          python research/run_all_sequence.py --selftest || exit /b 1
           python backend/preflight_longwindow.py --selftest || exit /b 1
           python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
           python backend/venues/venue_admissibility.py --selftest || exit /b 1

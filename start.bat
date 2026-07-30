@@ -327,6 +327,10 @@ python backend\task_supervisor.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_close_only_authority.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+python backend\test_polymarket_client_protocol.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
+python backend\test_feed_protocol_health.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 python backend\verified_io.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\artifact_migration_status.py --selftest >nul 2>&1
@@ -367,7 +371,10 @@ if errorlevel 1 goto :selftest_failed_k
 echo [selftest] l. Research validation and promotion gates:
 python -m backend.quant_platform.test_research_validation >nul 2>&1
 if errorlevel 1 goto :selftest_failed_l
+python research\run_all_sequence.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_l
 echo [selftest] All invariant selftests passed.
+if "%BTC_SELFTEST_ONLY%"=="1" exit /b 0
 goto :selftests_done
 
 :selftest_failed_a

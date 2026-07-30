@@ -49,6 +49,9 @@ def environment_issues(env: dict[str, str], *, mode: str) -> list[str]:
         issues.append(
             "BTC_EVIDENCE_MODE must be 1 so unverified complete-trade artifacts are refused"
         )
+    for name in ("BTC_REQUIRE_POLYMARKET_FEED", "BTC_REQUIRE_PROTOCOL_HEALTH"):
+        if not _is_true(env.get(name)):
+            issues.append(f"{name} must be 1")
     bind_host = (env.get("BTC_BIND_HOST") or "127.0.0.1").strip().lower()
     if bind_host not in {"127.0.0.1", "localhost", "::1"} and not _is_true(
         env.get("BTC_ALLOW_PUBLIC_BIND")
@@ -199,6 +202,8 @@ def selftest() -> int:
         "BTC_SERVE_FRONTEND": "1",
         "BTC_EVIDENCE_MODE": "1",
         "BTC_REQUIRE_COMPLETE_TRADE": "1",
+        "BTC_REQUIRE_POLYMARKET_FEED": "1",
+        "BTC_REQUIRE_PROTOCOL_HEALTH": "1",
         "BTC_ADMIN_TOKEN": "a" * 32,
         "BTC_CONTROL_TOKEN": "b" * 32,
         "BTC_ALLOWED_ORIGINS": "https://btc.example",
