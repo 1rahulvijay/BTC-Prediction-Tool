@@ -198,6 +198,12 @@ def run() -> int:
     previous_freeze = os.environ.get("BTC_FREEZE_MODEL")
     previous_evidence = os.environ.get("BTC_EVIDENCE_MODE")
     try:
+        # This phase proves that an UNFROZEN service follows an atomic champion pointer
+        # swap. start.bat deliberately exports BTC_FREEZE_MODEL=1 before invoking
+        # selftests, so relying on the caller's environment made the launcher gate fail
+        # while the standalone test passed.
+        os.environ["BTC_FREEZE_MODEL"] = "0"
+        os.environ.pop("BTC_EVIDENCE_MODE", None)
         for module, artifact in (
             (share_path_serving, "complete_trade_share_path.pkl"),
             (btc_path_serving, "complete_trade_btc_path.pkl"),

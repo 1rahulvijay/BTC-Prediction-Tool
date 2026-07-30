@@ -47,6 +47,7 @@ class RiskState:
     weekly_pnl: float = 0.0
     open_notional: float = 0.0
     correlated_exposure: float = 0.0
+    current_signed_quantity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,11 @@ class OrderIntent:
     notional: float
     leverage: float
     reduce_only: bool = False
+    side: str | None = None
+    quantity: float | None = None
+    price: float | None = None
+    instrument_type: str = "DERIVATIVE"
+    venue_reduce_only_supported: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +125,9 @@ class RiskEngine:
         if intent.leverage <= 0 or intent.leverage > self.limits.max_leverage:
             reasons.append("leverage_limit")
 
+        if reduce_only and state.position_known:
+            self._validate_reduction(intent, state, reasons)
+
         risk_values = (
             state.daily_pnl,
             state.weekly_pnl,
@@ -129,8 +138,8 @@ class RiskEngine:
         if not risk_state_valid and not reduce_only:
             reasons.append("invalid_risk_state")
 
-        # Exposure and loss limits restrain NEW risk only. A reduce-only order lowers all of
-        # them by construction, so applying them to a flatten would block the remedy.
+        # Exposure and loss limits restrain NEW risk only. The strict validation above proves
+        # that a reduce-only request cannot increase or reverse the signed position.
         if not reduce_only:
             if (
                 risk_state_valid
@@ -154,3 +163,42 @@ class RiskEngine:
         action = RiskAction.ALLOW_REDUCE_ONLY if (reduce_only and advisories) else RiskAction.ALLOW
         return RiskDecision(action, (), tuple(advisories))
 
+    @staticmethod
+    def _validate_reduction(
+        intent: OrderIntent,
+        state: RiskState,
+        reasons: list[str],
+    ) -> None:
+        """Prove that a reduce-only request decreases exposure without crossing zero."""
+        current = state.current_signed_quantity
+        if not math.isfinite(current) or abs(current) <= 1e-12:
+            reasons.append("reduce_only_without_position")
+            return
+
+        side = str(intent.side or "").upper()
+        if side not in {"BUY", "SELL"}:
+            reasons.append("reduce_only_side_required")
+
+        quantity = intent.quantity
+        price = intent.price
+        if quantity is None or not math.isfinite(quantity) or quantity <= 0:
+            reasons.append("reduce_only_quantity_required")
+        if price is None or not math.isfinite(price) or price <= 0:
+            reasons.append("reduce_only_price_required")
+
+        instrument_type = str(intent.instrument_type or "").upper()
+        if instrument_type not in {"SPOT", "DERIVATIVE"}:
+            reasons.append("unsupported_instrument_type")
+        elif instrument_type == "DERIVATIVE" and not intent.venue_reduce_only_supported:
+            reasons.append("venue_reduce_only_unverified")
+
+        if reasons:
+            return
+
+        assert quantity is not None
+        signed_delta = quantity if side == "BUY" else -quantity
+        projected = current + signed_delta
+        if abs(projected) >= abs(current) - 1e-12:
+            reasons.append("reduce_only_does_not_reduce")
+        if abs(projected) > 1e-12 and current * projected < 0:
+            reasons.append("reduce_only_would_flip")

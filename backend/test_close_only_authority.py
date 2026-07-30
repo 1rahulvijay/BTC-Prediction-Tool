@@ -57,9 +57,17 @@ def _parts():
 
 
 def _intent(OrderIntent, *, reduce_only: bool, notional: float = 100.0,
-            leverage: float = 1.0):
+            leverage: float = 1.0, side: str = "SELL", quantity: float = 1.0,
+            venue_reduce_only_supported: bool = True):
     return OrderIntent(venue="binance", instrument="BTCUSDT", strategy_id="test",
-                       notional=notional, leverage=leverage, reduce_only=reduce_only)
+                       notional=notional, leverage=leverage, reduce_only=reduce_only,
+                       side=side if reduce_only else None,
+                       quantity=quantity if reduce_only else None,
+                       price=100.0 if reduce_only else None,
+                       instrument_type="DERIVATIVE",
+                       venue_reduce_only_supported=(
+                           venue_reduce_only_supported if reduce_only else False
+                       ))
 
 
 def _healthy_state(RiskState, **overrides):
@@ -67,6 +75,7 @@ def _healthy_state(RiskState, **overrides):
         "kill_switch": False, "position_known": True, "model_available": True,
         "sequence_healthy": True, "feed_age_ms": 10.0, "daily_pnl": 0.0,
         "weekly_pnl": 0.0, "open_notional": 0.0, "correlated_exposure": 0.0,
+        "current_signed_quantity": 1.0,
     }
     base.update(overrides)
     return RiskState(**base)
@@ -137,6 +146,33 @@ def test_unverifiable_reduction_is_still_blocked() -> None:
         decision = engine.evaluate(intent, healthy)
         chk(decision.action == RiskAction.BLOCK,
             f"{label} blocks even a reduce-only order ({decision.reasons})")
+
+    for label, intent, expected in (
+        (
+            "wrong side",
+            _intent(OrderIntent, reduce_only=True, side="BUY"),
+            "reduce_only_does_not_reduce",
+        ),
+        (
+            "oversized flip",
+            _intent(OrderIntent, reduce_only=True, quantity=2.0),
+            "reduce_only_would_flip",
+        ),
+        (
+            "venue flag missing",
+            _intent(
+                OrderIntent,
+                reduce_only=True,
+                venue_reduce_only_supported=False,
+            ),
+            "venue_reduce_only_unverified",
+        ),
+    ):
+        decision = engine.evaluate(intent, healthy)
+        chk(
+            decision.action == RiskAction.BLOCK and expected in decision.reasons,
+            f"{label} is rejected ({decision.reasons})",
+        )
 
 
 def test_healthy_state_is_a_plain_allow() -> None:

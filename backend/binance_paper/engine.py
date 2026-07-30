@@ -118,6 +118,7 @@ class BinancePaperEngine:
             weekly_pnl=weekly_pnl,
             open_notional=abs(self.position.quantity) * mark_price,
             correlated_exposure=abs(self.position.quantity) * mark_price,
+            current_signed_quantity=self.position.quantity,
         )
 
     def submit_market(
@@ -169,6 +170,11 @@ class BinancePaperEngine:
                 notional=quantity * best,
                 leverage=request.leverage,
                 reduce_only=request.reduce_only,
+                side=request.side.value,
+                quantity=quantity,
+                price=best,
+                instrument_type="DERIVATIVE",
+                venue_reduce_only_supported=True,
             )
             decision = self.risk.evaluate(intent, self._risk_state(request, book, mark))
             if decision.action is RiskAction.BLOCK:

@@ -202,8 +202,39 @@ def verified_load(path: str | Path, *, loader=None) -> Any:
 
 
 def stats() -> dict[str, Any]:
-    return dict(STATS, strict=strict_mode(),
-                migration_complete=STATS["unmanifested"] == 0)
+    """Separate process observations from repository-wide migration state.
+
+    A fresh process with zero loads has not proved that every artifact path is migrated.
+    The old `migration_complete = unmanifested == 0` conflated those facts.
+    """
+    try:
+        from artifact_migration_status import scan
+
+        repository = scan()
+        raw_load_sites = int(repository.get("load_count", 0))
+        raw_save_sites = int(repository.get("save_count", 0))
+    except Exception:
+        raw_load_sites = -1
+        raw_save_sites = -1
+    repository_complete = raw_load_sites == 0 and raw_save_sites == 0
+    return {
+        **STATS,
+        "strict": strict_mode(),
+        "runtime_verified_loads": STATS["verified"],
+        "runtime_unmanifested_loads": STATS["unmanifested"],
+        "runtime_refused_loads": STATS["refused"],
+        "runtime_encountered_only_manifested_artifacts": (
+            STATS["unmanifested"] == 0
+        ),
+        "repository_raw_load_sites": raw_load_sites,
+        "repository_raw_save_sites": raw_save_sites,
+        "repository_migration_complete": repository_complete,
+        # Backward-compatible name, now bound to the repository fact rather than a
+        # process-local observation.
+        "migration_complete": repository_complete,
+        # Active release provenance is checked by production_readiness, not inferred here.
+        "active_release_provenance_complete": None,
+    }
 
 
 def selftest() -> int:  # noqa: C901
