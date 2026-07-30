@@ -4464,6 +4464,12 @@ def _system_health_snapshot() -> dict:
     recorders = {
         "polymarket_l2": _recorder_file_status(execution_db),
     }
+    polymarket_feed = polymarket_client.status()
+    feed_protocols = {
+        "binance_spot": ws_client.health_snapshot(),
+        "binance_futures": futures_ws_client.health_snapshot(),
+        "coinbase": coinbase_client.health_snapshot(),
+    }
     disk_hash = _backend_code_hash()
     required_feed_names = ("binance_trade", "binance_depth", "pyth_price")
     blockers = [
@@ -4473,6 +4479,23 @@ def _system_health_snapshot() -> dict:
     ]
     if disk_hash != BACKEND_BOOT_CODE_HASH:
         blockers.append("backend_code_changed_after_boot")
+    if os.getenv(
+        "BTC_REQUIRE_POLYMARKET_FEED",
+        "1" if DEPLOYMENT_ENV == "production" else "0",
+    ) == "1":
+        blockers.extend(
+            f"polymarket:{reason}"
+            for reason in polymarket_feed.get("blockers", ())
+        )
+    if os.getenv(
+        "BTC_REQUIRE_PROTOCOL_HEALTH",
+        "1" if DEPLOYMENT_ENV == "production" else "0",
+    ) == "1":
+        for source in ("binance_spot", "binance_futures"):
+            blockers.extend(
+                f"protocol:{source}:{reason}"
+                for reason in feed_protocols[source].get("blockers", ())
+            )
     # A dead or dropping feed writer means the parquet archive has gaps. That must appear in
     # trust state, not only in a stats dict nothing reads: an archive with silent holes is worse
     # than a missing one, because it still looks like complete evidence.
@@ -4500,6 +4523,8 @@ def _system_health_snapshot() -> dict:
         "feed_writer": feed_writer_stats,
         "tasks": supervisor_status,
         "feeds": feeds,
+        "feed_protocols": feed_protocols,
+        "polymarket_feed": polymarket_feed,
         "recorders": recorders,
         "database_writer": {
             "status": "HEALTHY" if os.access(DATA_DIR, os.W_OK) else "BLOCKED",

@@ -6,16 +6,115 @@ Binance Data Ingestion
 """
 
 import asyncio
+from collections import deque
 import json
 import math
 import time
 import logging
+from pathlib import Path
 from typing import Callable, Optional
 
 import aiohttp
 import websockets
 
 logger = logging.getLogger(__name__)
+
+_QUARANTINE_DIR = Path(__file__).resolve().parents[1] / "data" / "quarantine"
+
+
+class _ProtocolHealth:
+    """Content health for a public feed, independent of socket connectivity."""
+
+    def __init__(self, source: str):
+        self.source = source
+        self.connected = False
+        self.messages = 0
+        self.valid_messages = 0
+        self.unknown_messages = 0
+        self.parse_errors = 0
+        self.last_message_ms: int | None = None
+        self.last_valid_ms: int | None = None
+        self.last_error = ""
+        self.errors_by_stream: dict[str, int] = {}
+        self._recent = deque(maxlen=1_000)
+
+    def message(self) -> None:
+        self.messages += 1
+        self.last_message_ms = int(time.time() * 1000)
+
+    def valid(self) -> None:
+        self.valid_messages += 1
+        self.last_valid_ms = int(time.time() * 1000)
+        self._recent.append(0)
+
+    def unknown(self) -> None:
+        self.unknown_messages += 1
+        self._recent.append(0)
+
+    def error(self, stream: str, raw, exc: Exception) -> None:
+        stream_name = str(stream or "unknown")
+        self.parse_errors += 1
+        self.errors_by_stream[stream_name] = (
+            self.errors_by_stream.get(stream_name, 0) + 1
+        )
+        self.last_error = f"{stream_name}:{type(exc).__name__}"
+        self._recent.append(1)
+        preview = str(raw)[:1_000].replace("\r", " ").replace("\n", " ")
+        logger.warning(
+            "%s message rejected stream=%r error=%s preview=%r",
+            self.source,
+            stream_name,
+            type(exc).__name__,
+            preview[:300],
+        )
+        try:
+            _QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+            row = {
+                "received_at_ms": int(time.time() * 1000),
+                "source": self.source,
+                "stream": stream_name,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+                "preview": preview,
+            }
+            with (_QUARANTINE_DIR / f"{self.source}.jsonl").open(
+                "a", encoding="utf-8"
+            ) as handle:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        except OSError as quarantine_error:
+            logger.error(
+                "%s quarantine write failed: %s", self.source, quarantine_error
+            )
+
+    def snapshot(self, stale_after_ms: int = 15_000) -> dict:
+        now = int(time.time() * 1000)
+        age = (
+            max(0, now - self.last_valid_ms)
+            if self.last_valid_ms is not None
+            else None
+        )
+        recent_rate = sum(self._recent) / max(1, len(self._recent))
+        blockers = []
+        if not self.connected:
+            blockers.append("socket_disconnected")
+        if age is None or age > stale_after_ms:
+            blockers.append("valid_content_stale")
+        if recent_rate > 0.01:
+            blockers.append("parse_error_rate")
+        return {
+            "source": self.source,
+            "connected": self.connected,
+            "healthy": not blockers,
+            "blockers": blockers,
+            "messages": self.messages,
+            "valid_messages": self.valid_messages,
+            "unknown_messages": self.unknown_messages,
+            "parse_errors": self.parse_errors,
+            "recent_parse_error_rate": recent_rate,
+            "errors_by_stream": dict(self.errors_by_stream),
+            "last_valid_age_ms": age,
+            "last_error": self.last_error,
+        }
 
 
 # ──────────────────────────────────────────────
@@ -38,6 +137,7 @@ class BinanceWebSocketClient:
         }
         self.reconnect_delay = 1.0
         self.max_reconnect_delay = 30.0
+        self.protocol_health = _ProtocolHealth("binance_spot_ws")
 
     def on(self, event: str, callback: Callable):
         if event in self.callbacks:
@@ -60,11 +160,13 @@ class BinanceWebSocketClient:
                     url, ping_interval=None, ping_timeout=None
                 ) as ws:
                     logger.info("Connected to Binance WebSocket")
+                    self.protocol_health.connected = True
                     self._emit("status", {"connected": True})
                     self.reconnect_delay = 1.0
 
                     async for message in ws:
                         stream = ""
+                        self.protocol_health.message()
                         try:
                             msg = json.loads(message)
                             stream = msg.get("stream", "")
@@ -112,10 +214,15 @@ class BinanceWebSocketClient:
                                         "trades": k["n"],
                                     },
                                 )
+                            else:
+                                self.protocol_health.unknown()
+                                continue
+                            self.protocol_health.valid()
                         except Exception as e:
-                            logger.warning(f"[ws] parse/emit error on stream={stream!r}: {type(e).__name__}: {e}")
+                            self.protocol_health.error(stream, message, e)
 
             except Exception as e:
+                self.protocol_health.connected = False
                 logger.warning(f"WebSocket disconnected: {e}")
                 self._emit("status", {"connected": False})
                 if self.running:
@@ -126,6 +233,10 @@ class BinanceWebSocketClient:
 
     def stop(self):
         self.running = False
+        self.protocol_health.connected = False
+
+    def health_snapshot(self) -> dict:
+        return self.protocol_health.snapshot(stale_after_ms=10_000)
 
 
 class BinanceFuturesWebSocketClient:
@@ -156,6 +267,7 @@ class BinanceFuturesWebSocketClient:
         self.book_message_count = 0
         self.last_agg_trade_receive_ts_ms = None
         self.agg_trade_message_count = 0
+        self.protocol_health = _ProtocolHealth("binance_futures_ws")
 
     def on(self, event: str, callback: Callable):
         if event in self.callbacks:
@@ -176,6 +288,7 @@ class BinanceFuturesWebSocketClient:
             return max(0, now - int(ts)) if ts is not None else None
 
         return {
+            **self.protocol_health.snapshot(stale_after_ms=10_000),
             "last_book_receive_ts_ms": self.last_book_receive_ts_ms,
             "book_message_count": int(self.book_message_count),
             "book_age_ms": age(self.last_book_receive_ts_ms),
@@ -249,11 +362,13 @@ class BinanceFuturesWebSocketClient:
                     url, ping_interval=None, ping_timeout=None
                 ) as ws:
                     logger.info("Connected to Binance Futures WebSocket")
+                    self.protocol_health.connected = True
                     self._emit("status", {"connected": True})
                     self.reconnect_delay = 1.0
 
                     async for message in ws:
                         stream = ""
+                        self.protocol_health.message()
                         try:
                             msg = json.loads(message)
                             stream = msg.get("stream", "")
@@ -283,9 +398,14 @@ class BinanceFuturesWebSocketClient:
                                 self.last_book_receive_ts_ms = received_at_ms
                                 self.book_message_count += 1
                                 self._emit("book", dict(book))
-                        except Exception:
-                            pass
+                            else:
+                                self.protocol_health.unknown()
+                                continue
+                            self.protocol_health.valid()
+                        except Exception as exc:
+                            self.protocol_health.error(stream, message, exc)
             except Exception as e:
+                self.protocol_health.connected = False
                 logger.warning(f"Futures WebSocket disconnected: {e}")
                 self._emit("status", {"connected": False})
                 if self.running:
@@ -294,6 +414,7 @@ class BinanceFuturesWebSocketClient:
 
     def stop(self):
         self.running = False
+        self.protocol_health.connected = False
 
 
 # ──────────────────────────────────────────────
@@ -584,6 +705,7 @@ class CoinbaseWebSocketClient:
         self.running = False
         self.callbacks = {"ticker": [], "status": []}
         self.reconnect_delay = 1.0
+        self.protocol_health = _ProtocolHealth("coinbase_ws")
 
     def on(self, event: str, callback: Callable):
         if event in self.callbacks:
@@ -611,14 +733,18 @@ class CoinbaseWebSocketClient:
                     self.WS_URL, ping_interval=None, ping_timeout=None
                 ) as ws:
                     logger.info("Connected to Coinbase WebSocket")
+                    self.protocol_health.connected = True
                     self._emit("status", {"connected": True})
                     self.reconnect_delay = 1.0
 
                     await ws.send(json.dumps(subscribe_msg))
 
                     async for message in ws:
+                        self.protocol_health.message()
+                        message_type = "unknown"
                         try:
                             msg = json.loads(message)
+                            message_type = str(msg.get("type") or "unknown")
                             if msg.get("type") == "ticker" and "price" in msg:
                                 self._emit(
                                     "ticker",
@@ -628,10 +754,14 @@ class CoinbaseWebSocketClient:
                                         "receive_time": int(time.time() * 1000),
                                     },
                                 )
-                        except Exception:
-                            pass  # malformed/unknown WS message — skip, keep the stream
+                                self.protocol_health.valid()
+                            else:
+                                self.protocol_health.unknown()
+                        except Exception as exc:
+                            self.protocol_health.error(message_type, message, exc)
 
             except Exception as e:
+                self.protocol_health.connected = False
                 logger.warning(f"Coinbase WS disconnected: {e}")
                 self._emit("status", {"connected": False})
                 if self.running:
@@ -640,6 +770,10 @@ class CoinbaseWebSocketClient:
 
     def stop(self):
         self.running = False
+        self.protocol_health.connected = False
+
+    def health_snapshot(self) -> dict:
+        return self.protocol_health.snapshot(stale_after_ms=15_000)
 
 
 class BybitRESTClient:
