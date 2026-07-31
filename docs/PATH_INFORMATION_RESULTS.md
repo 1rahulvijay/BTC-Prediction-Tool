@@ -231,3 +231,78 @@ inefficiency; it is the compensation for providing that liquidity.
 Which means the only way to earn it is to **be the market maker rather than the taker** — and
 that loops directly back to the liquidity-provision lane, which needs queue position, which needs
 sequenced L2. Every structural path now converges on the same prerequisite.
+
+---
+
+# FUNDING CARRY and CROSS-MARKET COHERENCE — both negative
+
+Reproduce: `python research/structural_edge_tests.py`
+
+## Test A — funding carry: not answerable, and the hurdle is unfavourable
+
+The archive holds **0.95 days** of `premiumIndex`, and the funding rate is **constant at
+0.000100** across every observation — the Binance baseline. A carry study needs the rate to
+*vary*; the edge would live in dislocations away from baseline, and there are none here.
+
+The hurdle needs no more data:
+
+```
+carry collected        3.0 bps/day    (0.01% per 8h, 11% annualised)
+round trip to hold it  36.0 bps       (spot + perp, in and out, 9 bps each)
+BREAKEVEN HOLD         12.0 days
+```
+
+Twelve days before the carry covers entry — over which the basis moves far more than 36 bps, so
+P&L is dominated by basis risk rather than by the carry the position exists to collect. Real at
+institutional scale with maker fees; structurally unattractive at retail taker cost.
+
+## Test B — coherence: the market is coherent, and my first answer was wrong
+
+A 5m and a 15m market sharing an end time price the same terminal price against different known
+barriers, with the same time remaining. A higher barrier must carry a lower probability.
+
+**Raw result: 16.42% violations, median magnitude 25 cents against a 1-cent spread.**
+
+That is free money at a scale that cannot exist in a live market, so the measurement was wrong.
+Two suspects checked:
+
+- **staleness** — ruled out. 100% of pairs quoted within 1 s, median skew **47 ms**.
+- **reference precision** — confirmed. Stratifying by how cleanly the barrier order can be
+  resolved:
+
+| barrier gap | pairs | violation % |
+|---|---:|---:|
+| < 1 min of noise | 819 | **45.3%** |
+| 1–3 min | 1722 | 21.2% |
+| 3–10 min | 2621 | 6.3% |
+| **> 10 min** | 325 | **0.0%** |
+
+45% at sub-noise gaps is a coin flip — the ordering is random there. Where the gap is
+unambiguous the violation rate is **exactly zero**. A genuine inconsistency would not depend on
+my ability to resolve which barrier is higher.
+
+Root cause: the reference came from a 1-minute bar's *close* matched to its *open* timestamp — a
+60-second error, against a **median barrier gap of 3 bps**, while BTC moves ~2.4 bps/minute. The
+error was the same size as the quantity being measured.
+
+**Verdict: the market is coherent.** This agrees with the complete-set result — a tight 1-cent
+spread centred on $1. Two independent tests, same conclusion: these books are efficiently priced
+and carry no free arithmetic inconsistency.
+
+## Where this leaves the structural lanes
+
+| lane | result |
+|---|---|
+| complete-set arbitrage | real, ~$200 per 2.17 days, ten-share size — not a business |
+| cross-market coherence | **no inconsistency** at measurable resolution |
+| funding carry | 12-day breakeven; not answerable and unattractive |
+| magnitude signal | real, but no instrument reachable as a taker |
+| breakout bracket | fails structurally on entry lateness |
+
+Five structural lanes, five negatives, all converging on the same point: **every taker structure
+on this venue pair is closed.** The penny spread on Polymarket and the 9 bps round trip on
+Binance are not obstacles in front of an edge — at these horizons they *are* the edge, and it
+belongs to whoever is quoting it.
+
+The only hypothesis left standing is **liquidity provision** — earning that spread rather than
+paying it. That needs queue position, which needs sequenced L2.
