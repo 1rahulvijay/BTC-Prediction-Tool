@@ -252,6 +252,15 @@ jobs:
       - name: Preregistration hashes unchanged
         run: python backend/research/verify_prereg_hashes.py
 
+      # --- pytest suites --------------------------------------------------------------------
+      # pytest was never invoked by this workflow, and a missed pytest-style test does not fail
+      # loudly: running one as `python <file>` executes no test function and exits 0.
+      # backend/research/test_binance_maker_conversion.py showed the cost - 4 tests and 29
+      # assertions that had never once run. pytest.ini also limited collection to two
+      # directories, so 5 of 86 tests were visible. Both are fixed; this step is the gate.
+      - name: Pytest suites (86 tests this workflow previously never ran)
+        run: python -m pytest -q
+
       - name: Every python file compiles
         run: python -m compileall -q backend
 
