@@ -368,6 +368,8 @@ if errorlevel 1 goto :selftest_failed_g
 echo [selftest] h. Strategy registry consistency:
 python backend\research\audit_strategy_registry.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_h
+python backend\test_current_documentation_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_h
 echo [selftest] i. Challenger promotion gates - no ungated model replacement:
 python backend\promote_challenger.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_i
@@ -379,11 +381,11 @@ python -m backend.binance_paper.test_engine >nul 2>&1
 if errorlevel 1 goto :selftest_failed_k
 echo [selftest] l. Research validation and promotion gates:
 python -m backend.quant_platform.test_research_validation >nul 2>&1
-if errorlevel 1 goto :selftest_failed_l
+if errorlevel 1 goto :selftest_failed_l1
 python research\maker_lever_test.py --selftest >nul 2>&1
-if errorlevel 1 goto :selftest_failed_l
+if errorlevel 1 goto :selftest_failed_l2
 python research\run_all_sequence.py --selftest >nul 2>&1
-if errorlevel 1 goto :selftest_failed_l
+if errorlevel 1 goto :selftest_failed_l3
 echo [selftest] All invariant selftests passed.
 if "%BTC_SELFTEST_ONLY%"=="1" exit /b 0
 goto :selftests_done
@@ -431,8 +433,16 @@ goto :selftest_abort
 echo [selftest] FAILED: python -m backend.binance_paper.test_engine
 goto :selftest_abort
 
-:selftest_failed_l
+:selftest_failed_l1
 echo [selftest] FAILED: python -m backend.quant_platform.test_research_validation
+goto :selftest_abort
+
+:selftest_failed_l2
+echo [selftest] FAILED: python research\maker_lever_test.py --selftest
+goto :selftest_abort
+
+:selftest_failed_l3
+echo [selftest] FAILED: python research\run_all_sequence.py --selftest
 goto :selftest_abort
 
 :selftest_abort

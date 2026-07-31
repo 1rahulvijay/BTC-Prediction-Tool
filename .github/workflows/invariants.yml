@@ -243,6 +243,9 @@ jobs:
       - name: Documentation table well-formedness
         run: python backend/research/check_doc_tables.py
 
+      - name: Current documentation matches executable feature/model contracts
+        run: python backend/test_current_documentation_contract.py
+
       # --- preregistration integrity --------------------------------------------------------
       # A frozen protocol whose bytes changed is not a frozen protocol. This recomputes every
       # recorded hash and fails if any drifted, so an edit cannot pass review unnoticed.

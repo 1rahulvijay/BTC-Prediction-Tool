@@ -1,5 +1,12 @@
 # Implementation Status — what is built, what is not, and why
 
+> **SUPERSEDED FOR CURRENT AGGREGATE STATUS.** This is the point-in-time audit associated with
+> commit `0085498`, primarily documenting the research-runner coverage defect and the evidence
+> known before the current documentation-contract gate was added. Preserve its research results,
+> but use `active/CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md` for current model,
+> feature, runtime, test and readiness status. In particular, its `70/70` count predates the new
+> documentation-contract step.
+
 Generated `2026-07-31`. Every number here was produced by running the thing described, not by
 reading a previous document. Commands are given so any line can be re-checked.
 

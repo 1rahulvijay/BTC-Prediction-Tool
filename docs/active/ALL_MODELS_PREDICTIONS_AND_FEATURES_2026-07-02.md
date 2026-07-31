@@ -1,11 +1,18 @@
-# All Models, Predictions And Features
+# Historical Models, Predictions And Features - 2026-07-02
+
+> **SUPERSEDED FOR CURRENT STATUS.** This catalog preserves the model designs and measured evidence
+> available on 2026-07-02, but its ACTIVE/GATED labels and 69-feature v11 contract are not current.
+> The current executable contract is v14 with 136 raw features and a 63-feature model mask; current
+> artifacts are blocked pending a compatible retrain. Use
+> `CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md` for present status. Do not use the
+> historical ACTIVE labels below to decide whether a model may serve.
 
 Date: 2026-07-02  
-Purpose: canonical inventory of the models currently present in the BTC Prediction Tool, what each
-predicts, how it works, which inputs it uses, and whether it is active, gated, disabled or research-only.
+Purpose: dated inventory of the models present in the BTC Prediction Tool at that time, what each
+predicted, how it worked, which inputs it used, and its then-current status.
 
-This document is derived from the current Python code and saved-model metadata. It supersedes older
-descriptions that call the app a four-model or seven-horizon production system.
+This document was derived from the 2026-07-02 Python code and saved-model metadata. It superseded
+older four-model/seven-horizon descriptions only for that historical state.
 
 ## Status Legend
 

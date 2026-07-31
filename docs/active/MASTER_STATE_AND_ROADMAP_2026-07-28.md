@@ -1,8 +1,13 @@
-# Master State & Roadmap — 2026-07-28
+# Historical Master State & Roadmap - 2026-07-28
 
-Single source of truth for what is fixed, what is built, what is blocked, what was
-rejected, and what comes next. Supersedes the "Phase 1–5 / Grand Blueprint" documents,
-which are **historical brainstorming and contain false completion claims** — see §8.
+> **SUPERSEDED FOR CURRENT IMPLEMENTATION STATUS.** This is a dated audit snapshot. Several items
+> it lists as future work, including verified serving loaders and runtime hardening, were implemented
+> afterward. Use `CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md` for the current
+> implementation/test/gap matrix and `report_master_runtime_state.py` for machine state. Preserve
+> this file only for the research decisions and evidence known on 2026-07-28.
+
+This file previously served as the single source of truth and superseded the "Phase 1-5 / Grand
+Blueprint" documents. It no longer has current-status authority.
 
 Stable research conclusions only. Current runtime state (commit, serviceable artifacts,
 archive rows, calibration mode, migration progress) is GENERATED — see §11. Every

@@ -5,14 +5,14 @@
 > production-ready. The canonical deployment gate is
 > `docs/active/PRODUCTION_READINESS_AUDIT_2026-07-30.md`; executable contracts in
 > `model_contract.py`, `model_registry.py`, `production_readiness.py` and serving loaders take
-> precedence over narrative documentation.
+> precedence over narrative documentation. Current implementation/test status is in
+> `docs/active/CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md`.
 
-**Current correction, 2026-06-15 pre-restart:** the raw app feature schema is **136** columns.
-The main ensemble now applies a model-local pruning mask and trains/predicts on **69** model
-features (`KEEP` + `PARITY-FIX`) while preserving the full 136-feature vector for UI, replay,
-diagnostics and live-only research. The current bundle architecture is
-`v11-pruned69-7977e0559560-...`; old full-width bundles retrain once, then cached pruned
-bundles should load normally.
+**Current executable correction, 2026-07-31:** the raw app feature schema is **136** columns and
+the v14 main-model mask contains **63** `KEEP`/`PARITY-FIX` features with hash
+`864622d65e85`. The current saved v11 main bundle and all unmanifested standalone artifacts are
+blocked pending the 1,265-day retrain. Later 69-feature/v11 statements in this historical reference
+describe the prior model era and are not current serving claims.
 
 Status: research and decision-support platform, not a proven production trading system. It uses serious quant concepts, but live edge still has to be proven over enough out-of-sample predictions.
 
@@ -74,7 +74,8 @@ Polling and streaming:
 
 - WebSockets are used for live Binance/Coinbase/futures data.
 - Slower institutional and derivatives data are polled periodically.
-- Current startup historical window is `HISTORICAL_DAYS = 30`, not 90 or 200.
+- Historical note: this model era used a 30-day startup window. The current launcher is configured
+  for 1,265 days; see the current implementation ledger and `start.bat`.
 
 ---
 

@@ -2,6 +2,10 @@
 
 ## Production
 
+- **[CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md](active/CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md)** -
+  canonical current code/model/feature/UI/data/paper-execution inventory; passing and expected-fail
+  test results; research conclusions; every material not-ready/not-implemented item with its reason
+  and completion path; and the exact post-training promotion sequence.
 - **[PRESTART_VALIDATION_2026-07-31.md](active/PRESTART_VALIDATION_2026-07-31.md)** -
   final source and Windows-launch audit before the 1,265-day retrain; fail-closed artifact reload
   fix, nullable live-state hardening, pytest discovery contract, 70/70 invariant result, exact
