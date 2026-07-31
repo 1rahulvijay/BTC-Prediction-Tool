@@ -46,6 +46,7 @@ FRONTIER = (
     "structural_edge_tests.py",
     "options_surface_tests.py",
     "phold_auc_and_expectancy.py",
+    "phold_calibrated_fair_value.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour
