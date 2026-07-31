@@ -90,7 +90,7 @@ def load():
     return mk, tk
 
 
-def test_complement(mk, tk, L):
+def analyse_complement(mk, tk, L):
     """Scan EVERY tick for UP_ask + DOWN_ask + fees < 1 (guaranteed-profit crossings)."""
     au, ad = tk["au"].to_numpy(float), tk["ad"].to_numpy(float)
     ok = (au > 0.01) & (au < 0.99) & (ad > 0.01) & (ad < 0.99)
@@ -130,7 +130,7 @@ def test_complement(mk, tk, L):
     L.append("")
 
 
-def test_opening_drift(mk, tk, L):
+def analyse_opening_drift(mk, tk, L):
     """Round N's move → is round N+1's continuation side underpriced at the open?"""
     mk = mk.sort_values("start_ms").reset_index(drop=True)
     first = (tk[tk["secs_left"] >= 200].sort_values(["condition_id", "secs_left"], ascending=[True, False])
@@ -199,16 +199,21 @@ def test_opening_drift(mk, tk, L):
 
 def main():
     if not os.path.exists(ZIP):
-        print(f"missing {ZIP}")
-        return
+        # This used to `return`, i.e. exit 0 - a clean pass that verified nothing. Any runner
+        # would record OK for a study whose input was absent. Two sibling studies in this
+        # directory raise FileNotFoundError on this same archive and correctly exit 1; this one
+        # silently disagreed with them. Missing input is a refusal, not a success.
+        print(f"REFUSED: required input is missing: {ZIP}")
+        print("This study cannot run without it; reporting success would be a false pass.")
+        return 1
     mk, tk = load()
     L = [f"# Structural Edge Hunt — Complement Arb & Opening Drift ({date.today().isoformat()})", "",
          f"Two STRUCTURAL (non-conditional) hunts on Kaggle archive (7): {len(mk):,} settled BTC 5m "
          f"rounds, {len(tk):,} executable tick observations. Both ask about market MECHANICS, not "
          "round-picking — the only species that has survived testing here. Fees "
          "`0.07·p·(1−p)` per leg; round-level; Wilson lower bounds.", ""]
-    test_complement(mk, tk, L)
-    test_opening_drift(mk, tk, L)
+    analyse_complement(mk, tk, L)
+    analyse_opening_drift(mk, tk, L)
     L += ["## Honest limits",
           "- Top-of-book only: no size/depth, so fillability at the quoted asks is unproven.",
           "- 1-second cadence: sub-second crossings and opening prints are invisible.",
@@ -223,4 +228,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # `main()` alone discarded the return value, so even an explicit refusal exited 0.
+    raise SystemExit(main())

@@ -82,7 +82,7 @@ def _isolated_data_dir() -> str:
     return temp
 
 
-def test_sustained_rate(seconds: float) -> None:
+def run_sustained_rate(seconds: float) -> None:
     print(f"sustained load at {TRADES_PER_SECOND} trades/s + {DEPTH_PER_SECOND} depth/s "
           f"for {seconds:.0f}s (real parquet writes)")
     import database
@@ -344,7 +344,7 @@ def main() -> int:
 
     original = os.environ.get("BTC_LOG_TICKS_PARQUET")
     try:
-        test_sustained_rate(seconds)
+        run_sustained_rate(seconds)
         test_burst()
         test_slow_disk()
         test_queue_saturation_drops_are_attributed()

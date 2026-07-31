@@ -1,9 +1,18 @@
-from research.polymarket_market_prior_residual_v1.run import (
+import sys
+from pathlib import Path
+
+# Same failure the Deribit recorder test had: `python tests/test_...py` died on
+# ModuleNotFoundError: No module named 'research', because the import below only resolved when
+# pytest put the repository root on sys.path. A test whose result depends on how it was launched
+# is a false failure waiting to be recorded as a real one.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from research.polymarket_market_prior_residual_v1.run import (  # noqa: E402
     OffsetLogit,
     _taker_fee,
 )
 
-import numpy as np
+import numpy as np  # noqa: E402
 
 
 def test_offset_logit_learns_incremental_signal() -> None:

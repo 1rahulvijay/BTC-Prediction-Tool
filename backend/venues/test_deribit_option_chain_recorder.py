@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from backend.venues.deribit_option_chain_recorder import (
+# `python backend/venues/test_deribit_option_chain_recorder.py` used to die on
+# ModuleNotFoundError: No module named 'backend' - the absolute import below only resolved when
+# the file was invoked as `python -m backend.venues....`. A test that fails depending on how it
+# is launched will be recorded as a product failure by any runner that launches it the other
+# way. Putting the repository root on sys.path makes both invocations equivalent.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from backend.venues.deribit_option_chain_recorder import (  # noqa: E402
     normalize_summary,
     parse_instrument_name,
 )
