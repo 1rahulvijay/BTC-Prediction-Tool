@@ -183,6 +183,24 @@ sizing from the displayed band.
 The magnitude signal is real statistical information. The tested Binance
 instrument is not a profitable conversion.
 
+### Structural-market research
+
+The latest `docs/PATH_INFORMATION_RESULTS.md` additions close three more
+apparently simple profit routes:
+
+- complete-set UP+DOWN arbitrage exists in only 0.155% of synchronized quotes
+  before costs, typically around ten shares and one cent ($0.10);
+- the median complete-set book is 1.0100 ask / 0.9900 bid, a one-cent maker
+  spread centered on fair settlement value;
+- apparent 5m/15m cross-market inconsistencies disappear when the barrier order
+  is known at adequate resolution: the unambiguous subset has 0% violations;
+- retail-taker funding carry needs about 12 days merely to cover the modeled
+  two-leg entry and exit cost, before basis risk.
+
+These results reinforce two priorities: sequenced-L2 maker/fill research and an
+instrument that directly pays on magnitude. They do not justify a taker
+arbitrage or carry strategy.
+
 ## Remaining Blockers
 
 ### Runtime and artifacts
@@ -375,6 +393,8 @@ Do not spend the next cycle on:
 - changing thresholds after looking at test results;
 - promoting RF from the current 334-call 15m sample;
 - converting magnitude into a Binance breakout bracket again;
+- retesting taker complete-set arbitrage, noisy cross-market barrier ordering
+  or retail-taker funding carry without structurally different execution;
 - calling a rank-calibrated probability fair value;
 - real-money execution before strict preflight and independent economic gates
   pass.

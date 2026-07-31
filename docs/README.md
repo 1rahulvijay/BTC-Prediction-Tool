@@ -10,7 +10,8 @@
   current 5m/15m ensemble, Price-to-Beat, action and per-model live accuracy/precision evidence.
 - **[PATH_INFORMATION_RESULTS.md](PATH_INFORMATION_RESULTS.md)** -
   direction/path null, multiple-testing-corrected magnitude result and the costed rejection of
-  all nine Binance breakout-bracket conversions.
+  all nine Binance breakout-bracket conversions; economically negligible complete-set
+  arbitrage; coherent cross-market pricing; and unattractive retail-taker funding carry.
 - **[PRODUCTION_READINESS_AUDIT_2026-07-30.md](active/PRODUCTION_READINESS_AUDIT_2026-07-30.md)** -
   canonical production gate, current blockers, secure launcher and promotion sequence. Current
   status is paper/shadow code-ready but artifact/environment blocked; real orders remain disabled.
