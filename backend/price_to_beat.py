@@ -432,7 +432,7 @@ def _window_quality(horizon, window_start_ms):
     fav = _load_window_favorability()
     if not fav or not window_start_ms:
         return None
-    hz = fav.get("horizons", {}).get(str(int(horizon)))
+    hz = (fav.get("horizons") or {}).get(str(int(horizon)))
     if not hz:
         return None
     try:
@@ -2425,7 +2425,7 @@ class PriceToBeatTracker:
                             p.get("id"), int(now_ms - p["verify_at"]),
                         )
                         invalid = {**p, "status": "invalid", "invalid_reason": "late_resolution_no_boundary"}
-                        if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
+                        if (self.latest_round.get(p["horizon"]) or {}).get("id") == p["id"]:
                             self.latest_round[p["horizon"]] = invalid
                         if self.persist:
                             try:
@@ -2457,7 +2457,7 @@ class PriceToBeatTracker:
                         _log_path_plan_outcome(_rd, _rd["trade_plan"], end_price)
                 except Exception as _ple:
                     logger.debug(f"path-plan outcome log skipped: {_ple}")
-                if self.latest_round.get(p["horizon"], {}).get("id") == p["id"]:
+                if (self.latest_round.get(p["horizon"]) or {}).get("id") == p["id"]:
                     self.latest_round[p["horizon"]] = resolved
                 if self.persist:
                     try:

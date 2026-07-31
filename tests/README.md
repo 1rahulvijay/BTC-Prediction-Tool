@@ -18,3 +18,18 @@ Examples:
 Automated package-level tests remain beside the Python packages they validate
 under `backend/`. Moving those modules would change import paths and the CI
 contract without improving runtime isolation.
+
+Run the pytest-compatible suites with:
+
+```powershell
+python -m pytest -q
+```
+
+`pytest.ini` deliberately limits discovery to `tests/` and `backend/venues/`.
+Many files named `test_*.py` elsewhere are standalone research or invariant
+executables with their own `main()` entry points, not pytest modules. The
+complete launch and evidence-integrity gate remains:
+
+```powershell
+python backend/run_ci_locally.py --all
+```

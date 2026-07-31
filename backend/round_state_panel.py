@@ -32,9 +32,8 @@ def load_model() -> dict | None:
         mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.exists() else -1.0
         if mtime == _MTIME:
             return _MODEL
-        _MTIME = mtime
         if mtime < 0:
-            _MODEL, _ERROR = None, "artifact missing"
+            _MODEL, _MTIME, _ERROR = None, mtime, "artifact missing"
             return None
         identity_ok, reasons = artifact_matches_current_training(MODEL_PATH)
         if not identity_ok:
@@ -44,9 +43,11 @@ def load_model() -> dict | None:
         if loaded.get("version") != EXPECTED_VERSION:
             _MODEL, _ERROR = None, f"incompatible version {loaded.get('version')}"
             return None
-        _MODEL, _ERROR = loaded, ""
+        _MODEL, _MTIME, _ERROR = loaded, mtime, ""
     except Exception as exc:
-        _ERROR = str(exc)
+        # Never retain a previously loaded model after its replacement fails
+        # identity verification or deserialization.
+        _MODEL, _ERROR = None, str(exc)
     return _MODEL
 
 
@@ -229,6 +230,7 @@ def compose(round_data: dict, snapshot_scores: dict[str, dict], opportunity: dic
 
 
 def selftest() -> None:
+    global MODEL_PATH, _MODEL, _MTIME, _CHECKED, _ERROR
     payload = compose(
         {"horizon": 5, "current_position": "UP", "current_move": 25, "p_hold": 0.9,
          "trade_plan": {"style": "one_sided", "p_move_50": 0.7, "p_roundtrip": 0.2},
@@ -243,6 +245,36 @@ def selftest() -> None:
         {"horizon": 5, "ref_captured_late_ms": 8_000, "champion": {"action": "PAPER_BET",
          "bet_candidate": True}}, {}, {"probability": None, "status": "unavailable"})
     assert late["action"] == "AVOID"
+
+    original_path = MODEL_PATH
+    original_loader = globals()["_verified_load"]
+    original_identity = globals()["artifact_matches_current_training"]
+    original_state = (_MODEL, _MTIME, _CHECKED, _ERROR)
+    try:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "round_state_heads.pkl"
+            candidate.write_bytes(b"not-a-model")
+            MODEL_PATH = candidate
+            globals()["artifact_matches_current_training"] = lambda _: (True, [])
+
+            def _fail_load(_):
+                raise ValueError("simulated corrupt artifact")
+
+            globals()["_verified_load"] = _fail_load
+            _MODEL = {"version": EXPECTED_VERSION}
+            _MTIME = -2.0
+            _CHECKED = 0.0
+            _ERROR = ""
+            assert load_model() is None
+            assert _MODEL is None
+            assert "simulated corrupt artifact" in _ERROR
+    finally:
+        MODEL_PATH = original_path
+        globals()["_verified_load"] = original_loader
+        globals()["artifact_matches_current_training"] = original_identity
+        _MODEL, _MTIME, _CHECKED, _ERROR = original_state
     print("ROUND STATE PANEL SELFTEST PASS")
 
 

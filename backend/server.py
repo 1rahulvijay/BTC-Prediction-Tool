@@ -1455,7 +1455,7 @@ def handle_liquidation(liq: dict) -> None:
 def refresh_derivatives_from_rest() -> None:
     """Replace derivatives with the latest REST snapshot WITHOUT clobbering the
     WebSocket-maintained liquidation aggregation (which the REST payload lacks)."""
-    liq = data_state.get("derivatives", {}).get("liquidations")
+    liq = _safe_dict(data_state.get("derivatives")).get("liquidations")
     data_state["derivatives"] = _safe_dict(rest_client.data)
     if isinstance(liq, dict) and ("long_vol" in liq or "recent" in liq):
         data_state["derivatives"]["liquidations"] = liq
@@ -3091,9 +3091,9 @@ def apply_live_quality_filters(
         threshold += 0.02
 
     signal_policy = _safe_dict(state.get("signal_policy"))
-    policy = _safe_dict(signal_policy.get("by_regime", {}).get(h))
+    policy = _safe_dict(_safe_dict(signal_policy.get("by_regime")).get(h))
     if not policy.get("ready"):
-        policy = _safe_dict(signal_policy.get("by_horizon", {}).get(h))
+        policy = _safe_dict(_safe_dict(signal_policy.get("by_horizon")).get(h))
     if policy.get("ready") and policy.get("threshold") is not None:
         learned_threshold = float(policy.get("threshold") or threshold)
         # Use learned live precision policy as the base bar. It can ease the gate

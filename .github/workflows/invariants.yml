@@ -215,6 +215,9 @@ jobs:
       - name: Feature + model weight fixes (VWAP window, TCN per-sample weights)
         run: python backend/test_feature_and_weight_fixes.py
 
+      - name: Round-state scoring fails closed on invalid artifact reload
+        run: python backend/round_state_panel.py
+
       - name: Master-document consistency (static claims only)
         run: python backend/report_master_runtime_state.py --selftest
 

@@ -300,6 +300,8 @@ if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b2. Quarantined prototypes + non-blocking feed callbacks:
 python backend\test_quarantine_and_feed.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
+python backend\round_state_panel.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
 python backend\feed_writer.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_regime_causal_filter.py >nul 2>&1
