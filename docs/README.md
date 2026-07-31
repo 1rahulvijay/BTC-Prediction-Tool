@@ -2,6 +2,10 @@
 
 ## Production
 
+- **[PRESTART_VALIDATION_2026-07-31.md](active/PRESTART_VALIDATION_2026-07-31.md)** -
+  final source and Windows-launch audit before the 1,265-day retrain; fail-closed artifact reload
+  fix, nullable live-state hardening, pytest discovery contract, 70/70 invariant result, exact
+  preflight capacity/coverage state and the post-training challenger promotion sequence.
 - **[FRONTIER_REVIEW_RECONCILIATION_2026-07-31.md](active/FRONTIER_REVIEW_RECONCILIATION_2026-07-31.md)** -
   reconciles the external $100K/frontier blueprints against current `master`; records the second
   rejection of a Polymarket market-prior residual under a fixed 60-second logit-offset protocol;
