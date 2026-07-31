@@ -36,6 +36,24 @@ AUTHORITATIVE_AUXILIARY = (
     "ceiling_levers_test.py",
     "maker_lever_test.py",
 )
+# Structural / diagnostic studies. These are NOT backtests and produce no IS/OOS return, so
+# they are classified separately rather than listed as "(no out-of-sample verdict)" beside
+# scripts that could have reported one. They still run, and a non-zero exit still fails.
+FRONTIER = (
+    "path_information_test.py",
+    "breakout_bracket_test.py",
+    "complete_set_arbitrage_test.py",
+    "structural_edge_tests.py",
+    "options_surface_tests.py",
+)
+# Not studies, and deliberately NOT executed by the suite.
+#   harness.py               - shared library, no standalone behaviour
+#   run_all_sequence.py      - this runner
+#   download_binance_l2_data - fetches ~120 days from data.binance.vision. Running it on every
+#                              suite invocation would hammer the network and rewrite data/, so
+#                              it is operator-invoked. Listed here so the coverage check can
+#                              tell "deliberately excluded" from "silently forgotten".
+NON_STUDY = {"harness.py", "run_all_sequence.py", "download_binance_l2_data.py"}
 
 VERDICT = re.compile(r"VERDICT:\s*(.+)")
 OOS_RETURN = re.compile(r"total return %\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)")
@@ -58,21 +76,46 @@ def suite_exit_code(rows: list[dict]) -> int:
     return 0 if rows and all(row.get("exit") == 0 for row in rows) else 1
 
 
+def uncovered_scripts() -> list[str]:
+    """Research scripts on disk that this runner would silently skip.
+
+    The docstring promises EVERY research script. Discovery was `v*.py` plus three hardcoded
+    names, so the five frontier studies - which produced every finding of the last week - were
+    excluded, and the selftest could not see it because it asserted only that the names it
+    already knew about existed. A check that can only confirm what it was told is vacuous;
+    this one enumerates the DIRECTORY and fails on anything unaccounted for.
+    """
+    covered = set(AUTHORITATIVE_AUXILIARY) | set(FRONTIER) | NON_STUDY
+    return sorted(path.name for path in HERE.glob("*.py")
+                  if not path.name.startswith("v") and path.name not in covered)
+
+
 def selftest() -> int:
     versioned = sorted((p for p in HERE.glob("v*.py")), key=order_key)
     auxiliary = [HERE / name for name in AUTHORITATIVE_AUXILIARY]
+    frontier = [HERE / name for name in FRONTIER]
     assert versioned
-    assert all(path.is_file() for path in auxiliary)
-    assert len({path.name for path in versioned + auxiliary}) == len(
-        versioned + auxiliary
+    assert all(path.is_file() for path in auxiliary), "auxiliary script missing"
+    assert all(path.is_file() for path in frontier), "frontier script missing"
+    everything = versioned + auxiliary + frontier
+    assert len({path.name for path in everything}) == len(everything)
+    assert all(len(file_sha256(path)) == 64 for path in everything)
+
+    # The check that would have caught the omission: nothing on disk goes unaccounted for.
+    skipped = uncovered_scripts()
+    assert not skipped, (
+        f"research scripts on disk but not covered by this runner: {skipped}. "
+        "Add them to FRONTIER or AUTHORITATIVE_AUXILIARY, or to NON_STUDY if they are "
+        "support modules. The runner claims to run every research script."
     )
-    assert all(len(file_sha256(path)) == 64 for path in versioned + auxiliary)
+
     assert suite_exit_code([{"exit": 0}]) == 0
     assert suite_exit_code([{"exit": 0}, {"exit": 1}]) == 1
     assert suite_exit_code([]) == 1
     print(
         "RESEARCH RUNNER SELFTEST PASS "
-        f"(versioned={len(versioned)} auxiliary={len(auxiliary)})"
+        f"(versioned={len(versioned)} auxiliary={len(auxiliary)} "
+        f"frontier={len(frontier)} uncovered=0)"
     )
     return 0
 
@@ -85,13 +128,17 @@ def main() -> int:
     if only_fixed:
         scripts = [p for p in scripts if p.name in REWRITTEN]
     else:
-        missing = [
-            name for name in AUTHORITATIVE_AUXILIARY if not (HERE / name).is_file()
-        ]
+        required = AUTHORITATIVE_AUXILIARY + FRONTIER
+        missing = [name for name in required if not (HERE / name).is_file()]
         if missing:
             print(f"RESEARCH SUITE REFUSED: missing required scripts: {missing}")
             return 2
-        scripts.extend(HERE / name for name in AUTHORITATIVE_AUXILIARY)
+        skipped = uncovered_scripts()
+        if skipped:
+            print(f"RESEARCH SUITE REFUSED: scripts on disk that this runner does not "
+                  f"cover: {skipped}")
+            return 2
+        scripts.extend(HERE / name for name in required)
     if "--list" in sys.argv:
         for script in scripts:
             print(f"{file_sha256(script)}  {script.name}")
@@ -125,6 +172,7 @@ def main() -> int:
             "exit": return_code,
             "secs": round(time.time() - started, 1),
             "rewritten": script.name in REWRITTEN,
+            "frontier": script.name in FRONTIER,
             "in_sample_pct": float(oos.group(1)) if oos else None,
             "oos_pct": float(oos.group(2)) if oos else None,
             "verdict": verdict.group(1).strip() if verdict else "(no out-of-sample verdict)",
@@ -136,6 +184,8 @@ def main() -> int:
     print(f"{'script':<40}{'IS %':>9}{'OOS %':>9}  verdict")
     print("-" * 92)
     for row in rows:
+        if row["frontier"]:
+            continue
         is_pct = f"{row['in_sample_pct']:.2f}" if row["in_sample_pct"] is not None else "-"
         oos_pct = f"{row['oos_pct']:.2f}" if row["oos_pct"] is not None else "-"
         flag = "*" if row["rewritten"] else " "
@@ -143,14 +193,28 @@ def main() -> int:
 
     measured = [r for r in rows if r["oos_pct"] is not None]
     positive = [r for r in measured if r["oos_pct"] > 0]
+    frontier_rows = [r for r in rows if r["frontier"]]
     print("-" * 92)
-    print(f"  scripts run                       : {len(rows)}")
+    print(f"  backtest scripts run              : {len(rows) - len(frontier_rows)}")
     print(f"  exited non-zero                   : {sum(1 for r in rows if r['exit'])}")
     print(f"  with a real out-of-sample number  : {len(measured)}  (* = rewritten)")
     print(f"  POSITIVE out-of-sample             : {len(positive)}")
     print()
     print("  Scripts without an out-of-sample number report IN-SAMPLE figures only.")
     print("  Those numbers are not evidence of edge and must not be quoted as results.")
+
+    if frontier_rows:
+        print("\n" + "=" * 92)
+        print("FRONTIER STUDIES - structural and diagnostic, not backtests")
+        print("=" * 92)
+        print("  These measure arithmetic constraints, path statistics and executable cost")
+        print("  hurdles. They have no IS/OOS return by construction, so they are reported")
+        print("  here rather than shown with an empty return column. Findings are in")
+        print("  docs/PATH_INFORMATION_RESULTS.md and docs/OPTIONS_SURFACE_RESULTS.md.")
+        print()
+        for row in frontier_rows:
+            mark = "OK " if row["exit"] == 0 else "ERR"
+            print(f"  {mark} {row['secs']:>6}s  {row['script']}")
 
     report = {
         "runner_sha256": file_sha256(Path(__file__)),
