@@ -45,7 +45,10 @@ data, and a horizon gate that killed the lane the previous campaign died in.
 | Bybit/Coinbase "optional" inside a required list | `CORE_REQUIRED` / `VARIANT_REQUIRED` tiers + named variants | earlier |
 | `sys.path` mutation in `__init__.py` | relative imports throughout | earlier |
 
-**Contracts bumped:** `FEATURE_SEMANTICS_VERSION = 3`, `TRAINING_SEMANTICS_VERSION = 2`.
+**Current contracts:** `FEATURE_SEMANTICS_VERSION = 4`,
+`TRAINING_SEMANTICS_VERSION = 3`. Version 4 removes two non-causal feature
+construction paths; version 3 makes direction labels, calibration folds, OOF
+stacking, class priors, and PSI references causal and training-only.
 
 ---
 
@@ -53,12 +56,13 @@ data, and a horizon gate that killed the lane the previous campaign died in.
 
 | built | not wired |
 |---|---|
-| `check_feature_contract.verdict_for()` + `--enforce-serving` | **no loader calls it**; stale models still load |
 | `phold_calibrator` (19 assertions, exact round-trip) | `MODE=off`; nothing in serving consumes it |
 | `event_conditional_v1` (79 assertions, frozen protocol) | every family `NOT_READY`, archive empty |
 | `head_permissions.may_price` | `may_rank` / `may_display_confidence` still **advisory** |
 
-**The P0 remains open.** `--enforce-serving` reports `0/12 serviceable` and blocks nothing.
+Feature-provenance enforcement is now wired into active standalone loaders and
+verified before deserialization. Existing artifacts remain unavailable when
+their manifest or feature/training identity does not match the running code.
 
 ---
 
@@ -269,8 +273,8 @@ python backend/report_master_runtime_state.py
 writes `data/reports/MASTER_RUNTIME_STATE.{json,md}`.
 
 `--selftest` is a documentation consistency test wired into both CI jobs. It asserts only
-what code can prove (semantics v3/v2, calibration default off, legacy flag fails closed,
-calibrators non-deployable, loader enforcement NOT wired, max_taker_ask still quadratic)
+what code can prove (semantics v4/v3, calibration default off, legacy flag fails closed,
+calibrators non-deployable, loader enforcement wired, max_taker_ask still quadratic)
 and deliberately does **not** assert runtime values, so CI never depends on a recorder.
 
 ## 12. Local validation as of this commit

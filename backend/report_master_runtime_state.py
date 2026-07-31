@@ -219,8 +219,8 @@ def selftest() -> int:
     print("master-doc consistency selftest")
     st = collect()
 
-    chk(st["feature_semantics_version"] == 3, "document claims feature semantics v3")
-    chk(st["training_semantics_version"] == 2, "document claims training semantics v2")
+    chk(st["feature_semantics_version"] == 4, "document claims feature semantics v4")
+    chk(st["training_semantics_version"] == 3, "document claims training semantics v3")
 
     import phold_calibrator as pc
     chk(pc.MODE == "off" or os.environ.get("BTC_PHOLD_CALIBRATION_MODE"),
