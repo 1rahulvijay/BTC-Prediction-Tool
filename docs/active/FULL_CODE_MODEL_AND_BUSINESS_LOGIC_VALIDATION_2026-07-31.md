@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 
-Source audited: `master` at `8ba94e7`
+Source audited: `master` at `a70a084` plus the 1,000-day configuration in this change
 
 Purpose: record what was actually executed and inspected before the next long-window retrain. This
 is a source, contract, safety and paper-accounting audit. It is not a claim that an unavailable
@@ -28,11 +28,11 @@ trading**. It is not currently suitable for trusted model serving or real-money 
 
 | validation | result |
 |---|---|
-| canonical local CI | PASS, 71/71 steps, 243.1 seconds |
-| exact Windows `start.bat` self-test-only path | PASS, 170.3 seconds; no server or training started |
+| canonical local CI | PASS, 73/73 steps, 227.6 seconds |
+| exact Windows `start.bat` self-test-only path | PASS, 166.1 seconds; no server or training started |
 | Python compilation | PASS, all 485 Python files under `backend/`, `research/` and `tests/` |
 | maintained Python static checks | PASS |
-| pytest | PASS, 5 tests |
+| pytest | PASS, 93 tests |
 | frontend production build | PASS |
 | frontend high-severity dependency audit | PASS, 0 vulnerabilities |
 | launcher path/control-flow integrity | PASS, 61 invoked paths |
@@ -47,10 +47,11 @@ environment require incompatible Starlette, Packaging and PyArrow versions. This
 the source-test result, but it is a deployment blocker. Production must use the dedicated
 `requirements-prod.txt` virtual environment required by preflight.
 
-The launcher preflight measured 445 GB free disk and found the cross-venue and trade-feature
-backfills cover 1,289 and 1,291 days respectively, exceeding the 1,265-day request. No completion
-marker exists, so the next normal launch correctly forces one full retrain. Self-test mode did not
-download, train or start either server.
+The final launcher preflight measured at least 429 GiB free disk and found the cross-venue and
+trade-feature backfills cover 1,289 and 1,291 days respectively, exceeding the newly selected
+1,000-day request.
+No 1,000-day completion marker exists, so the next normal launch correctly forces one full retrain.
+Self-test mode did not download, train or start either server.
 
 ## Model And Head Logic
 
@@ -136,12 +137,12 @@ Run these after the long-window training completes and before trusting a model o
 ```powershell
 python backend\check_model_compatibility.py
 python backend\check_feature_contract.py --enforce-serving
-python backend\promote_challenger.py --challenger data\saved_models_challenger_1265d --days 1265
 python backend\production_readiness.py --mode paper
 ```
 
-Only apply promotion after the dry run clears every frozen gate. Continue paper/shadow verification
-after promotion because a full-data production refit no longer owns an untouched test tail.
+The evaluated candidate must clear every frozen gate before the application creates the 100% refit.
+That full-data refit remains a silent challenger and requires paper/shadow verification because it
+no longer owns an untouched test tail.
 
 ## Audit Conclusion
 

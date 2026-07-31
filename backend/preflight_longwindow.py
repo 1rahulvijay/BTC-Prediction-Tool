@@ -1,4 +1,4 @@
-"""Disk/readiness preflight for a long-window (>=1200d) retrain.
+"""Disk/readiness preflight for a long-window (>=1000d) retrain.
 
 WHY THIS EXISTS
     The original gate asked one question: "are >=1000 raw aggTrade CSVs cached?" If not, it
@@ -12,7 +12,7 @@ WHY THIS EXISTS
         crossvenue_flow.parquet           1,851,635 rows   2023-01-16 -> 2026-07-24   1285d
 
     The bulk download already happened and the cache was pruned afterwards. `build_research_matrix`
-    reads those parquets directly, so rebuilding the 1m matrix to 1265d needs NO bulk re-download -
+    reads those parquets directly, so rebuilding the 1m matrix to 1000d needs NO bulk re-download -
     yet the CSV-count gate rejected the run for lack of 300GB, permanently, with no way forward
     except deleting the very thing that made the run cheap.
 
@@ -25,7 +25,7 @@ WHY THIS EXISTS
 
 Exit codes: 0 = proceed, 2 = insufficient disk (start.bat aborts), 3 = bad usage.
 
-    python backend/preflight_longwindow.py --days 1265
+    python backend/preflight_longwindow.py --days 1000
     python backend/preflight_longwindow.py --selftest
 """
 from __future__ import annotations
@@ -51,11 +51,11 @@ DERIVED_SOURCES = {
     "crossvenue_flow.parquet": "ts_ms",
 }
 
-LONG_WINDOW_DAYS = 1200        # threshold at which the heavy guard applies at all
+LONG_WINDOW_DAYS = 1000        # threshold at which the heavy guard applies at all
 FIRST_BUILD_FREE_GB = 300      # bulk aggTrade download + sequence memmap + parquet rewrites
 RESUME_FREE_GB = 80            # sequence memmap, staged bundles, DuckDB/parquet rewrites
 CACHED_FILES_FOR_RESUME = 1000
-COVERAGE_TOLERANCE = 0.98      # a 1265d request is served by 1261d of data; archives have gaps
+COVERAGE_TOLERANCE = 0.98      # a 1000d request is served by 980d of data; archives have gaps
 
 
 def derived_span_days(data_dir: Path = DATA) -> dict[str, float]:
@@ -149,7 +149,12 @@ def selftest() -> int:
     none = {"trade_features_backfill.parquet": 0.0, "crossvenue_flow.parquet": 0.0}
     partial = {"trade_features_backfill.parquet": 1287.0, "crossvenue_flow.parquet": 360.0}
 
-    # THE CASE THIS MACHINE IS IN, and the one the old gate got wrong.
+    # The selected production window must stay behind the heavy-build disk guard.
+    v = classify(1000, free_gb=150, cached_files=0, spans=full)
+    chk(v["mode"] == "REBUILD", "1000d derived coverage -> REBUILD, never SHORT_WINDOW")
+    chk(v["required_gb"] == RESUME_FREE_GB, "1000d rebuild keeps the 80GB safety floor")
+
+    # THE ORIGINAL 1265d CASE THIS MACHINE WAS IN, and the one the old gate got wrong.
     v = classify(1265, free_gb=150, cached_files=0, spans=full)
     chk(v["mode"] == "REBUILD", "derived sources covering the window -> REBUILD, not FIRST_BUILD")
     chk(v["ok"], "150GB is enough for a REBUILD (old gate wrongly demanded 300GB and aborted)")
@@ -169,7 +174,7 @@ def selftest() -> int:
     chk(v["covered_days"] == 360.0, "coverage reports the weakest source, not the best")
 
     v = classify(400, free_gb=20, cached_files=0, spans=none)
-    chk(v["mode"] == "SHORT_WINDOW" and v["ok"], "sub-1200d runs are not gated by this guard")
+    chk(v["mode"] == "SHORT_WINDOW" and v["ok"], "sub-1000d runs are not gated by this guard")
 
     v = classify(1265, free_gb=79, cached_files=0, spans=full)
     chk(not v["ok"], "REBUILD still refuses below the 80GB floor")
@@ -187,7 +192,7 @@ def selftest() -> int:
     # Real data, if present: this is the machine's actual state.
     spans = derived_span_days()
     if any(spans.values()):
-        real = classify(1265, free_gb=150, cached_files=0, spans=spans)
+        real = classify(1000, free_gb=150, cached_files=0, spans=spans)
         chk(real["mode"] == "REBUILD",
             f"LIVE: this machine classifies as {real['mode']} at {real['covered_days']}d")
 

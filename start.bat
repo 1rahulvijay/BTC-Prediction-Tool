@@ -28,18 +28,18 @@ REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sa
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
 REM head (big-move/up/down/drop/activity, path forecaster, FADE model). Set the window here and every
 REM model retrains on it. Long windows are resumable through the daily-file cache; the current
-REM 1265d source-complete window is still a multi-day first build.
-REM 1265d current executable window (2026-07-04): manifest-backed coverage starts 2023-01-15.
-REM Do not describe this artifact as a 1500d/2022-bear model. Made safer by the bps-label upgrade
+REM 1000d window reuses the existing source-complete backfills and remains a long training run.
+REM 1000d current executable window (operator choice 2026-07-31).
+REM Do not describe this artifact as a 1265d, 1500d, or full-2022-bear model. Made safer by the bps-label upgrade
 REM (labels remain comparable across price levels) and the
 REM VALIDATED-REFIT flow (each head measures on its untouched recent tail,
 REM then -- gate permitting -- refits production on all rows with rotated calibration; candidate test
-REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~30 recent days
-REM genuinely unseen by the candidates. First build: ~200-230GB of new daily spot/perp downloads and a
-REM MULTI-DAY (2-5 day) run on this laptop; files are cached and reused by all builders afterwards.
+REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~20 recent days
+REM genuinely unseen by the candidates. Existing derived sources already exceed 1000d, so the launcher
+REM can rebuild from local coverage; files are cached and reused by all builders afterwards.
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1265"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1000"
 REM Keep model provenance separate from the small candle window used by instant/production boot.
 if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
@@ -146,7 +146,7 @@ if not defined BTC_LGB_DEVICE set "BTC_LGB_DEVICE=cpu"
 REM Reject model/head artifacts whose requested days, source/data hash, end timestamp,
 REM feature schema, or artifact bytes differ from the current matrix contract.
 REM
-REM 2026-07-26 -- WHY THIS IS 0 UNTIL THE 1265d BUNDLE EXISTS:
+REM 2026-07-26 -- WHY THIS IS 0 UNTIL THE CURRENT 1000d BUNDLE EXISTS:
 REM   Sidecar manifests are written only by the NEW training path. Every artifact currently on
 REM   disk predates it, so with strict=1 all six are refused at load and the app serves with
 REM   NO heads at all (measured: P(hold), path, fade, signed-quantile, round-state, keepers).
@@ -154,7 +154,7 @@ REM   Back-filling manifests is NOT a fix: artifact_compatibility compares every
 REM   CURRENT training identity, so a manifest recording their real 400d provenance is refused
 REM   anyway, and one recording the current identity would be a lie about what trained them.
 REM   The honest state is "identity is not yet enforced because no artifact can satisfy it".
-REM   The 1265d run writes real manifests; AFTER it completes, set this back to 1 and the gate
+REM   The 1000d run writes real manifests; AFTER it completes, set this back to 1 and the gate
 REM   becomes meaningful instead of merely fatal. Verify with:
 REM     python backend/verify_artifact_identity.py
 if not defined BTC_STRICT_ARTIFACT_IDENTITY set "BTC_STRICT_ARTIFACT_IDENTITY=0"
@@ -213,8 +213,8 @@ if errorlevel 2 (
     exit /b 1
 )
 
-REM Long-window disk guard. Existing 400d cache is ~73GB; extending to 1500d plus the temporary
-REM pruned sequence memmap needs roughly 230-270GB more. Keep a safety margin for parquet rewrites.
+REM Long-window disk guard. The 1000d rebuild still needs working space for the temporary pruned
+REM sequence memmap, staged bundles and parquet rewrites even when source coverage already exists.
 for /f %%G in ('powershell -NoProfile -Command "[math]::Floor((Get-PSDrive -Name C).Free / 1GB)"') do set "BTC_FREE_DISK_GB=%%G"
 for /f %%G in ('powershell -NoProfile -Command "@(Get-ChildItem -LiteralPath '%BTC_DATA_DIR%\backfill_cache' -Filter 'BTCUSDT*aggTrades-*.csv' -File -ErrorAction SilentlyContinue).Count"') do set "BTC_BACKFILL_CACHE_FILES=%%G"
 if not defined BTC_BACKFILL_CACHE_FILES set "BTC_BACKFILL_CACHE_FILES=0"
@@ -230,7 +230,7 @@ REM rebuild needs NO bulk download even with an empty cache. Three modes, each w
 REM   REBUILD     derived parquets already span the window  -> 80GB
 REM   RESUME      >=1000 daily CSVs cached                  -> 80GB
 REM   FIRST_BUILD neither                                   -> 300GB
-REM   python backend\preflight_longwindow.py --days 1265     (explain the current verdict)
+REM   python backend\preflight_longwindow.py --days 1000     (explain the current verdict)
 REM   python backend\preflight_longwindow.py --selftest
 python backend\preflight_longwindow.py --days %BTC_HISTORICAL_DAYS%
 if errorlevel 2 (
@@ -503,7 +503,7 @@ if errorlevel 1 (
     REM the incumbent bundle is untouched; promotion is a separate GATED step that verifies every
     REM artifact manifest, the matrix monthly-quality gate, the admitted training window, and head
     REM health:
-    REM   python backend\promote_challenger.py --challenger data\saved_models_challenger_1265d --days 1265
+    REM   python backend\promote_challenger.py --challenger data\saved_models_challenger_Nd --days N
     REM   (add --apply to promote; the incumbent is snapshotted first)
     REM Set BTC_LONG_WINDOW_CHALLENGER=0 to train straight into saved_models (not advised).
     if not defined BTC_LONG_WINDOW_CHALLENGER set "BTC_LONG_WINDOW_CHALLENGER=1"

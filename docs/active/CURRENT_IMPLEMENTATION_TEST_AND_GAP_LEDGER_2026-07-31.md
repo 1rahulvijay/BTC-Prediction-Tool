@@ -28,7 +28,7 @@ The application is **not currently model-serving ready**:
 - the saved main ensemble is incompatible with the current v14 contract;
 - all 11 standalone serving artifacts lack current identity manifests;
 - calibration is inactive while compatible source models are unavailable;
-- the 1,265-day retrain and explicit challenger promotion have not completed.
+- the 1,000-day retrain and validated full-refit shadow flow have not completed.
 
 The application is **not real-money production ready**:
 
@@ -63,7 +63,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | live direction horizons | 5m and 15m |
 | default deep seat | TCN |
 | main architecture | `2026-07-31-v14-pruned63-864622d65e85-2horizon-5-15-rf-persist-split98-classbal-simw-tcnbal-purged-vrts-session-136-tcn` |
-| configured historical window | 1,265 days |
+| configured historical window | 1,000 days |
 | evaluation split | recent 2%, after purging |
 | production refit | all accepted data after the untouched-tail gate |
 | current serving status | `DEGRADED_MODEL_BLOCKED` |
@@ -230,9 +230,9 @@ from current main-model training because they do not meet the default `KEEP,PARI
 
 | gate | result |
 |---|---|
-| canonical local workflow | 71/71 passed |
+| canonical local workflow | 73/73 passed |
 | exact `start.bat` self-test-only path | passed |
-| pytest-compatible suites | 5 passed |
+| pytest suites | 93 passed |
 | Python compile | passed |
 | backend/test Pyflakes | passed |
 | frontend production build | passed |
@@ -292,9 +292,9 @@ runs; `audit_research_claims.py` currently flags 10 of 31 legacy scripts for exp
 
 **Why not ready:** saved artifacts predate v4/v3 semantics and current manifests.
 
-**How:** run the 1,265-day retrain, evaluate the purged recent 2%, generate OOF calibration, refit
-accepted production models on all data, write staged verified bundles, smoke-test, then use
-`promote_challenger.py` explicitly.
+**How:** run the 1,000-day retrain, evaluate the purged recent 2%, generate OOF calibration, refit
+accepted production models on all data, write staged verified bundles, smoke-test, and keep the
+full-data main refit in live shadow until its forward promotion gate passes.
 
 ### Strict Artifact Identity Everywhere
 
@@ -372,19 +372,13 @@ After training completes, do not auto-promote merely because files exist:
 ```powershell
 python backend\check_model_compatibility.py
 python backend\check_feature_contract.py --enforce-serving
-python backend\promote_challenger.py --challenger data\saved_models_challenger_1265d --days 1265
 ```
 
-Apply only if the dry run passes every frozen gate:
-
-```powershell
-python backend\promote_challenger.py --challenger data\saved_models_challenger_1265d --days 1265 --apply
-```
-
-Then rerun:
+The main ensemble's accepted 100% refit remains a live shadow challenger after its untouched-tail
+gate and staged smoke test. Do not manually copy artifacts into the active directory. Then rerun:
 
 ```powershell
 python backend\production_readiness.py --mode paper
 ```
 
-The 1,265-day training run is a prerequisite, not proof of accuracy or profit.
+The 1,000-day training run is a prerequisite, not proof of accuracy or profit.
