@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS deribit_chain_batches(
     duration_ms DOUBLE NOT NULL,
     http_status INTEGER,
     rpc_error VARCHAR,
+    response_sha256 VARCHAR,
+    response_rpc_id VARCHAR,
     raw_rows INTEGER NOT NULL,
     stored_rows INTEGER NOT NULL,
     dropped_rows INTEGER NOT NULL,
@@ -200,6 +202,14 @@ def initialize_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(path))
     connection.execute(SCHEMA_SQL)
+    connection.execute(
+        "ALTER TABLE deribit_chain_batches "
+        "ADD COLUMN IF NOT EXISTS response_sha256 VARCHAR"
+    )
+    connection.execute(
+        "ALTER TABLE deribit_chain_batches "
+        "ADD COLUMN IF NOT EXISTS response_rpc_id VARCHAR"
+    )
     connection.close()
 
 
@@ -233,6 +243,15 @@ def persist_payload(
         if rpc_error
         else ""
     )
+    canonical_response = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    ).encode("utf-8")
+    response_sha256 = hashlib.sha256(canonical_response).hexdigest()
+    response_rpc_id = str(payload.get("id") or "")
     batch_id = _batch_id(request_start_ns, response_receive_ns)
     code_commit, code_dirty = _code_identity()
     connection = duckdb.connect(str(path))
@@ -240,8 +259,13 @@ def persist_payload(
         connection.execute("BEGIN TRANSACTION")
         connection.execute(
             """
-            INSERT OR IGNORE INTO deribit_chain_batches VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?
+            INSERT OR IGNORE INTO deribit_chain_batches (
+                batch_id, request_start_ns, response_receive_ns, duration_ms,
+                http_status, rpc_error, response_sha256, response_rpc_id,
+                raw_rows, stored_rows, dropped_rows, minimum_exchange_ts_ms,
+                maximum_exchange_ts_ms, schema_version, code_commit, code_dirty
+            ) VALUES (
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             """,
             (
@@ -251,6 +275,8 @@ def persist_payload(
                 float(duration_ms),
                 int(http_status) if http_status is not None else None,
                 rpc_error_text,
+                response_sha256,
+                response_rpc_id,
                 len(raw_rows),
                 len(normalized),
                 len(raw_rows) - len(normalized),
@@ -301,6 +327,7 @@ def persist_payload(
         "stored_rows": len(normalized),
         "dropped_rows": len(raw_rows) - len(normalized),
         "rpc_error": rpc_error_text,
+        "response_sha256": response_sha256,
     }
 
 
@@ -368,16 +395,43 @@ def report(path: Path) -> dict[str, Any]:
             "instruction": "run the recorder before requesting a report",
         }
     connection = duckdb.connect(str(path), read_only=True)
-    batches = connection.execute(
-        """
-        SELECT count(*), count(*) FILTER (WHERE stored_rows > 0),
-               min(response_receive_ns), max(response_receive_ns),
-               sum(stored_rows), sum(dropped_rows)
-        FROM deribit_chain_batches
-        """
-    ).fetchone()
-    latest_batch, chain = _latest_chain(connection)
-    connection.close()
+    try:
+        batches = connection.execute(
+            """
+            SELECT count(*), count(*) FILTER (WHERE stored_rows > 0),
+                   min(response_receive_ns), max(response_receive_ns),
+                   sum(stored_rows), sum(dropped_rows)
+            FROM deribit_chain_batches
+            """
+        ).fetchone()
+        batch_gaps = connection.execute(
+            """
+            WITH ordered AS (
+                SELECT request_start_ns,
+                       lag(request_start_ns) OVER (
+                           ORDER BY request_start_ns
+                       ) AS previous_start_ns
+                FROM deribit_chain_batches
+                WHERE stored_rows > 0
+            )
+            SELECT max(
+                (request_start_ns - previous_start_ns) / 1000000000.0
+            )
+            FROM ordered
+            WHERE previous_start_ns IS NOT NULL
+            """
+        ).fetchone()[0]
+        hashed_batches = connection.execute(
+            """
+            SELECT count(*)
+            FROM deribit_chain_batches
+            WHERE response_sha256 IS NOT NULL
+              AND length(response_sha256) = 64
+            """
+        ).fetchone()[0]
+        latest_batch, chain = _latest_chain(connection)
+    finally:
+        connection.close()
     if latest_batch is None or chain is None or chain.empty:
         return {
             "status": "NO_VALID_CHAIN",
@@ -446,6 +500,10 @@ def report(path: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "batches": int(batches[0] or 0),
         "successful_batches": int(batches[1] or 0),
+        "source_hashed_batches": int(hashed_batches or 0),
+        "maximum_batch_gap_seconds": (
+            float(batch_gaps) if batch_gaps is not None else None
+        ),
         "first_receive_ts": (
             datetime.fromtimestamp(
                 int(batches[2]) / 1_000_000_000.0, tz=timezone.utc
@@ -530,6 +588,7 @@ def selftest() -> None:
         )
         assert result["stored_rows"] == 2
         assert result["dropped_rows"] == 1
+        assert len(result["response_sha256"]) == 64
         connection = duckdb.connect(str(path), read_only=True)
         assert connection.execute(
             "SELECT count(*) FROM deribit_chain_snapshots"

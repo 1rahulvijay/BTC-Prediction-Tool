@@ -243,7 +243,13 @@ and measured.
 The newly confirmed magnitude signal needs an instrument that pays on
 magnitude without requiring a directional stop entry.
 
-Build a public, read-only Deribit option-chain recorder with:
+**Recorder status update:** implemented in
+`backend/venues/deribit_option_chain_recorder.py`. Its first public smoke
+stored 942 BTC option rows across 13 expiries (471 calls and 471 puts), with
+602 two-sided quoted instruments and zero parser drops. One batch validates
+collection only; the volatility campaign remains blocked on forward history.
+
+The public, read-only recorder stores:
 
 - exchange and receive timestamps;
 - instrument, expiry, strike and call/put side;
@@ -408,7 +414,7 @@ Do not spend the next cycle on:
 5. Re-run strict preflight.
 6. Accumulate at least 100 resolved path rounds per horizon before diagnosing
    interval calibration.
-7. Start the Deribit chain recorder before attempting an options campaign.
+7. Keep the Deribit chain recorder running before attempting an options campaign.
 
 No code change in this audit guarantees accuracy, win rate or profit. The
 changes remove ways the system could fool itself and focus new research on the

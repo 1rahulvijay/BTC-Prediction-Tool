@@ -13,6 +13,9 @@ Examples from the repository root:
 .\research\launchers\run_profit_campaign_v1.bat
 .\research\launchers\run_180d_sequence_only.bat
 .\research\launchers\report_hierarchical_ensemble.bat
+.\research\launchers\run_polymarket_market_prior_residual_v1.bat
+.\research\launchers\run_deribit_option_chain_recorder.bat
+.\research\launchers\report_deribit_option_chain_recorder.bat
 ```
 
 Operational application controls remain at the repository root:

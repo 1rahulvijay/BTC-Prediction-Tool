@@ -50,6 +50,7 @@ wire a live Binance futures aggTrade stream computing the same per-bar CVD, then
 | **A4 perp** | `perp_cvd_live(ts, cvd_perp, vol_perp, perp_price)` | live per-1m-bar PERP CVD (futures aggTrade); parity-verified vs offline | next restart | `build_crossvenue_flow.py` (perp leg) |
 | **A10** | `setup_fingerprint(ts, horizon, regime, raw_direction, conviction, agreement, confidence, grade, cvd_1m, gex, expected_move)` | per-prediction decision context; joins `predictions_{h}m` for outcome | next restart | *(derivable from B1 too)* |
 | **GEX** | `gex_live(ts, gex, total_gamma, spot, pcr, atm_iv)` | live dealer gamma (Deribit) | next restart | *(live-only; no archive)* |
+| **Deribit chain** | `deribit_options.duckdb` (`deribit_chain_batches`, `deribit_chain_snapshots`) | per-expiry/strike BTC call/put bid, ask, mark, IV, OI and receive/exchange time | standalone public recorder | *(forward-only)* |
 | outcomes | `predictions_{h}m`, `price_to_beat`, `model_predictions`, `ab_results` | predictions + resolved outcomes (labels) | live | — |
 
 B1 is the ONLY collector with no offline twin — live L2 order-book depth (slots ~52–72) is not
@@ -140,3 +141,23 @@ Capability boundary:
 - conservative public-trade queue model: research only;
 - exact queue priority/passive fill: unavailable from aggregate public L2;
 - production execution RL: blocked until defensible forward fill labels exist.
+
+## Deribit Per-Strike Option Chain Recorder (2026-07-31)
+
+`backend/venues/deribit_option_chain_recorder.py` is a standalone, public,
+read-only BTC option-chain recorder. It persists one batch every 30 seconds by
+default, including instrument, expiry, strike, call/put type, underlying,
+bid/ask/mid/mark, IV, open interest, volume and available exchange/receive
+timestamps. It never reads credentials and has no order-submission route.
+
+Commands:
+
+```powershell
+research\launchers\run_deribit_option_chain_recorder.bat
+research\launchers\report_deribit_option_chain_recorder.bat
+python backend\venues\deribit_option_chain_recorder.py --selftest
+```
+
+The first public smoke stored 942 rows across 13 expiries with zero parser
+drops. This starts a forward dataset; it is not yet evidence that buying a
+straddle beats executable implied volatility, spread, fees or hedge cost.

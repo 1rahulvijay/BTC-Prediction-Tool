@@ -2,6 +2,11 @@
 
 ## Production
 
+- **[FRONTIER_REVIEW_RECONCILIATION_2026-07-31.md](active/FRONTIER_REVIEW_RECONCILIATION_2026-07-31.md)** -
+  reconciles the external $100K/frontier blueprints against current `master`; records the second
+  rejection of a Polymarket market-prior residual under a fixed 60-second logit-offset protocol;
+  maps the remaining economic backlog; and documents the new public per-strike Deribit recorder
+  plus its 942-row live smoke.
 - **[DEEP_ACCURACY_AND_RESEARCH_AUDIT_2026-07-31.md](active/DEEP_ACCURACY_AND_RESEARCH_AUDIT_2026-07-31.md)** -
   causal-label, feature, calibration, promotion, live-snapshot and Deribit-analysis corrections;
   current direction/path/head-health evidence; strict runtime blockers; and the prioritized
