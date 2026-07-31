@@ -17,6 +17,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+
+from verified_io import write_manifest as write_integrity_manifest
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
@@ -231,6 +233,15 @@ def train(output: Path = OUT) -> dict:
     temporary = output.with_name(f"{output.name}.tmp.{os.getpid()}")
     joblib.dump(bundle, temporary)
     os.replace(temporary, output)
+    # Write the integrity manifest in the SAME step that writes the artifact. Without it the
+    # artifact reads as UNKNOWN identity, and that is not cosmetic: phold_challenger refuses to
+    # mark its calibrators deployable while any source artifact fails identity enforcement
+    # (SOURCE_MODEL_REQUIRES_RETRAINING - 12/12 artifacts), which is exactly what currently
+    # disables PM_CALIBRATED_FAIR_VALUE_V1. A retrain that skips this leaves the only measured
+    # candidate switched off, so the manifest is part of saving, not a follow-up chore.
+    _manifest = write_integrity_manifest(output)
+    print(f"[round-state] manifest written sha256={_manifest['sha256'][:16]}... "
+          f"size={_manifest['size']}", flush=True)
     METRICS_OUT.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(metric_rows).to_csv(METRICS_OUT, index=False)
     (METRICS_OUT.parent / "summary.json").write_text(json.dumps({

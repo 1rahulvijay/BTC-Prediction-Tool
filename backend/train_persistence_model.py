@@ -31,6 +31,11 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import roc_auc_score
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 IN_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
@@ -263,7 +268,9 @@ def main():
     _tmp = f"{OUT_PATH}.tmp.{os.getpid()}"
     try:
         joblib.dump(bundle, _tmp)
+        write_integrity_manifest(_tmp)
         os.replace(_tmp, OUT_PATH)
+        write_integrity_manifest(OUT_PATH)
     finally:
         if os.path.exists(_tmp):
             os.remove(_tmp)

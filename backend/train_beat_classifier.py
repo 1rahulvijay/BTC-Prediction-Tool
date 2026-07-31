@@ -32,6 +32,11 @@ import numpy as np
 
 from backfill_trade_features import download_day, load_aggtrades, _daterange as daterange
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "beat_model.pkl")
@@ -206,6 +211,7 @@ def main():
     if save and models:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
         joblib.dump({"models": models, "features": FEATURE_NAMES, "horizons": passed}, OUT_PATH)
+        write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH} ({len(passed)} horizons). Wire P(beat) into the Polymarket card next.")
     elif save:
         print("No horizon cleared the gates — NOT saved (would be noise). Need more data / new info.")

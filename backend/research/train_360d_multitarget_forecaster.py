@@ -29,6 +29,11 @@ import numpy as np
 import pandas as pd
 import requests
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 warnings.filterwarnings("ignore")
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -948,6 +953,7 @@ def maybe_save_model(model: Any, path: Path, enabled: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
         pickle.dump(model, f)
+        write_integrity_manifest(f)
 
 
 def baseline_regression_predictions(target: str, train_y: np.ndarray, test_meta: pd.DataFrame, full_df: pd.DataFrame) -> dict[str, np.ndarray]:

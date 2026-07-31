@@ -26,6 +26,11 @@ from sklearn.model_selection import TimeSeriesSplit
 sys.path.insert(0, os.path.dirname(__file__))
 from edge_probe import _load_bars, FEATURE_BUILDERS, make_labels, _roll_sum, _roll_mean
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "selectivity_model_v2.pkl")
 
 def compute_vpin_transitions(bars):
@@ -210,6 +215,7 @@ def main(days=60, horizon=5, percentile=75):
             "threshold": threshold,
             "trained_at": datetime.now().isoformat()
         }, f)
+    write_integrity_manifest(MODEL_PATH)
     print(f"\nSaved model to {MODEL_PATH}")
 
 if __name__ == "__main__":

@@ -47,6 +47,10 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+# Manifest written in the same step as the artifact; see
+# backend/test_trainers_write_manifests.py for why this is a gate.
+from verified_io import write_manifest as write_integrity_manifest
+
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
 DEFAULT_MATRIX = DATA_DIR / "research_matrix_1m.parquet"
@@ -1128,11 +1132,9 @@ def save_research_models(
                         "train_start_ms": int(timestamps[valid_idx[0]]),
                         "train_end_ms": int(timestamps[valid_idx[-1]]),
                     }
-                    joblib.dump(
-                        artifact,
-                        model_dir / f"h{horizon}_{side}_{family}.joblib",
-                        compress=3,
-                    )
+                    _artifact_path = model_dir / f"h{horizon}_{side}_{family}.joblib"
+                    joblib.dump(artifact, _artifact_path, compress=3)
+                    write_integrity_manifest(_artifact_path)
                     del model, artifact
                     gc.collect()
                 except Exception as exc:  # noqa: BLE001 - optional model boundary
@@ -1181,11 +1183,9 @@ def save_research_models(
                     "train_rows": len(horizon_oof),
                     "training_source": "purged expanding-window OOF base predictions",
                 }
-                joblib.dump(
-                    artifact,
-                    model_dir / f"h{horizon}_act_skip_{family}.joblib",
-                    compress=3,
-                )
+                _artifact_path = model_dir / f"h{horizon}_act_skip_{family}.joblib"
+                joblib.dump(artifact, _artifact_path, compress=3)
+                write_integrity_manifest(_artifact_path)
                 del model, artifact
                 gc.collect()
             except Exception as exc:  # noqa: BLE001 - optional model boundary

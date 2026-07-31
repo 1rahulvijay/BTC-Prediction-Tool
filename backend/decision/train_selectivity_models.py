@@ -37,6 +37,11 @@ from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 import joblib
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
@@ -191,6 +196,7 @@ def main():
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     joblib.dump(bundle, OUT)
+    write_integrity_manifest(OUT)
     print(f"\nSaved {OUT}")
     print("NOTE: serving these live requires computing the SAME features at serve time "
           "(rv_*/vpin_15m/compression_ratio/shock_magnitude/basis/cvd) with parity — see V10.")

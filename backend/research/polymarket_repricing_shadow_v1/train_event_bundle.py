@@ -37,6 +37,11 @@ from train_event_time_specialists import (
 
 from polymarket_repricing_shadow_v1.event_features import FEATURE_NAMES
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 PROTOCOL_PATH = Path(__file__).with_name("frozen_protocol.json")
 DEFAULT_OUTPUT = (
     ROOT
@@ -187,6 +192,7 @@ def train(output: Path) -> Path:
     temporary = output.with_suffix(output.suffix + f".{os.getpid()}.tmp")
     joblib.dump(bundle, temporary, compress=3)
     os.replace(temporary, output)
+    write_integrity_manifest(output)
     manifest = {
         "path": str(output),
         "sha256": sha256_file(output),

@@ -39,6 +39,11 @@ import time
 import numpy as np
 import pandas as pd
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 CACHE = os.path.join(DATA_DIR, "backfill_cache")
@@ -213,7 +218,9 @@ def train(d, save=False):
         tmp = f"{OUT}.tmp.{os.getpid()}"
         try:
             joblib.dump(bundle, tmp)
+            write_integrity_manifest(tmp)
             os.replace(tmp, OUT)
+            write_integrity_manifest(OUT)
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)

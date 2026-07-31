@@ -26,6 +26,11 @@ import pandas as pd
 import joblib
 from sklearn.ensemble import GradientBoostingRegressor
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
@@ -91,6 +96,7 @@ def main():
                  "version": HEAD_VERSION,
                  "note": "signed bps quantiles; band = [q10-cqr, q90+cqr] for ~80% coverage; "
                          "project close = ref_price*(1+q50/1e4); serve via live_keepers."}, OUT)
+    write_integrity_manifest(OUT)
     print(f"\nSaved -> {OUT}")
     print("Serving: expected_drop=q10-cqr, expected_up=q90+cqr, projected_close from q50 "
           "(no manufactured lean drift). Features via live_keepers (parity-proven).")

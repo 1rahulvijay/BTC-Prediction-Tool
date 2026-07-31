@@ -22,6 +22,11 @@ import numpy as np
 from train_beat_classifier import (build_beat_features, FEATURE_NAMES,
                                     _ohlc_for_dates, resolve_dates)
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "magnitude_model.pkl")
@@ -100,6 +105,7 @@ def main():
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
         joblib.dump({"models": models, "quantiles": list(QUANTILES), "features": FEATURE_NAMES,
                      "horizons": passed}, OUT_PATH)
+        write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH} — P50/band is now conditional, not flat.")
     elif save:
         print("No horizon beat the flat baseline — NOT saved (conditioning is noise here).")

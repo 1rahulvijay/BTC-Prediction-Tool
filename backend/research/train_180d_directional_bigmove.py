@@ -33,6 +33,11 @@ import pandas as pd
 
 import train_360d_multitarget_forecaster as base
 
+# Manifest written in the same step as the artifact: without it the artifact reads as
+# UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
+# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+from verified_io import write_manifest as write_integrity_manifest
+
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_DIR = ROOT / "data" / "research"
 MODEL_DIR = ROOT / "data" / "saved_models" / "research_directional_bigmove"
@@ -108,6 +113,7 @@ def save_model(model: Any, path: Path, enabled: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
         pickle.dump(model, f)
+        write_integrity_manifest(f)
 
 
 def free_memory(*objs: Any) -> None:
