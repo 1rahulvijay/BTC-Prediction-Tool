@@ -64,9 +64,9 @@ CREATE TABLE IF NOT EXISTS deribit_chain_snapshots(
     ask_price DOUBLE,
     mid_price DOUBLE,
     mark_price DOUBLE,
-    mark_iv DOUBLE,
-    bid_iv DOUBLE,
-    ask_iv DOUBLE,
+    mark_iv_pct DOUBLE,
+    bid_iv_pct DOUBLE,
+    ask_iv_pct DOUBLE,
     open_interest DOUBLE,
     volume DOUBLE,
     interest_rate DOUBLE,
@@ -179,9 +179,9 @@ def normalize_summary(
         "ask_price": _nonnegative(item.get("ask_price")),
         "mid_price": _nonnegative(item.get("mid_price")),
         "mark_price": _nonnegative(item.get("mark_price")),
-        "mark_iv": _nonnegative(item.get("mark_iv")),
-        "bid_iv": _nonnegative(item.get("bid_iv")),
-        "ask_iv": _nonnegative(item.get("ask_iv")),
+        "mark_iv_pct": _nonnegative(item.get("mark_iv")),
+        "bid_iv_pct": _nonnegative(item.get("bid_iv")),
+        "ask_iv_pct": _nonnegative(item.get("ask_iv")),
         "open_interest": _nonnegative(item.get("open_interest")),
         "volume": _nonnegative(item.get("volume")),
         "interest_rate": _finite_float(item.get("interest_rate")),
@@ -210,6 +210,22 @@ def initialize_database(path: Path) -> None:
         "ALTER TABLE deribit_chain_batches "
         "ADD COLUMN IF NOT EXISTS response_rpc_id VARCHAR"
     )
+    snapshot_columns = {
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info('deribit_chain_snapshots')"
+        ).fetchall()
+    }
+    for old, new in (
+        ("mark_iv", "mark_iv_pct"),
+        ("bid_iv", "bid_iv_pct"),
+        ("ask_iv", "ask_iv_pct"),
+    ):
+        if old in snapshot_columns and new not in snapshot_columns:
+            connection.execute(
+                f"ALTER TABLE deribit_chain_snapshots "
+                f"RENAME COLUMN {old} TO {new}"
+            )
     connection.close()
 
 
@@ -304,9 +320,9 @@ def persist_payload(
                     row["ask_price"],
                     row["mid_price"],
                     row["mark_price"],
-                    row["mark_iv"],
-                    row["bid_iv"],
-                    row["ask_iv"],
+                    row["mark_iv_pct"],
+                    row["bid_iv_pct"],
+                    row["ask_iv_pct"],
                     row["open_interest"],
                     row["volume"],
                     row["interest_rate"],
@@ -384,6 +400,13 @@ def _latest_chain(connection: duckdb.DuckDBPyConnection):
         """,
         [batch[0]],
     ).fetchdf()
+    frame = frame.rename(
+        columns={
+            "mark_iv": "mark_iv_pct",
+            "bid_iv": "bid_iv_pct",
+            "ask_iv": "ask_iv_pct",
+        }
+    )
     return batch, frame
 
 
@@ -478,14 +501,14 @@ def report(path: Path) -> dict[str, Any]:
                     "straddle_ask_btc": float(
                         call["ask_price"] + put["ask_price"]
                     ),
-                    "call_mark_iv": (
-                        float(call["mark_iv"])
-                        if math.isfinite(float(call["mark_iv"]))
+                    "call_mark_iv_pct": (
+                        float(call["mark_iv_pct"])
+                        if math.isfinite(float(call["mark_iv_pct"]))
                         else None
                     ),
-                    "put_mark_iv": (
-                        float(put["mark_iv"])
-                        if math.isfinite(float(put["mark_iv"]))
+                    "put_mark_iv_pct": (
+                        float(put["mark_iv_pct"])
+                        if math.isfinite(float(put["mark_iv_pct"]))
                         else None
                     ),
                 }

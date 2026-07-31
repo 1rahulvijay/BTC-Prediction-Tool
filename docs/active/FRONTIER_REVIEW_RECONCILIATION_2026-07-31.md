@@ -151,7 +151,7 @@ It stores:
 - instrument, expiry, strike and call/put side;
 - underlying index and price;
 - bid, ask, midpoint and mark price;
-- mark, bid and ask IV;
+- mark, bid and ask IV in exchange-reported percentage units;
 - open interest and volume;
 - interest rate and estimated delivery price;
 - batch duration, HTTP/RPC status, dropped-row count, schema version and Git

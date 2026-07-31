@@ -147,7 +147,7 @@ Capability boundary:
 `backend/venues/deribit_option_chain_recorder.py` is a standalone, public,
 read-only BTC option-chain recorder. It persists one batch every 30 seconds by
 default, including instrument, expiry, strike, call/put type, underlying,
-bid/ask/mid/mark, IV, open interest, volume and available exchange/receive
+bid/ask/mid/mark, IV in percentage units, open interest, volume and available exchange/receive
 timestamps. It never reads credentials and has no order-submission route.
 
 Commands:
