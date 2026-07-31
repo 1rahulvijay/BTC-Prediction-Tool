@@ -28,6 +28,10 @@ from datetime import date, datetime
 
 import numpy as np
 
+# Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
+# why an unmanifested artifact blocks the P(hold) calibrator.
+from verified_io import write_manifest as write_integrity_manifest
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")   # Windows cp1252 can't encode ≥ / ·
 except Exception:
@@ -241,6 +245,7 @@ def main():
                      "ece_before": _ece(p, y), "ece_after": _ece(iso.predict(p), y),
                      "note": "Live P(hold) recalibration overlay. NOT auto-applied — the serving path "
                              "loads it only behind an explicit opt-in flag."}, OVERLAY)
+        write_integrity_manifest(OVERLAY)
         print(f"[calib] saved recalibration overlay -> {OVERLAY} "
               f"(ECE {_ece(p, y)} -> {_ece(iso.predict(p), y)}). Opt-in to apply; serving unchanged by default.")
 

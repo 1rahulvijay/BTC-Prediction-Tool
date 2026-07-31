@@ -29,6 +29,10 @@ import urllib.request
 
 import numpy as np
 
+# Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
+# why an unmanifested artifact blocks the P(hold) calibrator.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 SHADOW_DIR = os.path.join(DATA_DIR, "shadow")
@@ -91,6 +95,7 @@ def train_and_save(train_days=14):
         bundle["horizons"][h] = per
     os.makedirs(SHADOW_DIR, exist_ok=True)
     joblib.dump(bundle, MODEL_PATH)
+    write_integrity_manifest(MODEL_PATH)
     print(f"trained shadow models ({train_days}d) -> {MODEL_PATH}", flush=True)
     return bundle
 

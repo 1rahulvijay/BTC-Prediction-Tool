@@ -23,6 +23,10 @@ import numpy as np
 from backfill_trade_features import download_day, load_aggtrades
 from train_beat_classifier import ticks_to_ohlc, build_beat_features, FEATURE_NAMES, resolve_dates
 
+# Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
+# why an unmanifested artifact blocks the P(hold) calibrator.
+from verified_io import write_manifest as write_integrity_manifest
+
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 OUT_PATH = os.path.join(DATA_DIR, "saved_models", "path_model.pkl")
@@ -122,6 +126,7 @@ def main():
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
         joblib.dump({"models": models, "classes": CLASSES, "features": FEATURE_NAMES,
                      "horizons": passed}, OUT_PATH)
+        write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH}")
     elif save:
         print("No horizon beat base-rate — NOT saved (shape is noise at this data scale).")
