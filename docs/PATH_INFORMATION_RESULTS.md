@@ -1,0 +1,118 @@
+# Path Information Test — results
+
+Reproduce: `python research/path_information_test.py --rows 200000`
+
+Tests whether a signal carries information about the **path** of a 15-minute window even when it
+carries none about the **settlement**. All 31 earlier scripts measured only `close(t+15) > close(t)`
+and reported ~AUC 0.50. That measured the endpoint, never the excursion.
+
+All four tests are **diagnostics**, run out-of-sample, against a **matched-random control** with
+the same entry count and the same holding period. MFE/MAE appear only as labels — no feature is
+derived from the future.
+
+---
+
+## Test 1 — directional path information: NONE
+
+| signal | n | settle acc | P(MFE≥5) | P(MFE≥10) | P(MFE≥20) | P(MFE≥40) |
+|---|---:|---:|---|---|---|---|
+| flow_imbalance | 2394 | 49.2% | 58.6 / 58.4 | 34.3 / 35.7 | 11.7 / 13.9 | 2.0 / 2.7 |
+| flow_reversal | 289 | 50.9% | 62.3 / 58.3 | 38.1 / 35.7 | 10.0 / 14.0 | 1.7 / 2.7 |
+| momentum_baseline | 17924 | 47.8% | 56.6 / 56.6 | 34.7 / 34.7 | 14.0 / 14.0 | 3.1 / 3.1 |
+
+*(signal% / matched-random%)*
+
+**Not one cell beats its control.** `momentum_baseline` is identical to random to the decimal.
+Direction is dead along the path, not merely at the endpoint — which closes the hypothesis that
+the 0.50 AUC was hiding a tradeable excursion. Signed order flow and VPIN, tested here for the
+first time, do not change that.
+
+## Test 2 — excursion timing: UNIFORM, for every signal
+
+Median argmax 6–9 min with q25–q75 spanning 2–12 min in every case. The best moment to exit is
+distributed across the whole window.
+
+**No clock-based exit is learnable.** A fixed "exit at minute k" rule cannot work, which rules
+out the simplest form of dynamic profit-taking.
+
+## Test 3 — two-sided magnitude: **REAL, and significant**
+
+Sign discarded. Does a *move* happen at all?
+
+| signal | n | P(\|mv\|≥5) | P(\|mv\|≥10) | P(\|mv\|≥20) | P(\|mv\|≥40) |
+|---|---:|---|---|---|---|
+| **rv_term_inversion** | 2272 | 96.4 / 94.8 ★ | 82.1 / 77.1 ★ | 46.7 / 39.2 ★ | **16.3 / 10.6 ★** |
+| **shock** | 2598 | 96.3 / 94.8 | 80.4 / 77.1 ★ | 43.1 / 39.2 ★ | 13.4 / 10.6 ★ |
+| flow_reversal | 955 | 97.3 / 94.8 ★ | 81.2 / 77.1 | 40.5 / 39.2 | 9.7 / 10.6 |
+| compression_release | 2211 | 89.2 / 94.8 | 68.0 / 77.1 | 27.0 / 39.2 | 5.6 / 10.6 |
+| vpin_spike | 2713 | 95.5 / 94.8 | 73.6 / 77.1 | 31.9 / 39.2 | 6.2 / 10.6 |
+| momentum_baseline | 59924 | 94.8 / 94.8 | 77.1 / 77.1 | 39.2 / 39.2 | 10.6 / 10.6 |
+
+★ = beats the matched-random control at Bonferroni α = 0.00089 (56 comparisons)
+
+**`rv_term_inversion` (`rv_15m / rv_60m > 1.5`) is significant at all four thresholds**, and the
+lift grows with size: **1.54× at 40 bps** (16.3% vs 10.6%). `shock` is significant at three of
+four. This is the only positive result anywhere in this repository's research that survives
+correction for multiple testing.
+
+`compression_release` is significantly *worse* than random at every level — coiled ranges were
+followed by **smaller** moves, the opposite of the usual claim.
+
+## Test 4 — first passage: structural, not signal
+
+| signal | +k/−j | n | win% | breakeven% | edge |
+|---|---|---:|---:|---:|---:|
+| flow_imbalance | +10/−20 | 4791 | 72.5% | 66.7% | +5.8 |
+| flow_reversal | +10/−20 | 618 | 72.3% | 66.7% | +5.7 |
+| **momentum_baseline** | +10/−20 | 35721 | 71.7% | 66.7% | **+5.0** |
+
+The `+10/−20` structure shows a positive edge for **every** signal *including the zero-information
+baseline*. That makes it a property of BTC's short-horizon path distribution — risking 20 bps to
+make 10 wins more often than 2:1 — not a property of any signal.
+
+And it does not survive costs: the target is **10 bps** against a **9 bps** round trip. The
+`+20/−10` and `+30/−10` structures, which would clear costs, are all sharply negative.
+
+---
+
+## What this establishes
+
+1. **Direction is dead** — at settlement *and* along the path. Two independent measurements now
+   agree, and the second used features the first never touched.
+2. **Dynamic exit timing is not learnable** from a clock. Excursions are uniformly distributed.
+3. **Magnitude is predictable.** Volatility term-structure inversion genuinely forecasts large
+   moves, with a lift that increases with move size.
+4. **The `+10/−20` "edge" is an artifact** of path structure and dies on costs. It would have
+   looked like a discovery without the baseline comparison.
+
+## The honest problem with finding 3
+
+Predicting **|move| without direction** is only monetizable with an instrument that pays on
+magnitude. Checking the venues actually available:
+
+- **Polymarket binaries — no.** A contract still settles on *direction*. Knowing the move will be
+  large does not change P(up), and buying both YES and NO costs ~$1 for a $1 payoff: a
+  guaranteed loss.
+- **Binance directional futures — not directly.** Long or short still needs a side.
+- **Binance breakout bracket — yes, in principle.** Resting stop-entries both sides; whichever
+  triggers rides the move. This is a synthetic long-gamma position and is the natural expression
+  of this signal. Untested.
+- **Deribit options — yes, cleanly.** A straddle is the textbook instrument. Requires the options
+  chain, which is not collected.
+
+Note also that vol clustering is one of the most robust and widely known effects in finance. That
+this signal works is a validation that the measurement is sound; it is not a proprietary
+discovery, and the edge — if any — will be in **execution and instrument choice**, not in the
+prediction.
+
+## Next test, and its gate
+
+`BREAKOUT_BRACKET_V1` — resting stop-entries on both sides, triggered only when
+`rv_term_inversion` fires, exits by trailing stop.
+
+It must clear the bar the `+10/−20` result failed: **positive after the full 9 bps round trip**,
+beating a matched-random control with the same trigger count *and* the same holding time, with a
+day-block lower confidence bound above zero.
+
+Given a 40 bps threshold at 16.3% hit rate, the arithmetic is tight but not obviously impossible.
+That is the first thing this suite has produced worth a real test.
