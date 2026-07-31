@@ -71,6 +71,9 @@ class MeanReversionStrategy(StrategyBase):
     maximum_holding_seconds = 300
     stop_sigma = 1.5
     reward_risk_ratio = 1.0
+    # A fade that has extended this multiple past its entry threshold is no longer a
+    # stretched move reverting - it is a move continuing, which is the losing half.
+    extension_stop_multiple = 1.5
     minimum_stop_bps = 8.0
     maximum_stop_bps = 60.0
 
@@ -79,6 +82,7 @@ class MeanReversionStrategy(StrategyBase):
         return {
             "lookback_samples": self.lookback_samples,
             "entry_z": self.entry_z,
+            "extension_stop_multiple": self.extension_stop_multiple,
             "maximum_trade_count_60s": self.maximum_trade_count_60s,
             "maximum_spread_bps": self.maximum_spread_bps,
             "requested_notional_usd": self.requested_notional_usd,
@@ -88,6 +92,42 @@ class MeanReversionStrategy(StrategyBase):
             "minimum_stop_bps": self.minimum_stop_bps,
             "maximum_stop_bps": self.maximum_stop_bps,
         }
+
+    def position_exit_reason(self, position: dict, snapshot: MarketSnapshot) -> str | None:
+        """A fade has TWO dynamic exits, because its thesis can complete as well as break.
+
+        The trade is "price is stretched and will revert". So:
+          * reversion ACHIEVED - z has crossed back through zero. The reason for the position is
+            gone; holding on is a new bet in the opposite direction that this strategy never
+            made. Static take-profit would keep waiting for a price it has no reason to expect.
+          * thesis BROKEN - z has extended well past the entry threshold. Fading a move that
+            keeps going is the losing half of this trade, and waiting for the stop pays more for
+            the same information.
+
+        Both are read off the same z-score the entry used, so no new threshold is introduced
+        beyond the extension multiple.
+        """
+        history = tuple(float(value) for value in snapshot.mid_history)
+        if snapshot.feed_health is not DataQuality.HEALTHY or len(history) < self.lookback_samples + 1:
+            return None
+        prior = history[-self.lookback_samples - 1:-1]
+        dispersion = statistics.pstdev(prior)
+        if dispersion <= 0:
+            return None
+        z_score = (snapshot.mark_price - statistics.fmean(prior)) / dispersion
+        side = str(position.get("side", "")).upper()
+        # A long was opened because z was NEGATIVE (price below the mean).
+        if side.endswith("LONG"):
+            if z_score >= 0.0:
+                return "REVERSION_ACHIEVED"
+            if z_score <= -self.entry_z * self.extension_stop_multiple:
+                return "THESIS_INVALIDATED"
+        elif side.endswith("SHORT"):
+            if z_score <= 0.0:
+                return "REVERSION_ACHIEVED"
+            if z_score >= self.entry_z * self.extension_stop_multiple:
+                return "THESIS_INVALIDATED"
+        return None
 
     def decide(self, snapshot: MarketSnapshot):
         history = tuple(float(value) for value in snapshot.mid_history)

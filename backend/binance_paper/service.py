@@ -596,9 +596,17 @@ class BinancePaperService:
             if position["position_id"] in pending_positions:
                 continue
             strategy = self.registry.get(position["strategy_id"])
-            reason = strategy.position_exit_reason(position, snapshot)
-            if reason is None:
-                reason = self.portfolio.exit_reason(position, snapshot)
+            # ONE exit path, with precedence enforced inside portfolio.exit_reason:
+            # STOP / TAKE_PROFIT (prices the book actually reached) beat the strategy's thesis
+            # check, which beats MAX_HOLD. Calling position_exit_reason FIRST - as this did -
+            # let a strategy opinion relabel a position that had genuinely been stopped out.
+            #
+            # The portfolio is an injectable seam and is absent in some unit contexts; without
+            # it there are no static levels to respect, so the thesis check stands alone.
+            if self.portfolio is not None:
+                reason = self.portfolio.exit_reason(position, snapshot, strategy)
+            else:
+                reason = strategy.position_exit_reason(position, snapshot)
             if reason:
                 signal_id = canonical_hash(
                     {

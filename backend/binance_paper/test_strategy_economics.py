@@ -198,6 +198,47 @@ def test_control_is_deterministic_and_claims_nothing():
         raise AssertionError("the control never opened a position in 600 samples")
 
 
+def test_dynamic_exit_fires_and_control_stays_static():
+    """Entry and exit must be one rule - and the control must NOT get a thesis.
+
+    A zero-information benchmark that reacted to a thesis would no longer be zero-information,
+    and every other strategy is read against it. If random_control ever grows a reassess(), the
+    comparisons in the paper lane silently stop meaning anything, so this asserts it does not.
+    """
+    from backend.binance_paper.portfolio import BinancePaperPortfolio as Portfolio
+
+    registry = StrategyRegistry()
+    trend = registry.get("trend_following")
+
+    # A long opened on a rising ramp, then the ramp reverses hard: alignment flips negative.
+    rising = _trending_history(step_bps=3.0)
+    falling = [MARK * (1.0 + 3.0 / 10_000.0 * i) for i in range(0, -121, -1)]
+    position = {"side": "LONG", "opened_at_ms": 1_700_000_000_000,
+                "stop_price": MARK * 0.90, "take_profit_price": MARK * 1.10,
+                "maximum_holding_seconds": 300}
+
+    assert trend.position_exit_reason(position, snapshot(rising)) is None,         "a long must be held while its alignment still supports it"
+    assert trend.position_exit_reason(position, snapshot(falling)) == "THESIS_INVALIDATED",         "a long must close when the EMA alignment flips against it"
+
+    # The portfolio must surface it, and static levels must still take precedence.
+    assert Portfolio.exit_reason(position, snapshot(falling), trend) == "THESIS_INVALIDATED"
+    assert Portfolio.exit_reason(position, snapshot(falling)) is None,         "without a strategy the old static-only behaviour must be unchanged"
+
+    stopped = dict(position, stop_price=MARK * 1.10)   # bid already through the stop
+    assert Portfolio.exit_reason(stopped, snapshot(falling), trend) == "STOP",         "a real stop-out must be recorded as STOP, not relabelled by a thesis check"
+
+    # A reassess() that raises must never strand a position.
+    class Exploding:
+        def position_exit_reason(self, position, snapshot):
+            raise RuntimeError("boom")
+    assert Portfolio.exit_reason(position, snapshot(rising), Exploding()) is None
+
+    # The control must express NO thesis.
+    control = registry.get(CONTROL_STRATEGY_ID)
+    assert "position_exit_reason" not in vars(type(control)),         "random_control must not implement position_exit_reason - a control with a thesis is not a control"
+    assert control.position_exit_reason(position, snapshot(falling)) is None
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items())
              if name.startswith("test_") and callable(value)]

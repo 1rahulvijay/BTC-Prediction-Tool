@@ -211,8 +211,23 @@ class StrategyBase(ABC):
     def decide(self, snapshot: MarketSnapshot) -> StrategyDecision:
         raise NotImplementedError
 
+    # ---- dynamic exit -------------------------------------------------------------------
     def position_exit_reason(
         self, position: dict[str, Any], snapshot: MarketSnapshot
     ) -> str | None:
-        """Optional causal dynamic exit hook for this strategy's open position."""
+        """Should this OPEN position be closed because its thesis is gone?
+
+        Binance exits were entirely static - stop price, take-profit price and MAX_HOLD, all
+        three fixed at entry. A position whose reason for existing had already evaporated still
+        sat there until price happened to touch a level chosen minutes earlier.
+
+        The principle here is the same one the Polymarket module uses, and it deliberately adds
+        no new tunable: EXIT WHEN THE STRATEGY WOULD NO LONGER ENTER. Entry and exit become one
+        rule read in both directions, so a strategy cannot hold a position it would not open.
+
+        Return an exit reason string to close, or None to leave the static levels in charge.
+        The default is None, so a strategy that expresses no thesis keeps exactly its old
+        behaviour - and `random_control` MUST keep that default, because a control that reacted
+        to a thesis would no longer be zero-information and would stop being a valid benchmark.
+        """
         return None

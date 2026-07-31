@@ -51,6 +51,29 @@ class TrendFollowingStrategy(StrategyBase):
             "maximum_stop_bps": self.maximum_stop_bps,
         }
 
+    def position_exit_reason(self, position: dict, snapshot: MarketSnapshot) -> str | None:
+        """Close when the EMA alignment that justified the entry has flipped against it.
+
+        The entry condition is `alignment_bps >= +minimum_strength` for a long. Waiting for a
+        price stop after the alignment has gone negative is holding a position this strategy
+        would not open - the exit is the entry rule read backwards, so it introduces no new
+        threshold. A merely WEAKENING trend is not an exit: only a sign flip past the same
+        strength bar counts, otherwise noise around zero would churn the position.
+        """
+        history = tuple(float(value) for value in snapshot.mid_history)
+        if snapshot.feed_health is not DataQuality.HEALTHY or len(history) < self.slow_period:
+            return None                      # cannot judge the thesis; leave the stops in charge
+        window = history[-self.slow_period:]
+        fast = _ema(window[-self.fast_period:], self.fast_period)
+        slow = _ema(window, self.slow_period)
+        alignment_bps = (fast / slow - 1.0) * 10_000.0
+        side = str(position.get("side", "")).upper()
+        if side.endswith("LONG") and alignment_bps <= -self.minimum_strength_bps:
+            return "THESIS_INVALIDATED"
+        if side.endswith("SHORT") and alignment_bps >= self.minimum_strength_bps:
+            return "THESIS_INVALIDATED"
+        return None
+
     def decide(self, snapshot: MarketSnapshot):
         history = tuple(float(value) for value in snapshot.mid_history)
         base_features = {
