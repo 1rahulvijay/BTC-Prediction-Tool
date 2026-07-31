@@ -14,7 +14,7 @@ passes" gets said about a system that cannot serve.
 | check | command | result |
 |---|---|---|
 | CI gate | `python backend/run_ci_locally.py` | **72/72** (231 s) |
-| pytest suites | `python -m pytest -q` | **93 passed** (was 5 collected) |
+| pytest suites | `python -m pytest -q` | **86 passed** (was 5 collected) |
 | compilation | `python -m compileall -q backend research microstructure` | exit 0 |
 | frontend | `npm run build` | 597 ms, 370 kB / 113 kB gzip |
 | server import | `python -c "import server"` | clean, `app` present |
@@ -45,7 +45,8 @@ Two layers, and the second is why it survived so long.
 
 1. `python -m pytest` appeared **nowhere** in `.github/workflows/invariants.yml`.
 2. `pytest.ini` limited `testpaths` to `tests` and `backend/venues` — **5 tests collected while
-   93 existed**.
+   93 existed** (86 under the committed config, which excludes the 7-test
+   `test_feed_writer_load.py` that CI already runs as a script — see section 4).
 
 **Why it was invisible.** A missed pytest-style test does not fail loudly. Run one as
 `python <file>` and it executes no test function and exits 0 — a clean pass that verified
