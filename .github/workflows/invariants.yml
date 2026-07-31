@@ -202,6 +202,12 @@ jobs:
       - name: Paper strategy economics (a winner must actually win)
         run: python -m backend.binance_paper.test_strategy_economics
 
+      # The Polymarket fair-value module's leakage guard is STRUCTURAL: a Calibration carries
+      # fitted_through_ms and decide() raises on any round at or before it, so a look-ahead
+      # evaluation cannot be written by accident. The selftest proves the guard fires.
+      - name: Polymarket calibrated fair value (leakage guard + dynamic exit)
+        run: python -m backend.polymarket_paper.calibrated_fair_value --selftest
+
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
 
