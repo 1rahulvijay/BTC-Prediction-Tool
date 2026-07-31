@@ -76,8 +76,6 @@ CREATE TABLE IF NOT EXISTS deribit_chain_snapshots(
     PRIMARY KEY(batch_id, instrument_name)
 );
 
-CREATE INDEX IF NOT EXISTS deribit_chain_time_idx
-ON deribit_chain_snapshots(receive_ts_ns, expiry_ts_ms, strike, option_type);
 """
 
 SNAPSHOT_INSERT = """
@@ -222,10 +220,18 @@ def initialize_database(path: Path) -> None:
         ("ask_iv", "ask_iv_pct"),
     ):
         if old in snapshot_columns and new not in snapshot_columns:
+            connection.execute("DROP INDEX IF EXISTS deribit_chain_time_idx")
             connection.execute(
                 f"ALTER TABLE deribit_chain_snapshots "
                 f"RENAME COLUMN {old} TO {new}"
             )
+            snapshot_columns.remove(old)
+            snapshot_columns.add(new)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS deribit_chain_time_idx "
+        "ON deribit_chain_snapshots("
+        "receive_ts_ns, expiry_ts_ms, strike, option_type)"
+    )
     connection.close()
 
 
