@@ -92,7 +92,7 @@ def main():
                 else:
                     dir_str = "DIRECT "
                 print(f"{fname}_{col_name:15s} | AUC: {auc:.3f} | {dir_str}")
-            except:
+            except ValueError:
                 pass
                 
 if __name__ == "__main__":

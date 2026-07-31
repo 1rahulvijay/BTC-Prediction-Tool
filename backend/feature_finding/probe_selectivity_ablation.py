@@ -45,7 +45,7 @@ def run_model(X, y):
         try:
             auc = roc_auc_score(y_test, preds)
             aucs.append(auc)
-        except:
+        except ValueError:
             pass
             
     # Train full to get lift

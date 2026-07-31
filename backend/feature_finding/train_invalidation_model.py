@@ -55,7 +55,7 @@ def main():
         try:
             auc = roc_auc_score(y_test, preds)
             aucs.append(auc)
-        except:
+        except ValueError:
             pass
             
     print("P(Fail_Fast) Model Trained.")

@@ -232,7 +232,7 @@ from current main-model training because they do not meet the default `KEEP,PARI
 |---|---|
 | canonical local workflow | 73/73 passed |
 | exact `start.bat` self-test-only path | passed |
-| pytest suites | 93 passed |
+| pytest suites | 86 passed |
 | Python compile | passed |
 | backend/test Pyflakes | passed |
 | frontend production build | passed |

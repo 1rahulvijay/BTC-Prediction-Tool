@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 
-Source audited: `master` at `a70a084` plus the 1,000-day configuration in this change
+Source audited: `master` at `15d65c9` plus the narrow research-handler corrections in this change
 
 Purpose: record what was actually executed and inspected before the next long-window retrain. This
 is a source, contract, safety and paper-accounting audit. It is not a claim that an unavailable
@@ -28,11 +28,11 @@ trading**. It is not currently suitable for trusted model serving or real-money 
 
 | validation | result |
 |---|---|
-| canonical local CI | PASS, 73/73 steps, 227.6 seconds |
-| exact Windows `start.bat` self-test-only path | PASS, 166.1 seconds; no server or training started |
-| Python compilation | PASS, all 485 Python files under `backend/`, `research/` and `tests/` |
+| canonical local CI | PASS, 73/73 steps, 242.0 seconds |
+| exact Windows `start.bat` self-test-only path | PASS, 176.5 seconds; no server or training started |
+| Python compilation | PASS, all 486 Python files under `backend/`, `research/` and `tests/` |
 | maintained Python static checks | PASS |
-| pytest | PASS, 93 tests |
+| pytest | PASS, 86 tests |
 | frontend production build | PASS |
 | frontend high-severity dependency audit | PASS, 0 vulnerabilities |
 | launcher path/control-flow integrity | PASS, 61 invoked paths |
@@ -47,7 +47,7 @@ environment require incompatible Starlette, Packaging and PyArrow versions. This
 the source-test result, but it is a deployment blocker. Production must use the dedicated
 `requirements-prod.txt` virtual environment required by preflight.
 
-The final launcher preflight measured at least 429 GiB free disk and found the cross-venue and
+The final launcher preflight measured at least 425 GiB free disk and found the cross-venue and
 trade-feature backfills cover 1,289 and 1,291 days respectively, exceeding the newly selected
 1,000-day request.
 No 1,000-day completion marker exists, so the next normal launch correctly forces one full retrain.
@@ -129,6 +129,10 @@ These items remain and must not be described as completed:
 6. **Exact passive fills:** public aggregate L2 cannot reveal exact order priority. Any maker fill
    remains a conservative queue simulation until reconciled against forward orders.
 7. **Profitability:** deterministic tests prove arithmetic and refusal logic, not trading edge.
+
+The audit also narrowed seven research/probe `except: pass` handlers to `except ValueError`. ROC-AUC
+folds with only one class may still be skipped, while programming, data and dependency errors now
+fail visibly instead of being silently converted into incomplete research output.
 
 ## Required Post-Training Checks
 

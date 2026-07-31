@@ -195,7 +195,7 @@ def main(days=60, horizon=5, percentile=75):
             f_auc = roc_auc_score(y_train[val_ix], f_probs)
             fold_aucs.append(f_auc)
             print(f" Fold {f_idx+1}: AUC {f_auc:.3f}")
-        except:
+        except ValueError:
             pass
     if fold_aucs:
         print(f" Mean Fold AUC: {np.mean(fold_aucs):.3f} (Std: {np.std(fold_aucs):.3f})")

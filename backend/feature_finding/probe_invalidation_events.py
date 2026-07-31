@@ -122,7 +122,7 @@ def main():
                 dir_str = "DIRECT " if auc >= 0.5 else "INVERSE"
                 auc = auc if auc >= 0.5 else 1 - auc
                 print(f"{fname:25s} | AUC: {auc:.3f} | {dir_str}")
-            except:
+            except ValueError:
                 pass
 
     eval_target("Anchor Cross-back", target_anchor_cross)
