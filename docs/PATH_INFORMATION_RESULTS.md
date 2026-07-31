@@ -176,3 +176,58 @@ aggregate scalars every 30 s and persists nothing.
 recorder change, needs no credentials, and it is now justified by a measured signal rather than
 by a hypothesis — which is a materially better reason than the one behind the original V4
 proposal.
+
+---
+
+# COMPLETE-SET ARBITRAGE — result: exists, economically negligible
+
+Reproduce: `python research/complete_set_arbitrage_test.py`
+
+UP + DOWN must equal $1 at settlement. No forecast, no direction, no model — the arithmetic is
+fixed by the settlement rule. This was the one idea that could not be wrong in an interesting way.
+
+**Sample:** 2026-07-02 → 2026-07-04 (2.17 days), 419 paired conditions, 158,906 simultaneously
+quoted observations (median quote skew **0 ms**), valid + synchronized books only.
+
+## The market is efficiently quoted
+
+```
+UP_ask + DOWN_ask : median 1.0100
+UP_bid + DOWN_bid : median 0.9900
+```
+
+A **1-cent spread centred exactly on $1.** That penny is the market maker's income. A taker
+cannot reach it — crossing costs you the spread by construction.
+
+## The opportunities that do exist
+
+| assumed cost | buy-side opps | % of quotes | median size | total $ edge |
+|---|---:|---:|---:|---:|
+| 0.0c | 246 | 0.155% | 10.2 | **$78** |
+| 1.0c | 99 | 0.062% | 7.7 | $30 |
+| 3.0c | 19 | 0.012% | 8.0 | $8 |
+
+Sell side is similar: $121 at 0c, $40 at 3c.
+
+**Total theoretical edge across the entire 2.17-day window: ~$200.** Annualised at 100% capture,
+~$34k — and that assumes you win *every* opportunity, with both legs filling simultaneously,
+against everyone else watching the same book.
+
+A typical opportunity is **10 shares × 1 cent = $0.10.**
+
+## Verdict
+
+Complete-set arbitrage is **real but not a business.** It appears in 0.15% of quotes at sizes
+around ten shares. You cannot deploy $100k into $0.10 opportunities, and the two-leg execution
+risk is asymmetric: miss one leg and a riskless spread becomes an outright directional position —
+the precise risk the structure exists to avoid.
+
+## The finding underneath the finding
+
+The median tells the real story. **The market quotes 1.0100 / 0.9900** — someone is already
+making this market, tightly, around the theoretical value. The penny spread is not an
+inefficiency; it is the compensation for providing that liquidity.
+
+Which means the only way to earn it is to **be the market maker rather than the taker** — and
+that loops directly back to the liquidity-provision lane, which needs queue position, which needs
+sequenced L2. Every structural path now converges on the same prerequisite.
