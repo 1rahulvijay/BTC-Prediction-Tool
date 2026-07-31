@@ -116,3 +116,63 @@ day-block lower confidence bound above zero.
 
 Given a 40 bps threshold at 16.3% hit rate, the arithmetic is tight but not obviously impossible.
 That is the first thing this suite has produced worth a real test.
+
+
+---
+
+# BREAKOUT_BRACKET_V1 — result: does not monetise it
+
+Reproduce: `python research/breakout_bracket_test.py`
+
+The magnitude finding needed an instrument. On Binance the natural expression is a breakout
+bracket — resting stop-entries both sides, whichever triggers rides the move. Synthetic long
+gamma, no direction required.
+
+| entry | trail | fills | no-fill% | whip% | net bps | **control bps** | lift | day LCB |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 10b | 10b | 1866 | 17.9% | 1.0% | −11.40 | −10.38 | −1.02 | −11.99 |
+| 10b | 40b | 1866 | 17.9% | 1.0% | −9.48 | −8.17 | −1.32 | −10.73 |
+| 20b | 40b | 1061 | 53.3% | 0.0% | −9.02 | −8.77 | −0.25 | −11.10 |
+| 30b | 40b | 616 | 72.9% | 0.0% | −9.29 | −10.32 | **+1.03** | −12.42 |
+
+Entry and exit both taker. Both stops touched inside one bar is charged as a full whipsaw.
+
+**All nine configurations lose, and the control loses just as much.** That is the decisive
+column: the bracket bleeds whether or not the magnitude signal fired, so the loss is structural,
+not a signal failure.
+
+The one cell with positive lift (30b/40b, +1.03) is lift over a *losing* control — −9.29 bps
+net, day LCB −12.42. Lift over a loss is not profit.
+
+## Why it fails, structurally
+
+A bracket enters only **after** price has already travelled `entry` bps. It pays the cost of
+being late on every trade and collects only the remainder:
+
+- entry 10 bps → 17.9% never fill, and those that do give back the 10 bps plus 9 bps of cost
+- entry 30 bps → whipsaws vanish, but **72.9% never fill** and the remaining move is smaller
+
+Widening the entry to cut whipsaws also cuts what is left to capture. There is no setting where
+both work, which is why this is not a tuning problem.
+
+## What this does and does not close
+
+**Does not** invalidate the magnitude finding. `rv_term_inversion` still predicts large moves,
+still survives Bonferroni, still shows lift growing with size. Two independent tests now agree.
+
+**Does** close the Binance directional route to harvesting it. Knowing a move is coming is worth
+nothing if the only available instrument requires you to be late to it.
+
+## The instrument that fits
+
+A **Deribit straddle** never picks a side, so it does not pay the lateness cost that kills the
+bracket. That is the textbook expression of "large move, direction unknown", and it is the one
+instrument on the shortlist that structurally matches the signal.
+
+It needs the per-strike options chain, which is **not collected** — the client polls five
+aggregate scalars every 30 s and persists nothing.
+
+**Concrete next step:** persist the Deribit chain (strike, bid, ask, mark IV, expiry). That is a
+recorder change, needs no credentials, and it is now justified by a measured signal rather than
+by a hypothesis — which is a materially better reason than the one behind the original V4
+proposal.
