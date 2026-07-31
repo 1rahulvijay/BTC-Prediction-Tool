@@ -31,6 +31,8 @@ import os
 import database
 import decision_champion
 import round_state_panel
+from polymarket_paper import calibrated_fair_value as _pm_fv
+from polymarket_paper import calibration_loader as _pm_cal_loader
 from trade_forecast import live_forecaster as complete_trade_forecaster
 from polymarket.model_dynamic_paper import (
     RULE_ID as CHAMPION_DYNAMIC_RULE,
@@ -514,6 +516,35 @@ def _market_quote_for_round(round_data, now_ms):
         }
     except Exception:
         return None
+
+
+_PM_CAL_CACHE: dict[int, object] = {}
+_PM_CAL_LOGGED: set[int] = set()
+
+
+def _pm_calibration(horizon: int):
+    """Cached P(hold) calibrator for PM_CALIBRATED_FAIR_VALUE_V1, or None.
+
+    Cached because the file does not change while the process runs and this is called on a
+    per-round hot path. The unavailability reason is logged ONCE per horizon rather than every
+    round: a strategy that is disabled must be visible, but it must not flood the log."""
+    if horizon in _PM_CAL_CACHE:
+        return _PM_CAL_CACHE[horizon]
+    calibration = None
+    try:
+        calibration = _pm_cal_loader.load(int(horizon))
+    except Exception as exc:                      # never let a loader fault break the round loop
+        logger.debug(f"P(hold) calibrator load failed for {horizon}m: {exc}")
+    _PM_CAL_CACHE[horizon] = calibration
+    if calibration is None and horizon not in _PM_CAL_LOGGED:
+        _PM_CAL_LOGGED.add(horizon)
+        logger.info(
+            f"PM_CALIBRATED_FAIR_VALUE_V1 disabled for {horizon}m: no deployable P(hold) "
+            "calibrator. The challenger refuses to deploy one while the source artifacts fail "
+            "identity enforcement (SOURCE_MODEL_REQUIRES_RETRAINING). A retrain that writes "
+            "manifests is what enables this strategy."
+        )
+    return calibration
 
 
 def _leader_quote(round_data, now_ms):
@@ -1935,6 +1966,54 @@ class PriceToBeatTracker:
                                                       btc_entry=rnd.get("current_price"))
                 except Exception as _lle:
                     logger.debug(f"LATE_LEADER_30S paper log skipped: {_lle}")
+            # ── PM_CALIBRATED_FAIR_VALUE_V1: buy the leader ONLY when a CALIBRATED P(hold)
+            # exceeds the executable ask plus fee. Raw P(hold) cannot support this comparison -
+            # it says 96% where 89% realizes, so every "cheap" call it makes is biased by ~7
+            # points. Evidence: 2 of 3 strictly temporal splits, +0.0430/$1, day-block LCB
+            # +0.0164, against a trade-everything baseline whose bound is NEGATIVE. The third
+            # split - the MOST RECENT - failed, so this is a candidate accruing forward evidence
+            # in paper, not a promoted rule.
+            #
+            # INERT until the source artifacts carry identity manifests: the challenger marks
+            # its calibrators SOURCE_MODEL_REQUIRES_RETRAINING (12/12 artifacts fail identity),
+            # and calibration_loader.load() returns None for a non-deployable file. A calibrator
+            # for a model whose identity cannot be proven is not deployable. It then logs
+            # CAL_UNAVAILABLE and takes no position - that row is deliberate, because a strategy
+            # that is silently dead looks alive, which is a failure this repository has hit.
+            if (_paper_entries_allowed and 20 <= secs_left <= 32
+                    and int(rnd.get("horizon", 0) or 0) in (5, 15)
+                    and not rnd.get("_pmcfv_eval") and rnd.get("id")):
+                rnd["_pmcfv_eval"] = True
+                try:
+                    _h = int(rnd.get("horizon") or 0)
+                    _cal = _pm_calibration(_h)
+                    _lq = _leader_quote(rnd, now_ms)
+                    _raw_hold = (rnd.get("round_state") or {}).get("p_leader_holds")
+                    if _cal is None:
+                        database.log_rule_paper_trade(
+                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
+                            "", 0.0, 0.0, 0.0, 0.0, 0.0, "CAL_UNAVAILABLE")
+                    elif _lq is None or _raw_hold is None:
+                        database.log_rule_paper_trade(
+                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
+                            "", 0.0, 0.0, 0.0, 0.0, 0.0,
+                            "NO_QUOTE" if _lq is None else "NO_PHOLD")
+                    else:
+                        _d = _pm_fv.decide(_pm_fv.Quote(
+                            round_id=str(rnd["id"]), timestamp_ms=int(now_ms), horizon=_h,
+                            seconds_left=int(secs_left), leader_side=str(_lq["side"]),
+                            raw_p_hold=float(_raw_hold), ask=float(_lq["ask"]),
+                            bid=float(_lq["bid"]), fee=float(_lq["fee"])), _cal)
+                        database.log_rule_paper_trade(
+                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
+                            _lq["side"] if _d.action is _pm_fv.Action.ENTER else "",
+                            _lq["ask"], _lq["bid"], _lq["fee"], _lq["spread"], _lq["depth"],
+                            _d.action.value, btc_entry=rnd.get("current_price"))
+                except _pm_fv.CalibrationRefused as _cre:
+                    # The leakage guard fired. Never downgrade this to a trade.
+                    logger.warning(f"PM_CALIBRATED_FAIR_VALUE refused (leakage guard): {_cre}")
+                except Exception as _pmfve:
+                    logger.debug(f"PM_CALIBRATED_FAIR_VALUE paper log skipped: {_pmfve}")
             # ── 15m VARIANT as a SEPARATE SHADOW (operator 2026-07-04): same mechanics on 15m
             # rounds, its own name + evidence. NOT the frozen rule — the Kaggle validation was
             # 5m-only (no 15m quote history existed in any archive), so the 15m question gets
