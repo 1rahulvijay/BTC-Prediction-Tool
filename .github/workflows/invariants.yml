@@ -208,6 +208,13 @@ jobs:
       - name: Polymarket calibrated fair value (leakage guard + dynamic exit)
         run: python -m backend.polymarket_paper.calibrated_fair_value --selftest
 
+      # The wiring in price_to_beat.py sits inside `except Exception: logger.debug(...)`, so a
+      # wrong signature or argument order would log NOTHING and say nothing - the strategy would
+      # look registered while never writing a row. This exercises the real database call with
+      # the real argument shape and reads the rows back.
+      - name: PM fair-value wiring actually logs (a silent except cannot hide a dead strategy)
+        run: python backend/test_pm_fair_value_wiring.py
+
       # 21 of 31 trainers wrote model artifacts with NO integrity manifest, which is why
       # 12/12 artifacts fail identity and phold_challenger refuses to deploy any calibrator
       # (SOURCE_MODEL_REQUIRES_RETRAINING) - the live blocker on PM_CALIBRATED_FAIR_VALUE_V1.
