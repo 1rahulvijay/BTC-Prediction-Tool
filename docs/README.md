@@ -2,6 +2,10 @@
 
 ## Production
 
+- **[FULL_CODE_MODEL_AND_BUSINESS_LOGIC_VALIDATION_2026-07-31.md](active/FULL_CODE_MODEL_AND_BUSINESS_LOGIC_VALIDATION_2026-07-31.md)** -
+  complete source/model/head/paper-business-logic validation; 71/71 local CI result, full-tree
+  compile/static evidence, exact expected artifact failures, paper accounting and safety coverage,
+  residual artifact/environment/data blockers, and the honest launch verdict.
 - **[CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md](active/CURRENT_IMPLEMENTATION_TEST_AND_GAP_LEDGER_2026-07-31.md)** -
   canonical current code/model/feature/UI/data/paper-execution inventory; passing and expected-fail
   test results; research conclusions; every material not-ready/not-implemented item with its reason

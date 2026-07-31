@@ -2,7 +2,7 @@
 
 Date: 2026-07-31
 
-Reconciled through commit: `0085498`
+Reconciled against source commit: `8ba94e7`
 
 Purpose: canonical answer to what is implemented, what is tested, what the results mean, what is
 blocked, and how each blocked item can be completed.
@@ -238,7 +238,7 @@ from current main-model training because they do not meet the default `KEEP,PARI
 | frontend production build | passed |
 | npm high-severity audit | 0 vulnerabilities |
 | documentation tables | passed |
-| launcher integrity | 60 invoked paths valid |
+| launcher integrity | 61 invoked paths valid |
 | repository layout | 42 research launchers, 4 test launchers |
 
 The canonical workflow covers labels, target units, OOF isolation, immutable evidence, artifact
