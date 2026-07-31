@@ -29,8 +29,9 @@ No model or validation result guarantees profit.
 | Public transport | Not configured | Keep Uvicorn on loopback and terminate HTTPS at a reverse proxy/private tunnel |
 | Service supervision/backups | Not configured by this repository | Configure a service manager, alerts, and offline DuckDB/artifact backups |
 
-The fail-closed paper-production preflight reported seven failed prerequisites and started no
-server. The global Python environment also fails `pip check` because unrelated Reflex/Streamlit
+With temporary valid deployment settings supplied, the latest fail-closed paper-production
+preflight reported six artifact/model prerequisites and started no server. The global Python
+environment also fails `pip check` because unrelated Reflex/Streamlit
 packages require different Starlette, Packaging and PyArrow versions. Do not repair that shared
 environment in place; use `.venv-prod`.
 
