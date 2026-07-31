@@ -70,20 +70,25 @@ zero is still zero.
 
 ## What actually moves the ceiling, ranked by measured leverage
 
-### 1. Maker execution — a 6× improvement in the hurdle, no prediction change
+### 1. Passive entry — useful only with honest exit and fill accounting
 
-| horizon | taker move/cost | **maker move/cost** |
-|--------:|----------------:|--------------------:|
-| 15m | 1.06 | **6.39** |
-| 60m | 2.18 | **13.11** |
-| 240m | 4.37 | **26.20** |
+The former table granted both legs passive fills at a 1.5 bps round-trip cost. That second passive
+fill was not observed and overstated the execution improvement. The corrected comparison uses a
+7 bps passive-entry/taker-exit proxy:
 
-Not crossing the spread changes 15-minute trading from structurally impossible to structurally
-possible. That is a larger effect than any model improvement in this entire suite, and it is an
-execution problem, not a prediction problem.
+| horizon | taker move/cost | **passive-entry/taker-exit move/cost** |
+|--------:|----------------:|---------------------------------------:|
+| 15m | 1.06 | **1.37** |
+| 60m | 2.18 | **2.81** |
+| 240m | 4.37 | **5.62** |
 
-**Blocked on:** passive fill modelling requires queue position, which requires sequenced L2
-depth. The recorder stores top-of-book only — see `backend/venues/rl_data_readiness.py`.
+Passive entry lowers the hurdle, but does not create a 6x improvement. In the corrected
+mean-reversion screen, taker/taker returned -16.00% OOS; passive-entry/taker-exit ranged from
+-8.03% to -1.54% depending on entry depth and never became positive.
+
+The sequenced Binance L2 recorder now stores REST snapshots and gap-detectable diff depth. It
+supports deterministic book replay and conservative queue research. Public aggregate L2 still
+does not reveal exact order priority, and account-specific fees remain unverified.
 
 ### 2. Longer horizons — free, available today
 
@@ -110,9 +115,9 @@ costs. Selectivity is worth more than accuracy when the hurdle is this close to 
 | script | status | reason |
 |---|---|---|
 | v4 Breeden–Litzenberger | **BLOCKED** | Original computed a density from a *simulated* BS chain and called it "true market-implied probability". No Deribit per-strike chain is stored; Deribit's shortest BTC expiry is daily while this lane trades 5m/15m |
-| v6 persistent homology | **BLOCKED** | A book at one instant is a monotone price axis with no non-trivial loops — Betti-1 "liquidity holes" do not exist in that object. Also no depth data |
+| v6 persistent homology | **BLOCKED as framed** | A book at one instant is a monotone price axis with no non-trivial loops. Sequenced depth now accrues, but it does not make the proposed Betti-1 interpretation valid |
 | v7 Fisher–Rao geodesic | **BLOCKED as framed** | No order-book density, no defined crash state. Buildable as a distribution-shift *monitor*; not as a crash oracle |
-| v10 GNN / L2-CNN | **BLOCKED** | No depth stream to build a graph or image from |
+| v10 GNN / L2-CNN | **WAIT FOR EVIDENCE** | Sequenced USD-M depth collection now exists; training remains blocked until enough gap-free rows, labels and simple L2 baselines exist |
 
 These print a refusal and produce **no number**, because inventing the missing data is exactly
 what produced the results that reversed.

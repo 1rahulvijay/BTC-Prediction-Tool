@@ -335,6 +335,39 @@ Until the locked gate says otherwise, the correct status is:
 > Research-only execution evidence, not a profitable strategy and not a trade
 > instruction.
 
+## 2026-07-31 Legacy Proxy Correction
+
+The older `research/maker_lever_test.py` was not the forward V1 simulator above. It used
+one-minute high/low as a strict-trade-through entry proxy but then charged 1.5 bps as though both
+entry and exit filled passively. That gave an unobserved second passive fill and could overstate
+the maker conversion.
+
+It now:
+
+1. requires strict trade-through for the passive entry;
+2. exits as a taker at the fixed horizon;
+3. computes return directly from limit entry to horizon exit;
+4. charges the frozen V1 maker fee, taker fee and a taker-exit spread allowance;
+5. labels all output diagnostic because account fees and queue priority are unverified.
+
+`research/ceiling_analysis.py` was corrected from a 1.5 bps two-passive-leg hurdle to a 7 bps
+passive-entry/taker-exit proxy. Historical results produced by the former accounting must not be
+quoted as executable evidence.
+
+The corrected 200,000-row chronological test produced:
+
+| Route proxy | Fills/trades | OOS compounded return |
+|---|---:|---:|
+| taker entry + taker exit, 11.0 bps | 7,776 | -16.00% |
+| passive entry 1 bp deep + taker exit, 7.5 bps | 4,484 | -8.03% |
+| passive entry 2 bp deep + taker exit, 7.5 bps | 3,579 | -6.42% |
+| passive entry 5 bp deep + taker exit, 7.5 bps | 1,876 | -3.34% |
+| passive entry 10 bp deep + taker exit, 7.5 bps | 748 | -1.54% |
+
+The proxy reduces the loss but never makes this signal positive. This closes the cheap historical
+maker-rescue claim for this signal; it does not close other signals or replace the forward V1
+sequenced-book campaign.
+
 ## Related Frozen-Campaign Operational Note
 
 `polymarket_repricing_shadow_v1/live_shadow.py` still declares the legacy

@@ -102,3 +102,41 @@ second per token while causal level updates remain event-by-event for queue repl
 Run `.\run_polymarket_l2_recorder.bat`; analyze with `.\tests\launchers\run_polymarket_l2_execution_test.bat`.
 Queue output is conservative/base/optimistic because public L2 does not reveal order IDs or true rank.
 See [POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md](POLYMARKET_EXACT_DEPTH_AND_QUEUE_SIMULATION_2026-07-01.md).
+
+## Binance Sequenced L2 Recorder (2026-07-31)
+
+`backend/venues/binance_l2_recorder.py` is the durable USD-M BTCUSDT depth recorder. It is separate
+from the top-of-book multi-venue recorder and from the main app database.
+
+It records:
+
+- a REST depth snapshot with `lastUpdateId`;
+- every 100 ms diff-depth event with `U`, `u`, `pu`, exchange time and receive time;
+- raw bid/ask changes and their SHA-256;
+- a deterministic top-20 book checksum after each applied event;
+- sequence gaps, reconnect sessions and current progress.
+
+It does not store credentials and cannot submit orders. A gap invalidates the current local book
+and starts a new snapshot/session. The raw snapshot plus diffs can be replayed and checksum
+verified.
+
+Commands:
+
+```powershell
+.\start_binance_l2_recorder.bat
+python backend\venues\binance_l2_recorder.py --report
+python backend\venues\binance_l2_recorder.py --selftest
+python backend\venues\rl_data_readiness.py
+```
+
+The default archive is `data/binance_l2.duckdb` with a 10 GB size cap. `start.bat` launches one
+hidden instance through `backend/start_recorders_once.ps1`; set
+`BTC_SKIP_BINANCE_L2_RECORDER=1` only when disk or network constraints require it.
+
+Capability boundary:
+
+- deterministic local-book replay: available after enough gap-free rows accrue;
+- exact visible-depth taker VWAP: computable from replayed books;
+- conservative public-trade queue model: research only;
+- exact queue priority/passive fill: unavailable from aggregate public L2;
+- production execution RL: blocked until defensible forward fill labels exist.
