@@ -210,3 +210,9 @@ class StrategyBase(ABC):
     @abstractmethod
     def decide(self, snapshot: MarketSnapshot) -> StrategyDecision:
         raise NotImplementedError
+
+    def position_exit_reason(
+        self, position: dict[str, Any], snapshot: MarketSnapshot
+    ) -> str | None:
+        """Optional causal dynamic exit hook for this strategy's open position."""
+        return None

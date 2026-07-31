@@ -15,6 +15,7 @@ from .config import StrategyRiskConfig
 from .strategies import (
     BreakoutStrategy,
     MeanReversionStrategy,
+    ModelConsensusStrategy,
     RandomControlStrategy,
     TrendFollowingStrategy,
 )
@@ -31,6 +32,7 @@ class StrategyRegistry:
             "trend_following": TrendFollowingStrategy(),
             "breakout": BreakoutStrategy(),
             "mean_reversion": MeanReversionStrategy(),
+            "model_consensus": ModelConsensusStrategy(),
             CONTROL_STRATEGY_ID: RandomControlStrategy(),
         }
         self._enabled = {strategy_id: True for strategy_id in self._strategies}

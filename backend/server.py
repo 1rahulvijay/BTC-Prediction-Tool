@@ -654,11 +654,22 @@ data_state = {
     "sol_price": 0.0,
     "sol_volume": 0.0,
     "sol_imbalance": 0.0,
+    "_ptb_preds": {},
+    "_model_context_updated_ms": 0,
+    "_binance_paper_context": {},
 }
+
+
+def _binance_paper_model_context() -> dict:
+    """Pre-published compact context; no copying or model work on futures book ticks."""
+    value = data_state.get("_binance_paper_context") or {}
+    return value if isinstance(value, dict) else {}
+
 
 binance_paper_service = BinancePaperService(
     futures_ws_client,
     lambda: data_state.get("derivatives") or {},
+    _binance_paper_model_context,
 )
 configure_binance_paper_service(binance_paper_service)
 app.include_router(binance_paper_router)
@@ -1208,7 +1219,8 @@ def _paper_rule_status_cached():
                             "LATE_LEADER_15M_SHADOW_V1", "LATE_LEADER_15S_V1",
                             "LATE_LEADER_60S_V1", "LATE_LEADER_MAKER_V1",
                             "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1",
-                            "MODEL_CROSSFLIP_L1_V1", "MODEL_CROSSFLIP_L2_V1")},
+                            "MODEL_CROSSFLIP_L1_V1", "MODEL_CROSSFLIP_L2_V1",
+                            "CHAMPION_DYNAMIC_PAPER_V1")},
                # live action feed: every shadow/rule entry+exit, newest first (UI table)
                "recent": database.rule_paper_recent(14)}
         _PAPER_RULE_CACHE["val"] = val
@@ -4065,6 +4077,23 @@ async def main_loop():
             # HOLD/EXIT advice refresh within ~1s of the boundary — regardless of how slow
             # a prediction cycle gets on a loaded/throttled machine. (instant-window fix)
             data_state["_ptb_preds"] = preds_by_h
+            data_state["_model_context_updated_ms"] = int(now_ms if predictions else 0)
+            _paper_prediction = preds_by_h.get(5)
+            _paper_fields = (
+                "horizon", "direction", "finalDirection", "trade_verdict", "finalAction",
+                "actionable", "no_trade_reasons", "calibratedConfidence", "agreement",
+                "metaTrust", "expectedMove", "expectedMoveRange", "stopLoss",
+                "model_bundle_id", "regime",
+            )
+            data_state["_binance_paper_context"] = {
+                "updated_at_ms": int(now_ms if _paper_prediction else 0),
+                "model_trained": bool(model.is_trained),
+                "model_arch_version": MODEL_ARCH_VERSION,
+                "predictions": {
+                    5: {key: copy.deepcopy(_paper_prediction.get(key)) for key in _paper_fields}
+                } if _paper_prediction else {},
+                "regime_info": copy.deepcopy(data_state.get("regime_info") or {}),
+            }
 
             # Update simulator (closes expired trades, applies slippage, logs PnL)
             simulator.update(current_price, now_ms)

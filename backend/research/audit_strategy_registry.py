@@ -37,6 +37,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PTB = os.path.join(ROOT, "backend", "price_to_beat.py")
+POLYMARKET_RULE_MODULES = (
+    os.path.join(ROOT, "backend", "polymarket", "model_dynamic_paper.py"),
+)
 SRV = os.path.join(ROOT, "backend", "server.py")
 JS = os.path.join(ROOT, "src", "main.js")
 
@@ -61,8 +64,11 @@ def rule_strings_in_text(path: str) -> set[str]:
 
 
 def logged_rules() -> set[str]:
-    """Rules price_to_beat can trade. AST-based: sees loop tuples and direct args alike."""
-    return rule_strings_in_python(PTB)
+    """Rules the tracker can trade, including IDs owned by imported strategy modules."""
+    rules = rule_strings_in_python(PTB)
+    for path in POLYMARKET_RULE_MODULES:
+        rules.update(rule_strings_in_python(path))
+    return rules
 
 
 def audit() -> int:

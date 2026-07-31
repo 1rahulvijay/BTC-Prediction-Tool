@@ -19,9 +19,11 @@ class BinancePaperMarketAdapter:
         futures_client,
         derivatives_provider: Callable[[], dict] | None,
         config: EngineConfig,
+        model_context_provider: Callable[[], dict] | None = None,
     ):
         self.futures_client = futures_client
         self.derivatives_provider = derivatives_provider or (lambda: {})
+        self.model_context_provider = model_context_provider or (lambda: {})
         self.config = config
         self._lock = threading.RLock()
         self._last_book: dict | None = None
@@ -89,6 +91,13 @@ class BinancePaperMarketAdapter:
             return None, None
         return None, None
 
+    def _model_context(self) -> dict:
+        try:
+            value = self.model_context_provider() or {}
+            return dict(value) if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
     def snapshot(self, now_ms: int | None = None) -> MarketSnapshot | None:
         now = int(now_ms if now_ms is not None else time.time() * 1000)
         with self._lock:
@@ -109,6 +118,15 @@ class BinancePaperMarketAdapter:
         mark = (bid + ask) / 2.0
         spread = ask - bid
         funding_rate, funding_time_ms = self._funding()
+        model_context = self._model_context()
+        model_predictions = model_context.get("predictions") or {}
+        if isinstance(model_predictions, dict):
+            model_prediction = (
+                model_predictions.get(5) or model_predictions.get("5") or {}
+            )
+        else:
+            model_prediction = {}
+        model_prediction = model_prediction if isinstance(model_prediction, dict) else {}
         cutoff = now - 60_000
         eligible = [sample for sample in samples if sample[0] >= cutoff]
         trade_count_60s = None
@@ -149,10 +167,20 @@ class BinancePaperMarketAdapter:
                 "perpetual_mid_history": len(samples) >= 2,
                 "perpetual_trade_intensity": bool(agg_available),
                 "funding_rate": funding_rate is not None,
+                "ensemble_prediction": bool(model_prediction),
+                "live_probability_calibration": (
+                    model_prediction.get("calibratedConfidence") is not None
+                ),
+                "model_bundle_identity": bool(
+                    model_context.get("model_trained")
+                    and model_prediction.get("model_bundle_id")
+                ),
             },
             source_identifiers={
                 "book": "binance_futures_ws_bookTicker",
                 "trade_activity": "binance_futures_ws_aggTrade",
                 "funding": "binance_futures_public_rest",
+                "model_context": "main_ensemble_final_decision",
             },
+            model_context=model_context,
         )

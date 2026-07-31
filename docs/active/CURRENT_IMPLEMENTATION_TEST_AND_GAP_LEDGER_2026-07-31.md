@@ -2,7 +2,8 @@
 
 Date: 2026-07-31
 
-Reconciled against source commit: `8ba94e7`
+Reconciled against source baseline `404d9d9` plus the model-driven paper-strategy changes recorded
+in `MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.
 
 Purpose: canonical answer to what is implemented, what is tested, what the results mean, what is
 blocked, and how each blocked item can be completed.
@@ -110,8 +111,10 @@ forecast is guaranteed correct or a strategy is profitable.
 |---|---|---|---|---|
 | BUY/SELL/WAIT/AVOID explanation | decision gate/champion/UI | IMPLEMENTED_TESTED | Synchronization and reason-code tests pass. | Accuracy depends on retrained models and resolved live samples. |
 | Price-to-Beat 5m/15m rounds | `price_to_beat.py` | IMPLEMENTED_TESTED | Sign-truth, settlement and persistence tests pass. | Continue forward settlement collection. |
-| 16 Polymarket paper strategies | tracker, database, UI | SHADOW_PAPER | Registry confirms all 16 logged, exposed and named. | None is authorized for real money; evaluate exact bid/ask/fee results. |
-| Binance futures paper engine | `binance_paper/` | SHADOW_PAPER | Execution, partial fills, funding, recovery, risk and accounting suites pass. | Forward economic evidence is still required. |
+| 17 Polymarket paper strategies | tracker, database, UI | SHADOW_PAPER | AST registry confirms all 17 logged, exposed and named, including `CHAMPION_DYNAMIC_PAPER_V1`. | None is authorized for real money; evaluate exact bid/ask/fee results. |
+| Binance futures paper engine | `binance_paper/` | SHADOW_PAPER | Five isolated strategies; execution, partial fills, funding, recovery, risk and accounting suites pass. | Forward economic evidence is still required. |
+| Binance model-consensus strategy | `binance_paper/strategies/model_consensus.py` | SHADOW_PAPER | Uses the final calibrated 5m decision, conservative post-cost EV and causal dynamic exits. | Dormant without a compatible trained bundle and live calibration; must beat `random_control` forward. |
+| Polymarket Champion dynamic strategy | `polymarket/model_dynamic_paper.py` | SHADOW_PAPER | Requires the existing Champion `PAPER_BET`, exact ask/bid fees and depth; dynamic exit is ledger-tested. | Existing calibration lockdown remains default-off; forward profitability is unproven. |
 | Exact Polymarket ladder VWAP | `polymarket/l2_book.py` | IMPLEMENTED_TESTED | Deterministic depth/VWAP tests pass. | Passive queue priority cannot be exact from public aggregate L2. |
 | Control-plane authentication | `control_auth.py` | IMPLEMENTED_TESTED | Real HTTP auth tests pass. | Production tokens/origins are not configured on this machine. |
 | Order lifecycle and reservations | `order_lifecycle.py` | IMPLEMENTED_TESTED | Timeout=UNKNOWN, transition and recovery tests pass. | No real venue adapter consumes it. |
@@ -230,9 +233,9 @@ from current main-model training because they do not meet the default `KEEP,PARI
 
 | gate | result |
 |---|---|
-| canonical local workflow | 73/73 passed |
+| canonical local workflow | 74/74 passed |
 | exact `start.bat` self-test-only path | passed |
-| pytest suites | 86 passed |
+| pytest suites | 98 passed |
 | Python compile | passed |
 | backend/test Pyflakes | passed |
 | frontend production build | passed |
@@ -271,12 +274,14 @@ These failures are correct behavior, not test failures:
 | raw direction families | generally near 0.50 AUC/coin-flip | not proof of edge |
 | movement magnitude/path | predictive ranking exists in several tests | information/risk only until an executable instrument clears costs |
 | conditional LONG/SHORT/ACT-SKIP | selected policies lost after costs | RESEARCH_REJECTED |
-| dynamic exit | underperformed identical-entry HOLD | RESEARCH_REJECTED |
+| trained/general dynamic-exit campaign | underperformed identical-entry HOLD | RESEARCH_REJECTED |
+| bounded model-driven paper exits | implemented for Binance model consensus and Polymarket Champion | new forward paper experiments, not promoted |
 | Binance breakout bracket | all tested configurations lost after costs | RESEARCH_REJECTED |
 | complete-set Polymarket arbitrage | real but tiny/rare at measured size | no production strategy |
 | cross-market coherence | no robust inconsistency after timestamp correction | RESEARCH_REJECTED |
 | funding carry | sample lacked useful variation; estimated retail hurdle unattractive | not promoted |
 | Polymarket market-prior residual | did not beat the market/economic gates | RESEARCH_REJECTED |
+| live P(Hold) ranking | AUC 0.7762, but ECE 0.0678 and no ask bucket survived corrected economic robustness | information/calibration only; no pricing authority |
 | event-time repricing | research candidate only | forward shadow, no promotion |
 | liquidity provision | unresolved | requires sequenced L2 and conservative queue evidence |
 | options surface | 0/2,079 executable no-arbitrage violations; 15m magnitude fails the straddle spread upper bound | no production strategy |

@@ -8,12 +8,14 @@ missing denominator (random_control) and the one directional species the lane ha
 
 from .breakout import BreakoutStrategy
 from .mean_reversion import MeanReversionStrategy
+from .model_consensus import ModelConsensusStrategy
 from .random_control import RandomControlStrategy
 from .trend_following import TrendFollowingStrategy
 
 __all__ = [
     "BreakoutStrategy",
     "MeanReversionStrategy",
+    "ModelConsensusStrategy",
     "RandomControlStrategy",
     "TrendFollowingStrategy",
 ]

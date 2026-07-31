@@ -2,7 +2,8 @@
 
 Date: 2026-07-31
 
-Source audited: `master` at `15d65c9` plus the narrow research-handler corrections in this change
+Source audited: `master` baseline `404d9d9` plus the model-driven paper-strategy changes described
+in `MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.
 
 Purpose: record what was actually executed and inspected before the next long-window retrain. This
 is a source, contract, safety and paper-accounting audit. It is not a claim that an unavailable
@@ -28,11 +29,11 @@ trading**. It is not currently suitable for trusted model serving or real-money 
 
 | validation | result |
 |---|---|
-| canonical local CI | PASS, 73/73 steps, 242.0 seconds |
+| canonical local CI | PASS, 74/74 steps, 230.2 seconds after all strategy and documentation changes |
 | exact Windows `start.bat` self-test-only path | PASS, 176.5 seconds; no server or training started |
 | Python compilation | PASS, all 486 Python files under `backend/`, `research/` and `tests/` |
 | maintained Python static checks | PASS |
-| pytest | PASS, 86 tests |
+| pytest | PASS, 98 tests |
 | frontend production build | PASS |
 | frontend high-severity dependency audit | PASS, 0 vulnerabilities |
 | launcher path/control-flow integrity | PASS, 61 invoked paths |
@@ -99,6 +100,18 @@ The Binance paper engine passed end-to-end tests for:
 - stale/missing feed refusal, kill-switch behavior and emergency paper flattening;
 - reduce-only permission during degraded states without allowing position flips;
 - control-token authentication, explicit CORS and no default credentials.
+
+The paper registry now contains five isolated strategies: trend following, breakout, mean
+reversion, model consensus and the deterministic random control. `model_consensus` reads only the
+final post-filter 5m ensemble decision, requires live calibration and positive conservative EV
+after 12 bps assumed round-trip cost, and routes stale-context, direction-flip, confidence-collapse
+and profitable edge-decay exits through the normal fill/accounting lifecycle.
+
+The Polymarket tracker now exposes 17 paper strategies. `CHAMPION_DYNAMIC_PAPER_V1` cannot create
+entry authority: it requires the existing Champion `PAPER_BET`, then records ask entry, bid exit,
+both taker fees and dynamic target/stop/model-invalidation exits. The default Champion calibration
+lockdown remains in force, and the AST registry proves every strategy is logged, server-exposed and
+human-named in the UI.
 
 The complete-trade evidence path passed real DuckDB write/read/resolve/evaluate tests. It refuses
 partial evidence, missing net P/L, mixed run identities, reused holdout evidence, unverified bundles

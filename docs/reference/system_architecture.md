@@ -11,7 +11,7 @@
 **Current executable correction, 2026-07-31:** the raw app feature schema is **136** columns and
 the v14 main-model mask contains **63** `KEEP`/`PARITY-FIX` features with hash
 `864622d65e85`. The current saved v11 main bundle and all unmanifested standalone artifacts are
-blocked pending the 1,265-day retrain. Later 69-feature/v11 statements in this historical reference
+blocked pending the 1,000-day retrain. Later 69-feature/v11 statements in this historical reference
 describe the prior model era and are not current serving claims.
 
 Status: research and decision-support platform, not a proven production trading system. It uses serious quant concepts, but live edge still has to be proven over enough out-of-sample predictions.
@@ -22,7 +22,7 @@ Status: research and decision-support platform, not a proven production trading 
 
 | Area | Current Score | Reason |
 |---|---:|---|
-| Feature engineering | 8/10 | 136 raw app features with technical, microstructure, derivatives, cross-exchange, institutional, multi-timeframe, Polymarket/event and interaction features. The main ensemble consumes a 69-feature pruned model schema for speed/RAM hygiene. Live-only feature coverage improves as the signal-history buffer accumulates. |
+| Feature engineering | 8/10 | 136 raw app features with technical, microstructure, derivatives, cross-exchange, institutional, multi-timeframe, Polymarket/event and interaction features. The main ensemble consumes a 63-feature pruned model schema for speed/RAM hygiene. Live-only feature coverage improves as the signal-history buffer accumulates. |
 | Ensemble models | 8.7/10 | XGBoost, LightGBM, optional CatBoost, Random Forest, HistGradientBoosting, optional PyTorch TCN/sequence model, Logistic Regression, plus separate move-size regressors and regime move-size priors. |
 | Verification system | 9/10 | Per-horizon prediction recording, direction accuracy, miss rate, price-match rate, target-size error, BUY/SELL/AVOID action accuracy, and avoid-success tracking. |
 | Auto learning | 8/10 | Live verification feeds confidence thresholds, retraining flags, regime-specific model weights, and meta-model training data. |
@@ -75,7 +75,7 @@ Polling and streaming:
 - WebSockets are used for live Binance/Coinbase/futures data.
 - Slower institutional and derivatives data are polled periodically.
 - Historical note: this model era used a 30-day startup window. The current launcher is configured
-  for 1,265 days; see the current implementation ledger and `start.bat`.
+  for 1,000 days; see the current implementation ledger and `start.bat`.
 
 ---
 
@@ -97,9 +97,9 @@ The app builds full sequences shaped approximately:
 The main ensemble then applies a model-local feature mask before flattening:
 
 ```text
-MODEL_NUM_FEATURES = 69
+MODEL_NUM_FEATURES = 63
 MODEL_FEATURE_ACTIONS = KEEP,PARITY-FIX
-flattened learner row = 60 * 69 = 4140 values
+flattened learner row = 60 * 63 = 3780 values
 ```
 
 This is deliberate: UI, replay, feed-health and future live-only research still need the full
@@ -118,7 +118,7 @@ Feature groups:
 - Funding, long/short positioning and liquidation imbalance.
 - Regime features and volatility forecasts.
 - Options and institutional proxy features: put/call ratio, options skew, max-pain distance, ATM IV, basis spread/velocity, stablecoin flow, exchange netflow.
-- Legacy cross-asset and Chainlink feature slots remain in the 109-column schema but
+- Legacy cross-asset and Chainlink feature slots remain in the 136-column schema but
   are neutral unless those runtime feeds are deliberately re-enabled.
 - Macroeconomic features (DXY, US 10Y yield) are now fed from a live, range-validated
   Yahoo Finance poll (`TradFiMacroClient`) with fallback to the last good value; they move
@@ -659,7 +659,7 @@ The main operational risks are now:
 8. Kronos is lazy-loaded and falls back to a deterministic volatility projection unless the local Kronos package/model is installed and compatible.
 9. Chainlink and ETH/SOL cross-asset runtime feeds may be disabled in some runtime configs; their raw
    feature columns remain in the 136-feature app schema, while the current main ensemble consumes the
-   69-feature pruned model schema.
+   63-feature pruned model schema.
 
 Recently resolved (no longer limitations):
 
@@ -837,7 +837,7 @@ broken long-dated fair value) is demoted to experimental. `build_scoreboard` fee
 
 ### 20.8 Audited reality (Pass 42 — read before trusting headline accuracy)
 - **Only a minority of the raw 136 features contribute materially** (SHAP top-10 is mostly
-  volatility/volume). The main ensemble now trains on a 69-feature pruned schema; live-only
+  volatility/volume). The main ensemble now trains on a 63-feature pruned schema; live-only
   order-flow / derivatives / institutional / cross-asset research still needs live buffer coverage
   before it can be trusted. This remains a primary limiter of directional accuracy.
 - Raw directional accuracy (small n): 1m 57%, 3m 53%, 5m 46%, 7m 41%, 10m 59%, 15m 64%.
@@ -1027,6 +1027,25 @@ to `UI_GUIDE.md` for screen details.
 **Data flow (one line):** live feeds → `features.py` → `model.py` ensemble → quality filters in
 `server.py` → DuckDB persistence + WS `payload` → `main.js` render → `UI_GUIDE.md`-documented UI;
 verifiers (`*_verifier.py`, `price_to_beat.py`) resolve outcomes back into DuckDB → `analytics.py`.
+
+## 24. Model-Driven Paper Execution (2026-07-31)
+
+The Binance paper engine has five isolated strategies: trend following, breakout, mean reversion,
+the deterministic random control and `model_consensus`. The last strategy consumes the final
+post-filter 5m ensemble decision only when live calibration, model identity, agreement, meta trust
+and conservative post-cost EV all pass. Model decay, confidence collapse, direction reversal,
+fixed stop/target and maximum hold all route through the same latency/depth/fee/accounting engine.
+
+The Polymarket Price-to-Beat tracker exposes 17 paper strategies. The newest,
+`CHAMPION_DYNAMIC_PAPER_V1`, cannot authorize its own entry: it requires the existing Champion
+`PAPER_BET` and then measures ask-to-bid exits after both taker fees. Its dynamic target, stop,
+model-invalidation, edge-decay and last-chance exits are forward paper experiments. The Champion
+calibration lockdown remains default-off.
+
+Neither venue has a real-order adapter or authority. These strategies measure executable economics;
+they are not promoted or claimed profitable. See
+`docs/active/MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.
+
 ## Production Boundary (2026-07-30)
 
 The deployable boundary is a **paper/shadow decision-support service**, not a real-order service.

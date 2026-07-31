@@ -1,4 +1,4 @@
-# Paper Strategy Economics — a defect, its fix, and two new strategies
+# Paper Strategy Economics - cost guards and model-driven paper strategies
 
 `2026-07-31`. Reproduce every number with the commands at the end.
 
@@ -131,7 +131,7 @@ and silent about it. Caught by checking the schema instead of trusting the attri
 ## 4. Also fixed
 
 `api_selftest.py` asserted `len(strategy_body["items"]) == 2` and broke when the registry grew to
-four. Now compared against `StrategyRegistry()` itself, including the id set — a hardcoded count
+four (and later five). Now compared against `StrategyRegistry()` itself, including the id set - a hardcoded count
 tests the constant rather than the API and must be edited on every registry change.
 
 ## 5. Noted, not fixed
@@ -172,3 +172,20 @@ python -m backend.binance_paper.api_selftest
 python -m backend.binance_paper.selftest
 python backend/run_ci_locally.py
 ```
+
+## 8. Model-driven venue strategies
+
+The Binance paper registry now has a fifth strategy, `model_consensus`. It consumes the final
+post-filter 5m ensemble decision only when live calibration, bundle identity, agreement, meta trust
+and a conservative post-cost EV gate all pass. Its target is floored at 18 bps against the 12 bps
+assumed round trip. Dynamic exits are causal and still use the shared latency, depth, fee, slippage,
+risk and accounting lifecycle.
+
+Polymarket adds `CHAMPION_DYNAMIC_PAPER_V1` as the seventeenth tracker strategy. It can enter only
+after the existing Champion authorizes `PAPER_BET`; it then measures whether executable bid exits
+on net target, net stop or model invalidation outperform settlement. Both taker fees are charged.
+The Champion calibration lockdown remains default-off, so this is a forward experiment rather than
+a way to create more trades.
+
+Full contracts, tests and non-claims are recorded in
+`docs/active/MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.

@@ -48,13 +48,17 @@ class BinancePaperService:
         self,
         futures_client,
         derivatives_provider=None,
+        model_context_provider=None,
         *,
         config: EngineConfig | None = None,
         persistence: BinancePaperPersistence | None = None,
     ):
         self.config = config or EngineConfig.from_env()
         self.adapter = BinancePaperMarketAdapter(
-            futures_client, derivatives_provider, self.config
+            futures_client,
+            derivatives_provider,
+            self.config,
+            model_context_provider=model_context_provider,
         )
         self.registry = StrategyRegistry()
         self.persistence = persistence
@@ -591,7 +595,10 @@ class BinancePaperService:
         for position in self.persistence.open_positions():
             if position["position_id"] in pending_positions:
                 continue
-            reason = self.portfolio.exit_reason(position, snapshot)
+            strategy = self.registry.get(position["strategy_id"])
+            reason = strategy.position_exit_reason(position, snapshot)
+            if reason is None:
+                reason = self.portfolio.exit_reason(position, snapshot)
             if reason:
                 signal_id = canonical_hash(
                     {

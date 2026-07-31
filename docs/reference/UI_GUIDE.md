@@ -12,6 +12,13 @@ WebSocket `/ws`, and additionally calls `GET /api/action-log` for the Action Log
 
 ## Current Latest UI Addition
 
+- The Polymarket Trades blotter now names `CHAMPION_DYNAMIC_PAPER_V1` as **Champion dynamic
+  exit** and shows its exact ask entry, bid/settlement exit, both fees, P/L and exit reason.
+- The Strategy Lab includes the same policy as a forward paper row. It remains dormant unless the
+  existing Champion explicitly authorizes `PAPER_BET`; the UI does not create trade authority.
+- The Binance Paper tab receives `model_consensus` from the API registry. It shows missing model,
+  live-calibration and bundle-identity inputs separately rather than reporting a generic inactive
+  state.
 - **FSR-PPO Strategy Challenger** appears in the Decision Center after the primary
   decision cockpit. It shows a separate reinforcement-learning style paper-policy
   recommendation: `AVOID`, `BUY_SMALL`, `BUY_MEDIUM`, `SELL_SMALL`, or
@@ -35,12 +42,18 @@ WebSocket `/ws`, and additionally calls `GET /api/action-log` for the Action Log
 
 ## 2. Tabs
 
-Three tabs (`.app-tab`, switched in `main.js` tab handler):
+Six in-app tabs (`.app-tab`, switched in the `main.js` tab handler) plus the external guide:
 
-1. **Technical + Live Feed** — chart, indicators, predictions, order flow, tape, derivatives, verification, backtest.
-2. **Decision Center** — beginner-friendly decision cockpit with action, trust, risk,
-   confirmation and evidence gates first.
-3. **Models & Signals** — *(new)* per-model accuracy, price-to-beat rounds, action log, inventory.
+1. **Polymarket** - live 5m/15m rounds, Champion, model heads, share prices and paper strategy lab.
+2. **Trades** - exact Polymarket paper ledger across all 17 rules/shadows.
+3. **Bitcoin** - Binance-native price, prediction, chart and Price-to-Beat context.
+4. **Binance Paper** - isolated strategy accounts, positions, orders, fills, funding and controls.
+5. **Analysis** - beginner-oriented technical, flow and risk interpretation.
+6. **System Health** - data, model/artifact, recorder and task readiness.
+7. **How to bet** - opens the separate operator guide page in a new tab.
+
+Older sections below preserve the historical Decision Center/Models & Signals component map; those
+components were reorganized into the current tabs and should not be read as current navigation.
 
 ---
 

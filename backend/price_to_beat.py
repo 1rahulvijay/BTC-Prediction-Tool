@@ -32,6 +32,11 @@ import database
 import decision_champion
 import round_state_panel
 from trade_forecast import live_forecaster as complete_trade_forecaster
+from polymarket.model_dynamic_paper import (
+    RULE_ID as CHAMPION_DYNAMIC_RULE,
+    entry_decision as champion_dynamic_entry,
+    exit_decision as champion_dynamic_exit,
+)
 from artifact_identity import artifact_matches_current_training
 from check_feature_contract import verdict_for as feature_contract_verdict
 
@@ -647,7 +652,7 @@ def _side_quote(round_data, now_ms, side):
             return None
         rate = float(quote.get("fee_rate") or 0.07)
         fees_on = quote.get("fees_enabled") is not False
-        return {"ask": ask, "bid": bid,
+        return {"side": side, "ask": ask, "bid": bid,
                 "fee_in": round(rate * ask * (1 - ask), 5) if fees_on else 0.0,
                 "fee_out": round(rate * bid * (1 - bid), 5) if fees_on else 0.0,
                 "spread": ask - bid,
@@ -1972,12 +1977,58 @@ class PriceToBeatTracker:
                         "MODEL_FADE_LIVE_V1": "mfade",
                         "MODEL_STRADDLE_LIVE_V1": "mstrad",
                         "MODEL_SEQUENTIAL_REVERSAL_V1": "mseq",
+                        CHAMPION_DYNAMIC_RULE: "champdyn",
                     }
                     for _rule, _state in database.fetch_open_rule_paper_states(rnd["id"]).items():
                         _key = _state_keys.get(_rule)
                         if _key and _key not in _sh:
                             _sh[_key] = _state
                 _nowq = _leader_quote(rnd, now_ms)
+                # Model/head-driven Champion paper strategy. The Champion's default calibration
+                # lockdown keeps this dormant unless its existing explicit PAPER_BET override,
+                # head-permission and exact net-edge gates all pass. This block adds execution
+                # and dynamic exit measurement; it does not weaken any decision gate.
+                if _paper_entries_allowed and "champdyn" not in _sh and rnd.get("id"):
+                    # Use the same BTC-side quote that Champion evaluated. `_nowq` is the
+                    # market-price leader for older shadow rules and can legitimately be the
+                    # opposite side when Polymarket temporarily disagrees with the anchor feed.
+                    _champ_quote = _side_quote(rnd, now_ms, rnd.get("current_position"))
+                    _entry = champion_dynamic_entry(rnd, _champ_quote)
+                    if _entry.get("action") == "ENTER":
+                        _state = _entry["state"]
+                        _sh["champdyn"] = _state
+                        database.log_rule_paper_trade(
+                            rnd["id"], CHAMPION_DYNAMIC_RULE, int(now_ms),
+                            int(rnd.get("horizon") or 5), _state["side"],
+                            float(_champ_quote["ask"]), float(_champ_quote["bid"]),
+                            float(_champ_quote["fee_in"]), float(_champ_quote["spread"]),
+                            float(_champ_quote["ask_size"]), "ENTER",
+                            btc_entry=rnd.get("current_price"), state=_state,
+                        )
+                _champ_state = _sh.get("champdyn")
+                if _champ_state and _champ_state.get("open"):
+                    _exit_quote = _side_quote(rnd, now_ms, _champ_state["side"])
+                    _exit = champion_dynamic_exit(_champ_state, rnd, _exit_quote)
+                    if _exit.get("action") == "EXIT":
+                        _champ_state["open"] = False
+                        _champ_state["exit_reason"] = _exit["exit_reason"]
+                        database.close_rule_paper_trade(
+                            rnd["id"], CHAMPION_DYNAMIC_RULE,
+                            float(_exit["net_pnl"]), int(now_ms),
+                            _exit["exit_reason"], btc_exit=rnd.get("current_price"),
+                            exit_gross=float(_exit["exit_gross"]),
+                            exit_fee=float(_exit["exit_fee"]), state=_champ_state,
+                            settlement_source="live_bid",
+                        )
+                if (_paper_entries_allowed and "champdyn" not in _sh
+                        and secs_left <= 3 and rnd.get("id")):
+                    _sh["champdyn"] = {"open": False, "skipped": True}
+                    database.log_rule_paper_trade(
+                        rnd["id"], CHAMPION_DYNAMIC_RULE, int(now_ms),
+                        int(rnd.get("horizon") or 5), "", 0.0, 0.0, 0.0, 0.0,
+                        0.0, "NO_SIGNAL", btc_entry=rnd.get("current_price"),
+                        state=_sh["champdyn"],
+                    )
                 # entries (each once per round, first qualifying tick in its window)
                 if (_paper_entries_allowed and _nowq and _nowq["depth"] >= 1.0 and "scalp" not in _sh
                         and _dur * 0.2 < secs_left <= _dur * 0.6):
