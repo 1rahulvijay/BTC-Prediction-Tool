@@ -30,6 +30,10 @@ class TrendFollowingStrategy(StrategyBase):
     maximum_spread_bps = 5.0
     requested_notional_usd = 500.0
     maximum_holding_seconds = 300
+    stop_sigma = 1.0
+    reward_risk_ratio = 1.5
+    minimum_stop_bps = 8.0
+    maximum_stop_bps = 60.0
 
     @property
     def parameters(self):
@@ -41,6 +45,10 @@ class TrendFollowingStrategy(StrategyBase):
             "maximum_spread_bps": self.maximum_spread_bps,
             "requested_notional_usd": self.requested_notional_usd,
             "maximum_holding_seconds": self.maximum_holding_seconds,
+            "stop_sigma": self.stop_sigma,
+            "reward_risk_ratio": self.reward_risk_ratio,
+            "minimum_stop_bps": self.minimum_stop_bps,
+            "maximum_stop_bps": self.maximum_stop_bps,
         }
 
     def decide(self, snapshot: MarketSnapshot):
@@ -122,9 +130,21 @@ class TrendFollowingStrategy(StrategyBase):
 
         side = PositionSide.LONG if positive else PositionSide.SHORT
         sign = 1.0 if side is PositionSide.LONG else -1.0
-        stop_bps = max(4.0, min(30.0, volatility_bps * 2.0))
+        # volatility_bps is the standard deviation of ONE 1-second sample. Scaling it by a bare
+        # 2.0 sized the stop for a 2-second event while the position is held up to 300 seconds.
+        # BTC's 1-second sd is ~0.81 bps, so `max(4.0, 0.81*2)` always collapsed to the 4.0 bps
+        # floor and the target to 6.0 bps - below the 12.0 bps round trip. Scale by sqrt(time)
+        # to the actual horizon instead, then floor the target above cost.
+        horizon_scale = math.sqrt(max(1.0, float(self.maximum_holding_seconds)))
+        stop_bps = max(
+            self.minimum_stop_bps,
+            min(self.maximum_stop_bps, volatility_bps * horizon_scale * self.stop_sigma),
+        )
+        target_bps = max(stop_bps * self.reward_risk_ratio, self.minimum_take_profit_bps)
         stop_distance = snapshot.mark_price * stop_bps / 10_000.0
-        target_distance = stop_distance * 1.5
+        target_distance = snapshot.mark_price * target_bps / 10_000.0
+        features["stop_bps"] = stop_bps
+        features["target_bps"] = target_bps
         strength = min(1.0, (abs(alignment_bps) + abs(momentum_bps)) / 30.0)
         return self._decision(
             snapshot,

@@ -194,6 +194,14 @@ jobs:
       - name: Binance paper execution and accounting
         run: python -m backend.binance_paper.test_engine
 
+      # Both Phase-1 strategies shipped with a 6.0 bps take-profit against a 12.0 bps round trip:
+      # every trade that reached its target still lost 6 bps. The accounting was correct, so
+      # nothing caught it - no test asked whether a winning trade wins. This asserts that every
+      # registered strategy's target clears the round trip, that StrategyBase refuses one that
+      # does not, and that raising the engine's fees fails here rather than bleeding in paper.
+      - name: Paper strategy economics (a winner must actually win)
+        run: python -m backend.binance_paper.test_strategy_economics
+
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
 

@@ -1,4 +1,10 @@
-"""Fixed Phase-1 registry: exactly Trend Following and Breakout."""
+"""Fixed registry: two continuation strategies, one mean-reversion, one zero-information control.
+
+`random_control` is not decoration. Every apparent edge in this repository's research died on
+contact with a matched control, and the paper lane previously had none - trend_following and
+breakout reported P&L against nothing. A strategy that does not beat random_control over the
+same period, with the same notional and holding period, has established nothing.
+"""
 from __future__ import annotations
 
 from dataclasses import fields
@@ -6,8 +12,17 @@ import json
 from typing import Any
 
 from .config import StrategyRiskConfig
-from .strategies import BreakoutStrategy, TrendFollowingStrategy
+from .strategies import (
+    BreakoutStrategy,
+    MeanReversionStrategy,
+    RandomControlStrategy,
+    TrendFollowingStrategy,
+)
 from .strategy_base import canonical_hash
+
+# The benchmark every other strategy is read against. Named here so tooling can find it without
+# hardcoding the string in several places.
+CONTROL_STRATEGY_ID = "random_control"
 
 
 class StrategyRegistry:
@@ -15,6 +30,8 @@ class StrategyRegistry:
         self._strategies = {
             "trend_following": TrendFollowingStrategy(),
             "breakout": BreakoutStrategy(),
+            "mean_reversion": MeanReversionStrategy(),
+            CONTROL_STRATEGY_ID: RandomControlStrategy(),
         }
         self._enabled = {strategy_id: True for strategy_id in self._strategies}
 

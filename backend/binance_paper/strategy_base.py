@@ -33,6 +33,22 @@ class StrategyBase(ABC):
     candidate_validity_ms = 2_500
     maximum_entry_drift_bps = 2.0
 
+    # A take-profit closer than the round trip means every perfect winner still loses. Both
+    # Phase-1 strategies shipped with a 6.0 bps target against a 12.0 bps round trip - the
+    # 1-second sample volatility (0.81 bps) was multiplied by 2 and floored at 4.0 bps, so the
+    # floor always bound, and the target was 1.5x that floor. The strategies were not unlikely
+    # to profit; they were arithmetically incapable of it, and nothing downstream noticed
+    # because the accounting was correct and only the intent was wrong.
+    #
+    # assumed_round_trip_bps must be >= the engine's configured 2 x (fee + slippage).
+    # test_paper_strategy_economics.py asserts both halves of that.
+    assumed_round_trip_bps = 12.0
+    minimum_target_cost_multiple = 1.5
+
+    @property
+    def minimum_take_profit_bps(self) -> float:
+        return float(self.assumed_round_trip_bps) * float(self.minimum_target_cost_multiple)
+
     def __init__(self, risk: StrategyRiskConfig | None = None):
         self.risk = (risk or StrategyRiskConfig()).clamped()
 
@@ -101,6 +117,21 @@ class StrategyBase(ABC):
             raise ValueError("strategy stop must be finite")
         if take_profit_price is not None and not math.isfinite(float(take_profit_price)):
             raise ValueError("strategy target must be finite")
+        # Refuse a target that cannot clear the round trip. This is a programming error in the
+        # strategy, not a market condition, so it raises like the finiteness checks above rather
+        # than degrading to NO_EDGE - a strategy that would open a position it cannot win must
+        # fail loudly at its first decision, in test, not bleed quietly in paper.
+        if side is not None and take_profit_price is not None and snapshot.mark_price > 0:
+            target_bps = (
+                abs(float(take_profit_price) - snapshot.mark_price)
+                / snapshot.mark_price * 10_000.0
+            )
+            if target_bps < self.assumed_round_trip_bps:
+                raise ValueError(
+                    f"{self.strategy_id}: take-profit is {target_bps:.2f} bps from mark but the "
+                    f"round trip costs {self.assumed_round_trip_bps:.2f} bps - every winner "
+                    f"would still lose {self.assumed_round_trip_bps - target_bps:.2f} bps"
+                )
         drift_fraction = max(0.0, float(self.maximum_entry_drift_bps)) / 10_000.0
         maximum_entry_price = (
             snapshot.best_ask * (1.0 + drift_fraction)

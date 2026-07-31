@@ -9,6 +9,7 @@ import tempfile
 from .routes import configure_service, router
 from .selftest import FakeFuturesClient, config
 from .service import BinancePaperService
+from .strategy_registry import StrategyRegistry
 
 
 # Control endpoints are authenticated. This harness supplies the token on every request via the
@@ -45,7 +46,13 @@ def run() -> None:
             assert client.post("/api/binance-paper/start").status_code == 409
             assert client.get("/api/binance-paper/accounts").status_code == 200
             strategy_body = client.get("/api/binance-paper/strategies").json()
-            assert len(strategy_body["items"]) == 2
+            # Compared against the registry rather than a literal. This assertion read `== 2`
+            # and broke the moment the registry grew to four; a hardcoded count tests the
+            # constant, not the API, and has to be edited every time the registry changes.
+            assert len(strategy_body["items"]) == len(StrategyRegistry().all())
+            assert {item["strategy_id"] for item in strategy_body["items"]} == {
+                strategy.strategy_id for strategy in StrategyRegistry().all()
+            }
             assert all(item["inactive_reason"] == "Paper engine disabled" for item in strategy_body["items"])
         disabled.shutdown()
     print("  PASS  disabled-engine typed API")

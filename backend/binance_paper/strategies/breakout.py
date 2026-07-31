@@ -25,6 +25,10 @@ class BreakoutStrategy(StrategyBase):
     maximum_spread_bps = 5.0
     requested_notional_usd = 500.0
     maximum_holding_seconds = 300
+    stop_sigma = 1.0
+    reward_risk_ratio = 1.5
+    minimum_stop_bps = 8.0
+    maximum_stop_bps = 60.0
 
     @property
     def parameters(self):
@@ -35,6 +39,10 @@ class BreakoutStrategy(StrategyBase):
             "maximum_spread_bps": self.maximum_spread_bps,
             "requested_notional_usd": self.requested_notional_usd,
             "maximum_holding_seconds": self.maximum_holding_seconds,
+            "stop_sigma": self.stop_sigma,
+            "reward_risk_ratio": self.reward_risk_ratio,
+            "minimum_stop_bps": self.minimum_stop_bps,
+            "maximum_stop_bps": self.maximum_stop_bps,
         }
 
     def decide(self, snapshot: MarketSnapshot):
@@ -137,9 +145,20 @@ class BreakoutStrategy(StrategyBase):
             breach_bps / 5.0
             + min(0.5, trade_count / max(1, self.minimum_trade_count_60s) / 4.0),
         )
-        stop_bps = max(5.0, min(35.0, volatility_bps * 2.0))
+        # See trend_following: volatility_bps is ONE 1-second sample's sd, so a bare x2 sized the
+        # stop for a 2-second event against a 300-second hold. The 5.0 bps floor always bound and
+        # the 7.5 bps target sat below the 12.0 bps round trip. Scale by sqrt(horizon) and floor
+        # the target above cost.
+        horizon_scale = math.sqrt(max(1.0, float(self.maximum_holding_seconds)))
+        stop_bps = max(
+            self.minimum_stop_bps,
+            min(self.maximum_stop_bps, volatility_bps * horizon_scale * self.stop_sigma),
+        )
+        target_bps = max(stop_bps * self.reward_risk_ratio, self.minimum_take_profit_bps)
         stop_distance = snapshot.mark_price * stop_bps / 10_000.0
-        target_distance = stop_distance * 1.5
+        target_distance = snapshot.mark_price * target_bps / 10_000.0
+        features["stop_bps"] = stop_bps
+        features["target_bps"] = target_bps
         return self._decision(
             snapshot,
             action=Action.OPEN_LONG if upside else Action.OPEN_SHORT,
