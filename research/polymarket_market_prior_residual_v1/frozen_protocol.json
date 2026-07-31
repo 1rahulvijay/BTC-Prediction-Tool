@@ -1,0 +1,87 @@
+{
+  "protocol_id": "POLY_MARKET_PRIOR_RESIDUAL_V1",
+  "status": "research_only",
+  "serving_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "data": {
+    "database": "data/execution_layer.duckdb",
+    "snapshot_table": "pm_round_snapshots",
+    "settlement_table": "pm_round_settlements",
+    "allowed_resolution_sources": [
+      "polymarket_clob",
+      "polymarket_gamma"
+    ],
+    "horizons_minutes": [
+      5,
+      15
+    ],
+    "checkpoint_seconds_left": 60,
+    "checkpoint_tolerance_seconds": 5,
+    "maximum_open_snapshot_skew_seconds": 5,
+    "minimum_top_ask_size": 1.0
+  },
+  "models": {
+    "A_market_prior": [
+      "normalized_polymarket_mid"
+    ],
+    "B_anchor_time": [
+      "signed_distance_bps",
+      "abs_distance_bps",
+      "horizon_15m"
+    ],
+    "C_market_prior_anchor_residual": [
+      "signed_distance_bps",
+      "abs_distance_bps",
+      "horizon_15m"
+    ],
+    "D_market_prior_full_residual": [
+      "signed_distance_bps",
+      "abs_distance_bps",
+      "horizon_15m",
+      "vol_60s_pct",
+      "path_range_bps",
+      "flips_so_far",
+      "distance_velocity_10s_bps",
+      "side_age_s",
+      "up_spread",
+      "down_spread",
+      "log_up_depth",
+      "log_down_depth",
+      "complete_set_ask_sum",
+      "p_hold_up",
+      "market_phold_disagreement"
+    ],
+    "residual_link": "logit(p_market) + beta*x",
+    "l2_penalty": 4.0
+  },
+  "validation": {
+    "unit": "one_checkpoint_per_market_round",
+    "first_training_days": 3,
+    "minimum_training_rounds": 150,
+    "minimum_test_rounds_per_day": 20,
+    "purge_seconds": 900,
+    "random_seed": 20260731,
+    "primary_model": "D_market_prior_full_residual",
+    "champion_baseline": "A_market_prior"
+  },
+  "economics": {
+    "quantity_shares": 1.0,
+    "crypto_taker_fee_formula": "0.07 * price * (1 - price)",
+    "edge_buffer": 0.02,
+    "entry": "recorded_top_ask_with_at_least_one_share",
+    "exit": "official_settlement_payout",
+    "fills": "top_level_capacity_only_no_queue_assumption"
+  },
+  "promotion_gate": {
+    "minimum_independent_oos_rounds": 500,
+    "minimum_calendar_weeks": 8,
+    "minimum_actions": 100,
+    "require_primary_brier_below_market": true,
+    "require_primary_log_loss_below_market": true,
+    "require_positive_net_pnl": true,
+    "require_positive_day_block_lower_95": true,
+    "maximum_single_positive_day_profit_share": 0.35,
+    "automatic_promotion": false
+  }
+}
