@@ -13,6 +13,7 @@ ALLOWED_ROOT_BATCH = {
     "frontend.bat",
     "run_backend.bat",
     "run_polymarket_l2_recorder.bat",
+    "start_binance_l2_recorder.bat",
     "start.bat",
     "start_instant.bat",
     "start_production.bat",

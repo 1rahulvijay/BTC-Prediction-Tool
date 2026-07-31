@@ -181,6 +181,9 @@ jobs:
       - name: RL data readiness (refuses execution RL without depth)
         run: python backend/venues/rl_data_readiness.py
 
+      - name: Sequenced Binance L2 snapshot/diff/gap/replay invariants
+        run: python backend/venues/binance_l2_recorder.py --selftest
+
       - name: Collector evidence integrity (D1-D5)
         run: python backend/venues/test_collector_integrity.py
 
@@ -193,6 +196,9 @@ jobs:
 
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
+
+      - name: Maker proxy charges passive entry plus explicit taker exit
+        run: python research/maker_lever_test.py --selftest
 
       - name: Hierarchical target-specific ensemble invariants
         run: python -m backend.research.hierarchical_ensemble_v1.selftest
@@ -325,10 +331,12 @@ jobs:
           python backend/preflight_longwindow.py --selftest || exit /b 1
           python backend/venues/multi_venue_recorder.py --selftest || exit /b 1
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
+          python backend/venues/binance_l2_recorder.py --selftest || exit /b 1
           python backend/venues/rl_data_readiness.py || exit /b 1
           python -m backend.quant_platform.test_kernel || exit /b 1
           python -m backend.binance_paper.test_engine || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
+          python research/maker_lever_test.py --selftest || exit /b 1
           python -m backend.research.hierarchical_ensemble_v1.selftest || exit /b 1
           python -m backend.research.forecast_adapters_v1.selftest || exit /b 1
           python -m backend.research.profit_campaign_v1.selftest || exit /b 1

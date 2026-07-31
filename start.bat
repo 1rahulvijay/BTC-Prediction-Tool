@@ -314,6 +314,8 @@ if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b3. Launcher integrity - every invoked path exists:
 python backend\test_launcher_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b3
+python tests\test_repository_layout.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b3
 echo [selftest] b4. Model registry + artifact bundles (foundation):
 python backend\model_registry.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b4
@@ -351,6 +353,8 @@ if errorlevel 1 goto :selftest_failed_e
 echo [selftest] f. Venue admissibility - backlog/lead-lag/identity gates:
 python backend\venues\venue_admissibility.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
+python backend\venues\binance_l2_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
 python backend\venues\rl_data_readiness.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
 echo [selftest] g. Collector evidence integrity - D1-D5:
@@ -371,6 +375,8 @@ if errorlevel 1 goto :selftest_failed_k
 echo [selftest] l. Research validation and promotion gates:
 python -m backend.quant_platform.test_research_validation >nul 2>&1
 if errorlevel 1 goto :selftest_failed_l
+python research\maker_lever_test.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_l
 python research\run_all_sequence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_l
 echo [selftest] All invariant selftests passed.
@@ -384,7 +390,7 @@ goto :selftest_abort
 echo [selftest] FAILED: python backend\trade_forecast\freeze_guard.py --selftest
 goto :selftest_abort
 :selftest_failed_b3
-echo [selftest] FAILED: python backend\test_launcher_integrity.py
+echo [selftest] FAILED: launcher integrity or repository layout
 goto :selftest_abort
 :selftest_failed_b4
 echo [selftest] FAILED: python backend\model_registry.py --selftest (or model_artifacts.py)

@@ -23,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness import DEFAULT_FEE_BPS, DEFAULT_SPREAD_BPS, causal_frame, load_btc, split  # noqa: E402
 
 TAKER_COST_BPS = 2.0 * DEFAULT_FEE_BPS + DEFAULT_SPREAD_BPS      # 9.0
-MAKER_COST_BPS = 1.5     # both sides passive, no spread crossed
+# Executable proxy: one passive entry (2 bps) plus one taker exit
+# (5 bps). It deliberately does not grant a second passive fill.
+MAKER_TAKER_COST_BPS = 7.0
 
 STRATEGIES = {
     "momentum": lambda p: np.where(
@@ -74,11 +76,14 @@ def horizon_table() -> None:
     for horizon in (1, 5, 15, 30, 60, 240, 720, 1440):
         move = (close.shift(-horizon) / close - 1).abs().dropna().median() * 1e4
         taker = move / TAKER_COST_BPS
-        maker = move / MAKER_COST_BPS
+        maker = move / MAKER_TAKER_COST_BPS
         verdict = "yes" if taker > 3 else "marginal" if taker > 1.5 else "NO"
         print(f"{horizon:>7}m{move:>15.1f}{taker:>10.2f}{maker:>10.2f}  {verdict}")
     print("-" * 84)
-    print(f"  taker cost {TAKER_COST_BPS:.1f} bps round trip | maker cost {MAKER_COST_BPS:.1f} bps")
+    print(
+        f"  taker cost {TAKER_COST_BPS:.1f} bps round trip | "
+        f"passive-entry/taker-exit proxy {MAKER_TAKER_COST_BPS:.1f} bps"
+    )
     print("  A ratio near 1.0 means the typical move is the SAME SIZE as the cost of")
     print("  capturing it, so breaking even requires the whole move, correctly signed,")
     print("  every time. That is arithmetic, not a modelling difficulty.")
@@ -90,8 +95,8 @@ def main() -> int:
     print("\n" + "=" * 84)
     print("CONCLUSION - the two levers with measured leverage")
     print("=" * 84)
-    print("  1. MAKER EXECUTION  changes the 15m hurdle by ~6x without touching prediction.")
-    print("     Blocked on sequenced L2 depth for queue position (top-of-book only today).")
+    print("  1. PASSIVE ENTRY can reduce cost, but not by assuming both legs fill passively.")
+    print("     Sequenced L2 now records replayable books; exact queue priority remains absent.")
     print("  2. LONGER HORIZONS  are testable on existing data right now.")
     print("\n  Reported in docs/RESEARCH_RESULTS_MASTER.md; this script regenerates both tables.")
     return 0

@@ -74,3 +74,14 @@ if ($env:BTC_SKIP_VENUE_COLLECTOR -eq "1") {
         @("-u", "backend\venues\multi_venue_recorder.py") `
         "multi_venue_recorder.stdout.log" "multi_venue_recorder.stderr.log"
 }
+
+# Full sequenced Binance USD-M book. This is intentionally isolated from the
+# main app and from the top-of-book multi-venue archive. It records raw
+# snapshot+diff evidence only and has no credentials or order path.
+if ($env:BTC_SKIP_BINANCE_L2_RECORDER -eq "1") {
+    Write-Host "[recorder] Binance sequenced L2 recorder skipped."
+} else {
+    Start-Recorder "Binance sequenced L2" "binance_l2_recorder\.py" `
+        @("-u", "backend\venues\binance_l2_recorder.py", "--max-db-gb", "10") `
+        "binance_l2_recorder.stdout.log" "binance_l2_recorder.stderr.log"
+}

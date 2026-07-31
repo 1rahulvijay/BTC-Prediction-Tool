@@ -1,86 +1,46 @@
-"""Can the recorded archive support execution RL? Audited against what is actually collected.
+"""Audit whether recorded market data can support execution research.
 
-THE SHORT ANSWER TODAY: NO, and not for a reason more data will fix on its own.
+The repository now has two different archives:
 
-WHY THIS FILE IS A GATE AND NOT A NOTE
-    An RL execution agent needs to know whether ITS order would have filled. That depends on
-    queue position: how much size rested ahead of it at its price level, and how that size was
-    consumed or cancelled. Reconstructing it requires a full order-book snapshot plus every
-    sequenced diff-depth update, so the book can be replayed level by level with no gaps.
+* `multi_venue.duckdb`: top-of-book cross-venue timing. It supports taker
+  execution and touch-level lead/lag, but never exact queue reconstruction.
+* `binance_l2.duckdb`: REST snapshot plus sequenced USD-M diff depth. It can
+  support deterministic local-book replay only after real rows have accrued.
 
-    The recorder collects TOP OF BOOK ONLY:
-
-        binance_spot/bookTicker      best bid/ask + sizes        1 level per side
-        binance_perp/bookTicker      best bid/ask + sizes        1 level per side
-        bybit_perp/orderbook.1       depth ONE                   1 level per side
-        binance_spot/aggTrade        aggregated trades
-        binance_perp/aggTrade_rest   aggregated trades, polled
-        binance_perp/premiumIndex    mark/index/funding
-        binance_perp/openInterest    open interest
-
-    There is no `@depth` stream, no lastUpdateId, no first/last update id pair, and no periodic
-    REST snapshot anywhere in the collector. So the archive cannot reconstruct depth beyond the
-    best level, at any point in its history, no matter how many days it runs.
-
-    That makes exact `queue_depth_ahead_of_us` UNCOMPUTABLE from this data - not noisy, not
-    approximate: absent. Even at the touch, bookTicker reports aggregate size, never the identity
-    or ordering of the resting orders that make it up.
-
-WHAT WOULD CHANGE THE ANSWER
-    Adding, per venue and symbol:
-        - a REST depth snapshot with its lastUpdateId
-        - btcusdt@depth@100ms diff updates carrying (U, u) so gaps are DETECTABLE
-        - a recorded resync whenever U does not chain onto the previous u
-    Until those exist, an execution-RL claim is refused here rather than argued about later.
-
-WHAT THE ARCHIVE CAN ALREADY SUPPORT
-    Top-of-book microstructure: spread, microprice, best-size imbalance, trade signs and
-    intensity, cross-venue lead-lag on the touch, and IMMEDIATE-TAKER execution modelling, where
-    the fill is against the visible best level and queue position never matters.
-
-    python backend/venues/rl_data_readiness.py
+Aggregate L2 still does not expose individual order priority. Therefore exact
+passive-fill labels and production execution RL remain refused even when the
+L2 archive is replayable. Conservative queue models are research estimates.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT = Path(__file__).resolve().parents[2]
+DATA = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
+MULTI_VENUE_SOURCE = Path(__file__).with_name("multi_venue_recorder.py")
+L2_SOURCE = Path(__file__).with_name("binance_l2_recorder.py")
+L2_DB = Path(os.environ.get("BTC_BINANCE_L2_DB") or DATA / "binance_l2.duckdb")
 
-# Streams that carry more than the touch. Membership here is what makes L2 replay possible.
-FULL_DEPTH_MARKERS = ("@depth", "depth@", "lastUpdateId", "diffDepth", "orderbook.50",
-                      "orderbook.200", "orderbook.500")
-
-# A stream name alone is not evidence of depth. `orderbook.1` contains the digit 1 for a reason.
 TOP_OF_BOOK_ONLY = {
     "binance_spot/bookTicker": "best bid/ask + aggregate size, 1 level per side",
     "binance_perp/bookTicker": "best bid/ask + aggregate size, 1 level per side",
     "bybit_perp/orderbook.1": "depth ONE - the name states the level count",
 }
 
-CAPABILITY = {
-    "top_of_book_microstructure": True,
-    "trade_intensity_and_signing": True,
-    "cross_venue_leadlag_on_touch": True,
-    "immediate_taker_execution": True,     # fills against the visible best level
-    "passive_fill_simulation": False,      # needs queue position
-    "queue_position_reconstruction": False,
-    "l2_book_replay": False,
-    "execution_rl_training": False,
-}
+# Minimum evidence for declaring that at least one recorded session can be
+# replayed. This is an operational smoke threshold, not a model-training gate.
+MIN_REPLAY_DIFFS = 1_000
 
 
-def collector_source() -> str:
-    return (Path(__file__).resolve().parent / "multi_venue_recorder.py").read_text(
-        encoding="utf-8")
-
-
-def declared_streams(source: str) -> list[str]:
+def _declared_streams(source: str) -> list[str]:
     import re
 
     match = re.search(r"^EXPECTED\s*=\s*\((.*?)\)", source, re.S | re.M)
@@ -89,28 +49,108 @@ def declared_streams(source: str) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
-def has_full_depth(source: str) -> tuple[bool, list[str]]:
-    """True only if the COLLECTOR subscribes to a depth stream. Comments do not count."""
-    code = "\n".join(
-        line for line in source.splitlines() if not line.strip().startswith("#"))
-    found = [marker for marker in FULL_DEPTH_MARKERS if marker in code]
-    return bool(found), found
+def _l2_code_contract() -> dict[str, Any]:
+    if not L2_SOURCE.exists():
+        return {"present": False, "missing": ["recorder_source"]}
+    source = L2_SOURCE.read_text(encoding="utf-8")
+    required = {
+        "rest_snapshot": "lastUpdateId",
+        "diff_first_id": '"U"',
+        "diff_final_id": '"u"',
+        "previous_update_id": '"pu"',
+        "gap_rebuild": "BookSequenceGap",
+        "raw_snapshot_table": "l2_snapshots",
+        "raw_diff_table": "l2_diffs",
+        "replay": "replay_session",
+    }
+    missing = [name for name, marker in required.items() if marker not in source]
+    return {"present": not missing, "missing": missing}
 
 
-def audit() -> dict:
-    source = collector_source()
-    streams = declared_streams(source)
-    depth_present, markers = has_full_depth(source)
+def _l2_evidence() -> dict[str, Any]:
+    if not L2_DB.exists():
+        return {
+            "path": str(L2_DB),
+            "exists": False,
+            "sessions": 0,
+            "snapshots": 0,
+            "applied_diffs": 0,
+            "replayable_sessions": 0,
+            "ready": False,
+            "reason": "archive_missing",
+        }
+    try:
+        import duckdb
+
+        db = duckdb.connect(str(L2_DB), read_only=True)
+        row = db.execute(
+            """
+            SELECT
+                COUNT(*) AS sessions,
+                COUNT(*) FILTER (WHERE snapshot_update_id IS NOT NULL) AS snapshots,
+                COALESCE(SUM(applied_diffs), 0) AS applied_diffs,
+                COUNT(*) FILTER (
+                    WHERE snapshot_update_id IS NOT NULL
+                      AND applied_diffs >= ?
+                      AND gap_count = 0
+                      AND status IN ('SYNCED', 'COMPLETED', 'INTERRUPTED')
+                ) AS replayable_sessions
+            FROM l2_sessions
+            """,
+            [MIN_REPLAY_DIFFS],
+        ).fetchone()
+        db.close()
+        ready = int(row[3]) > 0
+        return {
+            "path": str(L2_DB),
+            "exists": True,
+            "sessions": int(row[0]),
+            "snapshots": int(row[1]),
+            "applied_diffs": int(row[2]),
+            "replayable_sessions": int(row[3]),
+            "ready": ready,
+            "reason": "ready" if ready else "insufficient_gap_free_recorded_diffs",
+        }
+    except Exception as exc:
+        return {
+            "path": str(L2_DB),
+            "exists": True,
+            "sessions": 0,
+            "snapshots": 0,
+            "applied_diffs": 0,
+            "replayable_sessions": 0,
+            "ready": False,
+            "reason": f"archive_unreadable:{type(exc).__name__}:{exc}",
+        }
+
+
+def audit() -> dict[str, Any]:
+    multi_source = (
+        MULTI_VENUE_SOURCE.read_text(encoding="utf-8")
+        if MULTI_VENUE_SOURCE.exists()
+        else ""
+    )
+    streams = _declared_streams(multi_source)
+    code = _l2_code_contract()
+    evidence = _l2_evidence()
+    replay_ready = bool(code["present"] and evidence["ready"])
     return {
-        "declared_streams": streams,
-        "full_depth_present": depth_present,
-        "depth_markers_found": markers,
+        "declared_top_of_book_streams": streams,
         "top_of_book_only": sorted(set(streams) & set(TOP_OF_BOOK_ONLY)),
-        "capability": dict(CAPABILITY, **({
-            "passive_fill_simulation": True,
-            "queue_position_reconstruction": True,
-            "l2_book_replay": True,
-        } if depth_present else {})),
+        "l2_collector_code": code,
+        "l2_evidence": evidence,
+        "capability": {
+            "top_of_book_microstructure": True,
+            "trade_intensity_and_signing": True,
+            "cross_venue_leadlag_on_touch": True,
+            "immediate_taker_execution": True,
+            "sequenced_l2_collection": bool(code["present"]),
+            "l2_book_replay": replay_ready,
+            "conservative_queue_research": replay_ready,
+            "exact_passive_fill_simulation": False,
+            "exact_queue_position_reconstruction": False,
+            "production_execution_rl_training": False,
+        },
     }
 
 
@@ -118,50 +158,61 @@ def main() -> int:
     report = audit()
     ok = True
 
-    def chk(cond: object, msg: str) -> None:
+    def check(condition: object, message: str) -> None:
         nonlocal ok
-        print(f"  {'OK  ' if cond else 'FAIL'} {msg}")
-        ok = ok and bool(cond)
+        print(f"  {'OK  ' if condition else 'FAIL'} {message}")
+        ok = ok and bool(condition)
 
     print("=" * 78)
-    print("RL DATA READINESS - what the recorded archive can and cannot support")
+    print("EXECUTION DATA READINESS")
     print("=" * 78)
-    print(f"\ndeclared streams ({len(report['declared_streams'])}):")
-    for stream in report["declared_streams"]:
+    print("\ntop-of-book archive")
+    for stream in report["declared_top_of_book_streams"]:
         note = TOP_OF_BOOK_ONLY.get(stream, "")
         print(f"    {stream:<34}{note}")
 
-    print("\ndepth reconstruction")
-    chk(not report["full_depth_present"] or report["depth_markers_found"],
-        "the depth verdict is derived from the collector's CODE, not from this file's prose")
-    print(f"       full-depth stream subscribed: {report['full_depth_present']}")
+    code = report["l2_collector_code"]
+    evidence = report["l2_evidence"]
+    print("\nsequenced L2 collector")
+    check(code["present"], "snapshot + diff + gap + replay code contract exists")
+    if code["missing"]:
+        print(f"       missing markers: {', '.join(code['missing'])}")
+    print(f"       archive: {evidence['path']}")
+    print(
+        f"       sessions={evidence['sessions']} snapshots={evidence['snapshots']} "
+        f"applied_diffs={evidence['applied_diffs']} "
+        f"replayable_sessions={evidence['replayable_sessions']}"
+    )
+    print(f"       evidence status: {evidence['reason']}")
 
     print("\ncapability")
     for name, value in report["capability"].items():
         print(f"    {'YES' if value else 'NO ':<4} {name}")
 
-    print("\nverdict")
-    if report["full_depth_present"]:
-        print("    A depth stream is now collected. Re-audit: queue reconstruction may be")
-        print("    possible, but only once snapshot+diff sequencing and gap detection are")
-        print("    verified. This file must be updated deliberately, not assumed.")
-        chk(False, "CAPABILITY table is stale - a depth stream exists but the table denies it")
-    else:
-        chk(report["capability"]["execution_rl_training"] is False,
-            "execution RL is REFUSED: no depth stream, so queue position is uncomputable")
-        chk(report["capability"]["passive_fill_simulation"] is False,
-            "passive/maker fill simulation is REFUSED for the same reason")
-        chk(report["capability"]["immediate_taker_execution"] is True,
-            "immediate-taker execution modelling IS supported - it needs no queue position")
-        print("\n    Exact queue_depth_ahead_of_us is ABSENT, not noisy. bookTicker reports")
-        print("    aggregate size at the touch and never the identity or ordering of the")
-        print("    resting orders composing it.")
-        print("\n    To change this the collector must add, per venue/symbol:")
-        print("      - a REST depth snapshot with its lastUpdateId")
-        print("      - btcusdt@depth@100ms diffs carrying (U, u) so gaps are DETECTABLE")
-        print("      - a recorded resync whenever U fails to chain onto the previous u")
+    check(
+        report["capability"]["exact_queue_position_reconstruction"] is False,
+        "individual queue priority is never inferred from aggregate public L2",
+    )
+    check(
+        report["capability"]["production_execution_rl_training"] is False,
+        "production execution RL remains refused without defensible fill labels",
+    )
+    check(
+        report["capability"]["l2_book_replay"]
+        == bool(code["present"] and evidence["ready"]),
+        "book replay becomes ready from code plus recorded evidence, not code alone",
+    )
 
-    print("\nRL DATA READINESS", "PASS" if ok else "FAIL")
+    print("\nverdict")
+    if report["capability"]["l2_book_replay"]:
+        print("    Gap-detectable local-book replay is available for research.")
+        print("    Passive fills remain conservative estimates, never observed truth.")
+    else:
+        print("    Collector code is installed, but replay evidence has not yet met the")
+        print(f"    operational smoke threshold of {MIN_REPLAY_DIFFS:,} applied diffs")
+        print("    in one gap-free session. Run start_binance_l2_recorder.bat.")
+
+    print("\nEXECUTION DATA READINESS", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 
