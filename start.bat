@@ -78,6 +78,7 @@ REM SILENT A/B challenger. The incumbent keeps driving decisions until >=30 cale
 REM >=500 resolved predictions, PF>1.20 and positive expectancy all pass live.
 if not defined BTC_FULL_REFIT_AFTER_GATE set "BTC_FULL_REFIT_AFTER_GATE=1"
 if not defined BTC_PROMOTION_MIN_HOLDOUT_SAMPLES set "BTC_PROMOTION_MIN_HOLDOUT_SAMPLES=1000"
+if not defined BTC_PROMOTION_MIN_DIRECTIONAL_CALLS set "BTC_PROMOTION_MIN_DIRECTIONAL_CALLS=200"
 if not defined BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION set "BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION=0.48"
 if not defined BTC_PROMOTION_MAX_BRIER set "BTC_PROMOTION_MAX_BRIER=0.80"
 if not defined BTC_PROMOTION_MAX_ECE set "BTC_PROMOTION_MAX_ECE=0.20"
@@ -192,7 +193,7 @@ if "%BTC_VALIDATE_STARTUP%"=="1" (
     echo [validate] binance_paper=%BTC_ENABLE_BINANCE_PAPER% default_db=data\binance_paper.duckdb
     echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%
     echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB% lgb_device=%BTC_LGB_DEVICE%
-    echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%
+    echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_calls=%BTC_PROMOTION_MIN_DIRECTIONAL_CALLS% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%
     echo [validate] marker=%BTC_RETRAIN_COMPLETION_MARKER%
     exit /b 0
 )
@@ -332,6 +333,8 @@ if errorlevel 1 goto :selftest_failed_b
 python backend\test_polymarket_client_protocol.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\test_feed_protocol_health.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_b
+python backend\test_institutional_feeds.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\verified_io.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b

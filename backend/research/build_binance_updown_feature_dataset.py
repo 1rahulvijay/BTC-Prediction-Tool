@@ -490,9 +490,9 @@ def finalize_matrix(matrix):
         if pd.api.types.is_numeric_dtype(matrix[c]):
             feature_cols.append(c)
     matrix[feature_cols] = matrix[feature_cols].replace([np.inf, -np.inf], np.nan)
-    med = matrix[feature_cols].median(numeric_only=True)
-    matrix[feature_cols] = matrix[feature_cols].fillna(med).fillna(0.0)
-    nunique = matrix[feature_cols].nunique(dropna=False)
+    # Preserve missing values in the shared evidence matrix. Every downstream
+    # time split must fit its imputer on training rows only.
+    nunique = matrix[feature_cols].nunique(dropna=True)
     feature_cols = [c for c in feature_cols if nunique.get(c, 0) > 1]
     keep_cols = [c for c in id_cols if c in matrix.columns] + label_cols + \
                 [c for c in reg_targets if c in matrix.columns] + feature_cols
@@ -507,6 +507,7 @@ def finalize_matrix(matrix):
                            "label_line_cross_before_expiry", "label_big_round_move_10bps",
                            "label_big_round_move_20bps"],
         "notes": ["Features known at/before snapshot ts.",
+                  "Missing feature values are preserved; fit imputers on training folds only.",
                   "Polymarket EV needs live ask; this is BTC fair-value only.",
                   "Use round_id/time splits or purged walk-forward; never random-split."],
     }

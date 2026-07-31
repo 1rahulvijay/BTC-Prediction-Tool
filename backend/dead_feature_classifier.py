@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 ACTION = {
     "klines": "KEEP", "aggtrades": "PARITY-FIX", "orderbook": "RETIRE", "derivatives": "RETIRE",
     "options": "RETIRE", "liquidations": "RETIRE", "crossasset": "RETIRE", "external": "RETIRE",
-    "polymarket": "RECORD-LIVE",
+    "regime_live": "RETIRE", "duplicate": "RETIRE", "polymarket": "RECORD-LIVE",
 }
 NOTE = {
     "klines": "kline-derived; perfect train/serve parity",
@@ -40,6 +40,8 @@ NOTE = {
     "liquidations": "forceOrder; geo-blocked + not archived",
     "crossasset": "eth/sol/dxy/us10y; external, low 5m prior",
     "external": "coinbase premium / fear-greed / oracle / netflow; external feed, geo/low-info",
+    "regime_live": "post-fit live regime snapshot; no causal historical backfill for the direction model",
+    "duplicate": "exact duplicate of an existing selected feature; adds cost without information",
     "polymarket": "Polymarket book/odds; CANNOT backfill -- the real edge -> record live",
 }
 
@@ -49,9 +51,8 @@ SOURCE = {
         "stoch_rsi", "adx_norm", "obv_change", "williams_r_norm", "cci_norm", "mfi_norm",
         "price_vs_ema9", "price_vs_ema21", "price_vs_sma50", "volume_ma_ratio", "roc_5", "roc_10",
         "heikin_ashi_trend", "rsi_x_adx", "vol_x_trend", "rv_1m", "rv_5m", "rv_15m", "vol_acceleration",
-        "ewma_vol", "dist_to_resistance", "dist_to_support", "sr_compression", "regime_transition_prob",
-        "regime_entropy", "vol_forecast_1m", "vol_forecast_5m", "vol_forecast_15m", "mtf_trend_alignment",
-        "mtf_volatility_ratio", "mtf_support_distance", "volume_profile_poc_distance",
+        "ewma_vol", "dist_to_resistance", "dist_to_support", "sr_compression", "mtf_trend_alignment",
+        "mtf_volatility_ratio", "volume_profile_poc_distance",
         "volume_profile_lvn_distance", "twap_deviation", "exhaustion", "volume_profile_value_area_pos",
         "orb_position", "orb_breakout", "rv_upside", "rv_downside", "trend_efficiency", "signed_streak",
         "momentum_fast_slow", "return_acceleration", "variance_ratio", "rv_term_structure",
@@ -86,6 +87,11 @@ SOURCE = {
         "chainlink_price_norm", "fv_deviation", "stablecoin_flow", "exchange_netflow",
         "cross_exchange_lead_lag",
     ],
+    "regime_live": [
+        "regime_transition_prob", "regime_entropy", "vol_forecast_1m",
+        "vol_forecast_5m", "vol_forecast_15m",
+    ],
+    "duplicate": ["mtf_support_distance"],
     "polymarket": [
         "polymarket_relevant_event", "polymarket_probability_change", "polymarket_liquidity",
         "polymarket_event_shock",

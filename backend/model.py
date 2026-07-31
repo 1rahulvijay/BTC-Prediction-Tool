@@ -88,6 +88,41 @@ def _representative_training_indices(indices: np.ndarray, max_samples: int) -> n
     return np.unique(np.concatenate([older[positions], recent]))
 
 
+def _purged_calibration_splits(
+    labels: np.ndarray,
+    horizon: int,
+    n_splits: int = 3,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Build recent, chronological calibration folds with a label-overlap gap."""
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    expected_classes = np.array([0, 1, 2], dtype=np.int64)
+    if len(labels) < 300 or not np.array_equal(np.unique(labels), expected_classes):
+        return []
+
+    n_splits = max(2, int(n_splits))
+    validation_size = max(50, len(labels) // 10)
+    first_validation = len(labels) - n_splits * validation_size
+    purge_gap = max(1, LOOKBACK + int(horizon))
+    if first_validation <= purge_gap:
+        return []
+
+    splits = []
+    for fold in range(n_splits):
+        validation_start = first_validation + fold * validation_size
+        validation_stop = min(validation_start + validation_size, len(labels))
+        training_stop = validation_start - purge_gap
+        train_idx = np.arange(0, training_stop, dtype=np.int64)
+        validation_idx = np.arange(validation_start, validation_stop, dtype=np.int64)
+        if len(train_idx) < 100 or len(validation_idx) < 30:
+            continue
+        if not np.array_equal(np.unique(labels[train_idx]), expected_classes):
+            continue
+        if not np.array_equal(np.unique(labels[validation_idx]), expected_classes):
+            continue
+        splits.append((train_idx, validation_idx))
+    return splits if len(splits) >= 2 else []
+
+
 def _regime_similarity_weights(
     X_model: np.ndarray,
     feature_names: list[str],
@@ -453,8 +488,14 @@ except ImportError:
 # Bump when the TRAINING PROCEDURE changes in a way that makes an older bundle
 # non-comparable, even if the feature columns are identical. Distinct from
 # features.FEATURE_SEMANTICS_VERSION, which tracks what the INPUTS mean.
-TRAINING_SEMANTICS_VERSION = 2
+TRAINING_SEMANTICS_VERSION = 3
 TRAINING_SEMANTICS_CHANGELOG = {
+    3: "2026-07-31 direction labels use a causal per-candle ATR threshold instead "
+       "of one threshold derived from the final rows; same-bar dual barrier touches "
+       "become conservative no-trade labels; XGBoost/LightGBM probability calibration "
+       "uses purged chronological folds instead of shuffled stratified CV; OOF "
+       "stacking excludes synthetic class-presence compatibility rows; class priors "
+       "and PSI reference distributions use training rows only.",
     2: "2026-07-28 TCN: per-sample weighted loss (was per-class mean, which discarded "
        "recency) + device-stable inference. Bundles trained under v1 optimised a "
        "different objective and are not comparable.",
@@ -753,18 +794,6 @@ class MultiModelEnsemble:
         _, _, model_n_features = X_model.shape
         X_flat = X_model.reshape((n_samples, lookback * model_n_features))
 
-        # Per-horizon class priors [DOWN, NEUTRAL, UP] for inference-time de-biasing.
-        self.class_priors = {}
-        for _h in self.horizons:
-            if _h in Y and len(Y[_h]) > 0:
-                try:
-                    self.class_priors[_h] = np.asarray(Y[_h]).mean(axis=0).tolist()
-                except Exception:
-                    pass
-        if self.class_priors:
-            logger.info("[TRAIN] Class priors (DOWN/NEUTRAL/UP): %s",
-                        {h: [round(x, 3) for x in p] for h, p in self.class_priors.items()})
-
         # Train/holdout split. Configurable via BTC_TRAIN_SPLIT_FRAC (default 0.8).
         # CLAMPED to [0.5, 0.98]: a holdout is MANDATORY because the magnitude bands are
         # conformal-calibrated on the held-out slice (see §conformal below) and the OOS
@@ -792,6 +821,21 @@ class MultiModelEnsemble:
             self.model_feature_pruning,
             self.horizons,
         )
+
+        # Priors are model inputs for legacy non-class-balanced bundles, so they must
+        # be estimated from fitted rows only. The untouched tail remains evaluation-only.
+        self.class_priors = {}
+        for _h in self.horizons:
+            if _h in Y and len(Y[_h]) >= split_idx:
+                try:
+                    self.class_priors[_h] = np.asarray(Y[_h])[:split_idx].mean(axis=0).tolist()
+                except Exception:
+                    pass
+        if self.class_priors:
+            logger.info(
+                "[TRAIN] Train-slice class priors (DOWN/NEUTRAL/UP): %s",
+                {h: [round(x, 3) for x in p] for h, p in self.class_priors.items()},
+            )
         
         half_life = max(50.0, split_idx / 3.0)
         _idx = np.arange(split_idx)
@@ -994,6 +1038,20 @@ class MultiModelEnsemble:
                 if len(np.unique(y_train_h)) < 2:
                     continue
 
+                # Calibration must see the real chronological rows, never the synthetic
+                # class-presence samples appended below for estimator compatibility.
+                X_calibration = X_train_h
+                y_calibration = y_train_h
+                sw_calibration = sw
+                calibration_cv = _purged_calibration_splits(y_calibration, h)
+                if not calibration_cv:
+                    logger.info(
+                        "[CALIBRATION] h=%sm reg=%s unavailable: insufficient "
+                        "three-class chronological folds; using uncalibrated estimator.",
+                        h,
+                        reg,
+                    )
+
                 # Class-balancing augmentation (per regime bucket). Thin regimes often
                 # contain only {DOWN, UP} and no NEUTRAL, which makes multiclass models
                 # configured with num_class=3 fail on the non-contiguous label set
@@ -1025,8 +1083,18 @@ class MultiModelEnsemble:
                         tree_method='hist', device=XGB_DEVICE
                     )
                     try:
-                        xgb_model = CalibratedClassifierCV(estimator=base_xgb, method='isotonic', cv=3)
-                        xgb_model.fit(X_train_h, y_train_h, sample_weight=sw)
+                        if not calibration_cv:
+                            raise ValueError("purged chronological calibration unavailable")
+                        xgb_model = CalibratedClassifierCV(
+                            estimator=base_xgb,
+                            method='isotonic',
+                            cv=calibration_cv,
+                        )
+                        xgb_model.fit(
+                            X_calibration,
+                            y_calibration,
+                            sample_weight=sw_calibration,
+                        )
                         for cc in getattr(xgb_model, "calibrated_classifiers_", []):
                             fitted = getattr(cc, "estimator", getattr(cc, "base_estimator", None))
                             if fitted is not None:
@@ -1097,8 +1165,18 @@ class MultiModelEnsemble:
                             verbose=-1, device_type=LGB_DEVICE  # gpu if probed OK, else cpu
                         )
                         try:
-                            lgb_model = CalibratedClassifierCV(estimator=base_lgb, method='isotonic', cv=3)
-                            lgb_model.fit(X_train_h, y_train_h, sample_weight=sw)
+                            if not calibration_cv:
+                                raise ValueError("purged chronological calibration unavailable")
+                            lgb_model = CalibratedClassifierCV(
+                                estimator=base_lgb,
+                                method='isotonic',
+                                cv=calibration_cv,
+                            )
+                            lgb_model.fit(
+                                X_calibration,
+                                y_calibration,
+                                sample_weight=sw_calibration,
+                            )
                         except ValueError:
                             base_lgb.fit(X_train_h, y_train_h, sample_weight=sw)
                             lgb_model = base_lgb
@@ -1231,7 +1309,12 @@ class MultiModelEnsemble:
 
                 # 6. Train Logistic Stacker using Out-of-Fold (OOF) predictions
                 try:
-                    X_stack, y_stack, _ = recent_classification_slice(X_train_h, y_train_h, sw, STACKER_MAX_SAMPLES)
+                    X_stack, y_stack, _ = recent_classification_slice(
+                        X_calibration,
+                        y_calibration,
+                        sw_calibration,
+                        STACKER_MAX_SAMPLES,
+                    )
                     _t0 = log_component_start(h, reg, "OOFStacker", len(X_stack))
                     purge_gap = min(
                         max(LOOKBACK + int(h), 1),
@@ -1452,7 +1535,7 @@ class MultiModelEnsemble:
                 "method": "native-training-split",
             }
 
-        self._build_feature_reference(X_model)
+        self._build_feature_reference(X_model[:split_idx])
         self.is_trained = True
         self.train_count += 1
         if not self._save_models():

@@ -297,8 +297,11 @@ def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 1
 # invalidates artifacts under strict mode - but strict mode can be off, and a hash
 # says only "something changed". This constant says WHAT changed, and
 # check_feature_contract.py reports it in plain words.
-FEATURE_SEMANTICS_VERSION = 3
+FEATURE_SEMANTICS_VERSION = 4
 FEATURE_SEMANTICS_CHANGELOG = {
+    4: "2026-07-31 cvd_slope_divergence: full-dataset standard deviation -> "
+       "causal trailing scale; cross-asset leading gaps no longer backfill from a "
+       "future first observation. Appending future data previously changed past rows.",
     3: "2026-07-28 vwap(): bar-count window -> TRUE duration window. The bar count was "
        "derived from the median timestamp delta, which over-reached across gaps (a 6h gap "
        "made a '1440 bar' window span 29.98h, not 24h). Now resolved against the clock "
@@ -683,30 +686,53 @@ def clamp(val: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(val)))
 
 
-def compute_adaptive_threshold(closes: np.ndarray, atr_arr: np.ndarray) -> float:
+def compute_adaptive_threshold_series(
+    closes: np.ndarray,
+    atr_arr: np.ndarray,
+    smoothing_span: int = 100,
+) -> np.ndarray:
+    """Return a causal volatility threshold for every decision candle.
+
+    Each value uses only ATR and price observations available at or before that
+    candle. Applying one threshold derived from the final rows to the entire
+    history makes old labels depend on the newest volatility regime.
     """
-    Adaptive threshold based on recent ATR.
-    Instead of fixed 0.03%, use median ATR% * 0.15 as the neutral zone boundary.
-    This prevents the majority-NEUTRAL class problem.
-    """
-    # Cost floor: the neutral band must be at least the round-trip trading cost + buffer,
-    # so the model is never trained to label a sub-cost move as a tradeable UP/DOWN.
-    # ~0.08% covers ~0.04% taker x2; tune via BTC_LABEL_COST_FLOOR.
+    closes = np.asarray(closes, dtype=np.float64).reshape(-1)
+    atr_arr = np.asarray(atr_arr, dtype=np.float64).reshape(-1)
     cost_floor = float(os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008"))
-    valid_atr = atr_arr[~np.isnan(atr_arr)]
-    if len(valid_atr) < 10:
-        return cost_floor  # fallback
+    cost_floor = min(max(cost_floor, 0.0), 0.003)
+    thresholds = np.full(len(closes), cost_floor, dtype=np.float64)
+    if len(closes) == 0 or len(atr_arr) == 0:
+        return thresholds
 
-    median_atr = np.median(valid_atr[-100:])
-    median_price = np.median(closes[-100:])
+    alpha = 2.0 / (max(2, int(smoothing_span)) + 1.0)
+    atr_ewma = None
+    price_ewma = None
+    valid_count = 0
+    for index in range(min(len(closes), len(atr_arr))):
+        price = float(closes[index])
+        atr_value = float(atr_arr[index])
+        if not (np.isfinite(price) and price > 0 and np.isfinite(atr_value) and atr_value >= 0):
+            continue
+        if atr_ewma is None:
+            atr_ewma = atr_value
+            price_ewma = price
+        else:
+            atr_ewma = alpha * atr_value + (1.0 - alpha) * atr_ewma
+            price_ewma = alpha * price + (1.0 - alpha) * price_ewma
+        valid_count += 1
+        if valid_count >= 10 and price_ewma and price_ewma > 0:
+            thresholds[index] = np.clip(0.15 * atr_ewma / price_ewma, cost_floor, 0.003)
 
-    if median_price <= 0:
-        return cost_floor
+    return thresholds
 
-    atr_pct = median_atr / median_price
-    # 15% of ATR%, never below the cost floor, capped so high-vol bands stay sane.
-    threshold = max(cost_floor, min(0.003, atr_pct * 0.15))
-    return threshold
+
+def compute_adaptive_threshold(closes: np.ndarray, atr_arr: np.ndarray) -> float:
+    """Return the latest causal threshold for compatibility with diagnostics."""
+    thresholds = compute_adaptive_threshold_series(closes, atr_arr)
+    if len(thresholds):
+        return float(thresholds[-1])
+    return float(os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008"))
 
 
 def _ffill_zeros(arr: np.ndarray) -> np.ndarray:
@@ -715,13 +741,12 @@ def _ffill_zeros(arr: np.ndarray) -> np.ndarray:
     Cross-asset feeds (ETH/SOL) record 0 during outages/startup; diffing across a
     0 bar turns one missing sample into two false full-scale moves (e.g. the
     lead-lag feature saturates its clip at ±1.0 on pure feed noise). Leading zeros
-    are backfilled with the first real value; an all-zero series is returned as-is
+    remain zero; only already-observed values are carried forward, and an all-zero series is returned as-is
     (constant → zero variance → harmless)."""
     out = np.asarray(arr, dtype=np.float64).copy()
     nz = np.flatnonzero(out != 0.0)
     if nz.size == 0 or nz.size == out.size:
         return out
-    out[: nz[0]] = out[nz[0]]
     pos = np.where(out != 0.0, np.arange(out.size), 0)
     np.maximum.accumulate(pos, out=pos)
     return out[pos]
@@ -1278,7 +1303,8 @@ def build_features_from_klines(
     _cvd_cum = np.cumsum(cvd_1m_raw)
     _pslope = np.zeros(n); _pslope[_w:] = (closes[_w:] - closes[:-_w]) / np.where(closes[:-_w] > 0, closes[:-_w], 1.0)
     _cslope = np.zeros(n); _cslope[_w:] = _cvd_cum[_w:] - _cvd_cum[:-_w]
-    _cn = np.std(_cvd_cum) if np.std(_cvd_cum) > 1e-9 else 1.0
+    _cvd_scale = _rolling_std(_cvd_cum, 100)
+    _cn = np.where(_cvd_scale > 1e-9, _cvd_scale, 1.0)
     _div_cont = _pslope * 100.0 - (_cslope / _cn)
     features[:, 120] = np.clip(_div_cont[1:], -1.0, 1.0)
     # 121-122: upside / downside realized volatility (semivariance) — kline regime signal.
@@ -1506,11 +1532,13 @@ def build_sequences(
     if horizons is None:
         horizons = [5, 15]  # pruned 2026-06-21: only the two tradeable market horizons
 
-    # Compute adaptive threshold (used as the TP/SL barrier)
+    # Compute a decision-time threshold series. Historical labels must use the
+    # volatility state available at that point, not the dataset's final state.
     if atr_arr is not None:
-        threshold = compute_adaptive_threshold(closes, atr_arr)
+        threshold_series = compute_adaptive_threshold_series(closes, atr_arr)
     else:
-        threshold = 0.0003
+        cost_floor = float(os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008"))
+        threshold_series = np.full(len(closes), min(max(cost_floor, 0.0), 0.003))
 
     max_h = max(horizons)
 
@@ -1534,6 +1562,7 @@ def build_sequences(
         # (seq ends at the latest candle and we predict from its close), removing the
         # 1-bar train/serve skew that came from entering at closes[i+1].
         current_price = closes[i]
+        threshold = float(threshold_series[i])
 
         for h in horizons:
             # Magnitude target: realized |move| over the horizon as a fraction.
@@ -1566,11 +1595,8 @@ def build_sequences(
 
                 if touched_up and touched_down:
                     # Both barriers touched in the same bar — intrabar order is
-                    # unknown, so resolve by the bar's net direction (close vs entry).
-                    if closes[idx] >= current_price:
-                        hit_up = True
-                    else:
-                        hit_down = True
+                    # unknown. Leave both flags false so this becomes a conservative
+                    # no-trade label instead of an invented directional first hit.
                     break
                 elif touched_up:
                     hit_up = True

@@ -7,6 +7,7 @@ Each feed is an async poller with graceful fallback to neutral values.
 import datetime as _dt
 import logging
 import math
+import statistics
 import time
 from typing import Optional
 
@@ -69,6 +70,120 @@ def compute_gex(instruments: list, now_ms: int) -> dict:
             "spot": round(spot, 2)}
 
 
+def compute_option_surface_metrics(instruments: list, now_ms: int) -> dict:
+    """Compute expiry-consistent BTC option summary metrics.
+
+    ATM IV, skew and max pain must come from one expiry. Combining equal strikes
+    across expiries or allowing a call IV to overwrite a put IV creates values
+    that do not describe any tradeable option surface. Prefer an expiry with at
+    least 24 hours remaining so expiry-hour microstructure does not dominate the
+    dashboard.
+    """
+    records = []
+    now_s = now_ms / 1000.0
+    for instrument in instruments:
+        try:
+            name = str(instrument.get("instrument_name") or "")
+            parts = name.split("-")
+            if len(parts) < 4 or parts[0] != "BTC":
+                continue
+            expiry = _dt.datetime.strptime(parts[1].title(), "%d%b%y").replace(
+                tzinfo=_dt.timezone.utc,
+                hour=8,
+            )
+            if expiry.timestamp() <= now_s:
+                continue
+            option_type = parts[3].upper()
+            if option_type not in {"C", "P"}:
+                continue
+            records.append({
+                "expiry_ms": int(expiry.timestamp() * 1000),
+                "strike": float(parts[2]),
+                "type": option_type,
+                "oi": max(0.0, float(instrument.get("open_interest", 0.0) or 0.0)),
+                "iv": max(0.0, float(instrument.get("mark_iv", 0.0) or 0.0) / 100.0),
+                "underlying": max(
+                    0.0,
+                    float(instrument.get("underlying_price", 0.0) or 0.0),
+                ),
+            })
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+
+    if not records:
+        return {
+            "put_call_ratio": 1.0,
+            "max_pain": 0.0,
+            "atm_iv": 0.0,
+            "skew_25d": 0.0,
+            "option_expiry_ms": 0,
+        }
+
+    call_oi = sum(row["oi"] for row in records if row["type"] == "C")
+    put_oi = sum(row["oi"] for row in records if row["type"] == "P")
+    expiries = sorted({row["expiry_ms"] for row in records})
+    stable_expiries = [
+        expiry for expiry in expiries
+        if expiry - now_ms >= 24 * 60 * 60 * 1000
+    ]
+    nearest_expiry = stable_expiries[0] if stable_expiries else expiries[0]
+    surface = [row for row in records if row["expiry_ms"] == nearest_expiry]
+    spots = [row["underlying"] for row in surface if row["underlying"] > 0]
+    spot = float(statistics.median(spots)) if spots else 0.0
+
+    def side_iv(option_type: str, target: float) -> float:
+        candidates = [
+            row for row in surface
+            if row["type"] == option_type and row["iv"] > 0
+        ]
+        if not candidates or target <= 0:
+            return 0.0
+        nearest = min(candidates, key=lambda row: abs(row["strike"] - target))
+        return float(nearest["iv"])
+
+    atm_iv = 0.0
+    skew = 0.0
+    if spot > 0:
+        strikes = sorted({row["strike"] for row in surface})
+        if strikes:
+            atm_strike = min(strikes, key=lambda strike: abs(strike - spot))
+            atm_values = [
+                row["iv"] for row in surface
+                if row["strike"] == atm_strike and row["iv"] > 0
+            ]
+            if atm_values:
+                atm_iv = float(statistics.fmean(atm_values))
+        put_iv = side_iv("P", spot * 0.95)
+        call_iv = side_iv("C", spot * 1.05)
+        if put_iv > 0 and call_iv > 0:
+            skew = put_iv - call_iv
+
+    max_pain = 0.0
+    candidate_strikes = sorted({row["strike"] for row in surface})
+    if candidate_strikes:
+        def expiry_payout(settlement: float) -> float:
+            payout = 0.0
+            for row in surface:
+                intrinsic = (
+                    max(0.0, settlement - row["strike"])
+                    if row["type"] == "C"
+                    else max(0.0, row["strike"] - settlement)
+                )
+                payout += row["oi"] * intrinsic
+            return payout
+
+        max_pain = min(candidate_strikes, key=expiry_payout)
+
+    pcr = put_oi / call_oi if call_oi > 0 else 1.0
+    return {
+        "put_call_ratio": round(min(3.0, pcr), 4),
+        "max_pain": float(max_pain),
+        "atm_iv": round(atm_iv, 4),
+        "skew_25d": round(skew, 4),
+        "option_expiry_ms": nearest_expiry,
+    }
+
+
 class DeribitOptionsClient:
     """
     Fetches BTC options summary from Deribit public API (no auth needed).
@@ -86,6 +201,7 @@ class DeribitOptionsClient:
             "atm_iv": 0.0,
             "gex": 0.0,            # net dealer gamma exposure ($/1% move)
             "total_gamma": 0.0,    # total gamma positioning magnitude
+            "option_expiry_ms": 0,
             "last_update": 0,
         }
 
@@ -116,67 +232,9 @@ class DeribitOptionsClient:
         if not instruments:
             return self.data
 
-        total_calls = 0
-        total_puts = 0
-        call_oi = 0
-        put_oi = 0
-        iv_by_strike = {}
-        oi_by_strike = {}
-
-        for inst in instruments:
-            name = inst.get("instrument_name", "")
-            oi = float(inst.get("open_interest", 0))
-            iv = float(inst.get("mark_iv", 0)) / 100.0  # Convert from % to decimal
-            underlying = float(inst.get("underlying_price", 0))
-
-            if "-C" in name:
-                total_calls += 1
-                call_oi += oi
-            elif "-P" in name:
-                total_puts += 1
-                put_oi += oi
-
-            # Parse strike from instrument name (e.g., BTC-28JUN24-70000-C)
-            parts = name.split("-")
-            if len(parts) >= 3:
-                try:
-                    strike = float(parts[2])
-                    if strike not in oi_by_strike:
-                        oi_by_strike[strike] = 0
-                    oi_by_strike[strike] += oi
-                    if iv > 0:
-                        iv_by_strike[strike] = iv
-                except (ValueError, IndexError):
-                    pass
-
-        # Put/Call Ratio
-        pcr = put_oi / (call_oi + 1e-9) if call_oi > 0 else 1.0
-        self.data["put_call_ratio"] = round(min(3.0, pcr), 4)
-
-        # Max Pain: strike with maximum total OI
-        if oi_by_strike:
-            max_pain_strike = max(oi_by_strike.items(), key=lambda x: x[1])[0]
-            self.data["max_pain"] = float(max_pain_strike)
-
-        # ATM IV: IV of strike closest to underlying price
-        if iv_by_strike and instruments:
-            first = instruments[0] if isinstance(instruments[0], dict) else {}
-            underlying = float(first.get("underlying_price", 0))
-            if underlying > 0:
-                closest_strike = min(iv_by_strike.keys(), key=lambda s: abs(s - underlying))
-                self.data["atm_iv"] = round(iv_by_strike[closest_strike], 4)
-
-        # 25-delta skew proxy: IV of 25% OTM put vs 25% OTM call
-        if iv_by_strike and instruments:
-            first = instruments[0] if isinstance(instruments[0], dict) else {}
-            underlying = float(first.get("underlying_price", 0))
-            if underlying > 0:
-                put_strike = underlying * 0.95  # ~5% OTM put (proxy for 25d)
-                call_strike = underlying * 1.05  # ~5% OTM call
-                put_iv = self._closest_iv(iv_by_strike, put_strike)
-                call_iv = self._closest_iv(iv_by_strike, call_strike)
-                if put_iv > 0 and call_iv > 0:
-                    self.data["skew_25d"] = round(put_iv - call_iv, 4)
+        self.data.update(
+            compute_option_surface_metrics(instruments, int(time.time() * 1000))
+        )
 
         # Net dealer gamma exposure (regime signal; analytic BS gamma, no extra API call).
         try:

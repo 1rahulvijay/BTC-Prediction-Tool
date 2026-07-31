@@ -5,6 +5,7 @@ streams real-time predictions, indicators, and verification data to frontend.
 """
 
 import asyncio
+import copy
 import functools
 import requests  # used only by the lightweight Pyth price-to-beat anchor poller
 import json
@@ -2490,7 +2491,13 @@ async def relearn_models_background(reason: str = "manual"):
     )
     try:
         had_trained_incumbent = bool(getattr(model, "is_trained", False))
-        promotion_pipeline = bool(FULL_REFIT_AFTER_GATE and reason == "forced-startup")
+        # Every relearn follows the same evaluate -> refit -> shadow contract. Manual,
+        # scheduled and auto-learning requests must not bypass holdout gates and replace
+        # the incumbent merely because they were not startup-triggered.
+        promotion_pipeline = model_promotion.promotion_required(
+            FULL_REFIT_AFTER_GATE,
+            reason,
+        )
         run_id = f"eval{HISTORICAL_DAYS}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         candidate_dir = (
             os.path.join(MODEL_CHALLENGER_DIR, run_id, "evaluation")
@@ -3363,7 +3370,13 @@ async def main_loop():
                 error=None,
             )
             try:
-                if FORCE_MAIN_RETRAIN and FULL_REFIT_AFTER_GATE:
+                # No compatible incumbent is a promotion event even when start.bat
+                # found an older completion marker and therefore cleared FORCE_MAIN_RETRAIN.
+                # Never install a freshly trained architecture without the holdout gate.
+                if model_promotion.promotion_required(
+                    FULL_REFIT_AFTER_GATE,
+                    "forced-startup",
+                ):
                     await relearn_models_background("forced-startup")
                     if not getattr(model, "is_trained", False):
                         raise RuntimeError(
@@ -3374,7 +3387,7 @@ async def main_loop():
                     _write_retrain_completion_marker(model, deployment_state="active")
                 await broadcast({"type": "status", "step": "step-model", "msg": "Model trained"})
                 logger.info("[BOOT] Background startup training complete.")
-                if not (FORCE_MAIN_RETRAIN and FULL_REFIT_AFTER_GATE):
+                if not FULL_REFIT_AFTER_GATE:
                     _set_status(
                         "relearn_status",
                         running=False,
@@ -3384,7 +3397,7 @@ async def main_loop():
                         completed_at=time.time(),
                         error=None,
                     )
-                if MODEL_BOOT_BACKTEST and (FORCE_MAIN_RETRAIN or not _load_backtest_cache()):
+                if MODEL_BOOT_BACKTEST:
                     schedule_backtest("startup")
             except Exception as e:
                 logger.error("[BOOT] Background startup training failed: %s", e, exc_info=True)
@@ -3583,7 +3596,10 @@ async def main_loop():
             # the full historical window every 2s is wasteful and blocks the event loop.
             # blocks the event loop. We only consume the last LOOKBACK rows for the
             # sequence, so slice to a recent window. Training still uses full history.
-            recent_klines = data_state["klines"][-1500:]
+            recent_klines = copy.deepcopy(data_state["klines"][-1500:])
+            order_flow_snapshot = copy.deepcopy(data_state["order_flow"])
+            derivatives_snapshot = copy.deepcopy(data_state["derivatives"])
+            sentiment_snapshot = copy.deepcopy(data_state["sentiment"])
 
             # Current Features (per-bar signal history keeps the sequence window
             # consistent with how the model was trained).
@@ -3607,11 +3623,12 @@ async def main_loop():
             # pings — the stale-feed/ping-timeout disconnects seen in the UI. (#6)
             live_features = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: build_features_from_klines(
+                functools.partial(
+                    build_features_from_klines,
                     recent_klines,
-                    data_state["order_flow"],
-                    data_state["derivatives"],
-                    data_state["sentiment"],
+                    order_flow_snapshot,
+                    derivatives_snapshot,
+                    sentiment_snapshot,
                     signal_history=live_sig_hist,
                 ),
             )

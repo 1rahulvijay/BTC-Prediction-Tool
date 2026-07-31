@@ -2,6 +2,15 @@
 
 ## Production
 
+- **[DEEP_ACCURACY_AND_RESEARCH_AUDIT_2026-07-31.md](active/DEEP_ACCURACY_AND_RESEARCH_AUDIT_2026-07-31.md)** -
+  causal-label, feature, calibration, promotion, live-snapshot and Deribit-analysis corrections;
+  current direction/path/head-health evidence; strict runtime blockers; and the prioritized
+  volatility/options, adaptive-conformal and sequenced-L2 research program.
+- **[DUCKDB_METRICS_ANALYSIS_2026-07-31.md](active/DUCKDB_METRICS_ANALYSIS_2026-07-31.md)** -
+  current 5m/15m ensemble, Price-to-Beat, action and per-model live accuracy/precision evidence.
+- **[PATH_INFORMATION_RESULTS.md](PATH_INFORMATION_RESULTS.md)** -
+  direction/path null, multiple-testing-corrected magnitude result and the costed rejection of
+  all nine Binance breakout-bracket conversions.
 - **[PRODUCTION_READINESS_AUDIT_2026-07-30.md](active/PRODUCTION_READINESS_AUDIT_2026-07-30.md)** -
   canonical production gate, current blockers, secure launcher and promotion sequence. Current
   status is paper/shadow code-ready but artifact/environment blocked; real orders remain disabled.

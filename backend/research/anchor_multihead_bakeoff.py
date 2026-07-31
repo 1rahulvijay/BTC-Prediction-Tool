@@ -126,6 +126,17 @@ def wf_folds(df, n_splits):
         yield k + 1, set(tr_ids.tolist()), set(te_ids.tolist())
 
 
+def fold_matrices(train, *others, features):
+    """Impute every fold with training-only statistics."""
+    train_values = train[features].replace([np.inf, -np.inf], np.nan)
+    medians = train_values.median(numeric_only=True)
+    matrices = [train_values.fillna(medians).fillna(0.0).values]
+    for frame in others:
+        values = frame[features].replace([np.inf, -np.inf], np.nan)
+        matrices.append(values.fillna(medians).fillna(0.0).values)
+    return matrices
+
+
 def run_horizon(hdf, feats, folds, max_train):
     h = int(hdf["horizon_min"].iloc[0])
     print(f"\n=== horizon {h}m: {len(hdf):,} snapshots, {hdf['round_id'].nunique():,} rounds ===")
@@ -143,8 +154,9 @@ def run_horizon(hdf, feats, folds, max_train):
                 continue
             if max_train and len(tr) > max_train:
                 tr = tr.sample(max_train, random_state=0)
-            Xtr, ytr = tr[feats].values, tr[tgt].values.astype(int)
-            Xte, yte = te[feats].values, te[tgt].values.astype(int)
+            Xtr, Xte = fold_matrices(tr, te, features=feats)
+            ytr = tr[tgt].values.astype(int)
+            yte = te[tgt].values.astype(int)
             # all predictors, then score WITHIN seconds-left buckets (pooled AUC is misleading:
             # late-round snapshots make the winner trivially predictable = P(Hold), not a forecast).
             preds = {"baseline_rate": np.full(len(yte), float(ytr.mean()))}
@@ -185,7 +197,9 @@ def run_horizon(hdf, feats, folds, max_train):
                 continue
             if max_train and len(tr) > max_train:
                 tr = tr.sample(max_train, random_state=0)
-            Xtr, ytr = tr[feats].values, tr[tgt].values; Xte, yte = te[feats].values, te[tgt].values
+            Xtr, Xte = fold_matrices(tr, te, features=feats)
+            ytr = tr[tgt].values
+            yte = te[tgt].values
             rows.append([h, tgt, "baseline_mean", fold, len(yte), round(reg_metrics(yte, np.full(len(yte), ytr.mean()))["mae"], 3),
                          round(reg_metrics(yte, np.full(len(yte), ytr.mean()))["rmse"], 3)])
             for name, model in regressors().items():
@@ -218,9 +232,10 @@ def run_horizon(hdf, feats, folds, max_train):
                     continue
                 if max_train and len(fit) > max_train:
                     fit = fit.sample(max_train, random_state=0)
-                Xf, yf = fit[feats].values, fit[tgt].values
-                Xc, yc = cal[feats].values, cal[tgt].values
-                Xte, yte = te[feats].values, te[tgt].values
+                Xf, Xc, Xte = fold_matrices(fit, cal, te, features=feats)
+                yf = fit[tgt].values
+                yc = cal[tgt].values
+                yte = te[tgt].values
                 pr = {}
                 for a in (0.1, 0.5, 0.9):
                     m = LGBMRegressor(objective="quantile", alpha=a, n_estimators=250, max_depth=5,

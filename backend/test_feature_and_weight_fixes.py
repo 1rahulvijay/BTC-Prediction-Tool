@@ -187,10 +187,12 @@ def main() -> int:
     print("\n[contract] a formula change must be announceable, not silent")
     from features import FEATURE_SEMANTICS_CHANGELOG, FEATURE_SEMANTICS_VERSION
     chk(FEATURE_SEMANTICS_VERSION >= 2,
-        f"FEATURE_SEMANTICS_VERSION is {FEATURE_SEMANTICS_VERSION} (bumped for the VWAP change)")
+        f"FEATURE_SEMANTICS_VERSION is {FEATURE_SEMANTICS_VERSION} (semantic changes are versioned)")
     chk(FEATURE_SEMANTICS_VERSION in FEATURE_SEMANTICS_CHANGELOG
-        and "vwap" in FEATURE_SEMANTICS_CHANGELOG[FEATURE_SEMANTICS_VERSION].lower(),
-        "the changelog names what changed, so a hash diff is not the only record")
+        and bool(FEATURE_SEMANTICS_CHANGELOG[FEATURE_SEMANTICS_VERSION].strip()),
+        "the current semantics version names what changed")
+    chk(any("vwap" in text.lower() for text in FEATURE_SEMANTICS_CHANGELOG.values()),
+        "the historical VWAP semantics change remains documented")
 
     # ------------------------------------------------------------------- TCN weights
     print("\n[tcn] per-sample weights must reach the gradient")

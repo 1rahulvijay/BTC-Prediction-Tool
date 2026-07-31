@@ -183,12 +183,16 @@ class Backtester:
             return self._empty_results(horizons)
 
         # Compute adaptive threshold from ATR
-        from features import atr, compute_adaptive_threshold
+        from features import atr, compute_adaptive_threshold_series
         highs = closes * 1.001  # Approximate — real highs not available here
         lows = closes * 0.999
         atr_arr = atr(highs, lows, closes)
-        threshold = compute_adaptive_threshold(closes, atr_arr)
-        logger.info(f"Backtest adaptive threshold: {threshold:.6f}")
+        threshold_series = compute_adaptive_threshold_series(closes, atr_arr)
+        logger.info(
+            "Backtest adaptive threshold: latest=%.6f median=%.6f",
+            float(threshold_series[-1]),
+            float(np.median(threshold_series)),
+        )
 
         for h in horizons:
             if progress_cb:
@@ -230,6 +234,7 @@ class Backtester:
                 # entry at closes[i], outcome at closes[i+h].
                 current_price = closes[i]
                 future_price = closes[i + h]
+                threshold = float(threshold_series[i])
                 
                 if current_price <= 0:
                     continue

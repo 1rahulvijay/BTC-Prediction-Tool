@@ -70,7 +70,16 @@ def main():
         d = df[df.horizon_min == hz].sort_values("round_start")
         cut = int(len(d) * 0.7)
         tr, te = d.iloc[:cut], d.iloc[cut:]
-        Xtr, Xte = tr[feats].values, te[feats].values
+        train_values = tr[feats].replace([np.inf, -np.inf], np.nan)
+        medians = train_values.median(numeric_only=True)
+        Xtr = train_values.fillna(medians).fillna(0.0).values
+        Xte = (
+            te[feats]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(medians)
+            .fillna(0.0)
+            .values
+        )
         for tgt in ("big_up", "big_down", "big_drop"):
             ytr, yte = tr[tgt].values, te[tgt].values
             if len(np.unique(ytr)) < 2 or len(np.unique(yte)) < 2:

@@ -14,6 +14,12 @@ from pathlib import Path
 import numpy as np
 
 
+def promotion_required(enabled: bool, reason: str | None = None) -> bool:
+    """Keep retraining origin out of the safety decision."""
+    del reason
+    return bool(enabled)
+
+
 def promotion_gates() -> dict:
     def env_float(name: str, default: float) -> float:
         try:
@@ -29,6 +35,7 @@ def promotion_gates() -> dict:
 
     return {
         "min_holdout_samples": env_int("BTC_PROMOTION_MIN_HOLDOUT_SAMPLES", 1000),
+        "min_directional_calls": env_int("BTC_PROMOTION_MIN_DIRECTIONAL_CALLS", 200),
         "min_directional_precision": env_float("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", 0.48),
         "max_multiclass_brier": env_float("BTC_PROMOTION_MAX_BRIER", 0.80),
         "max_ece": env_float("BTC_PROMOTION_MAX_ECE", 0.20),
@@ -135,6 +142,8 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
         reasons = []
         if candidate_metrics["samples"] < gates["min_holdout_samples"]:
             reasons.append("insufficient_holdout_samples")
+        if candidate_metrics["directional_calls"] < gates["min_directional_calls"]:
+            reasons.append("insufficient_directional_calls")
         if candidate_metrics["directional_precision"] < gates["min_directional_precision"]:
             reasons.append("directional_precision_below_floor")
         if candidate_metrics["multiclass_brier"] > gates["max_multiclass_brier"]:
@@ -197,6 +206,10 @@ def selftest() -> None:
     metrics = probability_metrics(probability, actual)
     assert metrics["samples"] == 500 and metrics["multiclass_brier"] < 0.2
     assert _sample_indices(np.arange(100), 10).shape == (10,)
+    for reason in ("forced-startup", "manual-ui", "scheduled", "auto-learning"):
+        assert promotion_required(True, reason)
+        assert not promotion_required(False, reason)
+    assert promotion_gates()["min_directional_calls"] > 0
     assert promotion_gates()["min_directional_precision"] > 0
     print("model_promotion selftest: PASS")
 
