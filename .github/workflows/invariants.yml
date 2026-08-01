@@ -230,6 +230,13 @@ jobs:
       - name: Causal join guard (a quote may not be priced with a state from its future)
         run: python backend/test_causal_join_guard.py
 
+      # The guard above is a text check on research SQL. This is the structural fix: a ledger
+      # that REFUSES a decision row whose state, quote or feature cutoff postdates the decision.
+      # Replaying the original pairing through it rejects 93.3% of rows - the exact population
+      # that produced the retracted candidate edge.
+      - name: Atomic causal decision ledger (a non-causal row cannot be stored)
+        run: python -m backend.opportunity_ledger.ledger --selftest
+
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
 
