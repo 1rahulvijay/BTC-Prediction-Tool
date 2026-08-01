@@ -35,8 +35,21 @@ PROTOCOL, DECLARED BEFORE RESULTS
     G5  a RANDOM arm matched on trade COUNT, so "it merely trades less" cannot look like skill
 
     python research/settlement_fragility_test.py
+
+RETRACTED - fragility AUC +0.0699/+0.0820/+0.0595 and its expectancy arms
+    This study joined a market STATE to an executable QUOTE without requiring the state to be
+    available at the decision timestamp. In 93.5% of rows the state was observed AFTER the
+    decision (median +8.1s). See research/causal_decision_join.py for the corrected
+    construction and research/research_status.py for the registry.
+
+    It refuses to run without --run-retracted-study.
 """
 from __future__ import annotations
+
+RESEARCH_STATUS = "RETRACTED"
+RETRACTION_REASON = "NONCAUSAL_STATE_QUOTE_JOIN"
+REPLACED_BY = "research/causal_decision_join.py"
+CAPITAL_AUTHORITY = False
 
 import argparse
 import sys
@@ -120,6 +133,8 @@ def arm(estimate, ask, fee, net, days, label):
 
 
 def main() -> int:
+    from research_status import guard
+    guard(Path(__file__).name)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rule", default="LATE_LEADER_30S_V1")
     args = parser.parse_args()

@@ -43,8 +43,21 @@ GATES, DECLARED BEFORE ANY RESULT IS SEEN
         filter that does not beat trading everything has established nothing.
 
     python research/phold_auc_and_expectancy.py
+
+RETRACTED - p_hold 0.97-0.99 bucket, +0.0371/$1 with day LCB +0.0069
+    This study joined a market STATE to an executable QUOTE without requiring the state to be
+    available at the decision timestamp. In 93.5% of rows the state was observed AFTER the
+    decision (median +8.1s). See research/causal_decision_join.py for the corrected
+    construction and research/research_status.py for the registry.
+
+    It refuses to run without --run-retracted-study.
 """
 from __future__ import annotations
+
+RESEARCH_STATUS = "RETRACTED"
+RETRACTION_REASON = "NONCAUSAL_STATE_QUOTE_JOIN"
+REPLACED_BY = "research/causal_decision_join.py"
+CAPITAL_AUTHORITY = False
 
 import argparse
 from pathlib import Path
@@ -134,6 +147,8 @@ def expected_calibration_error(probabilities, labels, bins=10) -> float:
 
 
 def main() -> int:
+    from research_status import guard
+    guard(Path(__file__).name)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rule", default=QUOTE_RULE)
     args = parser.parse_args()

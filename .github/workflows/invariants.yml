@@ -222,6 +222,14 @@ jobs:
       - name: Trainers write manifests (an unmanifested artifact blocks the calibrator)
         run: python backend/test_trainers_write_manifests.py
 
+      # Five studies produced economic numbers from a join where the model state was observed
+      # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
+      # only positive candidate. Every one passed CI, its own preregistered gates, matched
+      # controls and day-block bounds - because no check asked whether the inputs existed when
+      # the decision was made. This is that check.
+      - name: Causal join guard (a quote may not be priced with a state from its future)
+        run: python backend/test_causal_join_guard.py
+
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
 

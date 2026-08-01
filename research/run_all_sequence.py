@@ -59,7 +59,10 @@ FRONTIER = (
 #                              suite invocation would hammer the network and rewrite data/, so
 #                              it is operator-invoked. Listed here so the coverage check can
 #                              tell "deliberately excluded" from "silently forgotten".
-NON_STUDY = {"harness.py", "run_all_sequence.py", "download_binance_l2_data.py"}
+#   research_status.py       - the retraction registry itself. A registry that ran as a
+#                              study would be a study auditing its own status.
+NON_STUDY = {"harness.py", "run_all_sequence.py", "download_binance_l2_data.py",
+             "research_status.py"}
 
 VERDICT = re.compile(r"VERDICT:\s*(.+)")
 OOS_RETURN = re.compile(r"total return %\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)")

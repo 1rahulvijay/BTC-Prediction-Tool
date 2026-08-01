@@ -42,8 +42,21 @@ DECLARED GRID AND GATES
     G5  >= MIN_TRADES selected rounds on test, else NOT MEASURED
 
     python research/policy_threshold_size_test.py
+
+RETRACTED - '0 of 5 beat the pre-declared control'
+    This study joined a market STATE to an executable QUOTE without requiring the state to be
+    available at the decision timestamp. In 93.5% of rows the state was observed AFTER the
+    decision (median +8.1s). See research/causal_decision_join.py for the corrected
+    construction and research/research_status.py for the registry.
+
+    It refuses to run without --run-retracted-study.
 """
 from __future__ import annotations
+
+RESEARCH_STATUS = "RETRACTED"
+RETRACTION_REASON = "NONCAUSAL_STATE_QUOTE_JOIN"
+REPLACED_BY = "research/causal_decision_join.py"
+CAPITAL_AUTHORITY = False
 
 import argparse
 import sys
@@ -105,6 +118,8 @@ def choose_policy(probability, ask, fee, net, days):
 
 
 def main() -> int:
+    from research_status import guard
+    guard(Path(__file__).name)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rule", default="LATE_LEADER_30S_V1")
     args = parser.parse_args()
