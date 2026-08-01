@@ -49,6 +49,7 @@ FRONTIER = (
     "phold_calibrated_fair_value.py",
     "meta_label_head_test.py",
     "settlement_fragility_test.py",
+    "policy_threshold_size_test.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour

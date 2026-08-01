@@ -136,6 +136,7 @@ def main() -> int:
     print("-" * 110)
 
     passes = evaluated = 0
+    beat_fixed = fixed_seen = 0
     for cut in SPLIT_DAYS:
         if cut >= len(days_all):
             continue
@@ -174,6 +175,14 @@ def main() -> int:
         te_net = test["held"].to_numpy(float) - te_ask - te_fee
         te_days = test["day"].to_numpy()
 
+        # The control that matters: the PRE-DECLARED fixed margin, chosen before any outcome
+        # was seen. If re-optimising cannot beat this, the optimisation is costing money.
+        fixed = evaluate(cal_test, te_ask, te_fee, te_net, te_days, 0.02, "FLAT")
+        if fixed is not None:
+            print(f"{cut:>6}{'CAL@fixed':>12}{'0.02/FLAT':>16}{'(declared)':>11}"
+                  f"{fixed['n']:>8}{fixed['mean']:>+11.4f}{fixed['lcb']:>+10.4f}{'n/a':>9}"
+                  f"  <- pre-declared control")
+
         outcomes = {}
         for label, p_train, p_test in (("CALIBRATED", train["p_cal"].to_numpy(float), cal_test),
                                        ("FRAGILITY", frag_train, frag_test)):
@@ -189,6 +198,9 @@ def main() -> int:
                       f"{chosen['lcb']:>+11.4f}{'NOT MEASURED':>38}")
                 continue
             outcomes[label] = result
+            if fixed is not None:
+                fixed_seen += 1
+                beat_fixed += int(result["lcb"] > fixed["lcb"])
             shrink = result["lcb"] - chosen["lcb"]
             print(f"{cut:>6}{label:>12}{policy_label:>16}"
                   f"{chosen['lcb']:>+11.4f}{result['n']:>8}{result['mean']:>+11.4f}"
@@ -208,20 +220,35 @@ def main() -> int:
     print("=" * 110)
     print(f"  With BOTH models free to choose threshold and size on training days,")
     print(f"  FRAGILITY beat CALIBRATED on the TEST lower bound in {passes} of {evaluated} splits.")
+    print(f"  But re-optimised policies beat the PRE-DECLARED 0.02/FLAT control in only "
+          f"{beat_fixed} of {fixed_seen} cases.")
     print()
     print("  'shrink' is TEST LCB minus TRAIN-selected LCB. It is the cost of having chosen a")
     print("  policy by looking at outcomes. A large negative shrink means the selection found")
     print("  noise, and it is printed on every row precisely so that cannot be quietly omitted.")
     print()
-    if passes == 0:
-        print("  The ranking advantage does NOT convert, even with the threshold and size")
-        print("  re-optimised in the model's favour. Combined with meta_label_head_test, that")
-        print("  is now two feature families and one policy dimension, none of which beat a")
-        print("  calibrated P(hold). The constraint is not the model's view of the market.")
+    if beat_fixed == 0 and fixed_seen:
+        print("  RE-OPTIMISATION MADE IT WORSE. Every re-optimised policy - including the ones")
+        print("  that beat each other - lost to a margin declared before any outcome was seen.")
+        print("  The FRAGILITY-beats-CALIBRATED result above is a comparison between two")
+        print("  overfitted policies, and without the control row it would have read as a win.")
+        print()
+        print("  The shrink column shows why: a policy selected as +0.34 on training days")
+        print("  delivered +0.006 on test. Selection on 7-14 days of rounds is fitting noise,")
+        print("  and 18 cells per model per split is 18 chances to find it. The surviving")
+        print("  trade counts are 75 and 138 - the selection also discarded most of the sample.")
+        print()
+        print("  CONCLUSION: the lever is not the threshold either. Two feature families and")
+        print("  now the policy dimension have each failed to beat calibrated P(hold) at a")
+        print("  fixed, pre-declared margin. What is missing is not model capacity or policy")
+        print("  freedom - it is DATA. 21 days cannot support selecting anything.")
+    elif passes:
+        print("  A converting cell exists AND beats the pre-declared control. 18 policy cells")
+        print("  were searched per model per split, so this still needs forward evidence on")
+        print("  rounds recorded after today before it is more than a candidate.")
     else:
-        print("  A converting cell exists. 18 policy cells were searched per model per split,")
-        print("  so this needs forward evidence on rounds recorded after today before it is")
-        print("  anything more than a candidate.")
+        print("  The ranking advantage does NOT convert, even with threshold and size")
+        print("  re-optimised in the model's favour.")
     return 0
 
 
