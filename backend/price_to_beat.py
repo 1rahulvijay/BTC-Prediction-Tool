@@ -547,6 +547,82 @@ def _pm_calibration(horizon: int):
     return calibration
 
 
+_PM_LEDGER = None
+_PM_LEDGER_FAILED = False
+
+
+def _pm_ledger():
+    """The atomic causal decision ledger, or None. Never breaks the round loop."""
+    global _PM_LEDGER, _PM_LEDGER_FAILED
+    if _PM_LEDGER is not None or _PM_LEDGER_FAILED:
+        return _PM_LEDGER
+    try:
+        from opportunity_ledger.ledger import OpportunityLedger
+        _PM_LEDGER = OpportunityLedger(
+            os.path.join(os.environ.get("BTC_DATA_DIR",
+                                        os.path.join(os.path.dirname(
+                                            os.path.dirname(os.path.abspath(__file__))), "data")),
+                         "opportunity_ledger.duckdb"))
+    except Exception as exc:
+        _PM_LEDGER_FAILED = True
+        logger.warning(f"opportunity ledger unavailable, decisions will not be recorded: {exc}")
+    return _PM_LEDGER
+
+
+def _pm_ledger_record(round_data, now_ms, horizon, quote, action, reason, probability):
+    """One immutable decision row, with the timestamps that actually decided it.
+
+    decision_ts       = now, the instant this branch ran
+    quote_recv_ts     = when the bridge observed the price (from the quote itself)
+    state_snapshot_ts = when round_state was last SCORED, not when it was read
+    feature_cutoff_ts = the same instant - no feature here postdates the state
+
+    A NonCausalDecision raised from here is a REAL FINDING about the live path: it means this
+    code cannot prove its own causality. It is logged at WARNING and never silently dropped,
+    because that silence is exactly how the original defect survived five studies.
+    """
+    ledger = _pm_ledger()
+    if ledger is None:
+        return
+    # Imported BEFORE the try: naming it only inside would make `except NonCausalDecision`
+    # raise NameError if the import itself failed - an error handler that cannot run.
+    try:
+        from opportunity_ledger.ledger import Action, Decision, NonCausalDecision
+    except Exception as exc:
+        logger.debug(f"opportunity ledger types unavailable: {exc}")
+        return
+    try:
+        state_ms = int(round_data.get("_round_state_score_ms") or 0) or None
+        quote_ms = int(quote.get("quote_ts_ms") or 0) if quote else 0
+        record = Decision(
+            round_id=str(round_data.get("id")),
+            strategy_id="PM_CALIBRATED_FAIR_VALUE_V1",
+            market_id=str(round_data.get("condition_id") or round_data.get("id")),
+            venue="polymarket",
+            decision_ts=int(now_ms),
+            quote_exchange_ts=None,
+            quote_recv_ts=quote_ms or None,
+            # The EXACT state used, identified rather than reconstructed later by an as-of join.
+            state_snapshot_id=(f"{round_data.get('id')}:{state_ms}" if state_ms else None),
+            state_snapshot_ts=state_ms,
+            feature_cutoff_ts=state_ms,
+            side=(quote or {}).get("side") if action == "ENTER" else None,
+            ask=(quote or {}).get("ask") if action == "ENTER" else None,
+            bid=(quote or {}).get("bid") if action == "ENTER" else None,
+            fee=(quote or {}).get("fee") if action == "ENTER" else None,
+            probability=probability if action == "ENTER" else None,
+            model_artifact_hash=None, calibrator_hash=None, policy_hash=None,
+            feature_values_hash=None,
+            action=Action(action), reason=str(reason)[:400],
+            risk_state="PAPER_ONLY")
+        ledger.record(record)
+    except NonCausalDecision as exc:
+        logger.warning(f"LEDGER REFUSED a live decision - the serving path cannot prove its "
+                       f"own causality: {exc}")
+    except Exception as exc:
+        logger.debug(f"opportunity ledger write skipped: {exc}")
+
+
 def _leader_quote(round_data, now_ms):
     """BOTH-sides view of the fresh bridge quote, picking the MARKET's leader (higher bid) --
     the side LATE_LEADER_30S_V1 buys. Same fail-closed anchor/age checks as _market_quote_for_round
@@ -571,7 +647,11 @@ def _leader_quote(round_data, now_ms):
         fee = round(fee_rate * ask * (1.0 - ask), 5) if quote.get("fees_enabled") is not False else 0.0
         return {"side": side, "ask": ask, "bid": bid, "fee": fee,
                 "spread": round(ask - bid, 4),
-                "depth": float(quote.get(f"{pfx}_top_ask_size") or 0.0)}
+                "depth": float(quote.get(f"{pfx}_top_ask_size") or 0.0),
+                # WHEN this price was observed. Without it a decision row cannot prove the
+                # quote preceded the decision, which is the defect that invalidated five
+                # studies. The bridge stamps `ts` in SECONDS; the ledger works in ms.
+                "quote_ts_ms": int(float(quote.get("ts") or 0.0) * 1000.0)}
     except Exception:
         return None
 
@@ -1989,15 +2069,31 @@ class PriceToBeatTracker:
                     _cal = _pm_calibration(_h)
                     _lq = _leader_quote(rnd, now_ms)
                     _raw_hold = (rnd.get("round_state") or {}).get("p_leader_holds")
+                    # Every branch below writes BOTH the paper row and one atomic causal ledger
+                    # row, in the same block that made the decision, with the timestamps that
+                    # decided it. No research script should ever again reconstruct which state
+                    # belonged to which quote - that reconstruction is what invalidated five
+                    # studies, with the state postdating the decision in 93.5% of rows.
+                    #
+                    # UNAVAILABLE and NO_QUOTE are separate ledger actions, never merged into
+                    # WAIT: "declined" and "could not evaluate" produce the same empty P&L and
+                    # mean opposite things.
                     if _cal is None:
                         database.log_rule_paper_trade(
                             rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
                             "", 0.0, 0.0, 0.0, 0.0, 0.0, "CAL_UNAVAILABLE")
+                        _pm_ledger_record(rnd, int(now_ms), _h, _lq, "UNAVAILABLE",
+                                          "no deployable P(hold) calibrator "
+                                          "(SOURCE_MODEL_REQUIRES_RETRAINING)", None)
                     elif _lq is None or _raw_hold is None:
                         database.log_rule_paper_trade(
                             rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
                             "", 0.0, 0.0, 0.0, 0.0, 0.0,
                             "NO_QUOTE" if _lq is None else "NO_PHOLD")
+                        _pm_ledger_record(rnd, int(now_ms), _h, _lq,
+                                          "NO_QUOTE" if _lq is None else "BLOCKED",
+                                          "no executable quote" if _lq is None
+                                          else "round state carries no p_leader_holds", None)
                     else:
                         _d = _pm_fv.decide(_pm_fv.Quote(
                             round_id=str(rnd["id"]), timestamp_ms=int(now_ms), horizon=_h,
@@ -2009,6 +2105,10 @@ class PriceToBeatTracker:
                             _lq["side"] if _d.action is _pm_fv.Action.ENTER else "",
                             _lq["ask"], _lq["bid"], _lq["fee"], _lq["spread"], _lq["depth"],
                             _d.action.value, btc_entry=rnd.get("current_price"))
+                        _pm_ledger_record(
+                            rnd, int(now_ms), _h, _lq,
+                            "ENTER" if _d.action is _pm_fv.Action.ENTER else "WAIT",
+                            _d.reason, _d.p_cal)
                 except _pm_fv.CalibrationRefused as _cre:
                     # The leakage guard fired. Never downgrade this to a trade.
                     logger.warning(f"PM_CALIBRATED_FAIR_VALUE refused (leakage guard): {_cre}")
