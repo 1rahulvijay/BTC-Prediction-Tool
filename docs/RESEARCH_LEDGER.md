@@ -1,7 +1,7 @@
 # Research Ledger — every idea: tested, retracted, untested, or blocked
 
-`2026-08-01`. The canonical answer to "what do we actually know?" Machine-readable status lives in
-`research/research_status.py`; this is the reader's version.
+`2026-08-02`. The canonical answer to "what do we actually know?" Machine-readable status lives
+in `research/research_status.py`; this is the reader's version.
 
 **Current evidence position:**
 
@@ -10,7 +10,17 @@ Promotable economic strategies : 0
 Valid measured candidates      : 0
 Real-money authority           : 0
 Correct mode                   : shadow / paper
+Lanes with untested headroom   : 0        <- every lane now has a measured answer
+Binding constraint             : forward data. FORWARD_UNTOUCHED = 0 rows.
 ```
+
+**The one-paragraph summary.** Ceilings are real and large; nothing captures any of them. A
+perfectly-timed Polymarket exit earns +0.1005/share and a perfect Binance 120m trade earns
++30 bps, but across every lane tested **no fixed rule beats standing aside**, and two
+pre-declared heads plus an opportunity/direction stack all failed to convert. The recurring
+mechanism is specific: *sign* is predictable (AUC 0.87) and *magnitude* is not (AUC 0.58), and
+value needs magnitude. Separately, the market's own quoted price beats both model vintages on
+every probability metric — measured twice, by two independent studies.
 
 ---
 
@@ -81,6 +91,14 @@ They **refuse to run** without `--run-retracted-study`, and print why.
 | paper strategies had a 6 bps target vs 12 bps round trip | valid, **fixed** |
 | 21 of 31 trainers wrote artifacts with no integrity manifest | valid; writer gate fixed, full serving provenance still awaits retrain |
 | pytest never ran in CI (86 tests unexercised) | valid, **fixed** |
+| **the market's ask beats both model vintages** on Brier, log loss, ECE and AUC | valid — §4.5, corroborated independently by §9 |
+| **no fixed rule beats WAIT** on either venue, at any horizon tested | valid — §4.6, §4.7, §4.10 |
+| **exit-timing ceiling is real**: +0.1005/share Polymarket, +19/+30 bps Binance 60/120m | valid — §4.6, §4.7 |
+| **Binance 15m is dead on arithmetic**: ceiling median −2.63 bps vs a 12 bps round trip | valid — §4.7 |
+| **sign is predictable, magnitude is not** (AUC 0.8731 vs 0.5831 on the same target) | valid — §4.9 |
+| direction AUC **below 0.5** at 60m and 120m; conditioning on high opportunity does not lift it | valid — §4.10 |
+| **0 of 25 artifacts are loadable by serving** | valid — §4.1 |
+| Polymarket quote trajectories exist at 144–447 snapshots/round | valid — §4.2 |
 
 `causal_decision_join.py` is classified **CAUSAL_BEST_EFFORT_HISTORICAL**, not gold standard:
 `rule_paper_trades` has one generic `ts` and cannot prove it is exactly when the stored ask was
@@ -90,13 +108,15 @@ observed.
 
 Not disproven. Listed so they are not mistaken for closed.
 
+**Answered since this list was written** — do not re-open without new data:
+exit-timing value (§4.6, §4.8, §4.9), MFE/MAE quantiles as ceilings (§4.7),
+last-anchor-crossing and flip persistence (§4.4), conditional direction (§4.10).
+
 | idea | why untested |
 |---|---|
 | alpha half-life / survival of an impulse | no forward dataset |
-| last-anchor-crossing distribution | genuinely new; needs causal ledger |
-| Polymarket probability excursion (MFPE/MAPE) | **unblocked** — trajectories exist; see §4.2 |
-| mispricing half-life | same |
-| maker fill survival, queue position, markout | needs sequenced L2 |
+| mispricing half-life | needs the quote path joined to a decision, i.e. forward ledger rows |
+| maker fill survival, queue position, markout | needs sequenced Binance L2; Polymarket L2 exists |
 | liquidity-vacuum / price-response kernel | needs L2 |
 | flow-origin classification | needs cross-venue synchronized feeds |
 | multi-expiry outcome geometry | needs simultaneous market capture |
@@ -376,6 +396,12 @@ rather than a worse model.
 it does support: **do not promote the newer artifact**, and treat the market price as the
 incumbent any Polymarket model must beat.
 
+**Independently corroborated.** The Phase 5B campaign (§9), a separate codebase run on a
+different construction, measured model P(hold) Brier **0.1618** against the market's **0.1410**.
+This study measured **0.1604** against **0.1453**. Two studies that share no code agree that the
+market's quoted price is the better probability — which is why §6.3 names the market-prior
+residual as the only modelling direction the evidence supports.
+
 ### 4.6 Polymarket action-value engine - `2026-08-02`
 
 `backend/polymarket_policy/` prices every action from the **recorded ladder**: you buy at the
@@ -626,30 +652,68 @@ Each is negative-tested: it has been shown to *catch* a planted offender, not me
 carried matched controls and day-block lower bounds — and was wrong anyway, because no check asked
 whether the inputs existed when the decision was made.
 
-## 6. Plan
+## 6. Plan — rewritten `2026-08-02` against what is now measured
 
-**Phase 0 — restore the substrate** *(nothing below it is worth doing first)*
-1. Restart recorders; manifest the gap since 2026-07-29
-2. Full artifact retrain — trainers now write manifests
-3. Verify all manifests; refit calibrators from verified sources
-4. Confirm `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` starts logging real decisions instead of `CAL_UNAVAILABLE`
+**The situation in one line:** every research lane the current data can answer has been
+answered, all negatively. The binding constraint is no longer ideas — it is forward data.
 
-**Phase 1 — atomic causal decision ledger: implemented for the fair-value forward benchmark.**
-One immutable row carries exact local quote receive time, venue timestamp, persisted state
-snapshot id, context payload, feature/artifact/calibrator/policy hashes, action, and distinct
-`WAIT` / `UNAVAILABLE` / `NO_QUOTE` / `BLOCKED` reasons. ENTER and WAIT are refused if their
-context is missing or its hash does not match. Automatic official-outcome append and coverage of
-every other strategy remain open before this becomes the platform-wide promotion authority.
+### 6.1 What is actually blocking, in order
 
-**Phase 2 — freeze one benchmark and collect.** Calibrated `p_hold`, `> ask + fee + 0.02`, fixed
-small notional, hold to settlement, every opportunity logged including `WAIT`. No retuning during
-the window.
+| # | blocker | who unblocks it | what it gates |
+|---|---|---|---|
+| 1 | **round recorders dark since `2026-07-25 15:00`** | operator: `start.bat` | *everything*. `FORWARD_UNTOUCHED` = 0 rows, so nothing can be promoted, ever, until this changes |
+| 2 | **0 of 25 artifacts loadable** | a retrain via `train_heads.py` | every model-backed strategy is `UNAVAILABLE`, not unprofitable |
+| 3 | 8 forward weeks + 1,000 resolved rounds | time, once (1) is fixed | the promotion gate |
 
-**Phase 3 — only then** evaluate challengers, with separate train / calibration / policy-selection
-/ untouched-test partitions.
+Nothing below matters until (1). A study run today spends evaluation data on a window that has
+already answered twice, which is how the retracted results were produced.
 
-**Data gate before Phase 3:** ≥8 uninterrupted forward weeks, ≥1,000 independently resolved
-rounds, high causal-join coverage, multiple regimes, no unresolved recorder gaps.
+### 6.2 The retrain must write PROVENANCE manifests
+
+Measured (§4.1): the integrity sidecar satisfies the manifest gate and does **not** unblock
+serving. `backend/train_heads.py` is the only place that writes provenance correctly, and it
+does so in the *orchestrator*. **Launch the retrain through `train_heads.py`** — running
+trainers individually produces artifacts that still cannot be served, and the run will look
+successful.
+
+Acceptance: `python backend/test_artifact_serviceability.py` reports a serviceable count above
+zero. It ratchets, so the number can rise and never silently fall.
+
+### 6.3 What to collect, and what NOT to build
+
+Once recorders are up, the ledger already records every decision causally. Collect. Do not
+model.
+
+**Do not build, and why — each is closed by measurement, not opinion:**
+
+| do not build | closed by |
+|---|---|
+| another direction classifier | §4.5, §4.10 — direction is below 0.5 at 60/120m and the market beats every vintage |
+| a Binance 15m strategy | §4.7 — the ceiling's median is −2.63 bps against a 12 bps round trip |
+| a third exit rule on the July window | §4.8, §4.9 — two pre-declared rules already failed there |
+| a magnitude regressor on these features | §4.9 — rank correlation with realised value is −0.02 |
+| complete-set lock scanning as a strategy | §4.6 — best action on 3 of 50,272 checkpoints |
+
+**Worth building once forward rows exist**, in this order:
+
+1. **Automatic outcome append** to the ledger — settlement, fills, markouts. Without it the
+   forward rows are decisions with no results attached.
+2. **Ledger coverage for every strategy**, not just the fair-value benchmark.
+3. **The market-prior residual**, framed as `logit(p) = logit(ask) + f(x)`. This is the only
+   modelling direction the evidence supports: the market is the incumbent and a model must
+   predict its *error*, not the outcome.
+4. Re-run the exit-value question on forward data. The ceiling is real; the failure was
+   conversion on a spent window.
+
+### 6.4 The gate that has not moved
+
+```
+>=8 uninterrupted forward weeks     >=1,000 independently resolved rounds
+positive day/week lower bound       positive under 2x cost stress
+beats a matched-count control       beats the market baseline
+no timestamp violations             no artifact-identity failures
+no single day >35% of profit        FORWARD_UNTOUCHED evidence only
+```
 
 ## 7. Capital
 
@@ -660,16 +724,31 @@ $500 canary   : not yet
 $0 shadow     : correct mode
 ```
 
-The next milestone is not profit. It is **one forward economic result that never required a
-retrospective state-to-quote join.**
+The next milestone is not profit, and it is not a model. It is **one forward economic result
+from `FORWARD_UNTOUCHED` rows** — a class that currently contains zero observations and will
+contain zero until the recorders restart.
+
+Everything measured on the existing 21-day window is elimination-grade by construction. It has
+eliminated a great deal, which is worth something: the map is now specific rather than vague.
+It cannot promote anything, and no amount of further analysis on it will.
 
 ## 8. Reproduce
 
 ```bash
-python research/research_status.py
-python research/causal_decision_join.py
-python backend/test_causal_join_guard.py
-python backend/run_ci_locally.py
+python backend/run_ci_locally.py                              # 96 gating steps, the only real CI
+python research/run_all_sequence.py --selftest                # every study is covered
+python backend/test_artifact_serviceability.py                # can serving load anything yet?
+python backend/audit/freeze_oracle_release.py --verify        # has the frozen champion drifted?
+python backend/audit/build_oracle_data_manifest.py            # what did the recorders capture?
+```
+
+Rebuild the research substrate, in dependency order:
+
+```bash
+python backend/research_data/checkpoint_builder.py            # 56,467 causal checkpoints
+python backend/research_data/path_label_builder.py            # 32 labels per checkpoint
+python backend/research_data/action_value_builder.py          # Polymarket action ceilings
+python backend/research_data/binance_action_value_builder.py  # Binance action ceilings
 ```
 
 ## 9. Phase 5B standalone campaign - `2026-08-02`
