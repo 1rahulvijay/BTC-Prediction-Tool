@@ -98,7 +98,7 @@ from task_supervisor import (
     SUPERVISOR,
 )
 from feed_writer import FEED_WRITER
-from model_revision_ledger import ModelRevisionLedger
+from model_revision_ledger import ModelRevisionLedger, forecast_identity
 import database
 
 logging.basicConfig(
@@ -165,19 +165,7 @@ def _revision_rows(predictions: list[dict], current_price: float,
         # NEUTRAL because costs/feed/risk blocked a directional forecast; recording that as a
         # model NEUTRAL would corrupt stability and calibration research. Both states remain in
         # model_outputs so forecast quality and decision quality can be evaluated separately.
-        model_prediction = str(
-            prediction.get("preServerDirection", prediction.get("direction", "NEUTRAL"))
-        ).upper()
-        if model_prediction in ("UP", "DOWN"):
-            calibrated = prediction.get("calibratedConfidence")
-            calibration_source = (
-                "live_isotonic" if calibrated is not None else "ensemble_confidence"
-            )
-            if calibrated is None:
-                calibrated = prediction.get("confidence", 0.0)
-        else:
-            calibrated = prediction.get("probNeutral", prediction.get("confidence", 0.0))
-            calibration_source = "ensemble_neutral_probability"
+        model_prediction, calibrated, calibration_source = forecast_identity(prediction)
         rows.append({
             "release_id": str(
                 prediction.get("model_bundle_id") or f"unversioned:{MODEL_ARCH_VERSION}"

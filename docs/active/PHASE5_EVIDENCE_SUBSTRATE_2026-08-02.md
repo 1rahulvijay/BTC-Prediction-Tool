@@ -171,7 +171,7 @@ Focused validation at implementation:
 | Check | Result |
 |---|---:|
 | Python compile for changed modules | PASS |
-| Model-revision ledger self-test | 9 checks passed |
+| Model-revision ledger self-test | 11 checks passed |
 | Candidate-evidence builder self-test | 7 checks passed |
 | Exact float32 state round trip | PASS |
 | Changed duplicate revision rejection | PASS |

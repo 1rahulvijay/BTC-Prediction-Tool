@@ -58,6 +58,24 @@ def _finite_probability(value: Any, name: str) -> float:
     return result
 
 
+def forecast_identity(prediction: dict[str, Any]) -> tuple[str, float, str]:
+    """Separate the model forecast from a later server-side no-trade decision."""
+    direction = str(
+        prediction.get("preServerDirection", prediction.get("direction", "NEUTRAL"))
+    ).upper()
+    if direction not in VALID_DIRECTIONS:
+        raise RevisionRefusal(f"invalid pre-server prediction {direction!r}")
+    if direction in ("UP", "DOWN"):
+        calibrated = prediction.get("calibratedConfidence")
+        source = "live_isotonic" if calibrated is not None else "ensemble_confidence"
+        if calibrated is None:
+            calibrated = prediction.get("confidence", 0.0)
+    else:
+        calibrated = prediction.get("probNeutral", prediction.get("confidence", 0.0))
+        source = "ensemble_neutral_probability"
+    return direction, _finite_probability(calibrated, "calibrated_probability"), source
+
+
 class ModelRevisionLedger:
     """Thread-safe append-only DuckDB ledger for model revisions and outcomes."""
 
@@ -497,6 +515,16 @@ def _selftest() -> int:
 
         check(ledger.coverage()["stored_causal_violations"] == 0,
               "the stored ledger has no causal violations")
+
+        gated = {
+            "preServerDirection": "UP", "finalDirection": "NEUTRAL",
+            "calibratedConfidence": 0.57, "confidence": 0.60, "probNeutral": 0.10,
+        }
+        check(forecast_identity(gated) == ("UP", 0.57, "live_isotonic"),
+              "a server veto does not rewrite the underlying model forecast as NEUTRAL")
+        check(forecast_identity({"preServerDirection": "NEUTRAL", "probNeutral": 0.44})
+              == ("NEUTRAL", 0.44, "ensemble_neutral_probability"),
+              "a genuine model NEUTRAL carries its own class probability")
 
     print(f"\nMODEL REVISION LEDGER SELFTEST: PASS ({checks} checks)")
     return 0
