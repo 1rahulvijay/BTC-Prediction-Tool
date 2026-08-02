@@ -21,11 +21,12 @@ trained live ensemble first emits predictions.
 Every completed prediction cycle stores:
 
 - release ID, model ID, horizon and prediction timestamp;
-- final UP/DOWN/NEUTRAL prediction and calibrated-confidence source;
+- pre-server UP/DOWN/NEUTRAL model forecast and calibrated-confidence source;
 - UP, DOWN and NEUTRAL probability vector;
 - previous revision ID and previous prediction for the same release/model/horizon;
 - exact Binance reference quote used by the cycle;
-- aggregate output, final gates, skip reasons, model weights and every base-model vote;
+- aggregate output, distinct final trade-gated action, skip reasons, model weights and every
+  base-model vote;
 - every base model's DOWN/NEUTRAL/UP probability vector;
 - one shared exact model-input snapshot for all horizons in the cycle.
 

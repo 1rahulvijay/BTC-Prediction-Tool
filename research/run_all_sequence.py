@@ -54,6 +54,7 @@ FRONTIER = (
     "model_vintage_comparison_v1.py",
     "hold_vs_exit_head_v1.py",
     "ev_magnitude_rule_v1.py",
+    "binance_opportunity_head_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour

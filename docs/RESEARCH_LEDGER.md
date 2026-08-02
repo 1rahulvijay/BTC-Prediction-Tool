@@ -558,6 +558,52 @@ you can predict *whether* to exit and not *how much it is worth*, and value need
 would be multiple testing on data that has already answered twice. The next legitimate move is
 forward data, not another rule — and there are still ZERO `FORWARD_UNTOUCHED` rows.
 
+### 4.10 Binance 60/120m opportunity head - `2026-08-02`  **FAILS, last lane closed**
+
+`research/binance_opportunity_head_v1.py` tests the blueprint's one remaining claim directly:
+*"a 51% unconditional model may have better precision inside a small, high-opportunity
+subset."* Two stages — an opportunity head `P(|return over H| > round trip)`, then direction
+measured **overall and inside the top opportunity decile**.
+
+All 13 features were verified backward-looking before use: each correlates more strongly with
+the *past* absolute return than the future one. Training windows overlap; **evaluation windows
+are disjoint** with a one-horizon purge gap at each split boundary.
+
+| | 60m | 120m |
+|---|---:|---:|
+| opportunity head AUC | **0.6462** | **0.6405** |
+| opportunity ECE | 0.0228 | 0.0345 |
+| direction AUC, overall | 0.4853 | 0.4910 |
+| direction AUC, top decile | 0.5632 ± 0.0429 (n=178) | 0.4752 ± 0.0416 (n=193) |
+| lift vs 2 s.e. | +0.0779 vs 0.0859 | −0.0158 vs 0.0833 |
+
+**Magnitude is predictable. Direction is not — and conditioning does not rescue it.** The
+opportunity head genuinely works (AUC 0.65, well calibrated). Direction sits *below* 0.5 at both
+horizons, and the top-decile lift falls short of its own two standard errors at 60m and is
+negative at 120m. The hypothesis is not supported.
+
+| policy | 60m mean bps | 60m LCB | 120m mean bps | 120m LCB |
+|---|---:|---:|---:|---:|
+| WAIT | 0.00 | 0.00 | 0.00 | 0.00 |
+| ALWAYS_LONG | −12.88 | −14.44 | −13.80 | −16.90 |
+| ALWAYS_SHORT | −11.12 | −12.60 | −10.20 | −13.21 |
+| HEAD | −4.59 | −6.35 | −9.99 | −13.03 |
+| RANDOM_MATCHED | −4.24 | −5.39 | −10.70 | −13.84 |
+| *PERFECT (hindsight)* | *+19.45* | *+16.81* | *+30.23* | *+26.16* |
+
+The head is indistinguishable from **random at matched trade count** at both horizons, and WAIT
+beats everything. The hindsight ceilings (+19.45 / +30.23) independently reproduce the action
+engine's earlier measurement (+18.46 / +31.37) from a separate implementation — a useful check
+that the two agree.
+
+**A verdict this file first got wrong.** It originally printed "conditioning LIFTS direction"
+for the 60m result, because it compared point estimates with a fixed +0.02 margin and ignored
+that n=178. Adding a Hanley-McNeil standard error flips it to "does NOT lift" — the honest
+answer, and stricter than the one it replaced.
+
+**This closes the last lane with untested headroom.** Every ceiling measured here is real and
+large; nothing built so far captures any of it.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |

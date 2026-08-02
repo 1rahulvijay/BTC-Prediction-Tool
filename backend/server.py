@@ -161,10 +161,23 @@ def _revision_rows(predictions: list[dict], current_price: float,
     quote = _revision_market_quote(current_price, order_flow_state, prediction_ts)
     rows = []
     for prediction in predictions:
-        calibrated = prediction.get("calibratedConfidence")
-        calibration_source = "live_isotonic" if calibrated is not None else "ensemble_confidence"
-        if calibrated is None:
-            calibrated = prediction.get("confidence", 0.0)
+        # A model revision is the forecast BEFORE server-side trade vetoes. FinalDirection may be
+        # NEUTRAL because costs/feed/risk blocked a directional forecast; recording that as a
+        # model NEUTRAL would corrupt stability and calibration research. Both states remain in
+        # model_outputs so forecast quality and decision quality can be evaluated separately.
+        model_prediction = str(
+            prediction.get("preServerDirection", prediction.get("direction", "NEUTRAL"))
+        ).upper()
+        if model_prediction in ("UP", "DOWN"):
+            calibrated = prediction.get("calibratedConfidence")
+            calibration_source = (
+                "live_isotonic" if calibrated is not None else "ensemble_confidence"
+            )
+            if calibrated is None:
+                calibrated = prediction.get("confidence", 0.0)
+        else:
+            calibrated = prediction.get("probNeutral", prediction.get("confidence", 0.0))
+            calibration_source = "ensemble_neutral_probability"
         rows.append({
             "release_id": str(
                 prediction.get("model_bundle_id") or f"unversioned:{MODEL_ARCH_VERSION}"
@@ -172,7 +185,7 @@ def _revision_rows(predictions: list[dict], current_price: float,
             "model_id": "main_ensemble",
             "horizon_min": int(prediction.get("horizon") or 0),
             "prediction_ts": int(prediction_ts),
-            "prediction": str(prediction.get("finalDirection", prediction.get("direction", "NEUTRAL"))),
+            "prediction": model_prediction,
             "calibrated_probability": float(calibrated or 0.0),
             "probability_up": float(prediction.get("probUp", 0.0) or 0.0),
             "probability_down": float(prediction.get("probDown", 0.0) or 0.0),

@@ -66,6 +66,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
+    """Identity includes DuckDB's WAL; hashing only the main file can omit current rows."""
+    files = [path, Path(f"{path}.wal")]
+    return tuple(
+        (candidate.name, candidate.stat().st_size, candidate.stat().st_mtime_ns)
+        for candidate in files if candidate.exists()
+    )
+
+
 def _finite(value: Any) -> float | None:
     try:
         result = float(value)
@@ -241,7 +250,7 @@ def build_candidate_evidence(source: Path, output: Path, *, require_rows: bool =
 
     if not source.is_file():
         raise FileNotFoundError(f"atomic opportunity ledger not found: {source}")
-    before = source.stat()
+    before = _source_signature(source)
     con = duckdb.connect(str(source), read_only=True)
     try:
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
@@ -257,8 +266,8 @@ def build_candidate_evidence(source: Path, output: Path, *, require_rows: bool =
         ).fetchdf()
     finally:
         con.close()
-    after = source.stat()
-    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+    after = _source_signature(source)
+    if before != after:
         raise RuntimeError("source ledger changed during export; stop/retry instead of mixing snapshots")
     if decisions.empty and require_rows:
         raise RuntimeError(
@@ -291,12 +300,18 @@ def build_candidate_evidence(source: Path, output: Path, *, require_rows: bool =
     finally:
         if temp_output.exists():
             temp_output.unlink()
+    source_files = {
+        candidate.name: {"size": candidate.stat().st_size, "sha256": _sha256(candidate)}
+        for candidate in [source, Path(f"{source}.wal")] if candidate.exists()
+    }
+    if _source_signature(source) != after:
+        raise RuntimeError("source ledger changed while its manifest hashes were computed")
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "built_ts": int(time.time() * 1000),
         "source": str(source.resolve()),
-        "source_sha256": _sha256(source),
-        "source_size": after.st_size,
+        "source_files": source_files,
+        "source_identity_sha256": hashlib.sha256(_json(source_files).encode("utf-8")).hexdigest(),
         "output": str(output.resolve()),
         "output_sha256": _sha256(output),
         "rows": int(len(frame)),
