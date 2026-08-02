@@ -11,3 +11,7 @@ microstructure/
 
 # Research scratch data outputs (scripts and harness ARE tracked)
 research/sequence_results.json
+
+# Frozen release artifact BYTES. The sha256 in releases/*/model_manifest.json is the
+# record that belongs in git; 148 MB of pickles is not.
+releases/*/artifacts/

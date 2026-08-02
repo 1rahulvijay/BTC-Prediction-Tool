@@ -94,7 +94,7 @@ Not disproven. Listed so they are not mistaken for closed.
 |---|---|
 | alpha half-life / survival of an impulse | no forward dataset |
 | last-anchor-crossing distribution | genuinely new; needs causal ledger |
-| Polymarket probability excursion (MFPE/MAPE) | needs quote *trajectories* — 1.00 rows/round today |
+| Polymarket probability excursion (MFPE/MAPE) | **unblocked** — trajectories exist; see §4.2 |
 | mispricing half-life | same |
 | maker fill survival, queue position, markout | needs sequenced L2 |
 | liquidity-vacuum / price-response kernel | needs L2 |
@@ -116,9 +116,9 @@ excursion shifts. A state-conditioned hazard model is a different question.
 | item | blocker |
 |---|---|
 | `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` activation | **0 of 25 artifacts are loadable by serving** — §4.1 |
-| all forward evidence | recorders down since `2026-07-29 19:18` |
+| all forward evidence | recorders down; **not all at once** - see §4.2 |
 | queue/maker research | no sequenced L2 |
-| Polymarket dynamic exit | quote trajectories: 1.00 rows/round, 2 markets |
+| ~~Polymarket dynamic exit~~ | **NOT BLOCKED** - the 1.00 rows/round figure was wrong; see §4.2 |
 | options ↔ Polymarket lead-lag | archives 27 days apart |
 | hosted CI | billing; local `run_ci_locally.py` is the only gate |
 
@@ -160,6 +160,57 @@ Consequences, none of which were visible before measuring:
 `backend/test_artifact_serviceability.py` now measures this on every CI run and ratchets: the
 count may rise, never silently fall.
 
+### 4.2 The data was never measured - `2026-08-02`
+
+`backend/audit/build_oracle_data_manifest.py` profiles every table in every store: span, rows,
+distinct days, hours with **zero** rows inside the span, inter-arrival quantiles, max gap,
+duplicate/out-of-order rates, venue-vs-local clock skew, sequence integrity, recorder sessions.
+It found three things nobody had checked.
+
+**1. "The database" is not one object.** Three files named `analytics.duckdb` exist with
+different spans. Serving resolves its path from `BTC_DB_PATH`/`BTC_DATA_DIR`; some research
+modules hardcode a different copy.
+
+| path | span |
+|---|---|
+| `data/analytics.duckdb` | `2026-06-12` -> `2026-07-04` (stale, pre-Oracle) |
+| `data/btc_duckdbs/analytics.duckdb` | `2026-07-05` -> `2026-07-25` (**the live Oracle archive**) |
+
+`research/phold_auc_and_expectancy.py` hardcodes `btc_duckdbs`; `backend/database.py` defaults
+to the stale copy. Every study must now state which path it read.
+
+**2. The recorders did not stop together.**
+
+| recorder | last row |
+|---|---|
+| cross-venue collector (`multi_venue.venue_events`) | `2026-07-29 19:18:08` |
+| **round / Polymarket recorders** (`btc_duckdbs/analytics`) | **`2026-07-25 15:00`** |
+
+The remembered "down since 2026-07-29" is true only of the cross-venue feed. Round-level
+forward evidence has been dark since **2026-07-25** - an 8-day hole, not 4.
+
+Continuity *within* the live archive is good: 21 distinct days with **0-2 hours** of zero rows
+and a max gap of ~2.1 h.
+
+**3. The quote-trajectory blocker was wrong.** `btc_duckdbs/execution_layer.pm_round_snapshots`
+holds **1,713,160 rows over 7,787 markets** - 144 snapshots per 5m round, 447 per 15m round,
+roughly one every two seconds - each carrying `up/down_bid`, `ask`, `mid`, `spread`,
+`top_ask_size` and cumulative depth `d1/d2/d5`, **100% non-null**, alongside `p_hold_*` and
+`anchor_price`.
+
+The "1.00 rows/round, 2 markets" figure came from `rule_paper_trades` - which stores one
+*decision* row per round by design - and from the stale copy. It was never a statement about
+the recorder. This unblocks, on data already on disk:
+
+- probability excursion (MFPE/MAPE) and mispricing half-life
+- `OPPOSITE_TOKEN_EXECUTABLE_EXCURSION_V1` - the blueprint said mark it
+  `BLOCKED_BY_QUOTE_TRAJECTORY` if only one quote per round existed. It does not apply.
+- hold-vs-exit counterfactual labels from the actual future executable **bid** path
+
+Caveat: `pm_round_snapshots` has one generic `ts`, so it is the same
+`CAUSAL_BEST_EFFORT_HISTORICAL` class as `rule_paper_trades`. That is acceptable for building
+*labels* (which look forward from a decision point by design) and **not** for features.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -171,6 +222,7 @@ count may rise, never silently fall.
 | `backend/test_naming_honesty.py` | `test_*.py` files that cannot fail |
 | `run_all_sequence.py` coverage check | studies silently excluded from the runner |
 | pytest step | 86 tests that CI never ran |
+| `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
 

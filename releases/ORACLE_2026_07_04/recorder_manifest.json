@@ -1,0 +1,51 @@
+{
+ "note": "Per-table coverage, gaps and clock skew are measured separately by backend/audit/build_oracle_data_manifest.py.",
+ "release_id": "ORACLE_2026_07_04",
+ "stores": [
+  {
+   "mtime_utc": "2026-07-31T22:04:44.011769+00:00",
+   "size_bytes": 428617728,
+   "store": "analytics.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-26T11:21:30.466513+00:00",
+   "size_bytes": 536576,
+   "store": "complete_trade_forecast.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-31T08:07:42.828693+00:00",
+   "size_bytes": 3944448,
+   "store": "deribit_options.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-04T08:55:12.948082+00:00",
+   "size_bytes": 27537408,
+   "store": "execution_layer.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-28T07:59:43.668980+00:00",
+   "size_bytes": 22032384,
+   "store": "microstructure.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-04T09:32:57.411331+00:00",
+   "size_bytes": 94908416,
+   "store": "model_metrics.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-31T09:00:43.273890+00:00",
+   "size_bytes": 918040576,
+   "store": "multi_venue.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-02T09:27:44.267121+00:00",
+   "size_bytes": 536576,
+   "store": "opportunity_ledger.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-04T09:25:26.742741+00:00",
+   "size_bytes": 2432184320,
+   "store": "polymarket_l2.duckdb"
+  }
+ ]
+}

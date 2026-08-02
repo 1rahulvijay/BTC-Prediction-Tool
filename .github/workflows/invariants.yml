@@ -232,6 +232,19 @@ jobs:
       - name: Artifact serviceability (passing the manifest gate is not a loadable model)
         run: python backend/test_artifact_serviceability.py
 
+      # The July 4 build is the only benchmark with real forward exposure, so every challenger
+      # is judged against it. That comparison is void if the champion's artifacts change
+      # underneath it - 8 of 25 already did, and their deployed bytes are gone. --verify
+      # re-hashes the survivors against the freeze.
+      - name: Oracle release freeze intact (a champion that shifts is not a benchmark)
+        run: python backend/audit/freeze_oracle_release.py --verify
+
+      # Selftest only: profiling multi-GB stores is too slow for a gate. It proves the profiler
+      # can still detect a gap, a duplicate stamp, a missing sequence number and clock skew -
+      # a coverage tool that has silently stopped measuring is worse than none.
+      - name: Data manifest profiler still detects gaps and skew
+        run: python backend/audit/build_oracle_data_manifest.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

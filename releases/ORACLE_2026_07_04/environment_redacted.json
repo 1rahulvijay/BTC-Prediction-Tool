@@ -1,0 +1,18 @@
+{
+ "captured_utc": "2026-08-02T09:53:32.987650+00:00",
+ "keys": {
+  "BINANCE_API_KEY": "unset",
+  "BINANCE_API_SECRET": "unset",
+  "BTC_ADMIN_TOKEN": "unset",
+  "BTC_DATA_DIR": "unset",
+  "BTC_FREEZE_MODEL": "unset",
+  "BTC_REAL_ORDERS": "unset",
+  "BTC_STRICT_ARTIFACT_IDENTITY": "unset",
+  "BTC_TRADING_MODE": "unset",
+  "POLYMARKET_API_KEY": "unset",
+  "POLYMARKET_PASSPHRASE": "unset",
+  "POLYMARKET_SECRET": "unset"
+ },
+ "note": "Names only, by policy. Secrets belong in the deployment environment, never in a file under version control.",
+ "release_id": "ORACLE_2026_07_04"
+}

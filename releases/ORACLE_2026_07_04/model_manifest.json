@@ -1,0 +1,261 @@
+{
+ "artifact_summary": {
+  "as_deployed": 17,
+  "changed_since_deployment": 8,
+  "serviceable": 0,
+  "total": 25
+ },
+ "artifacts": [
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.856789+00:00",
+   "name": "accuracies.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "e5455d531529c6a6c44f0b40f972dbbbac7bc9ccdd97ac47a6f2865e708488cb",
+   "size_bytes": 940,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T21:25:25.509920+00:00",
+   "name": "activity_keeper_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "937e4bc2b21dfd98191c14bad3bd2ccab9b56a8b040f8a6c859cc0c192a78d5e",
+   "size_bytes": 23727841,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.897562+00:00",
+   "name": "architecture_version.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "0eabc24cb4cffbe50d09cb825644a16ceedaca8dad41459a9991a28d7d19f46d",
+   "size_bytes": 114,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T20:43:38.327197+00:00",
+   "name": "bigdrop_keeper_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "3819b07311c88eb6db67321f910137f1827745a03eca8a2acad754cdcb115d0c",
+   "size_bytes": 25133069,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-04T07:46:05.268892+00:00",
+   "name": "bigmove_keeper_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "4e40b04354cbdaf7307c7a89a4fed2ed1a618842336ee3d37dad0ae54ec49fc8",
+   "size_bytes": 32876708,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T21:25:27.942704+00:00",
+   "name": "champion_meta_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "239057913d54d3ea904cf7b3287ea2f2a5e263d188927320fa3b6d73944e3fe3",
+   "size_bytes": 7419,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.865423+00:00",
+   "name": "class_priors.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "93ef75ba753e76b8f863cbc87127b22b80362dbe428d3f2af8142a79f511186a",
+   "size_bytes": 82,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:21:22.265212+00:00",
+   "name": "complete_trade_btc_path.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "942fdf7641d2ad3b079d455c6dc17f77dcb681d2df1d30807fded396ea22dd0b",
+   "size_bytes": 8086027,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:21:03.508505+00:00",
+   "name": "complete_trade_execution_heads.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "e04c4f0924a73c67a68bdbbd0faeb60e811300f9b908b3e45a225254764ec14b",
+   "size_bytes": 2474655,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:20:02.684376+00:00",
+   "name": "complete_trade_share_path.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "5066630055fec100db996f8508ac5afd88feeb39dfb7be0112c795576e6f4fe7",
+   "size_bytes": 44405062,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.856789+00:00",
+   "name": "conformal_residuals.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "c6759b058c1effd923ebed39f50f442d8c5178cf9e5ba17b2bcc6dc085f18827",
+   "size_bytes": 152,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T21:11:00.562015+00:00",
+   "name": "directional_keeper_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "235e388eea3892b967cb8ed85450829b8e6e2eb9a65b547f358df2fd8bf3d78c",
+   "size_bytes": 46402926,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-01T02:48:17.131347+00:00",
+   "name": "fade_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "d0fb77dedabb08c07d2b39a6a55a0d18dda96a0df31f2df3d8612874f80cf3f0",
+   "size_bytes": 4138566,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "feature_reference.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "334a0f63da434275b58658b3e789e3b010b78e5edc1c38cf3471e5dc3d042ec0",
+   "size_bytes": 14313,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "feature_reference_names.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "8c929c34f610b388b616b1973ef478a930d55e4acd4595a68f62b6569a3d0646",
+   "size_bytes": 1134,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T21:41:07.671594+00:00",
+   "name": "magnitude_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "5c66d15ccc872559f7476e09b7190078e9db27a2efeb59af41428b8ac051a310",
+   "size_bytes": 1144509,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "model_feature_schema.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "ed945a8fedafd6bdea787526608eb52de2fa356ad11459e12e41594fdb1d46e6",
+   "size_bytes": 1223,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "move_size_stats.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "16bcf990fff1d4a4982bf9d0b5cc291ce91da8b7a44d6e50de73cc7aba64c3a3",
+   "size_bytes": 561,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-01T02:47:48.077755+00:00",
+   "name": "path_forecaster.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "16584c4cc9706775ab6e946e12746eb7d700486e2517e7922c95ce53b8f38493",
+   "size_bytes": 25834497,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-02T22:00:06.452625+00:00",
+   "name": "path_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "3651f9b436d2f384a3eae4495d138f36b43b6bc42e206c7874f48f927ff0bdc3",
+   "size_bytes": 5653702,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-01T02:40:01.115689+00:00",
+   "name": "persistence_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "cc60e98fc3a498509b85e132fdc4ea20b60b749ea83366a0433c2ca0e5093b04",
+   "size_bytes": 2220151,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-01T02:48:36.693100+00:00",
+   "name": "round_state_heads.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "04dbde1560be03e8791a30b5e995ba4f9920d161fe7385be94363cdc7035ab84",
+   "size_bytes": 4250058,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-04T04:07:27.861414+00:00",
+   "name": "selectivity_models.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "fd299f4ae02a59137ad30e18e3e14de33b1bc6c1f293cc74a77001c558a8ff90",
+   "size_bytes": 10498292,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-01T02:35:35.717799+00:00",
+   "name": "signed_quantile_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "65db79e77eb2153fa5f01b747a373595af8141dad1dc17c9df7f60d30e375587",
+   "size_bytes": 1531700,
+   "state": "CHANGED_SINCE_DEPLOYMENT"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.897562+00:00",
+   "name": "stackers.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "85e340a2e90b6b25fb8f2279ec67e7d621fe27fceeea6118b9d4521965ea3ba9",
+   "size_bytes": 2791839,
+   "state": "AS_DEPLOYED"
+  }
+ ],
+ "release_id": "ORACLE_2026_07_04"
+}
