@@ -1230,6 +1230,47 @@ def fetch_open_rule_paper_states(round_id: str) -> dict:
             conn.close()
 
 
+def fetch_open_rule_paper_positions(round_id: str) -> list[dict]:
+    """Return identified open paper inventory for same-time action-path recording.
+
+    This is a read of the row that already represents the paper position. It does not infer an
+    entry from later quotes and it excludes skipped, unavailable and settled rows.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT round_id, rule, ts, horizon, side, ask, fee, state_json
+            FROM rule_paper_trades
+            WHERE round_id = ? AND action = 'ENTER' AND settled_ts IS NULL
+            ORDER BY rule
+        """, (str(round_id),)).fetchall()
+        result = []
+        for stored_round, rule, opened_ts, horizon, side, ask, fee, raw_state in rows:
+            state = {}
+            if raw_state:
+                try:
+                    decoded = json.loads(raw_state)
+                    state = decoded if isinstance(decoded, dict) else {}
+                except Exception:
+                    # Preserve the corrupt payload so the evidence recorder can refuse it and
+                    # retain it in its malformed-position denominator. Replacing it with an
+                    # empty state would manufacture a valid-looking one-share position.
+                    state = raw_state
+            result.append({
+                "round_id": str(stored_round), "rule": str(rule), "ts": int(opened_ts),
+                "horizon": int(horizon), "side": str(side or ""),
+                "ask": float(ask or 0.0), "fee": float(fee or 0.0), "state": state,
+            })
+        return result
+    except Exception as exc:
+        logger.warning("Open paper-position read failed for %s: %s", round_id, exc)
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
 def invalidate_price_to_beat(round_id: str):
     """Atomically remove a round with an unrecoverable same-feed boundary."""
     conn = None

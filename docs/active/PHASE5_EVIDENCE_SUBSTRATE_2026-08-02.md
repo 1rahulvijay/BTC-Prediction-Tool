@@ -123,6 +123,45 @@ This matters for Binance sequenced L2: the implementation and launcher wiring ex
 store has not yet been produced. Model/outcome health and recorder-process health remain separate
 reports so neither can make the other appear healthy.
 
+### 5. Same-time open-position action snapshots
+
+`backend/open_position_action_recorder.py` creates:
+
+```text
+data/open_position_actions.duckdb
+```
+
+For every identified open `rule_paper_trades` position, the live price-to-beat path attempts a
+capture every five seconds. One accepted capture contains the exact paper inventory, one atomic
+paired UP/DOWN book already published by the canonical Polymarket recorder, both complete public
+ladders, local receive times, venue timestamps when available, book hashes, fee metadata and the
+current round context.
+
+A snapshot is refused when it is future-dated, older than five seconds, missing either side,
+invalid, crossed, inconsistent with its top of book, or when the two local receive timestamps are
+more than one second apart. Invalid paper positions and unavailable-book attempts are stored in
+separate append-only diagnostic tables instead of disappearing from the denominator.
+
+Every accepted position snapshot records five research-only immediate action arms:
+
+| Arm | Exact recorded mechanics |
+|---|---|
+| `HOLD` | No fill; preserve the current inventory. |
+| `EXIT` | Sell all remaining UP and DOWN inventory through the recorded bid ladders. |
+| `REDUCE_50` | Sell half of each remaining leg through the recorded bid ladders. |
+| `SWITCH` | Sell the held one-sided inventory, then buy only the quantity actually sold on the opposite ask ladder. |
+| `LOCK` | Buy the smaller side's inventory deficit so matched pairs have a guaranteed settlement floor. |
+
+All ladder fills use `polymarket.l2_book.L2Book.execution_vwap`. The recorded crypto fee curve is
+charged at every consumed level. Insufficient depth produces a partial fill and explicit residual
+inventory; it is never upgraded to a complete fill. Entry cost is quantity-aware, action cash flow
+has an explicit sign, and the guaranteed floor is stored separately from any expected outcome.
+
+The action table does **not** select the best arm, update a model, alter a paper strategy or grant
+capital authority. It is a forward counterfactual mechanics ledger. HOLD/SWITCH/partial-inventory
+outcomes still require later official settlement and path evidence before the arms can be compared
+economically.
+
 ## Runtime Flow
 
 ```mermaid
@@ -137,10 +176,15 @@ flowchart LR
   K["Proxy and official settlements"] --> J
   J --> L["Candidate evidence builder"]
   L --> M["Phase 5 canonical Parquet"]
+  N["Open paper inventory"] --> O["Paired UP/DOWN full ladder"]
+  O --> P["Five research-only action arms"]
+  P --> Q["Open-position action ledger"]
 ```
 
-DuckDB writes run in a worker thread after the prediction cycle. They do not run inside WebSocket
-callbacks and do not add another model inference pass.
+Model-revision DuckDB writes run in a worker thread after the prediction cycle. The bounded
+open-position capture runs only from the Pyth price-to-beat tracker, never from a WebSocket
+callback, and adds no model inference pass. It records existing paper inventory only; the Binance
+mirror cannot create duplicate action snapshots.
 
 ## Operator Commands
 
@@ -163,6 +207,8 @@ Self-tests:
 ```powershell
 python backend\model_revision_ledger.py --selftest
 python backend\evidence_health_report.py --selftest
+python backend\open_position_action_recorder.py --selftest
+python backend\test_open_position_action_wiring.py
 python backend\audit\recorder_evidence_check.py --selftest
 python backend\research_data\candidate_evidence_builder.py --selftest
 ```
@@ -172,6 +218,16 @@ Daily report after the backend has produced predictions:
 ```powershell
 python backend\evidence_health_report.py --expect-live
 ```
+
+Open-position recorder coverage while the backend is stopped:
+
+```powershell
+python backend\open_position_action_recorder.py --report
+```
+
+The report keeps separate counts for paired books, position snapshots, each action arm, partial
+fills, failed capture attempts and malformed-position refusals. Zero rows means the runtime has
+not yet observed both an open paper position and an admissible paired book.
 
 Use `--full-state-scan` for a complete snapshot-integrity pass. The default checks the newest 1,000
 snapshots to keep the daily command bounded. `--strict` returns a non-zero exit code unless the
@@ -190,18 +246,6 @@ Status meanings:
 | `FAIL` | Stored evidence violates causality, identity, linkage or state integrity. |
 
 ## Still Blocked, Deliberately
-
-### Same-time open-position action arms
-
-HOLD/EXIT/REDUCE/SWITCH/LOCK cannot yet be declared complete. An honest row needs an identified
-open position, both token books, executable depth at the same timestamp, inventory after partial
-fills and fee rules. Retrospective later quotes are not a substitute.
-
-Expected future artifact:
-
-```text
-data/research/open_position_action_paths.parquet
-```
 
 ### 100/250/500ms and 1/2s execution stress
 
@@ -235,6 +279,8 @@ Focused validation at implementation:
 | Python compile for changed modules | PASS |
 | Model-revision ledger self-test | 11 checks passed |
 | Evidence-health report self-test | 12 checks passed |
+| Open-position action recorder self-test | 18 checks passed |
+| Live action-recorder wiring test | PASS |
 | Candidate-evidence builder self-test | 7 checks passed |
 | Exact float32 state round trip | PASS |
 | Changed duplicate revision rejection | PASS |

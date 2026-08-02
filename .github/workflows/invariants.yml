@@ -251,6 +251,15 @@ jobs:
       - name: Recorder evidence (wired is not the same as running)
         run: python backend/audit/recorder_evidence_check.py --selftest
 
+      # Phase 5C prefilters. 130 pins that a 0.419 bps effect against a 9 bps hurdle is killed
+      # on sight; 136 pins that 21 day-clusters cannot detect a shift below ~20 points however
+      # many rows they hold. Both must pass before any candidate is worth modelling.
+      - name: Effect-size-to-cost prefilter
+        run: python research/phase5c/test_effect_size_to_cost_ratio.py --selftest
+
+      - name: Effective independent sample size
+        run: python research/phase5c/test_effective_independent_sample_size.py --selftest
+
       # The checkpoint dataset performs NO state-to-quote join - every feature comes from one
       # atomically-written snapshot row - so the retracted defect is structurally impossible.
       # What remains joinable is the GRID (must take the last snapshot at or BEFORE each
@@ -341,6 +350,14 @@ jobs:
       # proves missing outcomes, late observations, refused writes and corrupt state are visible.
       - name: Forward evidence health report (coverage and integrity fail closed)
         run: python backend/evidence_health_report.py --selftest
+
+      # Every open paper position is valued from one causal paired UP/DOWN ladder. The recorder
+      # cannot choose an arm, and partial fills must remain visible as residual inventory.
+      - name: Open-position action snapshots (paired depth, fees, partial inventory)
+        run: python backend/open_position_action_recorder.py --selftest
+
+      - name: Open-position action recorder is reached by the live price-to-beat path
+        run: python backend/test_open_position_action_wiring.py
 
       # Pins ENTER versus WAIT economics and the no-asof-join export contract used by the
       # candidate-dependent Phase 5 tests.
@@ -513,6 +530,8 @@ jobs:
           python -m backend.opportunity_ledger.ledger --selftest || exit /b 1
           python backend/model_revision_ledger.py --selftest || exit /b 1
           python backend/evidence_health_report.py --selftest || exit /b 1
+          python backend/open_position_action_recorder.py --selftest || exit /b 1
+          python backend/test_open_position_action_wiring.py || exit /b 1
           python backend/research_data/candidate_evidence_builder.py --selftest || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
           python research/maker_lever_test.py --selftest || exit /b 1

@@ -669,6 +669,70 @@ started — the same family as the manifest gate in §4.1 that passed while 0 of
 loadable. This is now the third instance of that defect class found here, and the second one
 found in a check I wrote myself.
 
+## 10. Phase 5C triage - `2026-08-02`
+
+52 further tests were proposed against existing data, with 15 recommended next. Two of those 15
+were **prefilters**, and the correct order was to run them first: they decide whether the other
+13 can answer anything. Both are built, and they do decide it.
+
+### 10.1 What each data source can actually detect
+
+Day-clustered minimum detectable shift in win rate, 80% power — the inference level
+`day_block_lcb` already uses:
+
+| source | rows | **days** | MDE | supports |
+|---|---:|---:|---:|---|
+| Binance 1-minute bars | 518,400 | **360** | **7.4 pts** | hypothesis tests |
+| Polymarket checkpoints | 50,272 | **21** | **25–30 pts** | descriptive work only |
+| `multi_venue` (trades, bookTicker, OI, funding) | 20,085,631 | **2** | **99 pts** | nothing |
+
+`multi_venue` holds 20 million rows across **two days**. 17.6M of them are bookTicker. Row count
+and evidence are not the same quantity, and this is the clearest example in the repository.
+
+Clustering also matters more than row count. On the checkpoint data the intra-cluster
+correlation at round level is **0.347** — 6.5 checkpoints from one round carry about 2.2
+independent observations, not 6.5.
+
+### 10.2 Effect size against cost (`130`)
+
+Every **realisable** effect measured so far scores below 0.75x the cost it must clear. Only the
+hindsight ceilings clear 1.25x, and a ceiling is not a strategy:
+
+| candidate | gross | cost | ratio | band |
+|---|---:|---:|---:|---|
+| direction @60m / @120m | 0.00 | 12 bps | 0.00 | IRRELEVANT |
+| opportunity gate @60m | 7.41 | 12 bps | 0.62 | RESEARCH_ONLY |
+| hold-vs-exit classifier | 0.0004 | 0.0499 | 0.01 | IRRELEVANT |
+| complete-set lock | 0.00 | 0.0499 | 0.00 | IRRELEVANT |
+| *perfect exit @120m* | *42.23* | *12 bps* | *3.52* | *ELIGIBLE (hindsight)* |
+| *perfect Polymarket exit* | *0.1504* | *0.0499* | *3.01* | *ELIGIBLE (hindsight)* |
+
+The prefilter's selftest pins the case that motivated it: a 0.419 bps microprice effect against
+a 9 bps hurdle scores **0.05x** and is killed on sight.
+
+### 10.3 Triage of the recommended 15
+
+| test | verdict |
+|---|---|
+| **130** effect-size-to-cost, **136** effective sample size | **BUILT** |
+| 101 jump vs diffusion, 103 volatility half-life, 106 MFE/MAE joint | viable — Binance 360-day window |
+| 89 Brier decomposition, 94 last-crossing timing, 97 terminal margin, 123 monotonicity | viable **as description only** — no significance claim survives 21 days |
+| 91 disagreement→magnitude, 93 anchor dwell, 96 crossing velocity | **dead** — inferential targets far below a 25-point MDE |
+| 110 signed-flow saturation, 111 flow without price response, 117 OI quadrants | **dead** — the source holds 2 days |
+
+Six of fifteen cannot answer their question. Six more of the fifty-two (sections C and D, tests
+109–122) depend on the same 2-day source and are equally unrunnable.
+
+### 10.4 What this means
+
+The proposal's own closing rule — *establish that an effect is large enough, lasts long enough
+and maps to a monetizing instrument before asking whether it is predictable* — is correct, and
+applying it first removed 40% of the recommended package before any modelling.
+
+**The binding constraint has not changed and is not a research question.** It is 21 days of
+Polymarket and 2 days of cross-venue data. More tests on this window produce more confident
+descriptions of a sample too small to support them.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |

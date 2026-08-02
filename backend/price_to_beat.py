@@ -39,6 +39,7 @@ from polymarket.model_dynamic_paper import (
     entry_decision as champion_dynamic_entry,
     exit_decision as champion_dynamic_exit,
 )
+from open_position_action_recorder import recorder as open_position_action_recorder
 from artifact_identity import artifact_matches_current_training
 from check_feature_contract import verdict_for as feature_contract_verdict
 
@@ -50,6 +51,9 @@ logger = logging.getLogger(__name__)
 # of the price-to-beat CPU and blocked the asyncio event loop (→ frozen live price, laggy Pyth).
 # Recompute at most this often PER ROUND; P(hold) (time-sensitive) + champion stay per-tick.
 _HEADS_THROTTLE_MS = max(0, int(float(os.environ.get("BTC_PTB_HEADS_THROTTLE_SEC", "4")) * 1000))
+_OPEN_ACTION_CAPTURE_MS = max(
+    1_000, int(float(os.environ.get("BTC_OPEN_ACTION_CAPTURE_SEC", "5")) * 1_000)
+)
 
 # ── A1 / T3 persistence model (P(hold)) — separate head, lazy + crash-safe ──────────
 # Calibrated P(side-currently-ahead holds to close | abs_distance, seconds_left, vol,
@@ -854,7 +858,10 @@ def _live_share_prices_for_round(round_data, now_ms):
             if not (0.0 <= bid <= ask <= 1.0) or ask <= 0.0:
                 return None
             try:
-                ladder = quote.get(f"{prefix}_ladder")
+                # Prefer the complete public ladder carried by the atomic bridge. The capped
+                # 12-level ladder remains a compatibility fallback for older recorder builds.
+                ladder = (quote.get(f"{prefix}_full_ladder") or
+                          quote.get(f"{prefix}_ladder"))
                 ladder = json.loads(ladder) if isinstance(ladder, str) else ladder
                 bids = validated_levels(
                     (ladder or {}).get("b"),
@@ -880,6 +887,7 @@ def _live_share_prices_for_round(round_data, now_ms):
                 "bid_depth_5c": round(float(quote.get(f"{prefix}_b5") or 0.0), 2),
                 "bid_ladder": bids,
                 "ask_ladder": asks,
+                "quote_recv_ts": quote.get(f"{prefix}_quote_recv_ts") or quote_ts,
                 "book_ts": quote.get(f"{prefix}_book_ts"),
                 "book_hash": quote.get(f"{prefix}_book_hash"),
                 "buy_fee": round(fee_rate * ask * (1.0 - ask), 5) if fees_enabled else 0.0,
@@ -889,11 +897,69 @@ def _live_share_prices_for_round(round_data, now_ms):
             "ts": quote_ts,
             "age_seconds": round(max(0.0, age), 3),
             "fees_enabled": fees_enabled,
+            "fee_rate": fee_rate,
             "artifact_hash": quote.get("artifact_hash"),
             **sides,
         }
     except Exception:
         return None
+
+
+def _capture_open_position_action_evidence(round_data, now_ms, seconds_left, btc_side):
+    """Record action counterfactuals without granting the recorder decision authority."""
+    round_id = round_data.get("id")
+    last_capture = int(round_data.get("_open_action_capture_ms") or 0)
+    if not round_id or int(now_ms) - last_capture < _OPEN_ACTION_CAPTURE_MS:
+        return None
+    positions = database.fetch_open_rule_paper_positions(round_id)
+    if not positions:
+        return None
+    round_data["_open_action_capture_ms"] = int(now_ms)
+    result = open_position_action_recorder().record_positions(
+        positions,
+        market_snapshot=round_data.get("share_prices"),
+        recorded_ts=int(now_ms),
+        context={
+            "mode": "PAPER_RESEARCH_ONLY",
+            "horizon_min": int(round_data.get("horizon") or 0),
+            "seconds_left": int(seconds_left),
+            "btc_price": float(round_data.get("current_price") or 0.0),
+            "btc_side": str(btc_side or ""),
+            "p_hold": (
+                float(round_data["p_hold"])
+                if round_data.get("p_hold") is not None else None
+            ),
+            "champion_action": str(
+                (round_data.get("champion") or {}).get("action") or ""
+            ),
+            "state_snapshot_ts": int(round_data.get("_round_state_composed_ms") or 0),
+        },
+    )
+    if result.get("refused"):
+        logger.warning(
+            "Open-position action evidence refused %s/%s positions for %s",
+            result["refused"], result["positions"], round_id,
+        )
+    return result
+
+
+def _public_round_view(round_data):
+    """Remove internal execution ladders from a round before WebSocket serialization."""
+    if not isinstance(round_data, dict):
+        return round_data
+    public = dict(round_data)
+    prices = round_data.get("share_prices")
+    if isinstance(prices, dict):
+        public_prices = dict(prices)
+        for side in ("up", "down"):
+            side_quote = public_prices.get(side)
+            if isinstance(side_quote, dict):
+                clean = dict(side_quote)
+                clean.pop("bid_ladder", None)
+                clean.pop("ask_ladder", None)
+                public_prices[side] = clean
+        public["share_prices"] = public_prices
+    return public
 
 
 def _side_quote(round_data, now_ms, side):
@@ -2748,6 +2814,18 @@ class PriceToBeatTracker:
                                                               _qn["fee_in"], _qn["spread"],
                                                               0.0, "ENTER",
                                                               btc_entry=rnd.get("current_price"))
+                # Same-time action evidence for every currently open paper position. The
+                # recorder values HOLD/EXIT/REDUCE/SWITCH/LOCK from this exact paired ladder,
+                # but cannot choose an arm or feed any result back into the strategy.
+                try:
+                    _capture_open_position_action_evidence(
+                        rnd, int(now_ms), int(secs_left), cur_pos,
+                    )
+                except Exception as action_exc:
+                    logger.warning(
+                        "Open-position action evidence capture failed for %s: %s",
+                        rnd.get("id"), action_exc,
+                    )
             except Exception as _she:
                 logger.debug(f"shadow strategies skipped: {_she}")
 
@@ -2958,10 +3036,10 @@ class PriceToBeatTracker:
 
     def latest(self) -> dict:
         """Current open (or last resolved) round per horizon, for the UI cards."""
-        return {h: self.latest_round.get(h) for h in self.horizons}
+        return {h: _public_round_view(self.latest_round.get(h)) for h in self.horizons}
 
     def recent(self, n: int = 20) -> list:
-        return list(self.recent_rounds)[:n]
+        return [_public_round_view(row) for row in list(self.recent_rounds)[:n]]
 
     def accuracy(self) -> dict:
         out = {}
