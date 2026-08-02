@@ -1,0 +1,54 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "top-of-book snapshots only; no queue-position or passive-fill claim",
+    "required_columns": [
+      "mid",
+      "microprice",
+      "spread_bps",
+      "obi_20",
+      "obi_near",
+      "bid_usd",
+      "ask_usd",
+      "depth_slope",
+      "ofi"
+    ],
+    "source": "binance_l2",
+    "timestamp": "ts_ms"
+  },
+  "engine": "l2_research",
+  "experiment_id": "P5B_61_SPREAD_SHOCK_DIRECTIONAL_ASYMMETRY",
+  "method": {
+    "mode": "spread_shock"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "7fea6fe98bd14e9db9127372c2482347bf5397dda6a39b27ba58d65ebd127a50",
+  "protocol_version": "phase5b.v1",
+  "question": "What follows a spread shock?"
+}

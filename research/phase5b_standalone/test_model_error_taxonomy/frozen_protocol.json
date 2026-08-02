@@ -1,0 +1,68 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "decision fields precede resolution; outcome and PnL columns are labels only",
+    "required_columns": [
+      "horizon",
+      "entry_price",
+      "expected_move",
+      "confidence",
+      "raw_direction",
+      "final_direction",
+      "trade_verdict",
+      "action",
+      "notional_usd",
+      "fee_bps",
+      "slippage_bps",
+      "no_trade_reasons_json",
+      "resolved",
+      "actual_move",
+      "actual_direction",
+      "direction_hit",
+      "gross_pnl_usd",
+      "fees_usd",
+      "slippage_usd",
+      "net_pnl_usd",
+      "avoided_loss_usd",
+      "opportunity_cost_usd"
+    ],
+    "source": "analytics_table",
+    "table": "forward_ev_ledger",
+    "timestamp": "timestamp"
+  },
+  "engine": "system_research",
+  "experiment_id": "P5B_79_MODEL_ERROR_TAXONOMY",
+  "method": {
+    "mode": "error_taxonomy"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "f2d6c7c3a929c451c2069a308da8d77443a2213dc748805ac279bbe78879a3af",
+  "protocol_version": "phase5b.v1",
+  "question": "Why does each resolved decision fail?"
+}

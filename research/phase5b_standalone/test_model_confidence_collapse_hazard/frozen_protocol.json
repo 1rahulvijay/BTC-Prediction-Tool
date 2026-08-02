@@ -1,0 +1,43 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5B_49_MODEL_CONFIDENCE_COLLAPSE_HAZARD",
+  "method": {
+    "blocked_reason": "confidence-collapse labels require continuous per-model revisions",
+    "required_artifacts": [
+      "data/research/forecast_revision_paths.parquet"
+    ],
+    "required_columns": []
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "e169320fd32f941c7921dc90a18567193f73218ef04f4e2f38cb6170786147f8",
+  "protocol_version": "phase5b.v1",
+  "question": "Will strong confidence collapse shortly?"
+}

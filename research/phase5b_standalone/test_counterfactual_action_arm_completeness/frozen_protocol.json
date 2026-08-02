@@ -1,0 +1,50 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5B_86_COUNTERFACTUAL_ACTION_ARM_COMPLETENESS",
+  "method": {
+    "blocked_reason": "HOLD/EXIT/REDUCE/SWITCH/LOCK are not recorded at one causal timestamp",
+    "required_artifacts": [
+      "data/research/open_position_action_paths.parquet"
+    ],
+    "required_columns": [
+      "ts_ms",
+      "hold_value",
+      "exit_value",
+      "reduce_value",
+      "switch_value",
+      "lock_value"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "03292208862be35fb8ec2019340943a635d55913f36070b8a3059c1bfa185303",
+  "protocol_version": "phase5b.v1",
+  "question": "Are all position action arms executable?"
+}

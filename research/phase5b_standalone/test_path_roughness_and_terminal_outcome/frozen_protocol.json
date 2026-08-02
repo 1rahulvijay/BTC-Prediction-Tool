@@ -1,0 +1,94 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "features are available at ts_ms; ret_5m/future_abs_move_5m are labels only",
+    "required_columns": [
+      "close",
+      "ret_5m",
+      "future_abs_move_5m",
+      "rv_15m",
+      "rv_30m",
+      "rv_60m",
+      "rv_term",
+      "count_accel_5m",
+      "vol_accel",
+      "vpin_15m",
+      "vpin_30m",
+      "compression_ratio",
+      "range_15m",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp",
+      "trade_count",
+      "volume"
+    ],
+    "source": "btc_matrix",
+    "timestamp": "ts_ms"
+  },
+  "engine": "matrix_research",
+  "experiment_id": "P5B_67_PATH_ROUGHNESS_AND_TERMINAL_OUTCOME",
+  "method": {
+    "features": [
+      "rv_15m",
+      "rv_30m",
+      "rv_60m",
+      "rv_term",
+      "count_accel_5m",
+      "vol_accel",
+      "vpin_15m",
+      "vpin_30m",
+      "compression_ratio",
+      "range_15m",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp"
+    ],
+    "mode": "path_roughness"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "a3c4a566bf5477892c335580caa307df686e68e382b35681270e21e999f2cf6a",
+  "protocol_version": "phase5b.v1",
+  "question": "Does path roughness add information?"
+}

@@ -285,6 +285,47 @@ settlement proxy would have inflated leader survival by 8.5 points at exactly th
 retracted `p_hold` work cared about. Both labels ship, plus
 `label_path_agrees_with_settlement`, so the divergence is measurable rather than absorbed.
 
+**Burst rates**, P(move >= X USD within W seconds), averaged over both directions:
+
+| window | >=$10 | >=$25 | >=$50 | >=$100 | >=$200 |
+|---:|---:|---:|---:|---:|---:|
+| 5 s | 4.03% | 0.47% | 0.06% | 0.01% | 0.00% |
+| 15 s | 14.48% | 3.11% | 0.43% | 0.04% | 0.01% |
+| 30 s | 23.35% | 7.07% | 1.28% | 0.12% | 0.01% |
+| 60 s | 32.14% | 12.83% | 3.36% | 0.41% | 0.04% |
+
+The "sudden $300 pump" is real but sits at **0.04% per 60 s** — roughly 1 in 2,500 checkpoints.
+A head predicting it is a rare-event problem, so ROC-AUC will be uninformative; precision at
+the top 1%/5% and false alarms per day are the metrics that mean anything.
+
+Bursts are stored as the **continuous max excursion per window**, not as 40 pre-baked threshold
+booleans. Every boolean is a pure function of the float, so storing them would cache a
+computation that goes stale the moment the grid is edited while the parquet keeps serving the
+old answer under the same name. `burst_indicator(frame, direction, usd, window_s)` derives any
+threshold, and the published rates above come through that same helper — so the number in this
+document and the training target cannot diverge.
+
+**Flip persistence** over the 15,329 checkpoints whose path crosses the anchor:
+
+```
+first crossing is the FINAL one : 43.0%
+reverts within  5s              : 10.0%
+reverts within 15s              : 25.5%
+reverts within 30s              : 34.9%
+reverts within 60s              : 43.9%
+```
+
+**57% of flips revert.** That is the measured version of the temporary-burst-vs-durable-flip
+distinction: a crossing is close to a coin toss, tilted slightly toward reversion. Reversion is
+timed from the **first crossing**, not from the checkpoint — otherwise the same flip would look
+more or less durable purely by how early in the round it happened.
+
+**A bug this found in the labels shipped one commit earlier.** DuckDB's `greatest()` ignores
+NULL, so `greatest(NULL, 0)` is `0`. All **7,160** empty-path rows had recorded
+`label_remaining_max_up_usd = 0.0` — "no observation" written as "no move", the exact failure
+the module's own docstring claims to prevent. Every excursion column is now explicitly
+NULL-guarded, and the selftest asserts it.
+
 Sigma-normalised labels (`0.5/1.0/1.5/2.0`) use a **declared proxy**: `vol_60s_pct` from the
 checkpoint snapshot, scaled by sqrt(time). Causal, but not an implied vol and not claimed as one.
 

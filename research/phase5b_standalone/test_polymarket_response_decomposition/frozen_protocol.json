@@ -1,0 +1,54 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "sequenced applied L2 updates ordered by local receive timestamp",
+    "required_columns": [
+      "asset_id",
+      "side",
+      "price",
+      "previous_size",
+      "new_size",
+      "best_bid",
+      "best_ask",
+      "applied"
+    ],
+    "source": "polymarket_l2_updates",
+    "timestamp": "recv_ts_ns",
+    "where": "applied = true"
+  },
+  "engine": "pm_l2_research",
+  "experiment_id": "P5B_74_POLYMARKET_RESPONSE_DECOMPOSITION",
+  "method": {
+    "mode": "response_decomposition"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "19d73831a06b6bf42186a64b436af35b0344bf55e3e56a6bd4a6906c610959de",
+  "protocol_version": "phase5b.v1",
+  "question": "What causes Polymarket repricing?"
+}

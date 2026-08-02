@@ -1,0 +1,52 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "local receive timestamp orders public events; five-day minimum span applies",
+    "required_columns": [
+      "price",
+      "size",
+      "side",
+      "venue",
+      "stream",
+      "bid",
+      "ask"
+    ],
+    "source": "multi_venue_events",
+    "timestamp": "recv_ts"
+  },
+  "engine": "event_research",
+  "experiment_id": "P5B_58_EVENT_BURSTINESS_PREDICTABILITY",
+  "method": {
+    "mode": "burstiness"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "a98d10ed40e6f05e518bc67b1fc5986d8dd0406375e93745ed11e64c6e8a7d14",
+  "protocol_version": "phase5b.v1",
+  "question": "Does event clustering predict bursts?"
+}

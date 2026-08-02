@@ -1,0 +1,53 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "resolved outcome is label-only; votes share exact prediction timestamp and horizon",
+    "required_columns": [
+      "model",
+      "horizon",
+      "direction",
+      "actual_direction",
+      "hit",
+      "resolved"
+    ],
+    "source": "analytics_table",
+    "table": "model_predictions",
+    "timestamp": "timestamp",
+    "where": "resolved = true"
+  },
+  "engine": "ensemble_audit",
+  "experiment_id": "P5B_46_MINORITY_MODEL_CORRECTNESS",
+  "method": {
+    "mode": "minority_correctness"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "9eb4862d6effcd93fab4097d3a5f6b4af845dc512a6d8bc6df5d619626b3fecd",
+  "protocol_version": "phase5b.v1",
+  "question": "When is the minority ensemble side correct?"
+}

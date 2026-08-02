@@ -64,6 +64,35 @@ SIGMA_MULTIPLES = (0.5, 1.0, 1.5, 2.0)
 # vol_60s_pct is a standard deviation over a 60-second window, expressed in percent.
 VOL_WINDOW_S = 60.0
 
+# Burst horizons, in seconds after the checkpoint.
+BURST_WINDOWS_S = (5, 15, 30, 60)
+# Declared burst sizes in USD. Deliberately NOT stored as columns - see burst_indicator().
+BURST_THRESHOLDS_USD = (10, 25, 50, 100, 200)
+# Flip-reversion horizons, measured from the FIRST crossing, not from the checkpoint.
+FLIP_REVERT_WINDOWS_S = (5, 15, 30, 60)
+
+
+def burst_indicator(frame, direction: str, usd: float, window_s: int):
+    """Did price move `usd` in `direction` within `window_s` of the checkpoint?
+
+    WHY A FUNCTION AND NOT FORTY COLUMNS
+        The burst grid is 2 directions x 5 sizes x 4 windows = 40 booleans, and every one is a
+        pure function of the continuous max excursion already stored for that window. Storing
+        them would cache a computation that goes stale the moment anyone edits the threshold
+        grid - the parquet keeps serving yesterday's answer under today's column name, which is
+        the same species of silent wrongness this directory exists to prevent.
+
+        The continuous excursion is the sufficient statistic. Any threshold, including ones not
+        in BURST_THRESHOLDS_USD, is one comparison away and cannot disagree with the data.
+
+    NULL where the window held no samples: "not observed" is not "no burst"."""
+    if direction not in ("up", "down"):
+        raise ValueError("direction must be 'up' or 'down'")
+    if window_s not in BURST_WINDOWS_S:
+        raise ValueError(f"window_s must be one of {BURST_WINDOWS_S}")
+    excursion = frame[f"label_max_{direction}_usd_{window_s}s"]
+    return (excursion >= float(usd)).astype("boolean").where(excursion.notna())
+
 
 def build_query() -> str:
     # Computed in an OUTER select: SQL cannot reference an alias defined in the same SELECT
@@ -73,6 +102,30 @@ def build_query() -> str:
         f"ELSE label_remaining_range_usd >= {multiple} * sigma_remaining_usd END "
         f"AS label_move_exceeds_{str(multiple).replace('.', 'p')}_sigma"
         for multiple in SIGMA_MULTIPLES)
+    # Per-window high and low, one conditional aggregate each. A window with no samples yields
+    # NULL rather than the checkpoint price, so an unobserved window can never read as "flat".
+    burst_aggregates = ",\n           ".join(
+        f"max(m.btc_price) FILTER (WHERE m.seconds_left >= c.checkpoint_s - {window}) "
+        f"AS high_{window}s,\n"
+        f"           min(m.btc_price) FILTER (WHERE m.seconds_left >= c.checkpoint_s - {window})"
+        f" AS low_{window}s"
+        for window in BURST_WINDOWS_S)
+    # DuckDB's greatest() IGNORES NULL: greatest(NULL, 0) is 0, not NULL. Left unguarded, an
+    # unobserved window records as a calm one - the precise failure this file claims to avoid.
+    burst_columns = ",\n       ".join(
+        f"CASE WHEN a.high_{window}s IS NULL THEN NULL "
+        f"ELSE greatest(a.high_{window}s - c.btc_price, 0) END AS label_max_up_usd_{window}s,\n"
+        f"       CASE WHEN a.low_{window}s IS NULL THEN NULL "
+        f"ELSE greatest(c.btc_price - a.low_{window}s, 0) END AS label_max_down_usd_{window}s"
+        for window in BURST_WINDOWS_S)
+    # Reversion is timed from the FIRST crossing, not from the checkpoint. "The flip lasted 5
+    # seconds" is a statement about the flip; anchoring it to the checkpoint would make the
+    # same flip look more or less durable purely by how early in the round it happened.
+    flip_columns = ",\n       ".join(
+        f"CASE WHEN f.first_cross_left IS NULL THEN NULL ELSE f.second_cross_left IS NOT NULL "
+        f"AND (f.first_cross_left - f.second_cross_left) <= {window} END "
+        f"AS label_flip_reverts_{window}s"
+        for window in FLIP_REVERT_WINDOWS_S)
     return f"""
 WITH path AS (
     -- One pass over every round's price path. `side` is measured against the round's own
@@ -103,12 +156,29 @@ aggregated AS (
                FILTER (WHERE m.crossed)                    AS label_time_to_next_cross_s,
            min(m.seconds_left) FILTER (WHERE m.crossed)    AS final_cross_seconds_left,
            arg_min(m.side, m.seconds_left)
-               FILTER (WHERE m.crossed)                    AS final_cross_side
+               FILTER (WHERE m.crossed)                    AS final_cross_side,
+           {burst_aggregates}
     FROM checkpoints c
     -- STRICTLY AFTER the checkpoint. `<` not `<=`: the checkpoint's own sample is an input,
     -- and letting it into its own label would leak the present into the future.
     JOIN marked m ON m.slug = c.slug AND m.seconds_left < c.checkpoint_s
     GROUP BY c.slug, c.checkpoint_s
+),
+crossings AS (
+    -- Every crossing after the checkpoint, ranked in TIME order so the first and the second
+    -- can be addressed individually. seconds_left DESCENDS with time, hence ORDER BY ... DESC.
+    SELECT c.slug, c.checkpoint_s, m.seconds_left,
+           row_number() OVER (PARTITION BY c.slug, c.checkpoint_s
+                              ORDER BY m.seconds_left DESC) AS cross_rank
+    FROM checkpoints c
+    JOIN marked m ON m.slug = c.slug AND m.seconds_left < c.checkpoint_s AND m.crossed
+),
+flip AS (
+    SELECT slug, checkpoint_s,
+           max(seconds_left) FILTER (WHERE cross_rank = 1) AS first_cross_left,
+           max(seconds_left) FILTER (WHERE cross_rank = 2) AS second_cross_left,
+           count(*)                                        AS crossings_after
+    FROM crossings GROUP BY slug, checkpoint_s
 ),
 labelled AS (
 SELECT c.slug,
@@ -119,9 +189,15 @@ SELECT c.slug,
        c.eligible,
        coalesce(a.label_path_samples, 0)                   AS label_path_samples,
        -- Excursions are measured FROM the checkpoint price, and clipped at zero: an "upward
-       -- excursion" that never went up is 0, not a negative number.
-       greatest(a.future_high - c.btc_price, 0)            AS label_remaining_max_up_usd,
-       greatest(c.btc_price - a.future_low, 0)             AS label_remaining_max_down_usd,
+       -- excursion" that never went up is 0, not a negative number. The CASE is load-bearing -
+       -- greatest() IGNORES NULL in DuckDB, so the bare form turned all 7,160 empty-path rows
+       -- into a confident 0.0 "no move" instead of NULL.
+       CASE WHEN a.future_high IS NULL THEN NULL
+            ELSE greatest(a.future_high - c.btc_price, 0) END
+                                                           AS label_remaining_max_up_usd,
+       CASE WHEN a.future_low IS NULL THEN NULL
+            ELSE greatest(c.btc_price - a.future_low, 0) END
+                                                           AS label_remaining_max_down_usd,
        (a.future_high - a.future_low)                      AS label_remaining_range_usd,
        (a.terminal_price - c.anchor_price)                 AS label_terminal_distance_usd,
        (a.terminal_price - c.btc_price) / nullif(c.btc_price, 0)
@@ -140,6 +216,12 @@ SELECT c.slug,
        (CASE WHEN c.btc_price >= c.anchor_price THEN 1 ELSE -1 END) = a.terminal_side
                                                            AS label_current_side_survives,
        (a.label_future_crossings = 0)                      AS label_no_further_crossing,
+       -- Is the FIRST crossing after this checkpoint also the LAST one? This is the question a
+       -- flip-persistence head answers: durable terminal flip, or temporary excursion?
+       CASE WHEN f.crossings_after IS NULL THEN NULL
+            ELSE f.crossings_after = 1 END                  AS label_first_cross_is_final,
+       {flip_columns},
+       {burst_columns},
        -- SETTLEMENT-GROUNDED, and the one most studies actually want: does the side leading at
        -- this checkpoint WIN THE CONTRACT? Distinct from label_current_side_survives, which
        -- only asks whether it survives to the end of the RECORDED PATH. Measured, those two
@@ -158,6 +240,7 @@ SELECT c.slug,
                                                            AS sigma_remaining_usd
 FROM checkpoints c
 LEFT JOIN aggregated a ON a.slug = c.slug AND a.checkpoint_s = c.checkpoint_s
+LEFT JOIN flip f ON f.slug = c.slug AND f.checkpoint_s = c.checkpoint_s
 )
 SELECT *,
        {sigma_columns}
@@ -204,10 +287,32 @@ def summarise(frame) -> dict:
                                              lambda s: float(1.0 - s.mean())),
                           side_survives_rate=("label_current_side_survives", "mean"))
                      .reset_index())
+    # Burst rates over the DECLARED grid, derived through the same helper research uses, so the
+    # published number and the training target cannot come from different code paths.
+    burst_rates = {}
+    for window in BURST_WINDOWS_S:
+        for usd in BURST_THRESHOLDS_USD:
+            for direction in ("up", "down"):
+                series = burst_indicator(frame, direction, usd, window).dropna()
+                if len(series):
+                    burst_rates[f"{direction}_{usd}usd_{window}s"] = round(
+                        float(series.mean()), 5)
+    flipped = frame[frame["label_first_cross_is_final"].notna()]
+    flip_rates = {
+        "rows_with_a_crossing": int(len(flipped)),
+        "first_cross_is_final": round(float(flipped["label_first_cross_is_final"].mean()), 4)
+        if len(flipped) else None,
+        **{f"reverts_within_{w}s": round(float(flipped[f"label_flip_reverts_{w}s"].mean()), 4)
+           for w in FLIP_REVERT_WINDOWS_S if len(flipped)},
+    }
     return {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "source_checkpoints": str(CHECKPOINTS),
         "sigma_multiples": list(SIGMA_MULTIPLES),
+        "burst_windows_s": list(BURST_WINDOWS_S),
+        "burst_thresholds_usd": list(BURST_THRESHOLDS_USD),
+        "burst_rates": burst_rates,
+        "flip_rates": flip_rates,
         "rows": int(len(frame)),
         "rows_with_forward_path": int(len(labelled)),
         "rows_with_empty_path": int((frame["label_path_samples"] == 0).sum()),
@@ -252,6 +357,11 @@ def selftest() -> int:
     # A checkpoint at the very end of the round: nothing follows it.
     con.execute("INSERT INTO checkpoints VALUES ('r1', 1, 5, 1783400059, 'LIVE_RESEARCH',"
                 " TRUE, 101.0, 100.0, 1.0, 'DOWN')")
+    # A second round that crosses ONCE and never comes back: the flip is durable.
+    for left, price in ((60.0, 104.0), (50.0, 96.0), (5.0, 97.0)):
+        con.execute("INSERT INTO pm_round_snapshots VALUES (?,?,?,?)", ["r2", left, price, 100.0])
+    con.execute("INSERT INTO checkpoints VALUES ('r2', 60, 5, 1783400000, 'LIVE_RESEARCH',"
+                " TRUE, 104.0, 100.0, 1.0, 'DOWN')")
 
     frame = build(con)
     con.close()
@@ -289,12 +399,47 @@ def selftest() -> int:
     check(bool(row["label_path_agrees_with_settlement"]) is False,
           "path/settlement disagreement is itself recorded, not silently absorbed")
 
+    # --- bursts. Windows are measured back from the checkpoint at 60s left ------------------
+    # 5s window covers seconds_left in [55, 60): the path's next sample is at 50, so the window
+    # is EMPTY. 15s reaches the 96 sample; 30s adds 108; 60s adds 112 and 101.
+    import pandas as pd
+    check(pd.isna(row["label_max_up_usd_5s"]) and pd.isna(row["label_max_down_usd_5s"]),
+          "a burst window containing NO samples is NULL - an unobserved 5s is not a calm 5s")
+    check(abs(float(row["label_max_down_usd_15s"]) - 8.0) < 1e-9
+          and float(row["label_max_up_usd_15s"]) == 0.0,
+          "the 15s window sees only the drop to 96: down 8.0, up 0.0 (clipped, not negative)")
+    check(abs(float(row["label_max_up_usd_30s"]) - 4.0) < 1e-9,
+          "the 30s window reaches 108, so max up is 4.0 from the 104 checkpoint price")
+    check(abs(float(row["label_max_up_usd_60s"]) - 8.0) < 1e-9,
+          "the 60s window reaches the 112 high, so max up is 8.0")
+    check(bool(burst_indicator(frame, "up", 5, 60).iloc[0]) is True
+          and bool(burst_indicator(frame, "up", 10, 60).iloc[0]) is False,
+          "burst_indicator derives any threshold from the stored excursion (>=5 yes, >=10 no)")
+    check(pd.isna(burst_indicator(frame, "up", 5, 5).iloc[0]),
+          "burst_indicator propagates NULL for an unobserved window rather than reading False")
+
+    # --- flips. Crossings at 50s and 40s left, so the flip lasted 10 seconds ----------------
+    check(bool(row["label_flip_reverts_5s"]) is False
+          and bool(row["label_flip_reverts_15s"]) is True,
+          "the flip reverted after 10s: not within 5s, yes within 15s - timed from the FIRST "
+          "crossing, not from the checkpoint")
+    check(bool(row["label_first_cross_is_final"]) is False,
+          "the first crossing is not the final one when the path crosses back")
+
+    single = frame[frame["slug"] == "r2"].iloc[0]
+    check(bool(single["label_first_cross_is_final"]) is True
+          and bool(single["label_flip_reverts_60s"]) is False,
+          "a flip that never reverts is FALSE at every horizon, and is the final crossing")
+
     empty = frame[frame["checkpoint_s"] == 1].iloc[0]
     check(int(empty["label_path_samples"]) == 0,
           "a checkpoint with no forward path reports 0 samples")
     import pandas as pd
-    check(pd.isna(empty["label_remaining_range_usd"]),
-          "an empty forward path yields NULL labels, NOT zeros - unknown is not 'no move'")
+    check(pd.isna(empty["label_remaining_range_usd"])
+          and pd.isna(empty["label_remaining_max_up_usd"])
+          and pd.isna(empty["label_remaining_max_down_usd"]),
+          "an empty forward path yields NULL for EVERY excursion, NOT zeros - unknown is not "
+          "'no move', and greatest() would have quietly written 0.0")
 
     check(all(is_label(c) for c in frame.columns
               if c.startswith("label_")) and
@@ -347,6 +492,23 @@ def main() -> int:
         print(f"{row['checkpoint_s']:>10}s{row['rows']:>9,}"
               f"{row['median_range_usd']:>13.1f}{row['p90_range_usd']:>13.1f}"
               f"{row['any_crossing_rate']:>10.1%}{row['side_survives_rate']:>12.1%}")
+    print()
+    print("  BURST rate: P(move >= X USD within W seconds of the checkpoint), both directions")
+    print(f"{'window':>8}" + "".join(f"{f'>=${usd}':>10}" for usd in BURST_THRESHOLDS_USD))
+    for window in BURST_WINDOWS_S:
+        cells = ""
+        for usd in BURST_THRESHOLDS_USD:
+            up = summary["burst_rates"].get(f"up_{usd}usd_{window}s")
+            down = summary["burst_rates"].get(f"down_{usd}usd_{window}s")
+            cells += f"{(up + down) / 2:>9.2%} " if up is not None else f"{'-':>10}"
+        print(f"{window:>7}s{cells}")
+    print()
+    flips = summary["flip_rates"]
+    print(f"  FLIP persistence over {flips['rows_with_a_crossing']:,} checkpoints that cross:")
+    print(f"    first crossing is the FINAL one : {flips['first_cross_is_final']:.1%}")
+    for window in FLIP_REVERT_WINDOWS_S:
+        print(f"    reverts within {window:>2}s               : "
+              f"{flips[f'reverts_within_{window}s']:.1%}")
     print()
     print(f"  wrote {OUTPUT.relative_to(REPO).as_posix()}")
     print(f"  wrote {manifest_path.relative_to(REPO).as_posix()}")

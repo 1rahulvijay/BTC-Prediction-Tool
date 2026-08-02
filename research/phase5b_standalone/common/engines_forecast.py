@@ -22,6 +22,10 @@ from .data import load_contract
 
 def _clean_direction(value: Any) -> str | None:
     text = str(value or "").upper()
+    if text in {"1", "1.0", "TRUE"}:
+        return "UP"
+    if text in {"0", "0.0", "FALSE"}:
+        return "DOWN"
     return text if text in {"UP", "DOWN"} else None
 
 
@@ -186,8 +190,8 @@ def run_expiry_calibration(context: EngineContext) -> EngineResult:
                            context.maximum_rows)
     frame = loaded.frame.copy()
     frame = frame[frame["eligible"].fillna(False).astype(bool)]
-    frame["current_side"] = frame["current_side"].astype(str).str.upper()
-    frame["settled_side"] = frame["settled_side"].astype(str).str.upper()
+    frame["current_side"] = frame["current_side"].map(_clean_direction)
+    frame["settled_side"] = frame["settled_side"].map(_clean_direction)
     frame["target"] = (frame["current_side"] == frame["settled_side"]).astype(int)
     frame["probability"] = pd.to_numeric(frame["p_hold_cur"], errors="coerce")
     frame["market_probability"] = np.where(

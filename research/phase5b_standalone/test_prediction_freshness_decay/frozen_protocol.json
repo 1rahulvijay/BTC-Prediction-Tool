@@ -1,0 +1,43 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5B_50_PREDICTION_FRESHNESS_DECAY",
+  "method": {
+    "blocked_reason": "1/5/15/30/60/120-second markouts are not stored for each immutable model output",
+    "required_artifacts": [
+      "data/research/model_prediction_markouts.parquet"
+    ],
+    "required_columns": []
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "53196271950c10771e46adb48c3451cc0ddb3e7dedd82d4be21073f1abad4014",
+  "protocol_version": "phase5b.v1",
+  "question": "How quickly does each model output become stale?"
+}

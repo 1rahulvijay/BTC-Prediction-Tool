@@ -1,0 +1,76 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "atomic checkpoint row with checkpoint_age_s >= 0; settlement is label-only",
+    "required_columns": [
+      "slug",
+      "condition_id",
+      "horizon",
+      "anchor_ts",
+      "checkpoint_s",
+      "checkpoint_age_s",
+      "eligible",
+      "seconds_left",
+      "anchor_price",
+      "btc_price",
+      "distance_bps",
+      "vol_60s_pct",
+      "p_hold_cur",
+      "p_hold_up",
+      "p_hold_down",
+      "current_side",
+      "up_bid",
+      "up_ask",
+      "up_mid",
+      "up_spread",
+      "up_top_ask_size",
+      "up_d1",
+      "down_bid",
+      "down_ask",
+      "down_mid",
+      "down_spread",
+      "down_top_ask_size",
+      "down_d1",
+      "settled_side",
+      "up_win",
+      "down_win"
+    ],
+    "source": "poly_checkpoints",
+    "timestamp": "snapshot_ts"
+  },
+  "engine": "pm_research",
+  "experiment_id": "P5B_72_TOKEN_LIQUIDITY_ASYMMETRY_PERSISTENCE",
+  "method": {
+    "mode": "liquidity_persistence"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "c5268687335f89093271ac9930f7f315d1b6b7d341883aa7eb8d7f4a144c87ef",
+  "protocol_version": "phase5b.v1",
+  "question": "Does token liquidity persist?"
+}

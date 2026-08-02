@@ -1,0 +1,68 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "decision fields precede resolution; outcome and PnL columns are labels only",
+    "required_columns": [
+      "horizon",
+      "entry_price",
+      "expected_move",
+      "confidence",
+      "raw_direction",
+      "final_direction",
+      "trade_verdict",
+      "action",
+      "notional_usd",
+      "fee_bps",
+      "slippage_bps",
+      "no_trade_reasons_json",
+      "resolved",
+      "actual_move",
+      "actual_direction",
+      "direction_hit",
+      "gross_pnl_usd",
+      "fees_usd",
+      "slippage_usd",
+      "net_pnl_usd",
+      "avoided_loss_usd",
+      "opportunity_cost_usd"
+    ],
+    "source": "analytics_table",
+    "table": "forward_ev_ledger",
+    "timestamp": "timestamp"
+  },
+  "engine": "system_research",
+  "experiment_id": "P5B_77_SKIP_REASON_ECONOMIC_VALUE",
+  "method": {
+    "mode": "skip_reason_value"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "e91089d33e54935fefb186da1b1855de6c10469208ecbc873644464367b4950c",
+  "protocol_version": "phase5b.v1",
+  "question": "Which skip reasons avoid losses?"
+}

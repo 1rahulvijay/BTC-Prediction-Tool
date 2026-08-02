@@ -1,0 +1,53 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "resolved outcome is label-only; votes share exact prediction timestamp and horizon",
+    "required_columns": [
+      "model",
+      "horizon",
+      "direction",
+      "actual_direction",
+      "hit",
+      "resolved"
+    ],
+    "source": "analytics_table",
+    "table": "model_predictions",
+    "timestamp": "timestamp",
+    "where": "resolved = true"
+  },
+  "engine": "ensemble_audit",
+  "experiment_id": "P5B_47_SHARED_INFORMATION_FALSE_CONSENSUS",
+  "method": {
+    "mode": "false_consensus"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "839f86582c92535f2930ccd2747efcc74caea95c95d08d6e8a10685c3ea08242",
+  "protocol_version": "phase5b.v1",
+  "question": "How independent are ensemble votes?"
+}

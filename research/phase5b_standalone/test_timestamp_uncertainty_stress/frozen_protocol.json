@@ -1,0 +1,50 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5B_88_TIMESTAMP_UNCERTAINTY_STRESS",
+  "method": {
+    "blocked_reason": "candidate markouts at 100/250/500ms and 1/2s pessimistic delays are unavailable",
+    "required_artifacts": [
+      "data/research/phase5_candidate_latency_paths.parquet"
+    ],
+    "required_columns": [
+      "ts_ms",
+      "net_pnl_100ms",
+      "net_pnl_250ms",
+      "net_pnl_500ms",
+      "net_pnl_1s",
+      "net_pnl_2s"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "34d195053c20f970edf2cba470c1583cbc6821550a1251a2e14bc4ff3fc5fca2",
+  "protocol_version": "phase5b.v1",
+  "question": "Does edge survive timestamp uncertainty?"
+}

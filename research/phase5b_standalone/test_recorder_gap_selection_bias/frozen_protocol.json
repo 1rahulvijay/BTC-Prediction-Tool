@@ -1,0 +1,54 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "chronological_baseline",
+    "matched_control"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "recorder-health episodes; market outcomes require a separate causal join",
+    "required_columns": [
+      "episode_end",
+      "stream_counts",
+      "streams_live",
+      "streams_required",
+      "max_ws_age_ms",
+      "max_rest_age_ms",
+      "reconnects",
+      "qualifying",
+      "exclusion_reason"
+    ],
+    "source": "multi_venue_episodes",
+    "timestamp": "episode_start"
+  },
+  "engine": "system_research",
+  "experiment_id": "P5B_87_RECORDER_GAP_SELECTION_BIAS",
+  "method": {
+    "mode": "gap_bias"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "c173210c4332228951c3f4cd396bc0a44e652068eb4ffcc01f0ab5cc09b45ea8",
+  "protocol_version": "phase5b.v1",
+  "question": "Are recorder gaps selective?"
+}
