@@ -295,6 +295,11 @@ jobs:
       - name: Binance action value builder (disjoint windows, cost actually charged)
         run: python backend/research_data/binance_action_value_builder.py --selftest
 
+      # Pins the one way this head could cheat: the outcome its target is built from must never
+      # reach the feature matrix, and the clock must. Both are enforced by feature_columns().
+      - name: Hold-vs-exit head cannot see its own target
+        run: python research/hold_vs_exit_head_v1.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

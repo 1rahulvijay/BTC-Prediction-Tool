@@ -42,10 +42,16 @@ OUTCOME_COLUMNS = frozenset({
     "settled_side", "up_win", "down_win", "resolution_source", "expiry_btc", "resolved_at",
 })
 
-#: Columns identifying the row rather than describing the market.
+#: Columns identifying the ROW rather than describing the state of the world.
+#:
+#: The clock fields are deliberately NOT here. `seconds_left`, `checkpoint_s` and `horizon` are
+#: observations available at the decision instant and are among the most informative inputs
+#: any of these problems has - a first version filed them under identity, which would have
+#: silently starved a hold-versus-exit head of time-to-expiry for a bookkeeping reason.
+#: `checkpoint_age_s` stays: it describes how stale the RECORD is, not the market.
 IDENTITY_COLUMNS = frozenset({
-    "opportunity_id", "slug", "condition_id", "horizon", "anchor_ts", "checkpoint_s",
-    "snapshot_ts", "checkpoint_age_s", "evidence_class", "eligible", "seconds_left",
+    "opportunity_id", "slug", "condition_id", "anchor_ts",
+    "snapshot_ts", "checkpoint_age_s", "evidence_class", "eligible",
 })
 
 
@@ -175,6 +181,10 @@ def selftest() -> int:
     check(is_label("label_remaining_max_up_usd") and is_label("settled_side")
           and not is_label("up_ask"),
           "is_label covers both the prefix rule and the recorder's own outcome names")
+    check(set(feature_columns(["seconds_left", "checkpoint_s", "horizon", "slug"]))
+          == {"seconds_left", "checkpoint_s", "horizon"},
+          "the CLOCK is a feature, not identity - time-to-expiry drives every one of these "
+          "problems and filing it under identity would starve a head of its best input")
 
     print(f"\nCAUSAL VALIDATION SELFTEST: PASS ({checks} checks)")
     return 0

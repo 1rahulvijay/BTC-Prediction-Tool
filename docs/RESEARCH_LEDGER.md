@@ -469,6 +469,54 @@ a fatter downside tail. Small, and not leaned on.
 so roughly a quarter of 2h windows cross a stamp. In a positive-funding regime that flatters
 LONG arms — stated because it biases toward the conclusion that would otherwise pass unnoticed.
 
+### 4.8 Hold-vs-exit head - `2026-08-02`  **FAILS its declared gate**
+
+`research/hold_vs_exit_head_v1.py`. The action-value engines said the only headroom was exit
+timing, so this asks whether anything captures it. Target: at a checkpoint, would exiting at
+30s have beaten holding to settlement? Train on the earlier 70% of `LIVE_RESEARCH` days,
+calibrate the isotonic map and pick the threshold on the later 30%, evaluate on
+`RETROSPECTIVE_VALIDATION` — strictly later than both.
+
+```
+AUC 0.8731   ECE 0.0126        <- the head ranks the decision very well
+```
+
+| policy | exits | mean/$1 | day LCB |
+|---|---:|---:|---:|
+| ALWAYS_HOLD | 0 | **−0.0103** | −0.0186 |
+| ALWAYS_EXIT | 10,888 | −0.0339 | −0.0362 |
+| HEAD@0.65 | 894 | −0.0107 | −0.0196 |
+| RANDOM_MATCHED | 894 | −0.0132 | −0.0208 |
+| *PERFECT (hindsight)* | 2,628 | *+0.1005* | *+0.0945* |
+
+**A head with 0.87 AUC and 0.013 ECE does not beat doing nothing.** It loses to always-hold by
+0.0004/share while a perfect selector earns +0.1005. Good ranking, no conversion.
+
+**The diagnosis, measured not guessed.** The payoff is *favourable* to exiting when right:
+
+```
+exit beats hold : 23.4% of rows, mean gain +0.4758
+hold beats exit : 76.6% of rows, mean loss -0.1713   (gain is 2.8x the loss)
+blind exit EV   : 0.234 x 0.4758 - 0.766 x 0.1713 = -0.0199
+```
+
+So exiting indiscriminately loses because wrong exits are 3.3x more common, and the head must
+select. It ranks well enough to do so — and the *threshold* selected on calibration days
+(0.65) fires on only 894 of 10,888 rows, 8.2% against a 23.4% base rate, and does not transfer.
+
+This reproduces, under a causal construction, the one qualitative lesson that survived the
+retraction of `settlement_fragility_test`: **a better ordering does not transfer through a
+fixed threshold on a level.** That study's numbers are retracted; this is the same phenomenon
+measured cleanly, and it is now the second time it has decided an outcome here.
+
+**What is NOT being done:** no further threshold search. The grid, the selection rule and the
+evaluation set were declared before the run, the verdict is FAIL, and sweeping until something
+passes is exactly how the retracted studies were produced. The legitimate next step is a
+different DECISION RULE — an expected-value rule using predicted *magnitude* rather than a
+probability threshold on the sign — declared in advance and evaluated on data not yet spent.
+
+Elimination-grade regardless: zero `FORWARD_UNTOUCHED` rows exist.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
