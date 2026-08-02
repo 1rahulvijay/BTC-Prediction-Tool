@@ -285,6 +285,16 @@ jobs:
       - name: Action value builder (one implementation, no SQL copy of the arithmetic)
         run: python backend/research_data/action_value_builder.py --selftest
 
+      # The perpetual has no settlement cliff, so the horizon IS the action. These pin that the
+      # round trip is read from binance_paper.config rather than retyped, that long and short
+      # each pay it in full, and that windows are DISJOINT - overlapping ones once let this
+      # repository report 11 "independent" expiries carrying about one observation.
+      - name: Binance action value (costs from the paper engine, hindsight arms unselectable)
+        run: python backend/binance_alpha/action_value.py --selftest
+
+      - name: Binance action value builder (disjoint windows, cost actually charged)
+        run: python backend/research_data/binance_action_value_builder.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

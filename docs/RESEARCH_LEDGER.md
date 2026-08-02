@@ -427,6 +427,48 @@ capacity is not. `execution_cost.exit_fill()` returns `capacity_known = False` r
 assuming one share always fills — the assumption that turns an unexitable position into a
 backtest profit.
 
+### 4.7 Binance action-value engine - `2026-08-02`
+
+`backend/binance_alpha/action_value.py` plus a builder over the 1-minute archive (518,400 bars,
+`2025-08-05 → 2026-07-30`). The perpetual has no settlement cliff, so **the horizon is the
+action**. Round trip is `2 x (fee + slippage) = 12.0 bps`, read from `binance_paper.config` —
+this module carries no cost constant of its own.
+
+Windows are **disjoint** (stride = horizon). Overlapping windows once let this repository report
+a +1230 bps result across "11 expiries" carrying roughly one independent observation.
+
+| horizon | windows | LONG_HOLD | SHORT_HOLD | *ceiling (best exit)* | *perfect pick* |
+|---|---:|---:|---:|---:|---:|
+| 15m | 34,559 | −12.14 | −11.86 | *+2.75* (median **−2.63**) | *+7.10* |
+| 30m | 17,279 | −12.28 | −11.72 | *+9.26* | *+12.14* |
+| 60m | 8,639 | −12.56 | −11.44 | *+18.46* | *+20.28* |
+| 120m | 4,319 | −13.12 | −10.88 | *+31.37* (median +15.97) | *+32.68* |
+
+All figures bps, net of costs. Starred arms **require hindsight** and are bounds, never
+strategies — `select()` excludes them before comparing.
+
+**1. Every fixed rule loses almost exactly the round trip, at every horizon.** LONG_HOLD −12.14
+and SHORT_HOLD −11.86 at 15m against a 12.0 bps cost: the gross mean return is ≈ 0, as a
+near-martingale implies, and you simply pay the spread. Direction is worth nothing — the same
+conclusion the earlier work reached, now at four horizons on disjoint windows.
+
+**2. The 15-minute lane is dead even with perfect foresight.** The ceiling's *median* is
+**−2.63 bps** — a perfectly-timed exit loses money in more than half of all 15m windows, and the
++2.75 mean is carried entirely by the right tail. A realistic head captures some fraction of a
+ceiling; a fraction of this one is nothing.
+
+**3. Headroom scales with horizon and only becomes interesting past an hour.** The ceiling goes
++2.75 → +9.26 → +18.46 → +31.37 bps as the window grows, and at 120m it is 2.6x the round trip
+with a positive median. This is the measured version of the intuition that the 15m lane should
+be pushed out to 1–2h: at 15m there is nothing to capture, at 2h there is.
+
+Short ceilings edge out long ones at every horizon (+35.05 vs +31.37 at 120m), consistent with
+a fatter downside tail. Small, and not leaned on.
+
+**Declared omission:** funding is not modelled. Horizons reach 2h and funding settles every 8h,
+so roughly a quarter of 2h windows cross a stamp. In a positive-funding regime that flatters
+LONG arms — stated because it biases toward the conclusion that would otherwise pass unnoticed.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
