@@ -176,5 +176,10 @@ Focused validation at implementation:
 | Changed duplicate revision rejection | PASS |
 | Future-state rejection | PASS |
 | ENTER/WAIT counterfactual separation | PASS |
+| Full pytest suite | 108 passed |
+| Vite production build | PASS |
+| Python compileall (`backend`, `research`) | PASS |
 
-The full repository gate is recorded in the implementing commit after it completes.
+Both evidence self-tests are permanent invariant-workflow steps. The local full workflow completed
+before this validation record was finalized; GitHub-hosted CI remains subject to the repository's
+documented account/billing availability.

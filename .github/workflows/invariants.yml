@@ -305,6 +305,12 @@ jobs:
       - name: EV magnitude rule (corrected bound is stricter, no label reaches the features)
         run: python research/ev_magnitude_rule_v1.py --selftest
 
+      # Pins that evaluation windows are DISJOINT (stride == horizon) while training may
+      # overlap, that not trading costs exactly zero rather than a fee, and that the round trip
+      # is charged in full on both sides.
+      - name: Binance opportunity head (disjoint evaluation, costs charged both ways)
+        run: python research/binance_opportunity_head_v1.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched
@@ -319,6 +325,16 @@ jobs:
       # that produced the retracted candidate edge.
       - name: Atomic causal decision ledger (a non-causal row cannot be stored)
         run: python -m backend.opportunity_ledger.ledger --selftest
+
+      # Every intra-cadence model update must retain its exact input, predecessor and later
+      # markouts without mutating the forecast row or accepting future-dated state.
+      - name: Model revision ledger (exact state and append-only outcomes)
+        run: python backend/model_revision_ledger.py --selftest
+
+      # Pins ENTER versus WAIT economics and the no-asof-join export contract used by the
+      # candidate-dependent Phase 5 tests.
+      - name: Candidate evidence builder (exact decision and counterfactual separation)
+        run: python backend/research_data/candidate_evidence_builder.py --selftest
 
       - name: Research validation and promotion gates
         run: python -m backend.quant_platform.test_research_validation
