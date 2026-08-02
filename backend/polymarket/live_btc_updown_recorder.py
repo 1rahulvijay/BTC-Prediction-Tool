@@ -194,7 +194,8 @@ def get_book(tid):
     try:
         t0 = time.time()
         b = HTTP.get(CLOB_BOOK.format(tid=tid), timeout=6).json()
-        recv_ms = (time.time() - t0) * 1000.0
+        recv_ts = time.time()
+        recv_ms = (recv_ts - t0) * 1000.0
         bids = sorted(
             ((float(x["price"]), float(x["size"])) for x in b.get("bids", [])),
             reverse=True,
@@ -226,6 +227,9 @@ def get_book(tid):
             "b2": dband(bids, bb, 0.02),
             "b5": dband(bids, bb, 0.05),
             "recv_ms": round(recv_ms, 1),
+            # Epoch timestamp when the complete response became available locally. `recv_ms`
+            # above is request duration and must never be mistaken for receive time.
+            "recv_ts": recv_ts,
             "book_ts": book_ts,
             "book_hash": str(b.get("hash") or "")[:32],
             "ladder": _JSON.dumps(
@@ -808,6 +812,8 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                         "down_full_ladder": dbk["full_ladder"],
                         "up_book_ts": ub["book_ts"] or None,
                         "down_book_ts": dbk["book_ts"] or None,
+                        "up_quote_recv_ts": ub["recv_ts"],
+                        "down_quote_recv_ts": dbk["recv_ts"],
                         "up_recv_ms": ub["recv_ms"],
                         "down_recv_ms": dbk["recv_ms"],
                         "up_book_hash": ub["book_hash"],

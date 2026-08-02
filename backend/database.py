@@ -1067,9 +1067,15 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
     if mtime == _OFFICIAL_SETTLEMENT_MTIME:
         return {"status": "unchanged", "rounds": 0, "trades": 0}
     conn = None
-    rounds = trades = 0
+    rounds = trades = ledger_outcomes = 0
+    evidence_ledger = None
     try:
         conn = _connect()
+        try:
+            from opportunity_ledger.ledger import OpportunityLedger
+            evidence_ledger = OpportunityLedger(os.path.join(_DATA_DIR, "opportunity_ledger.duckdb"))
+        except Exception as exc:
+            logger.warning("Official outcomes cannot reach the opportunity ledger: %s", exc)
         settlements = conn.execute("""
             SELECT horizon, anchor_ts, settled_side, expiry_btc,
                    resolution_source, resolved_at
@@ -1130,11 +1136,22 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
                         WHERE round_id = ? AND rule = ?
                     """, (outcome, source, round_id, rule))
                 trades += 1
+            if evidence_ledger is not None:
+                try:
+                    ledger_outcomes += evidence_ledger.append_settlement_for_round(
+                        round_id, settled_direction=outcome, outcome_ts=settled_ms,
+                        kind="SETTLEMENT_OFFICIAL", settlement_price=actual_price,
+                        source=source)
+                except Exception as exc:
+                    logger.warning("Official opportunity outcome append failed for %s: %s",
+                                   round_id, exc)
         _OFFICIAL_SETTLEMENT_MTIME = mtime
-        return {"status": "ok", "rounds": rounds, "trades": trades}
+        return {"status": "ok", "rounds": rounds, "trades": trades,
+                "ledger_outcomes": ledger_outcomes}
     except Exception as exc:
         print(f"DuckDB official settlement reconciliation error: {exc}")
-        return {"status": "error", "rounds": rounds, "trades": trades, "error": str(exc)}
+        return {"status": "error", "rounds": rounds, "trades": trades,
+                "ledger_outcomes": ledger_outcomes, "error": str(exc)}
     finally:
         if conn:
             conn.close()
@@ -1515,7 +1532,7 @@ def log_champion_snapshot(round_data: dict, ts: int):
             conn.close()
 
 
-def log_round_state_snapshot(round_data: dict, ts: int):
+def log_round_state_snapshot(round_data: dict, ts: int) -> bool:
     """Append one live round-state shadow-panel snapshot for later calibration.
 
     Captures the flip-risk / late-shock $20/$50/$100 / next-opportunity probabilities the
@@ -1527,7 +1544,7 @@ def log_round_state_snapshot(round_data: dict, ts: int):
     try:
         rs = round_data.get("round_state") or {}
         if not rs:
-            return
+            return False
         flip = rs.get("flip_risk") or {}
         shock = rs.get("late_shock") or {}
         nxt = rs.get("next_three_rounds") or {}
@@ -1562,8 +1579,10 @@ def log_round_state_snapshot(round_data: dict, ts: int):
             str(rs.get("action") or ""),
             str(execu.get("status") or ""),
         ))
+        return True
     except Exception as e:
         print(f"DuckDB round-state-snapshot Insert Error: {e}")
+        return False
     finally:
         if conn:
             conn.close()

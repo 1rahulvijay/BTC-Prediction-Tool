@@ -1,7 +1,9 @@
 # Trading strategies — what exists on each venue, and what each one's evidence is
 
-`2026-07-31`. Every claim here is labelled with the evidence behind it. "Implemented" never
+`2026-08-02`. Every claim here is labelled with the evidence behind it. "Implemented" never
 means "profitable."
+
+**Capital authority: NONE. Promotable economic strategies: 0. Paper/shadow only.**
 
 ---
 
@@ -23,11 +25,14 @@ All five now pass the economics gate: take-profit must clear the round trip. Tha
 because both original strategies shipped with a **6.0 bps target against a 12.0 bps round trip** —
 every perfect winner lost 6 bps.
 
-## 2. Polymarket — `calibrated_fair_value` (new)
+## 2. Polymarket — calibrated fair-value forward benchmark
 
 `backend/polymarket_paper/calibrated_fair_value.py` — 13 selftest checks, gated in CI.
 
-Built on the one result in this repository that survived a strictly temporal split.
+This is a frozen forward benchmark, not a candidate. Its earlier positive historical result is
+**RETRACTED** because 93.5% of the quote/state joins used model state observed after the decision
+(median look-ahead 8.1 seconds). The causal reconstruction is 0 of 3 with a negative day-block
+lower bound in every tested window. See `docs/RESEARCH_LEDGER.md`.
 
 ### Entry and exit are one rule, not two heuristics
 
@@ -47,7 +52,7 @@ its premise is gone.
 
 | half | status |
 |---|---|
-| **ENTRY** | **measured.** 2 of 3 strictly temporal splits: +0.0430/$1, day-block LCB +0.0164, vs a trade-everything baseline whose bound is negative. Hold-to-settlement. |
+| **ENTRY** | **UNVALIDATED_FORWARD.** Historical economic claim retracted; causal rerun 0/3. |
 | **EXIT** | **NOT measured, and not measurable from data on disk.** |
 
 A dynamic exit needs the bid observed repeatedly across a round's life. `rule_paper_trades` holds
@@ -77,32 +82,30 @@ rounds, which is not calibration.
 12 bps round trip, now blocked by a `StrategyBase` guard that raises, negative-tested by
 reintroducing the original expression verbatim.
 
-**No leakage.** Enforced structurally in the Polymarket module (above) and in the research script,
-which refits the calibrator inside each split on strictly earlier days only, per horizon.
+**No leakage guarantee is claimed for old studies.** They are retracted. The new atomic ledger
+refuses post-decision state/quote inputs and requires exact artifact, calibrator, policy and input
+identity for evaluated ENTER and WAIT rows.
 
-**No overfitting.** Three margins are module constants; nothing selects them at runtime, and the
-selftest asserts that. But the honest statement is stronger than a guarantee: the entry rule's
-own evidence is **2 of 3 splits, with the most recent one failing**. That is the split closest to
-tomorrow. It has the fewest days and fewest trades, so decay and small-sample noise are not
-separable — and 21 days of live rounds cannot separate them. Anyone reading this as settled is
-reading it wrong.
+**No overfitting guarantee is possible.** The margins are frozen constants, but the only economic
+evidence previously cited for them is retracted. They must earn new forward evidence unchanged.
 
 ## 4. Validation of everything in this change
 
 | check | result |
 |---|---|
-| `backend/run_ci_locally.py` | **74/74** |
-| `python -m pytest -q` | **98 passed** |
+| `backend/run_ci_locally.py` | **79/79 passed** |
+| `python -m pytest -q` | **100 passed** |
 | `research/run_all_sequence.py --selftest` | frontier=7, uncovered=0 |
 | Polymarket module selftest | 13 checks |
 | Binance paper: engine / api / selftest / economics | all pass |
 
 ## 5. Not done, and why
 
-**Wiring into `price_to_beat.py`.** The 16 live Polymarket rules are inline in a 2,630-line
-serving file that the parallel session is actively editing. The new module is a pure decision
-function with no I/O so it can be called in one line when you choose to wire it — that is your
-call, not something to do quietly inside a shared file.
+**Forward benchmark wiring.** It is wired into `price_to_beat.py`, but remains unavailable until
+the source model/calibrator identity is serviceable. It records `UNAVAILABLE`, `NO_QUOTE`,
+`BLOCKED`, `WAIT`, and `ENTER` distinctly in the causal ledger. Its probability is paired with
+the executable quote for the same BTC-ahead contract, never whichever token the market happens
+to price higher.
 
 **`start.bat`** — left to you as instructed. Recorders remain down (last write
 `2026-07-29 19:18` UTC). Nothing above can accrue forward evidence until they run.

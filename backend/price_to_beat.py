@@ -62,6 +62,7 @@ _PERSIST_MODEL_ERROR = ""
 _PERSIST_MODEL_PATH = ""
 _PERSIST_MODEL_MTIME = -2.0
 _PERSIST_MODEL_CHECKED = 0.0
+_PERSIST_MODEL_HASH = None
 
 
 # ── FROZEN-ARTIFACT IMMUTABILITY (PR1, 2026-07-26) ────────────────────────────────────────────
@@ -145,7 +146,7 @@ def _load_persistence_model():
     """Return the persistence-model dict {clf, iso, features, ...} or None. HOT-RELOADS when the
     .pkl changes (mtime, throttled 30s) so a nightly refit goes live WITHOUT a restart; keeps the
     PRIOR model on any load failure (crash-safe). P(hold) silently disabled if absent."""
-    global _PERSIST_MODEL, _PERSIST_MODEL_ERROR, _PERSIST_MODEL_PATH, _PERSIST_MODEL_MTIME, _PERSIST_MODEL_CHECKED
+    global _PERSIST_MODEL, _PERSIST_MODEL_ERROR, _PERSIST_MODEL_PATH, _PERSIST_MODEL_MTIME, _PERSIST_MODEL_CHECKED, _PERSIST_MODEL_HASH
     import os
     import time
     now = time.time()
@@ -164,15 +165,23 @@ def _load_persistence_model():
             return _PERSIST_MODEL                    # frozen: keep serving the pinned artifact
         if mt < 0:
             _PERSIST_MODEL_ERROR = "missing"; _PERSIST_MODEL_MTIME = mt
+            _PERSIST_MODEL_HASH = None
             if _PERSIST_MODEL is None:
                 logger.info(f"A1 persistence model absent at {path} — P(hold) disabled.")
             return _PERSIST_MODEL
         if _identity_blocks_load(path, "persistence_model (P(hold))"):
             _PERSIST_MODEL_ERROR = "artifact identity mismatch"
             _PERSIST_MODEL_MTIME = mt
+            _PERSIST_MODEL_HASH = None
             return _PERSIST_MODEL
+        from verified_io import file_sha256
+        hash_before = file_sha256(path)
         loaded = _verified_load(path)                   # only reaches here when the file CHANGED
+        hash_after = file_sha256(path)
+        if hash_before != hash_after:
+            raise RuntimeError("persistence artifact changed while it was being loaded")
         _PERSIST_MODEL = loaded; _PERSIST_MODEL_MTIME = mt; _PERSIST_MODEL_ERROR = ""
+        _PERSIST_MODEL_HASH = hash_after
         logger.info("A1 persistence model (re)loaded (P(hold) live): test_auc="
                     f"{_PERSIST_MODEL.get('test_auc')}, features={_PERSIST_MODEL.get('features')}")
     except Exception as e:
@@ -518,12 +527,27 @@ def _market_quote_for_round(round_data, now_ms):
         return None
 
 
+# Read from the strategy module, never restated. The paper table and the ledger must name the
+# same thing, and the name itself now says the evidence status: this is a frozen forward
+# BENCHMARK, not the "candidate" it was called while quoting a result that is now retracted.
+_PM_STRATEGY_ID = _pm_fv.STRATEGY_ID
+
+def _seconds_to_ms(seconds) -> int:
+    """Bridge seconds -> ledger milliseconds, ROUNDED rather than truncated.
+
+    int(1025.321 * 1000.0) is 1025320, not 1025321: the product lands just below the integer
+    and int() floors it. One millisecond is harmless on its own, but these values are the
+    causal timestamps a decision row is judged by, and a conversion that is silently wrong in
+    one direction is not something to leave in the evidence path."""
+    return int(round(float(seconds or 0.0) * 1000.0))
+
+
 _PM_CAL_CACHE: dict[int, object] = {}
 _PM_CAL_LOGGED: set[int] = set()
 
 
 def _pm_calibration(horizon: int):
-    """Cached P(hold) calibrator for PM_CALIBRATED_FAIR_VALUE_V1, or None.
+    """Cached P(hold) calibrator for PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1, or None.
 
     Cached because the file does not change while the process runs and this is called on a
     per-round hot path. The unavailability reason is logged ONCE per horizon rather than every
@@ -539,12 +563,71 @@ def _pm_calibration(horizon: int):
     if calibration is None and horizon not in _PM_CAL_LOGGED:
         _PM_CAL_LOGGED.add(horizon)
         logger.info(
-            f"PM_CALIBRATED_FAIR_VALUE_V1 disabled for {horizon}m: no deployable P(hold) "
+            f"{_PM_STRATEGY_ID} disabled for {horizon}m: no deployable P(hold) "
             "calibrator. The challenger refuses to deploy one while the source artifacts fail "
             "identity enforcement (SOURCE_MODEL_REQUIRES_RETRAINING). A retrain that writes "
             "manifests is what enables this strategy."
         )
     return calibration
+
+
+# ── DECISION PROVENANCE ────────────────────────────────────────────────────────────────────
+# A causally-timestamped decision still proves nothing if it cannot say WHAT produced its
+# number. These four hashes are what let a later run re-derive a stored decision without
+# querying any table that did not exist at the decision instant - which is the whole point of
+# the ledger, and was the one thing the first wiring left as None.
+_PM_CAL_HASH_CACHE: dict[int, str] = {}
+
+
+def _phold_artifact_hash() -> str | None:
+    """Identity of the model that produced p_leader_holds, or None if it cannot be proven."""
+    _load_persistence_model()          # refreshes _PERSIST_MODEL_PATH / _PERSIST_MODEL_MTIME
+    if _PERSIST_MODEL is None or not _PERSIST_MODEL_PATH or not _PERSIST_MODEL_HASH:
+        return None
+    # This is the hash captured when the in-memory object was deserialized. Hashing the current
+    # path here would misidentify the served model during the 30-second hot-reload throttle.
+    return _PERSIST_MODEL_HASH
+
+
+def _pm_calibration_hash(horizon: int, calibration) -> str | None:
+    """Identity of the exact monotone map used, INCLUDING its leakage boundary.
+
+    The knots are the calibrator. Two files with the same knots and the same
+    fitted_through_ms are the same calibrator regardless of how they were serialised, and a
+    refit that moves the boundary is a different one even if the knots barely move."""
+    if calibration is None:
+        return None
+    if horizon not in _PM_CAL_HASH_CACHE:
+        try:
+            from artifact_identity import hash_json
+            _PM_CAL_HASH_CACHE[horizon] = hash_json({
+                "x": list(calibration.x), "y": list(calibration.y),
+                "fitted_through_ms": int(calibration.fitted_through_ms),
+                "horizon": int(calibration.horizon)})
+        except Exception as exc:
+            logger.debug(f"calibrator hash unavailable for {horizon}m: {exc}")
+            return None
+    return _PM_CAL_HASH_CACHE[horizon]
+
+
+def _pm_policy_hash() -> str | None:
+    """Identity of the DECLARED policy - every constant that can move a decision.
+
+    Read from the strategy module rather than restated here, so editing a margin changes the
+    hash automatically. A restated copy would drift and quietly certify the wrong policy."""
+    try:
+        from artifact_identity import hash_json
+        return hash_json({
+            "strategy": _PM_STRATEGY_ID,
+            "entry_margin": _pm_fv.ENTRY_MARGIN, "exit_margin": _pm_fv.EXIT_MARGIN,
+            "stop_drop": _pm_fv.STOP_DROP,
+            "min_seconds_left": _pm_fv.MIN_SECONDS_LEFT,
+            "max_seconds_left": _pm_fv.MAX_SECONDS_LEFT,
+            "eval_window_s": [_pm_fv.EVAL_MIN_SECONDS_LEFT,
+                              _pm_fv.EVAL_MAX_SECONDS_LEFT]})
+    except Exception as exc:
+        logger.debug(f"policy hash unavailable: {exc}")
+        return None
 
 
 _PM_LEDGER = None
@@ -569,56 +652,117 @@ def _pm_ledger():
     return _PM_LEDGER
 
 
-def _pm_ledger_record(round_data, now_ms, horizon, quote, action, reason, probability):
-    """One immutable decision row, with the timestamps that actually decided it.
+def _pm_ledger_settle_round(round_id, outcome, outcome_ms, *, price=None,
+                            kind="SETTLEMENT_PROXY", source=""):
+    """Append settlement lifecycle rows without mutating the original decisions."""
+    ledger = _pm_ledger()
+    if ledger is None:
+        return 0
+    try:
+        return ledger.append_settlement_for_round(
+            str(round_id), settled_direction=str(outcome), outcome_ts=int(outcome_ms),
+            kind=str(kind), settlement_price=price, source=str(source))
+    except Exception as exc:
+        logger.warning(f"opportunity-ledger settlement append failed for {round_id}: {exc}")
+        return 0
+
+
+def _pm_ledger_record(round_data, now_ms, horizon, quote, action, reason, probability,
+                      *, calibration=None, feature_values=None):
+    """One immutable decision row, with the timestamps AND the provenance that decided it.
 
     decision_ts       = now, the instant this branch ran
     quote_recv_ts     = when the bridge observed the price (from the quote itself)
-    state_snapshot_ts = when round_state was last SCORED, not when it was read
+    quote_exchange_ts = the VENUE's own stamp for that book - a different clock, so the ledger
+                        stores the difference as skew rather than asserting an ordering
+    state_snapshot_ts = when the complete state used here was composed and persisted
     feature_cutoff_ts = the same instant - no feature here postdates the state
 
-    A NonCausalDecision raised from here is a REAL FINDING about the live path: it means this
-    code cannot prove its own causality. It is logged at WARNING and never silently dropped,
-    because that silence is exactly how the original defect survived five studies.
+    An evaluated action (ENTER/WAIT) additionally carries four hashes naming the model, the
+    calibrator, the declared policy and the exact feature values. Without them a row proves
+    only that something ran; the ledger refuses such a row, so if the identity cannot be
+    resolved this records UNAVAILABLE - which is the truth - instead of a WAIT that cannot be
+    re-derived.
+
+    A refusal raised from here is a REAL FINDING about the live path. It is logged at WARNING
+    and never silently dropped, because that silence is exactly how the original defect
+    survived five studies.
     """
     ledger = _pm_ledger()
     if ledger is None:
         return
-    # Imported BEFORE the try: naming it only inside would make `except NonCausalDecision`
+    # Imported BEFORE the try: naming it only inside would make `except LedgerRefusal`
     # raise NameError if the import itself failed - an error handler that cannot run.
     try:
-        from opportunity_ledger.ledger import Action, Decision, NonCausalDecision
+        from opportunity_ledger.ledger import (
+            EVALUATED_ACTIONS, Action, Decision, LedgerRefusal, stable_hash)
     except Exception as exc:
         logger.debug(f"opportunity ledger types unavailable: {exc}")
         return
     try:
-        state_ms = int(round_data.get("_round_state_score_ms") or 0) or None
-        quote_ms = int(quote.get("quote_ts_ms") or 0) if quote else 0
+        state_ms = int(round_data.get("_round_state_composed_ms") or 0) or None
+        quote_ms = int((quote or {}).get("quote_ts_ms") or 0) or None
+        chosen = Action(action)
+        identity = {"model_artifact_hash": None, "calibrator_hash": None,
+                    "policy_hash": None, "feature_values_hash": None}
+        context = None
+        if chosen in EVALUATED_ACTIONS:
+            # stable_hash comes from the ledger itself, not a second implementation of the
+            # same canonical JSON. The ledger re-hashes decision_context.feature_values and
+            # compares; two hashers that agree today are a drift waiting to happen.
+            identity = {
+                "model_artifact_hash": _phold_artifact_hash(),
+                "calibrator_hash": _pm_calibration_hash(int(horizon), calibration),
+                "policy_hash": _pm_policy_hash(),
+                # The exact inputs decide() consumed, not a re-read of them later.
+                "feature_values_hash": (stable_hash(feature_values)
+                                        if feature_values is not None else None),
+            }
+            # The hash proves nothing changed; the payload is what lets a later run actually
+            # re-derive the decision without touching any table that postdates it.
+            context = {"feature_values": feature_values or {},
+                       "model_outputs": {"calibrated_probability": probability,
+                                         "raw_p_hold": (feature_values or {}).get("raw_p_hold")}}
+            missing = [name for name, value in identity.items() if not value]
+            if missing:
+                # Downgrading is not hiding the problem - UNAVAILABLE is precisely what
+                # happened: the strategy produced a number it cannot account for, so it has
+                # no usable decision to record.
+                logger.warning(
+                    f"{_PM_STRATEGY_ID} evaluated but cannot prove its provenance "
+                    f"({', '.join(missing)}); recording UNAVAILABLE instead of {action}")
+                chosen, reason = Action.UNAVAILABLE, f"unprovable identity: {','.join(missing)}"
+                identity = {key: None for key in identity}
+                context = None
+        # The quote and the probability are recorded for WAIT as well as ENTER. "What did it
+        # see, and what did it think, when it declined?" is the question forward evidence has
+        # to answer; a WAIT row with no price is just a timestamp.
+        acting = chosen in EVALUATED_ACTIONS
         record = Decision(
             round_id=str(round_data.get("id")),
-            strategy_id="PM_CALIBRATED_FAIR_VALUE_V1",
+            strategy_id=_PM_STRATEGY_ID,
             market_id=str(round_data.get("condition_id") or round_data.get("id")),
             venue="polymarket",
             decision_ts=int(now_ms),
-            quote_exchange_ts=None,
-            quote_recv_ts=quote_ms or None,
+            quote_exchange_ts=(quote or {}).get("quote_exchange_ts_ms"),
+            quote_recv_ts=quote_ms,
             # The EXACT state used, identified rather than reconstructed later by an as-of join.
             state_snapshot_id=(f"{round_data.get('id')}:{state_ms}" if state_ms else None),
             state_snapshot_ts=state_ms,
             feature_cutoff_ts=state_ms,
-            side=(quote or {}).get("side") if action == "ENTER" else None,
-            ask=(quote or {}).get("ask") if action == "ENTER" else None,
-            bid=(quote or {}).get("bid") if action == "ENTER" else None,
-            fee=(quote or {}).get("fee") if action == "ENTER" else None,
-            probability=probability if action == "ENTER" else None,
-            model_artifact_hash=None, calibrator_hash=None, policy_hash=None,
-            feature_values_hash=None,
-            action=Action(action), reason=str(reason)[:400],
+            side=(quote or {}).get("side") if acting else None,
+            ask=(quote or {}).get("ask") if acting else None,
+            bid=(quote or {}).get("bid") if acting else None,
+            fee=(quote or {}).get("fee") if acting else None,
+            probability=probability if acting else None,
+            **identity,
+            decision_context=context,
+            action=chosen, reason=str(reason)[:400],
             risk_state="PAPER_ONLY")
         ledger.record(record)
-    except NonCausalDecision as exc:
+    except LedgerRefusal as exc:
         logger.warning(f"LEDGER REFUSED a live decision - the serving path cannot prove its "
-                       f"own causality: {exc}")
+                       f"own causality or provenance: {exc}")
     except Exception as exc:
         logger.debug(f"opportunity ledger write skipped: {exc}")
 
@@ -651,7 +795,15 @@ def _leader_quote(round_data, now_ms):
                 # WHEN this price was observed. Without it a decision row cannot prove the
                 # quote preceded the decision, which is the defect that invalidated five
                 # studies. The bridge stamps `ts` in SECONDS; the ledger works in ms.
-                "quote_ts_ms": int(float(quote.get("ts") or 0.0) * 1000.0)}
+                "quote_ts_ms": _seconds_to_ms(
+                    quote.get(f"{pfx}_quote_recv_ts") or quote.get("ts")),
+                # The VENUE's own stamp for this book, which the recorder already captures and
+                # the bridge already carries - the app was simply dropping it. It is a
+                # DIFFERENT clock from `ts`, so the ledger stores their difference as skew
+                # rather than treating it as an ordering claim. 0/absent means the venue did
+                # not supply one; None keeps that distinguishable from "at the epoch".
+                "quote_exchange_ts_ms": (
+                    _seconds_to_ms(quote.get(f"{pfx}_book_ts")) or None)}
     except Exception:
         return None
 
@@ -757,17 +909,25 @@ def _side_quote(round_data, now_ms, side):
             return None
         if abs(float(now_ms) / 1000.0 - float(quote.get("ts") or 0.0)) > 5.0:
             return None
+        if side not in ("UP", "DOWN"):
+            return None
         pfx = "up" if side == "UP" else "down"
         ask, bid = float(quote[f"{pfx}_ask"]), float(quote[f"{pfx}_bid"])
         if not (0.0 <= bid <= ask < 1.0):
             return None
         rate = float(quote.get("fee_rate") or 0.07)
         fees_on = quote.get("fees_enabled") is not False
-        return {"side": side, "ask": ask, "bid": bid,
-                "fee_in": round(rate * ask * (1 - ask), 5) if fees_on else 0.0,
+        fee_in = round(rate * ask * (1 - ask), 5) if fees_on else 0.0
+        return {"side": side, "ask": ask, "bid": bid, "fee": fee_in,
+                "fee_in": fee_in,
                 "fee_out": round(rate * bid * (1 - bid), 5) if fees_on else 0.0,
                 "spread": ask - bid,
-                "ask_size": float(quote.get(f"{pfx}_top_ask_size") or 0.0)}
+                "ask_size": float(quote.get(f"{pfx}_top_ask_size") or 0.0),
+                "depth": float(quote.get(f"{pfx}_top_ask_size") or 0.0),
+                "quote_ts_ms": _seconds_to_ms(
+                    quote.get(f"{pfx}_quote_recv_ts") or quote.get("ts")),
+                "quote_exchange_ts_ms": (
+                    _seconds_to_ms(quote.get(f"{pfx}_book_ts")) or None)}
     except Exception:
         return None
 
@@ -1977,6 +2137,10 @@ class PriceToBeatTracker:
                 rnd.get("_round_state_scores") or {},
                 _opportunity or {"probability": None, "status": "unavailable"},
             )
+            # Timestamp the fully composed state, not only the slower shadow-head score. P(hold),
+            # side, distance and seconds-left are refreshed on this tick and did not all exist at
+            # `_round_state_score_ms`; using that older time would misstate feature causality.
+            rnd["_round_state_composed_ms"] = int(now_ms)
         except Exception as _rse:
             logger.debug(f"round-state shadow skipped: {_rse}")
             rnd["round_state"] = None
@@ -2046,13 +2210,18 @@ class PriceToBeatTracker:
                                                       btc_entry=rnd.get("current_price"))
                 except Exception as _lle:
                     logger.debug(f"LATE_LEADER_30S paper log skipped: {_lle}")
-            # ── PM_CALIBRATED_FAIR_VALUE_V1: buy the leader ONLY when a CALIBRATED P(hold)
-            # exceeds the executable ask plus fee. Raw P(hold) cannot support this comparison -
-            # it says 96% where 89% realizes, so every "cheap" call it makes is biased by ~7
-            # points. Evidence: 2 of 3 strictly temporal splits, +0.0430/$1, day-block LCB
-            # +0.0164, against a trade-everything baseline whose bound is NEGATIVE. The third
-            # split - the MOST RECENT - failed, so this is a candidate accruing forward evidence
-            # in paper, not a promoted rule.
+            # ── PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1: buy the leader ONLY when a
+            # CALIBRATED P(hold) exceeds the executable ask plus fee. Raw P(hold) cannot support
+            # this comparison - it says 96% where 89% realizes, so every "cheap" call it makes
+            # is biased by ~7 points.
+            #
+            # EVIDENCE: NONE. This rule once cited +0.0430/$1 with a day-block LCB of +0.0164
+            # over 2 of 3 splits. That study joined a market state to a quote without requiring
+            # the state to exist at the decision instant - 93.5% of its rows used a state from
+            # AFTER the decision - and is RETRACTED. Rebuilt causally it is 0 of 3 with negative
+            # bounds throughout. What runs here is a FROZEN BENCHMARK whose only purpose is to
+            # emit causally recorded forward decisions; it is not a candidate and carries no
+            # capital authority. See research/research_status.py.
             #
             # INERT until the source artifacts carry identity manifests: the challenger marks
             # its calibrators SOURCE_MODEL_REQUIRES_RETRAINING (12/12 artifacts fail identity),
@@ -2060,14 +2229,22 @@ class PriceToBeatTracker:
             # for a model whose identity cannot be proven is not deployable. It then logs
             # CAL_UNAVAILABLE and takes no position - that row is deliberate, because a strategy
             # that is silently dead looks alive, which is a failure this repository has hit.
-            if (_paper_entries_allowed and 20 <= secs_left <= 32
+            # Window read from the strategy module, not restated here: it is part of the frozen
+            # policy and feeds the policy hash, so a literal copy would let the recorded
+            # provenance describe a window the code no longer uses.
+            if (_paper_entries_allowed
+                    and _pm_fv.EVAL_MIN_SECONDS_LEFT <= secs_left <= _pm_fv.EVAL_MAX_SECONDS_LEFT
                     and int(rnd.get("horizon", 0) or 0) in (5, 15)
                     and not rnd.get("_pmcfv_eval") and rnd.get("id")):
                 rnd["_pmcfv_eval"] = True
                 try:
                     _h = int(rnd.get("horizon") or 0)
                     _cal = _pm_calibration(_h)
-                    _lq = _leader_quote(rnd, now_ms)
+                    # P(hold) describes the side currently ahead versus the BTC anchor. Price
+                    # that SAME contract. The market's higher-bid token can temporarily be the
+                    # opposite side; pairing its ask with this probability is a cross-contract
+                    # logic error, not an arbitrage signal.
+                    _lq = _side_quote(rnd, now_ms, rnd.get("current_position"))
                     _raw_hold = (rnd.get("round_state") or {}).get("p_leader_holds")
                     # Every branch below writes BOTH the paper row and one atomic causal ledger
                     # row, in the same block that made the decision, with the timestamps that
@@ -2080,14 +2257,14 @@ class PriceToBeatTracker:
                     # mean opposite things.
                     if _cal is None:
                         database.log_rule_paper_trade(
-                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
+                            rnd["id"], _PM_STRATEGY_ID, int(now_ms), _h,
                             "", 0.0, 0.0, 0.0, 0.0, 0.0, "CAL_UNAVAILABLE")
                         _pm_ledger_record(rnd, int(now_ms), _h, _lq, "UNAVAILABLE",
                                           "no deployable P(hold) calibrator "
                                           "(SOURCE_MODEL_REQUIRES_RETRAINING)", None)
                     elif _lq is None or _raw_hold is None:
                         database.log_rule_paper_trade(
-                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
+                            rnd["id"], _PM_STRATEGY_ID, int(now_ms), _h,
                             "", 0.0, 0.0, 0.0, 0.0, 0.0,
                             "NO_QUOTE" if _lq is None else "NO_PHOLD")
                         _pm_ledger_record(rnd, int(now_ms), _h, _lq,
@@ -2095,20 +2272,35 @@ class PriceToBeatTracker:
                                           "no executable quote" if _lq is None
                                           else "round state carries no p_leader_holds", None)
                     else:
+                        _state_ms = int(rnd.get("_round_state_composed_ms") or 0)
+                        if not _state_ms or not database.log_round_state_snapshot(rnd, _state_ms):
+                            database.log_rule_paper_trade(
+                                rnd["id"], _PM_STRATEGY_ID, int(now_ms), _h,
+                                "", 0.0, 0.0, 0.0, 0.0, 0.0, "STATE_UNAVAILABLE")
+                            _pm_ledger_record(
+                                rnd, int(now_ms), _h, _lq, "BLOCKED",
+                                "exact composed state snapshot could not be persisted", None)
+                            raise RuntimeError("exact composed state snapshot unavailable")
+                        # The feature vector is built ONCE and both consumed by decide() and
+                        # hashed into the ledger row. Rebuilding it for the hash would let the
+                        # recorded provenance describe inputs the decision never saw.
+                        _fvals = {"horizon": _h, "seconds_left": int(secs_left),
+                                  "leader_side": str(_lq["side"]),
+                                  "raw_p_hold": float(_raw_hold), "ask": float(_lq["ask"]),
+                                  "bid": float(_lq["bid"]), "fee": float(_lq["fee"])}
+                        _decision_ms = int(time.time() * 1000)
                         _d = _pm_fv.decide(_pm_fv.Quote(
-                            round_id=str(rnd["id"]), timestamp_ms=int(now_ms), horizon=_h,
-                            seconds_left=int(secs_left), leader_side=str(_lq["side"]),
-                            raw_p_hold=float(_raw_hold), ask=float(_lq["ask"]),
-                            bid=float(_lq["bid"]), fee=float(_lq["fee"])), _cal)
+                            round_id=str(rnd["id"]), timestamp_ms=_decision_ms, **_fvals), _cal)
                         database.log_rule_paper_trade(
-                            rnd["id"], "PM_CALIBRATED_FAIR_VALUE_V1", int(now_ms), _h,
-                            _lq["side"] if _d.action is _pm_fv.Action.ENTER else "",
+                            rnd["id"], _PM_STRATEGY_ID, _decision_ms, _h,
+                            _lq["side"],
                             _lq["ask"], _lq["bid"], _lq["fee"], _lq["spread"], _lq["depth"],
                             _d.action.value, btc_entry=rnd.get("current_price"))
                         _pm_ledger_record(
-                            rnd, int(now_ms), _h, _lq,
+                            rnd, _decision_ms, _h, _lq,
                             "ENTER" if _d.action is _pm_fv.Action.ENTER else "WAIT",
-                            _d.reason, _d.p_cal)
+                            _d.reason, _d.p_cal,
+                            calibration=_cal, feature_values=_fvals)
                 except _pm_fv.CalibrationRefused as _cre:
                     # The leakage guard fired. Never downgrade this to a trade.
                     logger.warning(f"PM_CALIBRATED_FAIR_VALUE refused (leakage guard): {_cre}")
@@ -2757,6 +2949,9 @@ class PriceToBeatTracker:
                             settlement_source="pyth_proxy")
                     except Exception as _pse:
                         logger.debug(f"Rule paper settle skipped: {_pse}")
+                    _pm_ledger_settle_round(
+                        p["id"], actual_dir, int(now_ms), price=float(end_price),
+                        kind="SETTLEMENT_PROXY", source="pyth_proxy")
             else:
                 still.append(p)
         self.pending = still

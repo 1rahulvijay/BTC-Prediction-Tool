@@ -216,11 +216,21 @@ jobs:
         run: python backend/test_pm_fair_value_wiring.py
 
       # 21 of 31 trainers wrote model artifacts with NO integrity manifest, which is why
-      # 12/12 artifacts fail identity and phold_challenger refuses to deploy any calibrator
-      # (SOURCE_MODEL_REQUIRES_RETRAINING) - the live blocker on PM_CALIBRATED_FAIR_VALUE_V1.
-      # An overnight retrain that skips the manifest leaves the strategy switched off silently.
+      # artifacts fail identity and phold_challenger refuses to deploy any calibrator
+      # (SOURCE_MODEL_REQUIRES_RETRAINING) - the live blocker on the frozen Polymarket
+      # forward benchmark. A retrain that skips the manifest leaves it switched off silently.
       - name: Trainers write manifests (an unmanifested artifact blocks the calibrator)
         run: python backend/test_trainers_write_manifests.py
+
+      # The gate above asks "did the trainer call a manifest writer?" and passes. This one asks
+      # the question that decides whether anything can trade - "can serving LOAD the artifact?"
+      # - and the answer measured 2026-08-02 is 0 of 25. They disagree because there are TWO
+      # manifests: the integrity sidecar (sha256+size) satisfies the gate above, while
+      # check_feature_contract explicitly skips integrity-only manifests and demands full
+      # provenance. So every trainer can pass while every artifact stays refused. A gate that
+      # cannot tell those apart is vacuous, which is the defect class this repo keeps hitting.
+      - name: Artifact serviceability (passing the manifest gate is not a loadable model)
+        run: python backend/test_artifact_serviceability.py
 
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's

@@ -2,6 +2,12 @@
 
 `2026-07-31`. Prompted by "retrain p_hold on the current v14 contract."
 
+> **RETRACTED ECONOMIC RESULT (2026-08-01):** the calibration-quality measurements may remain
+> useful diagnostics, but every quote-based expectancy number below is invalid as economic
+> evidence. The study paired quotes with later model state in 93.5% of rows (median 8.1 seconds
+> of hindsight). The causal reconstruction is 0 of 3 with negative lower bounds. This document
+> is retained as research history only; `docs/RESEARCH_LEDGER.md` is authoritative.
+
 ---
 
 ## 1. Correction: p_hold is not on the v14 contract, and was retrained two days ago
@@ -117,7 +123,7 @@ consistent with decay, and consistent with noise, and 21 days cannot tell you wh
 | p_hold retrained recently | already done, 2026-07-29, by the existing trainer |
 | calibrator fitted and measured | yes, wins on all three metrics |
 | calibrator applied to serving | **NO** — requires `BTC_APPLY_PHOLD_CALIBRATION=1`, an explicit operator decision |
-| fair-value edge | **CANDIDATE**, 2 of 3 temporal splits, most recent one fails |
+| fair-value edge | **RETRACTED** — noncausal state/quote join; causal rerun 0 of 3 |
 | real orders | **DISABLED** |
 
 Nothing was wired. No artifact was promoted. The calibrator remains shadow-only by its own

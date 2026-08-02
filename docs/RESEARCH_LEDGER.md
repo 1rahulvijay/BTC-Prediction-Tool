@@ -79,7 +79,7 @@ They **refuse to run** without `--run-retracted-study`, and print why.
 | option surface coherent: 0 of 2,079 no-arb violations | valid |
 | Polymarket books coherent; cross-market monotonicity holds | valid |
 | paper strategies had a 6 bps target vs 12 bps round trip | valid, **fixed** |
-| 21 of 31 trainers wrote artifacts with no manifest | valid, **fixed** |
+| 21 of 31 trainers wrote artifacts with no integrity manifest | valid; writer gate fixed, full serving provenance still awaits retrain |
 | pytest never ran in CI (86 tests unexercised) | valid, **fixed** |
 
 `causal_decision_join.py` is classified **CAUSAL_BEST_EFFORT_HISTORICAL**, not gold standard:
@@ -115,12 +115,50 @@ excursion shifts. A state-conditioned hazard model is a different question.
 
 | item | blocker |
 |---|---|
-| `PM_CALIBRATED_FAIR_VALUE_V1` activation | 24 of 25 artifacts lack manifests → calibrator not deployable |
+| `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` activation | **0 of 25 artifacts are loadable by serving** — §4.1 |
 | all forward evidence | recorders down since `2026-07-29 19:18` |
 | queue/maker research | no sequenced L2 |
 | Polymarket dynamic exit | quote trajectories: 1.00 rows/round, 2 markets |
 | options ↔ Polymarket lead-lag | archives 27 days apart |
 | hosted CI | billing; local `run_ci_locally.py` is the only gate |
+
+### 4.1 The manifest gate was passing vacuously — measured `2026-08-02`
+
+There are **two** different things called a manifest, and only one of them unblocks serving:
+
+| writer | file | contents | unblocks serving? |
+|---|---|---|---|
+| `verified_io.write_manifest` | `NAME.pkl.integrity.json` | sha256, size, `integrity_only: true` | **no** |
+| `artifact_identity.write_artifact_manifest` | `NAME.pkl.manifest.json` | full provenance | yes, if complete |
+
+`check_feature_contract._manifest()` **explicitly skips** any file carrying `integrity_only:
+true`. So `test_trainers_write_manifests.py` could report *"0 offenders"* — and did — while every
+artifact stayed refused. That is the same defect class as the non-causal join: a check that passes
+while the thing it was meant to guarantee is false.
+
+```
+artifacts (.pkl)                : 25
+  with a PROVENANCE manifest    :  3   (all 3 missing 'feature_semantics_version')
+  with ONLY an integrity manifest:  5   passes the manifest gate, still refused
+  with neither                  : 17
+  SERVICEABLE                   :  0
+```
+
+Consequences, none of which were visible before measuring:
+
+- Every model-backed strategy is **`UNAVAILABLE`, not unprofitable**. `p_hold` itself does not
+  load, so `p_leader_holds` is absent and the benchmark cannot even reach its own decision rule.
+- **A retrain that writes only integrity sidecars changes nothing.** `backend/train_heads.py` is
+  the only place that writes provenance correctly, and it does so in the *orchestrator* after each
+  per-head trainer returns — so a retrain launched by running trainers individually produces
+  artifacts that still cannot be served.
+- Serviceability additionally requires `artifact_matches_current_training`: `requested_days`,
+  `matrix_requested_days`, `matrix_coverage_ok`, `matrix_monthly_quality_passed`,
+  `source_manifest_hash`, `runtime_dependency_hash` and the artifact hash must all match the
+  *current* training identity. A complete manifest with stale values is still refused.
+
+`backend/test_artifact_serviceability.py` now measures this on every CI run and ratchets: the
+count may rise, never silently fall.
 
 ## 5. Governance added because of the retraction
 
@@ -128,7 +166,8 @@ excursion shifts. A state-conditioned hazard model is a different question.
 |---|---|
 | `research/research_status.py` | retracted numbers being rediscovered and quoted as evidence |
 | `backend/test_causal_join_guard.py` | a **new** quote↔state join without a causal timestamp rule |
-| `backend/test_trainers_write_manifests.py` | artifacts shipped without provenance |
+| `backend/test_trainers_write_manifests.py` | a trainer that dumps an artifact and writes no sidecar |
+| `backend/test_artifact_serviceability.py` | the gate above passing while **0 of 25** artifacts load |
 | `backend/test_naming_honesty.py` | `test_*.py` files that cannot fail |
 | `run_all_sequence.py` coverage check | studies silently excluded from the runner |
 | pytest step | 86 tests that CI never ran |
@@ -145,12 +184,14 @@ whether the inputs existed when the decision was made.
 1. Restart recorders; manifest the gap since 2026-07-29
 2. Full artifact retrain — trainers now write manifests
 3. Verify all manifests; refit calibrators from verified sources
-4. Confirm `PM_CALIBRATED_FAIR_VALUE_V1` starts logging real decisions instead of `CAL_UNAVAILABLE`
+4. Confirm `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` starts logging real decisions instead of `CAL_UNAVAILABLE`
 
-**Phase 1 — atomic causal decision ledger.** One immutable row at decision time carrying quote
-timestamps, the **exact state snapshot id used**, feature hash, artifact hashes, action, and
-`WAIT` / `UNAVAILABLE` / `NO_QUOTE` / `BLOCKED` reasons. No research script should ever again have
-to *guess* which state belonged to which quote.
+**Phase 1 — atomic causal decision ledger: implemented for the fair-value forward benchmark.**
+One immutable row carries exact local quote receive time, venue timestamp, persisted state
+snapshot id, context payload, feature/artifact/calibrator/policy hashes, action, and distinct
+`WAIT` / `UNAVAILABLE` / `NO_QUOTE` / `BLOCKED` reasons. ENTER and WAIT are refused if their
+context is missing or its hash does not match. Automatic official-outcome append and coverage of
+every other strategy remain open before this becomes the platform-wide promotion authority.
 
 **Phase 2 — freeze one benchmark and collect.** Calibrated `p_hold`, `> ask + fee + 0.02`, fixed
 small notional, hold to settlement, every opportunity logged including `WAIT`. No retuning during

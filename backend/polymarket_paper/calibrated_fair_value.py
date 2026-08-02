@@ -1,14 +1,24 @@
-"""POLYMARKET_CALIBRATED_FAIR_VALUE_V1 - the only measured candidate, with dynamic exit.
+"""PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1 - a frozen benchmark, NOT a candidate.
 
-WHAT THIS IS BUILT ON
-    research/phold_calibrated_fair_value.py measured the one result in this repository that
-    survived a strictly temporal split: with a CALIBRATED P(hold), buying the leader only when
-    the calibrated probability exceeds the quoted ask plus fee earned +0.0430/$1 with a day-block
-    lower bound of +0.0164, against a trade-everything baseline of +0.0076 with a NEGATIVE bound.
+EVIDENCE STATUS - READ THIS BEFORE QUOTING ANYTHING BELOW
+    This module used to open by calling itself "the only measured candidate" and quoting
+    +0.0430/$1 with a day-block lower bound of +0.0164 over 2 of 3 temporal splits.
 
-    2 of 3 temporal splits passed. THE FAILING ONE WAS THE MOST RECENT. That is a candidate, not
-    a finding, and this module exists to collect forward evidence in paper - not to authorize a
-    real order.
+    THAT RESULT IS RETRACTED. research/phold_calibrated_fair_value.py selected its market state
+    independently of the quote it traded against, and in 93.5% of rows the state was observed
+    AFTER the decision (median +8.1s). Rebuilt causally in research/causal_decision_join.py, the
+    same idea is 0 of 3 with a negative lower bound in every window: -0.0144, -0.0296, -0.0531.
+
+    So this module carries NO measured economic support in either direction. It is a frozen
+    forward benchmark: a declared, unchanging rule that exists to produce causally recorded
+    decisions from now on. Its historical numbers are a record of a defect, not evidence.
+
+        evidence status  : UNVALIDATED_FORWARD
+        historical claim : RETRACTED (NONCAUSAL_STATE_QUOTE_JOIN)
+        capital authority: NONE
+
+    The module-level constants below say the same thing to code, so a caller cannot read the
+    status wrong, and research/research_status.py is the canonical registry.
 
 THE MECHANISM, STATED HONESTLY
     This is not a better forecast. P(hold)'s ranking is unchanged and the market price already
@@ -37,12 +47,11 @@ THE LEAKAGE GUARD, MADE STRUCTURAL
     `decide()` REFUSES any round whose decision timestamp is at or before it. There is no flag to
     turn this off, so a look-ahead evaluation cannot be written by accident - it raises.
 
-EVIDENCE STATUS - THE ENTRY IS MEASURED, THE EXIT IS NOT
-    Be clear about which half of this carries evidence.
+NEITHER HALF CARRIES EVIDENCE - and they are unmeasured for DIFFERENT reasons
 
-      ENTRY   measured. research/phold_calibrated_fair_value.py, 2 of 3 strictly temporal
-              splits, +0.0430/$1 with a day-block lower bound of +0.0164 against a
-              trade-everything baseline whose bound is negative. Hold-to-settlement.
+      ENTRY   RETRACTED, not merely unmeasured. It had a number; the number described trades
+              nobody could have made. Causally rebuilt it is 0 of 3. Re-measuring it needs
+              forward rows from the causal ledger, not another pass over the same 21 days.
 
       EXIT    NOT MEASURED, and it cannot be measured from the data on disk. A dynamic exit
               needs the bid observed repeatedly across a round's life. `rule_paper_trades`
@@ -70,12 +79,26 @@ import argparse
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Identity and evidence status, machine-readable so no caller has to parse a docstring.
+# The serving layer reads STRATEGY_ID from here rather than restating the string, so the name
+# in the ledger and the name in the paper table cannot drift apart.
+STRATEGY_ID = "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1"
+EVIDENCE_STATUS = "UNVALIDATED_FORWARD"
+HISTORICAL_ECONOMIC_CLAIM = "RETRACTED"
+RETRACTION_REASON = "NONCAUSAL_STATE_QUOTE_JOIN"
+CAPITAL_AUTHORITY = False
+
 # Declared, not searched. Changing these is a protocol change, not a tuning knob.
 ENTRY_MARGIN = 0.02        # required fair-value edge over ask+fee before entering
 EXIT_MARGIN = 0.02         # bid must exceed fair value by this before selling early
 STOP_DROP = 0.10           # calibrated probability falling this far below entry breaks the thesis
 MIN_SECONDS_LEFT = 15      # below this the quote is not reliably executable
 MAX_SECONDS_LEFT = 120     # the window the calibrated evidence was measured on
+# The serving benchmark evaluates once in this narrower frozen checkpoint window. Keeping the
+# values here makes them part of the strategy contract and prevents the caller and policy hash
+# from silently drifting apart.
+EVAL_MIN_SECONDS_LEFT = 20
+EVAL_MAX_SECONDS_LEFT = 32
 
 
 class Action(str, Enum):

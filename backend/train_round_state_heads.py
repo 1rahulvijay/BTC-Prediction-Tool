@@ -237,8 +237,9 @@ def train(output: Path = OUT) -> dict:
     # artifact reads as UNKNOWN identity, and that is not cosmetic: phold_challenger refuses to
     # mark its calibrators deployable while any source artifact fails identity enforcement
     # (SOURCE_MODEL_REQUIRES_RETRAINING - 12/12 artifacts), which is exactly what currently
-    # disables PM_CALIBRATED_FAIR_VALUE_V1. A retrain that skips this leaves the only measured
-    # candidate switched off, so the manifest is part of saving, not a follow-up chore.
+    # disables PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1 - the frozen forward benchmark that
+    # is meant to be emitting causally recorded decisions. A retrain that skips this leaves it
+    # switched off, so the manifest is part of saving, not a follow-up chore.
     _manifest = write_integrity_manifest(output)
     print(f"[round-state] manifest written sha256={_manifest['sha256'][:16]}... "
           f"size={_manifest['size']}", flush=True)

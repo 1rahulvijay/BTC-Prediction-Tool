@@ -1220,7 +1220,8 @@ def _paper_rule_status_cached():
                             "LATE_LEADER_60S_V1", "LATE_LEADER_MAKER_V1",
                             "CHEAP_SAFE_EARLY_V1", "SHOCK_SNIPER_LIVE_V1",
                             "MODEL_CROSSFLIP_L1_V1", "MODEL_CROSSFLIP_L2_V1",
-                            "CHAMPION_DYNAMIC_PAPER_V1", "PM_CALIBRATED_FAIR_VALUE_V1")},
+                            "CHAMPION_DYNAMIC_PAPER_V1",
+                            "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1")},
                # live action feed: every shadow/rule entry+exit, newest first (UI table)
                "recent": database.rule_paper_recent(14)}
         _PAPER_RULE_CACHE["val"] = val

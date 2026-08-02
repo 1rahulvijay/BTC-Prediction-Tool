@@ -39,6 +39,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 PTB = os.path.join(ROOT, "backend", "price_to_beat.py")
 POLYMARKET_RULE_MODULES = (
     os.path.join(ROOT, "backend", "polymarket", "model_dynamic_paper.py"),
+    # The Polymarket fair-value benchmark owns its own id (STRATEGY_ID) and price_to_beat
+    # imports it rather than restating the string, so that the ledger row and the paper row
+    # cannot drift apart. That is the right pattern and it makes the literal invisible at the
+    # call site - the same blind spot the loop-variable case in the docstring describes. The
+    # module that OWNS the id is the place to read it from.
+    os.path.join(ROOT, "backend", "polymarket_paper", "calibrated_fair_value.py"),
 )
 SRV = os.path.join(ROOT, "backend", "server.py")
 JS = os.path.join(ROOT, "src", "main.js")

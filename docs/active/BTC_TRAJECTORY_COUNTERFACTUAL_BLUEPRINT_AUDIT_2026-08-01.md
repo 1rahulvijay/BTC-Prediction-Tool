@@ -553,7 +553,7 @@ Make current shadow/paper heads serviceable before creating new model families.
    - dataset identity;
    - policy identity where applicable.
 3. Re-run the P(hold) calibration challenger against the newly identified source artifacts.
-4. Confirm `PM_CALIBRATED_FAIR_VALUE_V1` changes from `CAL_UNAVAILABLE` to visible forward decisions.
+4. Confirm `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` changes from `CAL_UNAVAILABLE` to visible forward decisions.
 5. Build/promote a verified complete-trade champion bundle.
 6. Freeze the entry-threshold artifact before evidence begins.
 7. Run the recorders continuously.

@@ -35,7 +35,8 @@ import train_360d_multitarget_forecaster as base
 
 # Manifest written in the same step as the artifact: without it the artifact reads as
 # UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
-# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+# artifact fails identity enforcement - which disables
+# PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 from verified_io import write_manifest as write_integrity_manifest
 
 ROOT = Path(__file__).resolve().parents[2]

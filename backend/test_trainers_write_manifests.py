@@ -1,8 +1,9 @@
 """Every trainer that writes a model artifact must write its integrity manifest too.
 
 WHY THIS IS A GATE AND NOT A CONVENTION
-    A missing manifest is not bookkeeping. It is the live blocker on the only measured
-    candidate edge in this repository:
+    A missing manifest is not bookkeeping. It is the live blocker that keeps this repository's
+    frozen Polymarket forward benchmark from evaluating at all - so instead of producing
+    forward evidence it produces UNAVAILABLE rows:
 
         data/research/phold_challenger/phold_calibrators.json
           deployable = False,  both horizons
@@ -12,7 +13,7 @@ WHY THIS IS A GATE AND NOT A CONVENTION
     The P(hold) calibrator wins on Brier AND log-loss AND ECE and is still refused, because a
     calibrator for a model whose identity cannot be proven is not deployable - if the model
     silently changes, the calibrator becomes silently wrong. That refusal disables
-    PM_CALIBRATED_FAIR_VALUE_V1.
+    PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 
     So an overnight retrain that saves an artifact without a manifest does not merely leave a
     field blank. It leaves the strategy switched off, and nothing in the run would say so.
@@ -195,11 +196,17 @@ def main() -> int:
         print()
         print("  An artifact without a manifest reads as UNKNOWN identity, and the P(hold)")
         print("  calibrator refuses to deploy while ANY source artifact fails identity. A")
-        print("  retrain that skips the manifest leaves PM_CALIBRATED_FAIR_VALUE_V1 switched")
+        print("  retrain that skips the manifest leaves")
+        print("  PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1 switched")
         print("  off and says nothing about it. Write the manifest in the same step as the dump.")
         return 1
 
     print("\n  PASS - every artifact-writing trainer also writes a manifest.")
+    print("  NOTE: 'a manifest' here means the INTEGRITY sidecar (sha256+size). It is NOT")
+    print("  sufficient for serving: check_feature_contract skips integrity-only manifests, so")
+    print("  an artifact can pass this gate and still be refused as UNKNOWN identity. What the")
+    print("  serving path can actually load is measured by:")
+    print("      python backend/test_artifact_serviceability.py")
     return 0
 
 

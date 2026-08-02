@@ -19,7 +19,8 @@ from probes.probe_tradable_move import make_tradable_labels
 
 # Manifest written in the same step as the artifact: without it the artifact reads as
 # UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
-# artifact fails identity enforcement - which disables PM_CALIBRATED_FAIR_VALUE_V1.
+# artifact fails identity enforcement - which disables
+# PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 from verified_io import write_manifest as write_integrity_manifest
 
 def main():

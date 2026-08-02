@@ -1,4 +1,4 @@
-"""The PM_CALIBRATED_FAIR_VALUE_V1 wiring must actually log, not silently swallow.
+"""The PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1 wiring must actually log, not silently swallow.
 
 WHY THIS EXISTS
     The wiring in price_to_beat.py sits inside `except Exception: logger.debug(...)`, matching
@@ -79,13 +79,13 @@ def main() -> int:
 
         # Branch 1: calibrator unavailable - 11 positional arguments, no keywords.
         database.log_rule_paper_trade(
-            round_id, "PM_CALIBRATED_FAIR_VALUE_V1", 1_700_000_000_000, 5,
+            round_id, "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1", 1_700_000_000_000, 5,
             "", 0.0, 0.0, 0.0, 0.0, 0.0, "CAL_UNAVAILABLE")
         check(True, "CAL_UNAVAILABLE branch: 11-positional call is accepted by the real DB")
 
         # Branch 2: a real decision - 11 positional plus btc_entry keyword.
         database.log_rule_paper_trade(
-            round_id + 1, "PM_CALIBRATED_FAIR_VALUE_V1", 1_700_000_001_000, 15,
+            round_id + 1, "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1", 1_700_000_001_000, 15,
             "UP", 0.70, 0.68, 0.01, 0.02, 25.0, "ENTER", btc_entry=64_000.0)
         check(True, "ENTER branch: positional + btc_entry keyword is accepted")
 
@@ -96,7 +96,8 @@ def main() -> int:
         try:
             rows = con.execute(
                 "SELECT rule, action, side FROM rule_paper_trades "
-                "WHERE rule = 'PM_CALIBRATED_FAIR_VALUE_V1' ORDER BY ts").fetchall()
+                "WHERE rule = 'PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1' "
+                "ORDER BY ts").fetchall()
         finally:
             con.close()
         actions = {str(r[1]) for r in rows}
