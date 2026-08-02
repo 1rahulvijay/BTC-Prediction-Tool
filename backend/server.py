@@ -3900,7 +3900,7 @@ async def main_loop():
                                 predictions=predictions,
                                 feature_values=np.asarray(seq, dtype=np.float32).copy(),
                                 # `seq` is the exact full feature array passed to predict(); the
-                                # ensemble performs its own 69-feature selection internally.
+                                # ensemble applies the current model-contract mask internally.
                                 feature_names=list(FEATURE_NAMES),
                                 snapshot_ts=now_ms_pred,
                                 current_price=float(data_state["klines"][-1]["close"]),

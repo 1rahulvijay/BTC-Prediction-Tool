@@ -29,8 +29,8 @@ Every completed prediction cycle stores:
 - every base model's DOWN/NEUTRAL/UP probability vector;
 - one shared exact model-input snapshot for all horizons in the cycle.
 
-The state snapshot stores the full input passed into the ensemble, before its internal 69-feature
-selection. Values are float32, zlib-compressed, hashed together with the feature-name list, and can
+The state snapshot stores the full 136-feature input passed into the ensemble, before its current
+63-feature model-contract selection. Values are float32, zlib-compressed, hashed together with the feature-name list, and can
 be decoded exactly. The snapshot is stored once, not duplicated for each horizon.
 
 Outcomes are append-only in a separate table. The application records live Binance markouts at:
