@@ -286,10 +286,12 @@ Focused validation at implementation:
 | Changed duplicate revision rejection | PASS |
 | Future-state rejection | PASS |
 | ENTER/WAIT counterfactual separation | PASS |
-| Full pytest suite | 108 passed |
+| Full local invariant workflow | 102/102 passed |
+| Full pytest suite | 109 passed |
 | Vite production build | PASS |
+| npm high-severity audit | 0 vulnerabilities |
 | Python compileall (`backend`, `research`) | PASS |
 
-Both evidence self-tests are permanent invariant-workflow steps. The local full workflow completed
+The evidence self-tests are permanent invariant-workflow steps. The local full workflow completed
 before this validation record was finalized; GitHub-hosted CI remains subject to the repository's
 documented account/billing availability.
