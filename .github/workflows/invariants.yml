@@ -245,6 +245,16 @@ jobs:
       - name: Data manifest profiler still detects gaps and skew
         run: python backend/audit/build_oracle_data_manifest.py --selftest
 
+      # The checkpoint dataset performs NO state-to-quote join - every feature comes from one
+      # atomically-written snapshot row - so the retracted defect is structurally impossible.
+      # What remains joinable is the GRID (must take the last snapshot at or BEFORE each
+      # checkpoint) and the SETTLEMENT label (from the future by design, so segregated).
+      - name: Causal dataset contract (a row may not use its own future)
+        run: python backend/research_data/causal_validation.py --selftest
+
+      - name: Checkpoint builder as-of selection (grid, units, label segregation)
+        run: python backend/research_data/checkpoint_builder.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

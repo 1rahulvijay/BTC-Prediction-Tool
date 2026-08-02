@@ -211,6 +211,38 @@ Caveat: `pm_round_snapshots` has one generic `ts`, so it is the same
 `CAUSAL_BEST_EFFORT_HISTORICAL` class as `rule_paper_trades`. That is acceptable for building
 *labels* (which look forward from a decision point by design) and **not** for features.
 
+### 4.3 The canonical causal checkpoint dataset - `2026-08-02`
+
+`backend/research_data/checkpoint_builder.py` emits one admissible row per round per grid point
+from the live archive. **56,467 rows over 7,787 rounds**, 99.9% settlement coverage, median
+checkpoint age **1.10 s**.
+
+**It performs no state-to-quote join.** Every feature comes from a single atomically-written
+`pm_round_snapshots` row - BTC price, both books, the depth ladder and `p_hold` observed in one
+instant by one process. The defect that retracted five studies is structurally impossible here,
+not merely guarded against. Two joins remain and both are explicit: the grid takes the last
+snapshot **at or before** each checkpoint, and settlement is segregated as a LABEL
+(`OUTCOME_COLUMNS`) so it can never be offered as a feature.
+
+Grid points at the round start (300 s for 5m, 900 s for 15m) are **absent**: recording begins
+microseconds later, so no snapshot precedes them. Absent is the honest answer; reaching forward
+for the next row is the defect.
+
+| evidence class | rows | may promote? |
+|---|---:|---|
+| `PRE_ORACLE` | 2,413 | no - diagnostic only |
+| `LIVE_RESEARCH` (07-06 → 07-20) | 41,458 | no - shaped the research |
+| `RETROSPECTIVE_VALIDATION` (07-21 → 08-01) | 12,596 | no - elimination only |
+| **`FORWARD_UNTOUCHED` (08-02 →)** | **0** | the only class that can |
+
+**Zero promotable rows exist**, and will stay zero until the round recorders restart.
+
+**A bug this caught in itself.** `pm_round_snapshots.ts` is in SECONDS; `rule_paper_trades.ts`
+is in MILLISECONDS. Both are called `ts`. A hardcoded `/1000` sent all 56,467 rows to 1970 and
+classified the entire dataset `PRE_ORACLE` - a result plausible enough to ship. The epoch unit
+is now inferred, and the selftest asserts a known date lands in the right class, so the mistake
+fails loudly. Verified by planting it: the check does fail.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -222,6 +254,7 @@ Caveat: `pm_round_snapshots` has one generic `ts`, so it is the same
 | `backend/test_naming_honesty.py` | `test_*.py` files that cannot fail |
 | `run_all_sequence.py` coverage check | studies silently excluded from the runner |
 | pytest step | 86 tests that CI never ran |
+| `backend/research_data/causal_validation.py` | a dataset row using its own future |
 | `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
