@@ -85,6 +85,44 @@ eligible_for_economics = true
 The completeness test separately reports total, resolved and economic rows. Merely creating a
 Parquet file with the right columns no longer makes the prerequisite appear complete.
 
+### 4. Evidence health report
+
+`backend/evidence_health_report.py` audits both evidence databases without changing predictions,
+paper trades, model weights or promotion authority. Its default outputs are:
+
+```text
+data/reports/EVIDENCE_HEALTH_REPORT_V1.json
+data/evidence_health.duckdb
+```
+
+The JSON file is replaced atomically. The DuckDB history is append-only so recorder degradation
+can be inspected over time. The report includes:
+
+- revision rows by horizon and release ID;
+- resolved 1s/5s/15s/30s/60s/120s and per-horizon outcomes;
+- missing-outcome rate after a 10-second maturity grace period;
+- observation-latency median, p95, maximum and rate later than five seconds;
+- changed-duplicate and causal refusal counts;
+- predecessor-link and stored-causality checks;
+- compressed-state decode, shape, finite-value and hash verification;
+- opportunity rows by action, outcome kind and resolution state;
+- duplicate/orphan opportunity outcomes and missing evaluated-action provenance.
+
+An absent revision database or an empty opportunity ledger returns `WAITING_FOR_DATA`. It is never
+reported as healthy. Corrupt state, future-dated stored inputs, broken predecessor links, orphan
+outcomes or incomplete evaluated-action provenance return `FAIL`.
+
+Refusals are append-only diagnostics in `model_revision_refusals`. An identical retry remains an
+idempotent success and is not counted as a refusal. A same-ID/different-payload retry is counted as
+`DUPLICATE_CONFLICT`; time-order violations are counted as `CAUSAL`. The telemetry records a
+rejected attempt only and cannot weaken the ledger's original fail-closed behavior.
+
+`backend/audit/recorder_evidence_check.py` is the companion process-level audit. It separates a
+recorder that is merely wired/self-tested from one that has actually launched and written rows.
+This matters for Binance sequenced L2: the implementation and launcher wiring exist, but the local
+store has not yet been produced. Model/outcome health and recorder-process health remain separate
+reports so neither can make the other appear healthy.
+
 ## Runtime Flow
 
 ```mermaid
@@ -124,8 +162,32 @@ Self-tests:
 
 ```powershell
 python backend\model_revision_ledger.py --selftest
+python backend\evidence_health_report.py --selftest
+python backend\audit\recorder_evidence_check.py --selftest
 python backend\research_data\candidate_evidence_builder.py --selftest
 ```
+
+Daily report after the backend has produced predictions:
+
+```powershell
+python backend\evidence_health_report.py --expect-live
+```
+
+Use `--full-state-scan` for a complete snapshot-integrity pass. The default checks the newest 1,000
+snapshots to keep the daily command bounded. `--strict` returns a non-zero exit code unless the
+overall status is exactly `HEALTHY`; do not use strict mode while an intentionally empty
+opportunity ledger is still collecting. Because DuckDB file locking is process-scoped, run the CLI
+while the backend is stopped or otherwise guarantee that the source files are stable.
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `WAITING_FOR_DATA` | Required database/rows do not exist yet. This is not a pass. |
+| `COLLECTING` | Rows exist but the declared minimum mature sample is not available. |
+| `HEALTHY` | Declared coverage and integrity checks pass. This is not evidence of alpha. |
+| `DEGRADED` | Missing, late or stale coverage exceeds a declared operational threshold. |
+| `FAIL` | Stored evidence violates causality, identity, linkage or state integrity. |
 
 ## Still Blocked, Deliberately
 
@@ -172,6 +234,7 @@ Focused validation at implementation:
 |---|---:|
 | Python compile for changed modules | PASS |
 | Model-revision ledger self-test | 11 checks passed |
+| Evidence-health report self-test | 12 checks passed |
 | Candidate-evidence builder self-test | 7 checks passed |
 | Exact float32 state round trip | PASS |
 | Changed duplicate revision rejection | PASS |

@@ -245,6 +245,12 @@ jobs:
       - name: Data manifest profiler still detects gaps and skew
         run: python backend/audit/build_oracle_data_manifest.py --selftest
 
+      # A selftest proves code is correct and says nothing about whether the process ever ran.
+      # binance_l2_recorder.py is 804 correct, CI-gated, wired lines that have never recorded a
+      # byte. This reports wired-vs-ever-ran so NEVER_RAN is visible instead of invisible.
+      - name: Recorder evidence (wired is not the same as running)
+        run: python backend/audit/recorder_evidence_check.py --selftest
+
       # The checkpoint dataset performs NO state-to-quote join - every feature comes from one
       # atomically-written snapshot row - so the retracted defect is structurally impossible.
       # What remains joinable is the GRID (must take the last snapshot at or BEFORE each
@@ -330,6 +336,11 @@ jobs:
       # markouts without mutating the forecast row or accepting future-dated state.
       - name: Model revision ledger (exact state and append-only outcomes)
         run: python backend/model_revision_ledger.py --selftest
+
+      # A running process is not proof that its evidence recorders are healthy. This check
+      # proves missing outcomes, late observations, refused writes and corrupt state are visible.
+      - name: Forward evidence health report (coverage and integrity fail closed)
+        run: python backend/evidence_health_report.py --selftest
 
       # Pins ENTER versus WAIT economics and the no-asof-join export contract used by the
       # candidate-dependent Phase 5 tests.
@@ -496,8 +507,13 @@ jobs:
           python backend/venues/venue_admissibility.py --selftest || exit /b 1
           python backend/venues/binance_l2_recorder.py --selftest || exit /b 1
           python backend/venues/rl_data_readiness.py || exit /b 1
+          python backend/audit/recorder_evidence_check.py --selftest || exit /b 1
           python -m backend.quant_platform.test_kernel || exit /b 1
           python -m backend.binance_paper.test_engine || exit /b 1
+          python -m backend.opportunity_ledger.ledger --selftest || exit /b 1
+          python backend/model_revision_ledger.py --selftest || exit /b 1
+          python backend/evidence_health_report.py --selftest || exit /b 1
+          python backend/research_data/candidate_evidence_builder.py --selftest || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
           python research/maker_lever_test.py --selftest || exit /b 1
           python -m backend.research.hierarchical_ensemble_v1.selftest || exit /b 1

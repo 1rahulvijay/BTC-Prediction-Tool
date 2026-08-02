@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import threading
 import time
@@ -27,9 +28,10 @@ from typing import Any, Iterable
 import numpy as np
 
 
-SCHEMA_VERSION = "model-revision-ledger-v1"
+SCHEMA_VERSION = "model-revision-ledger-v2"
 STANDARD_MARKOUTS_MS = (1_000, 5_000, 15_000, 30_000, 60_000, 120_000)
 VALID_DIRECTIONS = frozenset({"UP", "DOWN", "NEUTRAL"})
+logger = logging.getLogger(__name__)
 
 
 class RevisionRefusal(ValueError):
@@ -146,8 +148,75 @@ class ModelRevisionLedger:
                         PRIMARY KEY (revision_id, outcome_kind)
                     )
                 """)
+                con.execute("""
+                    CREATE TABLE IF NOT EXISTS model_revision_refusals (
+                        refusal_id VARCHAR PRIMARY KEY,
+                        schema_version VARCHAR NOT NULL,
+                        refusal_ts BIGINT NOT NULL,
+                        operation VARCHAR NOT NULL,
+                        category VARCHAR NOT NULL,
+                        message VARCHAR NOT NULL,
+                        context_json VARCHAR NOT NULL
+                    )
+                """)
             finally:
                 con.close()
+
+    @staticmethod
+    def _refusal_category(error: Exception | str) -> str:
+        message = str(error).lower()
+        if "already exists with a different payload" in message:
+            return "DUPLICATE_CONFLICT"
+        if any(token in message for token in (
+            " is after ", " is before ", "out-of-order", "follows stored",
+        )):
+            return "CAUSAL"
+        if "state payload" in message or "decompress" in message:
+            return "STATE_DECODE"
+        return "VALIDATION"
+
+    def record_refusal(
+        self,
+        *,
+        operation: str,
+        error: Exception | str,
+        context: dict[str, Any] | None = None,
+        now_ms: int | None = None,
+    ) -> str:
+        """Persist a rejected write without weakening the fail-closed write contract."""
+        refusal_ts = int(_now_ms() if now_ms is None else now_ms)
+        message = str(error)
+        category = self._refusal_category(error)
+        refusal_id = hashlib.sha256(
+            f"{time.time_ns()}\0{operation}\0{category}\0{message}".encode("utf-8")
+        ).hexdigest()
+        with self._lock:
+            con = self._connect()
+            try:
+                con.execute(
+                    "INSERT INTO model_revision_refusals VALUES (?,?,?,?,?,?,?)",
+                    [refusal_id, SCHEMA_VERSION, refusal_ts, str(operation), category,
+                     message, _canonical_json(context or {})],
+                )
+            finally:
+                con.close()
+        return refusal_id
+
+    def _record_refusal_safely(
+        self,
+        *,
+        operation: str,
+        error: Exception,
+        context: dict[str, Any],
+    ) -> None:
+        try:
+            self.record_refusal(operation=operation, error=error, context=context)
+        except Exception as telemetry_error:
+            logger.error(
+                "Revision refusal telemetry failed during %s: %s",
+                operation,
+                telemetry_error,
+            )
 
     @staticmethod
     def _encode_state(feature_values: Any, feature_names: Iterable[str]) -> dict[str, Any]:
@@ -182,6 +251,39 @@ class ModelRevisionLedger:
         return np.frombuffer(raw, dtype=np.float32).reshape(shape).copy()
 
     def record_batch(
+        self,
+        revisions: Iterable[dict[str, Any]],
+        *,
+        feature_values: Any,
+        feature_names: Iterable[str],
+        snapshot_ts: int,
+        feature_cutoff_ts: int,
+        now_ms: int | None = None,
+    ) -> list[str]:
+        """Store a cycle and preserve a diagnostic row when validation refuses it."""
+        rows = [dict(row) for row in revisions]
+        try:
+            return self._record_batch(
+                rows,
+                feature_values=feature_values,
+                feature_names=feature_names,
+                snapshot_ts=snapshot_ts,
+                feature_cutoff_ts=feature_cutoff_ts,
+                now_ms=now_ms,
+            )
+        except RevisionRefusal as exc:
+            self._record_refusal_safely(
+                operation="record_batch",
+                error=exc,
+                context={
+                    "revision_count": len(rows),
+                    "snapshot_ts": int(snapshot_ts),
+                    "feature_cutoff_ts": int(feature_cutoff_ts),
+                },
+            )
+            raise
+
+    def _record_batch(
         self,
         revisions: Iterable[dict[str, Any]],
         *,
@@ -339,6 +441,27 @@ class ModelRevisionLedger:
         observed_ts: int,
         maximum_lateness_ms: int = 10_000,
     ) -> int:
+        try:
+            return self._resolve_due(
+                observed_price=observed_price,
+                observed_ts=observed_ts,
+                maximum_lateness_ms=maximum_lateness_ms,
+            )
+        except RevisionRefusal as exc:
+            self._record_refusal_safely(
+                operation="resolve_due",
+                error=exc,
+                context={"observed_ts": int(observed_ts)},
+            )
+            raise
+
+    def _resolve_due(
+        self,
+        *,
+        observed_price: float,
+        observed_ts: int,
+        maximum_lateness_ms: int = 10_000,
+    ) -> int:
         """Append due outcomes observed close enough to their declared target timestamp.
 
         Missing observations remain missing. A price seen after a restart is never backfilled as
@@ -414,6 +537,9 @@ class ModelRevisionLedger:
                        OR s.feature_cutoff_ts > r.prediction_ts
                     """
                 ).fetchone()[0])
+                refusals = dict(con.execute(
+                    "SELECT category, count(*) FROM model_revision_refusals GROUP BY 1"
+                ).fetchall())
             finally:
                 con.close()
         return {
@@ -422,6 +548,7 @@ class ModelRevisionLedger:
             "by_horizon": horizons,
             "linked_to_previous": linked,
             "stored_causal_violations": causal,
+            "refusals_by_category": refusals,
         }
 
 

@@ -116,7 +116,7 @@ last-anchor-crossing and flip persistence (§4.4), conditional direction (§4.10
 |---|---|
 | alpha half-life / survival of an impulse | no forward dataset |
 | mispricing half-life | needs the quote path joined to a decision, i.e. forward ledger rows |
-| maker fill survival, queue position, markout | needs sequenced Binance L2; Polymarket L2 exists |
+| maker fill survival, queue position, markout | the Binance L2 recorder EXISTS and works; it has never been launched — §4.11 |
 | liquidity-vacuum / price-response kernel | needs L2 |
 | flow-origin classification | needs cross-venue synchronized feeds |
 | multi-expiry outcome geometry | needs simultaneous market capture |
@@ -137,7 +137,7 @@ excursion shifts. A state-conditioned hazard model is a different question.
 |---|---|
 | `PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1` activation | **0 of 25 artifacts are loadable by serving** — §4.1 |
 | all forward evidence | recorders down; **not all at once** - see §4.2 |
-| queue/maker research | no sequenced L2 |
+| queue/maker research | **not a code gap** — the recorder exists and works, it has never run; §4.11 |
 | ~~Polymarket dynamic exit~~ | **NOT BLOCKED** - the 1.00 rows/round figure was wrong; see §4.2 |
 | options ↔ Polymarket lead-lag | archives 27 days apart |
 | hosted CI | billing; local `run_ci_locally.py` is the only gate |
@@ -630,6 +630,45 @@ answer, and stricter than the one it replaced.
 **This closes the last lane with untested headroom.** Every ceiling measured here is real and
 large; nothing built so far captures any of it.
 
+### 4.11 The Binance L2 recorder was never a code gap - `2026-08-02`
+
+The ledger carried *"queue/maker research: no sequenced L2"* as though the capability were
+missing. It is not. `backend/venues/binance_l2_recorder.py` is 804 lines implementing the full
+USD-M diff-depth protocol — REST snapshot, `U`/`u`/`pu` buffering, gap detection that closes the
+session and forces a resync — and it is **better than the `depth20` partial stream**, which
+carries no resync obligation because it re-sends a truncated snapshot.
+
+It is CI-gated, its selftest passes, and it is wired into `start_recorders_once.ps1` (enabled
+unless `BTC_SKIP_BINANCE_L2_RECORDER=1`). **It has never recorded a byte.** No
+`binance_l2.duckdb` exists anywhere, and no stdout/stderr log — because it was wired in after
+`2026-07-04`, and the launcher has not run on this machine since.
+
+**Verified working, for the first time**, with a bounded 45-second live run to a throwaway store:
+
+```
+430 diffs | 1 snapshot | 1 session | 0 gaps
+first_update_id / final_update_id / previous_update_id     proper U/u/pu
+received_ts_ms / event_ts_ms / transaction_ts_ms           three clocks
+applied / disposition / payload_sha256 / book_top_sha256   integrity fields
+```
+
+**The gap this exposed is not L2 — it is that nothing asked whether a recorder had ever run.**
+`backend/audit/recorder_evidence_check.py` now reports, per recorder wired in the launcher:
+whether it ever ran, whether its store holds rows, and when it last wrote.
+
+```
+binance_l2_recorder.py         ever ran False            0 rows   NEVER_RAN
+l2_recorder.py                 ever ran True    25,809,455 rows   HAS_DATA
+live_btc_updown_recorder.py    ever ran True       106,854 rows   HAS_DATA
+microstructure_recorder.py     ever ran True       198,037 rows   HAS_DATA
+multi_venue_recorder.py        ever ran False   20,085,631 rows   HAS_DATA (synced from the box)
+```
+
+A passing selftest proves the code is correct. It says nothing about whether the process ever
+started — the same family as the manifest gate in §4.1 that passed while 0 of 25 artifacts were
+loadable. This is now the third instance of that defect class found here, and the second one
+found in a check I wrote myself.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -644,6 +683,7 @@ large; nothing built so far captures any of it.
 | `backend/research_data/causal_validation.py` | a dataset row using its own future |
 | `backend/research_data/path_label_builder.py` | a label being offered as a model feature |
 | `backend/polymarket_policy/action_value.py` | a hindsight-only action being returned as a recommendation |
+| `backend/audit/recorder_evidence_check.py` | a recorder that is wired and selftests but has never run |
 | `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
