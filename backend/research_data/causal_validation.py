@@ -104,9 +104,21 @@ def assert_frame(frame) -> dict:
     }
 
 
+#: Every path label carries this prefix. A hand-maintained set of outcome names works until
+#: someone adds the thirty-seventh label and forgets; a prefix cannot be forgotten, because the
+#: column does not exist without it. OUTCOME_COLUMNS stays for the settlement columns, which
+#: the recorder named and which are not ours to rename.
+LABEL_PREFIX = "label_"
+
+
+def is_label(column: str) -> bool:
+    return column.startswith(LABEL_PREFIX) or column in OUTCOME_COLUMNS
+
+
 def feature_columns(columns) -> list[str]:
-    """Everything that may be fed to a model: not identity, not outcome."""
-    return sorted(set(columns) - OUTCOME_COLUMNS - IDENTITY_COLUMNS)
+    """Everything that may be fed to a model: not identity, not outcome, not a label."""
+    return sorted(name for name in set(columns)
+                  if name not in IDENTITY_COLUMNS and not is_label(name))
 
 
 def selftest() -> int:
@@ -155,6 +167,14 @@ def selftest() -> int:
     features = feature_columns(["up_ask", "p_hold_cur", "settled_side", "slug", "up_win"])
     check(features == ["p_hold_cur", "up_ask"],
           "outcome and identity columns are excluded from the feature list")
+
+    # The prefix rule is what makes this safe as labels multiply. A label invented today, never
+    # added to any list, must still be refused as a model input.
+    check(feature_columns(["up_ask", "label_invented_tomorrow"]) == ["up_ask"],
+          "an unheard-of label_* column is excluded WITHOUT being registered anywhere")
+    check(is_label("label_remaining_max_up_usd") and is_label("settled_side")
+          and not is_label("up_ask"),
+          "is_label covers both the prefix rule and the recorder's own outcome names")
 
     print(f"\nCAUSAL VALIDATION SELFTEST: PASS ({checks} checks)")
     return 0

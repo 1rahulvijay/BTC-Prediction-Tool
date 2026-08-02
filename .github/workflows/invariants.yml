@@ -255,6 +255,14 @@ jobs:
       - name: Checkpoint builder as-of selection (grid, units, label segregation)
         run: python backend/research_data/checkpoint_builder.py --selftest
 
+      # Labels are ALLOWED to see the future - that is what makes them labels. The gate is that
+      # they can never be mistaken for inputs: every one is prefixed label_ and
+      # feature_columns() excludes the prefix, so a label invented tomorrow is excluded without
+      # being registered anywhere. Also pins the strictly-after boundary: a label that included
+      # its own checkpoint sample would leak the present into the future.
+      - name: Path labels (strictly-after boundary, prefix segregation, NULL not zero)
+        run: python backend/research_data/path_label_builder.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

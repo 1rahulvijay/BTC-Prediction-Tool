@@ -137,7 +137,14 @@ SELECT c.slug,
        {_evidence_case()} AS evidence_class,
        {columns},
        -- LABEL. From after the checkpoint by construction; segregated in OUTCOME_COLUMNS.
-       t.settled_side, t.up_win, t.down_win, t.resolution_source, t.expiry_btc
+       -- The recorder stores settled_side as 0/1. The path labels speak 'UP'/'DOWN', and a
+       -- researcher joining the two tables writes `label_terminal_side = settled_side`, which
+       -- raises a conversion error at best and compares nothing at worst. Normalised HERE, at
+       -- the one place both encodings meet, rather than in every study. up_win confirms the
+       -- mapping: settled_side = 1 coincides with up_win on every row.
+       CASE WHEN t.settled_side IS NULL THEN NULL
+            WHEN t.settled_side = 1 THEN 'UP' ELSE 'DOWN' END AS settled_side,
+       t.up_win, t.down_win, t.resolution_source, t.expiry_btc
 FROM (SELECT *, strftime(to_timestamp({epoch}), '%Y-%m-%d') AS day FROM chosen) c
 LEFT JOIN pm_round_settlements t ON t.slug = c.slug AND t.horizon = c.horizon
 ORDER BY c.ts, c.checkpoint_s
@@ -203,7 +210,7 @@ def selftest() -> int:
                                  "no_trade_reason", "price_source") else f"{name} VARCHAR"
                                 for name in SNAPSHOT_COLUMNS) + ")")
         probe.execute("CREATE TABLE pm_round_settlements (slug VARCHAR, horizon DOUBLE,"
-                      " settled_side VARCHAR, up_win BOOLEAN, down_win BOOLEAN,"
+                      " settled_side INTEGER, up_win BOOLEAN, down_win BOOLEAN,"
                       " resolution_source VARCHAR, expiry_btc DOUBLE)")
         for stamp, left in zip(ts_values, (63.0, 58.0)):
             probe.execute(
@@ -213,7 +220,7 @@ def selftest() -> int:
                 [("UP" if name == "current_side" else "v" if name in
                   ("model_version", "decision_tier", "no_trade_reason", "price_source")
                   else 1.0) for name in SNAPSHOT_COLUMNS])
-        probe.execute("INSERT INTO pm_round_settlements VALUES ('r1', 5.0, 'UP', TRUE, FALSE,"
+        probe.execute("INSERT INTO pm_round_settlements VALUES ('r1', 5.0, 1, TRUE, FALSE,"
                       " 'official:clob', 64000.0)")
         return probe
 
@@ -237,7 +244,8 @@ def selftest() -> int:
           "the round-start grid point (300s for a 5m round) is ABSENT, not back-filled")
     check(bool(row60["eligible"].iloc[0]), "a 3.0s-old snapshot is eligible at a 10s bound")
     check(str(row60["settled_side"].iloc[0]) == "UP",
-          "the settlement label is attached")
+          "the recorder's 0/1 settled_side is normalised to 'UP' - the same vocabulary the "
+          "path labels use, so joining the two tables compares like with like")
     check(str(row60["evidence_class"].iloc[0]) == "LIVE_RESEARCH",
           "a 2026-07-07 checkpoint lands in LIVE_RESEARCH - the epoch unit is inferred, so a "
           "seconds/milliseconds mixup cannot silently classify everything PRE_ORACLE")

@@ -243,6 +243,51 @@ classified the entire dataset `PRE_ORACLE` - a result plausible enough to ship. 
 is now inferred, and the selftest asserts a known date lands in the right class, so the mistake
 fails loudly. Verified by planting it: the check does fail.
 
+### 4.4 Remaining-move and crossing labels - `2026-08-02`
+
+`backend/research_data/path_label_builder.py` computes 19 labels per checkpoint from the same
+`pm_round_snapshots` path the checkpoints came from - so a label can never describe a different
+round, anchor or price series. **49,307 of 56,467** checkpoints have a forward path (median 63
+samples); the other **7,160 get NULL, never zero**. Zero and unknown are different, and a model
+trained on the difference learns the recorder's downtime.
+
+Labels are allowed to see the future - that is what makes them labels. The protection is that
+they cannot be mistaken for inputs: every column is prefixed `label_`, and
+`causal_validation.feature_columns()` excludes the prefix, so a label invented tomorrow is
+excluded **without being registered anywhere**.
+
+**Remaining move and crossing risk, measured:**
+
+| seconds left | median range | p90 range | any further crossing | leader wins settlement |
+|---:|---:|---:|---:|---:|
+| 15 s | $1.4 | $12.2 | 10.0% | 82.5% |
+| 30 s | $4.3 | $20.5 | 12.8% | 83.5% |
+| 60 s | $11.2 | $34.4 | 17.8% | 82.5% |
+| 120 s | $23.5 | $57.6 | 26.3% | 79.5% |
+| 240 s | $46.2 | $101.1 | 48.9% | 68.3% |
+| 720 s (15m) | $98.6 | $209.3 | 61.2% | 66.4% |
+
+This is the answer to "is a $20-30 lead safe?" — it depends entirely on the clock. At 15 s a $20
+lead sits above the p90 remaining range; at 240 s the p90 is **$101**, so the same lead is
+fragile. A fixed dollar threshold cannot express that, which is what the fragility work was
+reaching for.
+
+**The path is NOT the settlement source.** `label_current_side_survives` (leader holds to the
+end of the *recorded path*) and `label_checkpoint_side_wins` (leader wins the *contract*)
+disagree materially:
+
+```
+15s checkpoint:   survives path 91.0%   wins settlement 82.5%   gap 8.5 points
+```
+
+The recorded path ends before expiry and the oracle is a different feed. Using the path as a
+settlement proxy would have inflated leader survival by 8.5 points at exactly the horizon the
+retracted `p_hold` work cared about. Both labels ship, plus
+`label_path_agrees_with_settlement`, so the divergence is measurable rather than absorbed.
+
+Sigma-normalised labels (`0.5/1.0/1.5/2.0`) use a **declared proxy**: `vol_60s_pct` from the
+checkpoint snapshot, scaled by sqrt(time). Causal, but not an implied vol and not claimed as one.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -255,6 +300,7 @@ fails loudly. Verified by planting it: the check does fail.
 | `run_all_sequence.py` coverage check | studies silently excluded from the runner |
 | pytest step | 86 tests that CI never ran |
 | `backend/research_data/causal_validation.py` | a dataset row using its own future |
+| `backend/research_data/path_label_builder.py` | a label being offered as a model feature |
 | `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
