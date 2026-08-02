@@ -53,6 +53,7 @@ from features import (
     compute_indicator_series,
     LOOKBACK,
     NUM_FEATURES,
+    FEATURE_NAMES,
     atr as compute_atr,
 )
 from model_verifier import PerModelVerifier
@@ -97,6 +98,7 @@ from task_supervisor import (
     SUPERVISOR,
 )
 from feed_writer import FEED_WRITER
+from model_revision_ledger import ModelRevisionLedger
 import database
 
 logging.basicConfig(
@@ -124,6 +126,88 @@ MAX_KLINES = HISTORICAL_DAYS * 24 * 60 + 1500
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+MODEL_REVISION_DB = os.path.join(DATA_DIR, "model_revision_ledger.duckdb")
+_MODEL_REVISION_LEDGER = None
+
+
+def _model_revision_ledger() -> ModelRevisionLedger:
+    """Create the research-only revision ledger lazily, never as an import side effect."""
+    global _MODEL_REVISION_LEDGER
+    if _MODEL_REVISION_LEDGER is None:
+        _MODEL_REVISION_LEDGER = ModelRevisionLedger(MODEL_REVISION_DB)
+    return _MODEL_REVISION_LEDGER
+
+
+def _revision_market_quote(current_price: float, order_flow_state: dict, observed_ts: int) -> dict:
+    """Exact observable Binance quote proxy used by the direction model at this cycle."""
+    mid = float(order_flow_state.get("mid_price") or current_price)
+    spread_bps = float(order_flow_state.get("spread_bps") or 0.0)
+    half_spread = mid * max(0.0, spread_bps) / 20_000.0
+    return {
+        "venue": "BINANCE_SPOT",
+        "symbol": "BTCUSDT",
+        "observed_ts": int(observed_ts),
+        "last_price": float(current_price),
+        "mid": mid,
+        "bid": mid - half_spread,
+        "ask": mid + half_spread,
+        "spread_bps": spread_bps,
+        "quote_method": "mid_plus_observed_spread",
+    }
+
+
+def _revision_rows(predictions: list[dict], current_price: float,
+                   order_flow_state: dict, prediction_ts: int) -> list[dict]:
+    quote = _revision_market_quote(current_price, order_flow_state, prediction_ts)
+    rows = []
+    for prediction in predictions:
+        calibrated = prediction.get("calibratedConfidence")
+        calibration_source = "live_isotonic" if calibrated is not None else "ensemble_confidence"
+        if calibrated is None:
+            calibrated = prediction.get("confidence", 0.0)
+        rows.append({
+            "release_id": str(
+                prediction.get("model_bundle_id") or f"unversioned:{MODEL_ARCH_VERSION}"
+            ),
+            "model_id": "main_ensemble",
+            "horizon_min": int(prediction.get("horizon") or 0),
+            "prediction_ts": int(prediction_ts),
+            "prediction": str(prediction.get("finalDirection", prediction.get("direction", "NEUTRAL"))),
+            "calibrated_probability": float(calibrated or 0.0),
+            "probability_up": float(prediction.get("probUp", 0.0) or 0.0),
+            "probability_down": float(prediction.get("probDown", 0.0) or 0.0),
+            "probability_neutral": float(prediction.get("probNeutral", 0.0) or 0.0),
+            "reference_price": float(current_price),
+            "market_quote": quote,
+            "model_outputs": {
+                **copy.deepcopy(prediction),
+                "calibration_source": calibration_source,
+            },
+        })
+    return rows
+
+
+def _write_revision_cycle(*, predictions: list[dict], feature_values: np.ndarray,
+                          feature_names: list[str], snapshot_ts: int,
+                          current_price: float, order_flow_state: dict,
+                          prediction_ts: int) -> tuple[list[str], int]:
+    """Blocking DuckDB work executed by main_loop in a worker thread."""
+    ledger = _model_revision_ledger()
+    revision_ids = ledger.record_batch(
+        _revision_rows(predictions, current_price, order_flow_state, prediction_ts),
+        feature_values=feature_values,
+        feature_names=feature_names,
+        snapshot_ts=int(snapshot_ts),
+        # The sequence includes live order-flow values captured at snapshot_ts, so its causal
+        # cutoff is the snapshot instant rather than merely the newest closed candle.
+        feature_cutoff_ts=int(snapshot_ts),
+        now_ms=int(time.time() * 1000),
+    )
+    outcomes = ledger.resolve_due(
+        observed_price=float(current_price),
+        observed_ts=int(prediction_ts),
+    )
+    return revision_ids, outcomes
 LOG_DIR = (os.getenv("BTC_LOG_DIR") or "").strip()
 if LOG_DIR:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -3801,6 +3885,36 @@ async def main_loop():
 
                     predictions.append(p)
                     cascade_data[h] = p
+
+                # Unlike the cadence-based prediction tables below, this records EVERY completed
+                # ensemble revision. Exact model input is compressed once for the cycle; horizon
+                # rows reference it and link to their preceding revision. DuckDB work runs off the
+                # event loop so evidence persistence cannot freeze WebSocket heartbeats.
+                if predictions:
+                    try:
+                        revision_ts = int(time.time() * 1000)
+                        revision_ids, _revision_outcomes = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            functools.partial(
+                                _write_revision_cycle,
+                                predictions=predictions,
+                                feature_values=np.asarray(seq, dtype=np.float32).copy(),
+                                # `seq` is the exact full feature array passed to predict(); the
+                                # ensemble performs its own 69-feature selection internally.
+                                feature_names=list(FEATURE_NAMES),
+                                snapshot_ts=now_ms_pred,
+                                current_price=float(data_state["klines"][-1]["close"]),
+                                order_flow_state=copy.deepcopy(
+                                    _safe_dict(data_state.get("order_flow"))
+                                ),
+                                prediction_ts=revision_ts,
+                            ),
+                        )
+                        for prediction, revision_id in zip(predictions, revision_ids):
+                            prediction["revisionId"] = revision_id
+                    except Exception as revision_error:
+                        # Research evidence must fail visibly but cannot take down live serving.
+                        logger.error("[REVISION LEDGER] cycle rejected: %s", revision_error)
 
             # FSR-PPO mothballed in v6 (R3): a challenger strategy layer is premature
             # until the core model proves its edge. Re-enable with BTC_FSR_PPO=1 —

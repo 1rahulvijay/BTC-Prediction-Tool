@@ -144,11 +144,17 @@ Additional audit fixes made before v4:
 
 ## Missing Data Needed To Continue
 
-1. Persist every model revision with release ID, horizon, prediction timestamp, and settlement.
+Post-campaign implementation status is tracked in
+`docs/active/PHASE5_EVIDENCE_SUBSTRATE_2026-08-02.md`.
+
+1. Persist every model revision with release ID, horizon, prediction timestamp, and outcome.
+   **Implemented for the live main ensemble; forward collection begins after restart.**
 2. Persist model-specific 1/5/15/30/60/120-second markouts.
+   **Implemented for the main ensemble with actual observation latency; data has not accrued yet.**
 3. Build an atomic BTC-event plus paired Polymarket token L2 clock join.
 4. Record the official settlement reference continuously around the anchor.
 5. Materialize canonical candidate evidence with exact quote, state, action, costs, and outcome.
+   **Builder implemented; production export remains blocked until ledger rows exist.**
 6. Record same-timestamp HOLD/EXIT/REDUCE/SWITCH/LOCK counterfactual paths.
 7. Record latency-stressed candidate PnL at 100/250/500ms and 1/2s.
 8. Keep multi-venue and recorder episode collection running for at least five independent days,

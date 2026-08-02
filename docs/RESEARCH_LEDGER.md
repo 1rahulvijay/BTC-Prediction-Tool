@@ -517,6 +517,47 @@ probability threshold on the sign — declared in advance and evaluated on data 
 
 Elimination-grade regardless: zero `FORWARD_UNTOUCHED` rows exist.
 
+### 4.9 EV rule on predicted magnitude - `2026-08-02`  **FAILS, and closes the lane**
+
+`research/ev_magnitude_rule_v1.py`. The classifier failed on threshold conversion, so this
+replaces the threshold with the quantity that matters: regress the incremental value
+`d = exit_value - hold_value` and exit when predicted `d > 0`. **No threshold, no grid, no free
+parameter** — deliberately, because this is the SECOND look at this evaluation window.
+
+Two looks is two chances at noise, so the gate uses a Bonferroni-corrected 2.5% day-block bound
+and prints the uncorrected 5% beside it.
+
+| policy | exits | mean/$1 | LCB 5% | LCB 2.5% |
+|---|---:|---:|---:|---:|
+| ALWAYS_HOLD | 0 | **−0.0103** | −0.0184 | −0.0199 |
+| ALWAYS_EXIT | 10,888 | −0.0339 | −0.0365 | −0.0371 |
+| CLASSIFIER@0.65 | 894 | −0.0107 | −0.0194 | −0.0213 |
+| **EV_RULE (d > 0)** | 3,563 | **−0.0215** | −0.0285 | −0.0298 |
+| RANDOM_MATCHED | 3,563 | −0.0200 | −0.0267 | −0.0279 |
+| *PERFECT (hindsight)* | 2,628 | *+0.1005* | *+0.0941* | *+0.0923* |
+
+**It loses to always-hold, to the classifier, and to random at matched count.**
+
+**Why — the finding that matters more than the verdict.** The same features, same rows, same
+target, two different questions:
+
+```
+SIGN      of d : AUC 0.8731    highly predictable
+MAGNITUDE of d : AUC 0.5831    rank correlation -0.0165 with realised d
+```
+
+Realised mean `d` gets monotonically **worse** across predicted-`d` bands
+(−0.0146 → −0.0334), so the regressor's ordering carries no usable information and is, if
+anything, mildly inverted. The rank correlation is ~0, so that inversion is not leaned on.
+
+**This closes the exit-timing lane on the current data.** The ceiling is real (+0.1005) and
+capturing it requires knowing *how much* exiting gains. That signal is not in these 29 features:
+you can predict *whether* to exit and not *how much it is worth*, and value needs the second.
+
+**Deliberate stop.** Two pre-declared approaches have now been tested on this window. A third
+would be multiple testing on data that has already answered twice. The next legitimate move is
+forward data, not another rule — and there are still ZERO `FORWARD_UNTOUCHED` rows.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |

@@ -288,13 +288,34 @@ def _candidate_completeness(context: EngineContext) -> EngineResult:
         columns = [row[0] for row in con.execute(
             "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()]
         total = int(con.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()[0])
+        resolved = (int(con.execute(
+            "SELECT count(*) FROM read_parquet(?) WHERE resolved = TRUE", [str(path)]
+        ).fetchone()[0]) if "resolved" in columns else None)
+        economic = (int(con.execute(
+            "SELECT count(*) FROM read_parquet(?) WHERE eligible_for_economics = TRUE", [str(path)]
+        ).fetchone()[0]) if "eligible_for_economics" in columns else None)
     finally:
         con.close()
     missing = sorted(set(required) - set(columns))
-    diagnostics.update({"rows": total, "columns": columns, "missing_columns": missing})
-    status = "BLOCKED_SCHEMA" if missing else "FAIL_UNSTABLE"
-    reasons = ([f"missing required columns: {missing}"] if missing else
-               ["schema presence still requires joined-coverage and causality validation"])
+    diagnostics.update({
+        "rows": total,
+        "resolved_rows": resolved,
+        "economic_rows": economic,
+        "columns": columns,
+        "missing_columns": missing,
+    })
+    if missing:
+        status, reasons = "BLOCKED_SCHEMA", [f"missing required columns: {missing}"]
+    elif total == 0:
+        status, reasons = "INSUFFICIENT_SAMPLE", ["candidate evidence has zero decisions"]
+    elif economic is not None and economic == 0:
+        status, reasons = "INSUFFICIENT_SAMPLE", [
+            "decision rows exist but none has a resolved executable counterfactual"
+        ]
+    else:
+        status, reasons = "FAIL_UNSTABLE", [
+            "schema and resolved coverage exist; promotion still requires the declared forward gates"
+        ]
     return EngineResult(status, "Candidate-evidence completeness gate", diagnostics,
                         dict(EMPTY_ECONOMICS), reasons, {}, {})
 

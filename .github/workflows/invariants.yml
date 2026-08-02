@@ -300,6 +300,11 @@ jobs:
       - name: Hold-vs-exit head cannot see its own target
         run: python research/hold_vs_exit_head_v1.py --selftest
 
+      # Pins the Bonferroni machinery: the local day-block bound must agree with the shared
+      # helper at 5% (so the two copies cannot drift) and must be STRICTER at 2.5%.
+      - name: EV magnitude rule (corrected bound is stricter, no label reaches the features)
+        run: python research/ev_magnitude_rule_v1.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

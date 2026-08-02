@@ -705,6 +705,9 @@ class MultiModelEnsemble:
         self.direction_lock_time = {} # {horizon: timestamp}
         self.opposing_ticks = {}      # {horizon: count of consecutive opposing signals}
         self.last_raw_directions = {} # {horizon: deque of last N raw directions}
+        # Populated during the existing agreement pass, so the evidence ledger can retain each
+        # base seat's full probability vector without running every model a second time.
+        self.latest_model_probabilities = {}
 
         # Configuration
         self.smoothing_alpha = self.config.get("smoothing_alpha", 0.12)
@@ -1890,7 +1893,7 @@ class MultiModelEnsemble:
         return max(counts.values()) / len(vals)
 
     def _model_directions(self, X_flat: np.ndarray, horizon: int, data_state: dict = None) -> dict:
-        """Return each trained model's argmax direction for this regime."""
+        """Return each argmax and retain its probability vector from the same inference pass."""
         reg = self._get_regime_from_state(data_state)
         store = self.models_by_regime.get(reg) or {}
         _base_names = ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf"]
@@ -1901,13 +1904,22 @@ class MultiModelEnsemble:
         if not any(horizon in (store.get(n) or {}) for n in _base_names) and reg != "GLOBAL":
             store = self.models_by_regime.get("GLOBAL") or {}
         dirs = {}
+        model_probabilities = {}
         for name in _base_names:
             if horizon in (store.get(name) or {}):
                 try:
                     probs = self._pad_probs(store[name][horizon].predict_proba(X_flat)[0], store[name][horizon])
                     dirs[name] = int(np.argmax(probs))
+                    total = float(np.sum(probs))
+                    normalized = probs / total if total > 0 else np.array([0.0, 1.0, 0.0])
+                    model_probabilities[name] = {
+                        "probDown": round(float(normalized[0]), 6),
+                        "probNeutral": round(float(normalized[1]), 6),
+                        "probUp": round(float(normalized[2]), 6),
+                    }
                 except Exception:
                     pass
+        self.latest_model_probabilities[horizon] = model_probabilities
         return dirs
 
     def _pairwise_disagreement(self, dirs: dict) -> dict:
@@ -2505,6 +2517,7 @@ class MultiModelEnsemble:
             "agreementThreshold": round(agreement_threshold, 3),
             "pairwise": pairwise,
             "modelDirs": model_dirs,
+            "modelProbabilities": dict(self.latest_model_probabilities.get(h, {})),
             **self._signal_quality(conf, agreement, direction, data_state, seq, exp_move, last_price, h),
             "lastPrice": last_price,
             # Neutral band used to grade this prediction at verify time — SAME cost-floored

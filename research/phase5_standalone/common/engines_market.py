@@ -500,22 +500,40 @@ def run_candidate_audit(context: EngineContext) -> EngineResult:
         missing = sorted(set(required) - set(columns))
         if missing:
             raise SchemaUnavailable(f"candidate evidence missing columns: {missing}")
-        projection = ", ".join(f'"{column}"' for column in required)
+        # The canonical builder deliberately retains unresolved decisions for coverage. Economic
+        # tests must not silently coerce their NULL outcomes into zeros or NaNs. Pull the status
+        # columns when available and fail closed to resolved, economics-eligible rows below.
+        optional_status = [
+            column for column in ("resolved", "eligible_for_economics", "selected_action")
+            if column in columns and column not in required
+        ]
+        projection_columns = [*required, *optional_status]
+        projection = ", ".join(f'"{column}"' for column in projection_columns)
         limit = f" LIMIT {context.maximum_rows}" if context.maximum_rows > 0 else ""
         frame = con.execute(
             f"SELECT {projection} FROM read_parquet(?) ORDER BY ts_ms DESC{limit}",
             [str(source)]).fetchdf().sort_values("ts_ms").reset_index(drop=True)
     finally:
         con.close()
+    recorded_rows = int(len(frame))
+    if "resolved" in frame.columns:
+        frame = frame[frame["resolved"].fillna(False).astype(bool)].copy()
+    if "eligible_for_economics" in frame.columns:
+        frame = frame[frame["eligible_for_economics"].fillna(False).astype(bool)].copy()
     minimum = int(context.protocol.payload["promotion_gates"].get("minimum_test_actions", 100))
     if len(frame) < minimum:
         return EngineResult("INSUFFICIENT_SAMPLE", "Candidate evidence is too small",
-                            {"rows": len(frame)}, dict(EMPTY_ECONOMICS),
+                            {"recorded_rows": recorded_rows, "economic_rows": len(frame)},
+                            dict(EMPTY_ECONOMICS),
                             [f"{len(frame)} rows < required {minimum}"], {"path": str(source)}, {})
     mode = str(method.get("mode", "concentration"))
     ts = pd.to_numeric(frame["ts_ms"], errors="coerce").to_numpy(np.int64)
     pnl = pd.to_numeric(frame["net_pnl"], errors="coerce").to_numpy(float)
-    diagnostics: dict[str, Any] = {"mode": mode, "rows": int(len(frame))}
+    diagnostics: dict[str, Any] = {
+        "mode": mode,
+        "recorded_rows": recorded_rows,
+        "economic_rows": int(len(frame)),
+    }
     tested_pnl = pnl
 
     if mode in {"negative_control", "randomization", "placebo"}:
