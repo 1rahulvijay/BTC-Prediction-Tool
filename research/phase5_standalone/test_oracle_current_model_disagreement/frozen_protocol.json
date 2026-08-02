@@ -1,0 +1,43 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5_04_ORACLE_CURRENT_MODEL_DISAGREEMENT",
+  "method": {
+    "blocked_reason": "the Oracle's overwritten central artifacts prevent paired prediction reconstruction",
+    "required_artifacts": [
+      "releases/ORACLE_2026_07_04/release_manifest.json",
+      "data/research/oracle_current_paired_predictions.parquet"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "fa8053f33ed4d589c5a3cd403c20a772ddcd5eec6c67845910f2d38898650303",
+  "protocol_version": "phase5.v1",
+  "question": "Does current code improve upon the July 4 Oracle deployment on paired forward decisions?"
+}

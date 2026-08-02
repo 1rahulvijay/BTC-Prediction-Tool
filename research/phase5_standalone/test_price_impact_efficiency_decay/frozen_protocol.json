@@ -1,0 +1,52 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": 9.0,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "BINANCE"
+  },
+  "data_contract": {
+    "causal_rule": "local receive time orders events; exchange timestamp is diagnostic only",
+    "required_columns": [
+      "price",
+      "size",
+      "side",
+      "venue",
+      "stream",
+      "bid",
+      "ask"
+    ],
+    "source": "multi_venue_events",
+    "timestamp": "recv_ts"
+  },
+  "engine": "event_flow",
+  "experiment_id": "P5_14_PRICE_IMPACT_EFFICIENCY_DECAY",
+  "method": {
+    "mode": "impact_decay"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "07e254df0886ff6e86aa80e4cec6c1f7a42d41463f98b7c49348cc81c3a03e6e",
+  "protocol_version": "phase5.v1",
+  "question": "Does aggressive flow continue moving price efficiently?"
+}

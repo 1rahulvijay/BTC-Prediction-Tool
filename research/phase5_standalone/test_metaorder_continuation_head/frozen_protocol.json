@@ -1,0 +1,52 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": 9.0,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "BINANCE"
+  },
+  "data_contract": {
+    "causal_rule": "local receive time orders events; exchange timestamp is diagnostic only",
+    "required_columns": [
+      "price",
+      "size",
+      "side",
+      "venue",
+      "stream",
+      "bid",
+      "ask"
+    ],
+    "source": "multi_venue_events",
+    "timestamp": "recv_ts"
+  },
+  "engine": "event_flow",
+  "experiment_id": "P5_11_METAORDER_CONTINUATION_HEAD",
+  "method": {
+    "mode": "continuation"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "c7757f9ee8ea96df4ba985b05e704bd6a7ffa07c575fa8acc832b174b3cc11cc",
+  "protocol_version": "phase5.v1",
+  "question": "Once a probable parent order is detected, does executable impact continue?"
+}

@@ -1,0 +1,46 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "candidate_audit",
+  "experiment_id": "P5_27_ALPHA_CONTEXT_SPECIALIZATION",
+  "method": {
+    "candidate_input": "research/phase5_candidate_evidence.parquet",
+    "mode": "context",
+    "required_columns": [
+      "ts_ms",
+      "net_pnl",
+      "alpha_id",
+      "regime"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "b6fb53a8b67ec588e1fd106972015fac51bf5a2df6a6331286bed9db1fa52a59",
+  "protocol_version": "phase5.v1",
+  "question": "In which frozen contexts is each candidate alpha economically active?"
+}

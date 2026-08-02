@@ -1,0 +1,63 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": 9.0,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "BINANCE"
+  },
+  "data_contract": {
+    "causal_rule": "all venue observations are from the same recorder snapshot",
+    "required_columns": [
+      "binance",
+      "coinbase",
+      "bybit",
+      "okx",
+      "max_spread_bps",
+      "ret_binance",
+      "ret_coinbase",
+      "ret_bybit",
+      "ret_okx"
+    ],
+    "source": "crossvenue",
+    "timestamp": "ts_ms"
+  },
+  "engine": "crossvenue",
+  "experiment_id": "P5_08_CROSS_EXCHANGE_DISLOCATION_DECAY",
+  "method": {
+    "features": [
+      "coinbase",
+      "bybit",
+      "okx",
+      "max_spread_bps",
+      "ret_binance",
+      "ret_coinbase",
+      "ret_bybit",
+      "ret_okx"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "a50126d5ae87460555cf1bdc2fc65db78696f5ab4ac4e8cb901ad9592f4ea55e",
+  "protocol_version": "phase5.v1",
+  "question": "When BTC venues disagree, which venue catches up and which reverses?"
+}

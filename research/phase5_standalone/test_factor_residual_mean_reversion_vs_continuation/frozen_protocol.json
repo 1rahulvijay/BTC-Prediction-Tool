@@ -1,0 +1,42 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5_07_FACTOR_RESIDUAL_MEAN_REVERSION_VS_CONTINUATION",
+  "method": {
+    "blocked_reason": "factor residual events must be built by experiment 06 first",
+    "required_artifacts": [
+      "data/research/crypto_factor_residual_events.parquet"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "b84aafc14300042ef9d807726a0e527ebd29904c40fd611397e2ced3e836e1ce",
+  "protocol_version": "phase5.v1",
+  "question": "When does a BTC factor residual continue and when does it revert?"
+}

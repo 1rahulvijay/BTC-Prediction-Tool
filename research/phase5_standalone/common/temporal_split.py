@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 import numpy as np
-import pandas as pd
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,4 +87,3 @@ def selftest() -> None:
         pass
     else:
         raise AssertionError("small samples must be refused")
-

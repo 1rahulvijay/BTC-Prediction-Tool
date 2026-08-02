@@ -69,7 +69,8 @@ def economic_metrics(
         "gross_pnl": float(gross.sum()),
         "net_pnl": float(net.sum()),
         "pnl_per_opportunity": float(net.sum() / max(1, opportunities)),
-        "profit_factor": float(positive / negative) if negative > 0 else (math.inf if positive else 0.0),
+        "profit_factor": float(positive / negative) if negative > 0 else None,
+        "no_losing_actions": bool(positive > 0 and negative == 0),
         "maximum_drawdown": _max_drawdown(net),
         "expected_shortfall_5pct": float(net[net <= np.quantile(net, 0.05)].mean()) if len(net) else None,
         "turnover": float(turnover),
@@ -96,8 +97,16 @@ def economic_verdict(metrics: dict[str, Any], gates: dict[str, Any]) -> tuple[st
     if net <= 0:
         return "FAIL_AFTER_COSTS", ["gross PnL is positive but net PnL is not"]
     reasons: list[str] = []
+    minimum_days = int(gates.get("minimum_day_blocks", 10))
+    minimum_weeks = int(gates.get("minimum_week_blocks", 4))
+    if int(metrics.get("day_blocks") or 0) < minimum_days:
+        reasons.append(f"fewer than {minimum_days} independent day blocks")
+    if int(metrics.get("week_blocks") or 0) < minimum_weeks:
+        reasons.append(f"fewer than {minimum_weeks} independent week blocks")
     required_pf = float(gates.get("minimum_profit_factor", 1.2))
-    if float(metrics.get("profit_factor") or 0.0) < required_pf:
+    profit_factor = (math.inf if metrics.get("no_losing_actions")
+                     else float(metrics.get("profit_factor") or 0.0))
+    if profit_factor < required_pf:
         reasons.append(f"profit factor below {required_pf}")
     if metrics.get("day_lower_confidence_bound") is None or metrics["day_lower_confidence_bound"] <= 0:
         reasons.append("day-block lower confidence bound is not positive")
@@ -118,4 +127,3 @@ def selftest() -> None:
                                capital_duration_seconds=200, cost_per_action=np.zeros(200), seed=1)
     status, _ = economic_verdict(metrics, {"minimum_test_actions": 100})
     assert status == "PASS_CANDIDATE"
-

@@ -1,0 +1,52 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": 9.0,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "BINANCE"
+  },
+  "data_contract": {
+    "causal_rule": "local receive time orders events; exchange timestamp is diagnostic only",
+    "required_columns": [
+      "price",
+      "size",
+      "side",
+      "venue",
+      "stream",
+      "bid",
+      "ask"
+    ],
+    "source": "multi_venue_events",
+    "timestamp": "recv_ts"
+  },
+  "engine": "event_flow",
+  "experiment_id": "P5_12_METAORDER_EXHAUSTION_REVERSAL",
+  "method": {
+    "mode": "exhaustion"
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "63994e48031c0c3c493d2e0097a68589897db473cd359133a03fae6f1502c440",
+  "protocol_version": "phase5.v1",
+  "question": "Can falling impact efficiency identify flow exhaustion and reversal?"
+}

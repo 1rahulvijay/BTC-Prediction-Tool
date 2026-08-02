@@ -1,0 +1,45 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "candidate_audit",
+  "experiment_id": "P5_31_ALPHA_REGIME_REVIVAL",
+  "method": {
+    "candidate_input": "research/phase5_candidate_evidence.parquet",
+    "mode": "revival",
+    "required_columns": [
+      "ts_ms",
+      "net_pnl",
+      "regime"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "249620f231a25fc6d6f88511f0f3a50ad69cad32591f4bc87a5c5948e30ff7da",
+  "protocol_version": "phase5.v1",
+  "question": "Does a retired alpha revive when its historical regime returns?"
+}

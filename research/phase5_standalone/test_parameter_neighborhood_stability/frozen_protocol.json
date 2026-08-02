@@ -1,0 +1,45 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "candidate_audit",
+  "experiment_id": "P5_40_PARAMETER_NEIGHBORHOOD_STABILITY",
+  "method": {
+    "candidate_input": "research/phase5_candidate_evidence.parquet",
+    "mode": "neighborhood",
+    "required_columns": [
+      "ts_ms",
+      "net_pnl",
+      "configuration_id"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "c3a5b05315f1da6ab9e884f352d241c718cf224088812eac054404aa2e492c43",
+  "protocol_version": "phase5.v1",
+  "question": "Does candidate economics survive small declared parameter perturbations?"
+}

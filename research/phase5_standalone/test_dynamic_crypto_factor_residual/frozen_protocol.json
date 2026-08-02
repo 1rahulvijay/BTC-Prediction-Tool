@@ -1,0 +1,42 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "readiness",
+  "experiment_id": "P5_06_DYNAMIC_CRYPTO_FACTOR_RESIDUAL",
+  "method": {
+    "blocked_reason": "no causal cross-asset crypto factor panel exists",
+    "required_artifacts": [
+      "data/research/crypto_factor_panel.parquet"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "5c633fb1680d60efb4d3cad13ae9c60303143158a4a60a5bf7e592610119eb35",
+  "protocol_version": "phase5.v1",
+  "question": "Is BTC-specific residual movement more predictable than raw BTC movement?"
+}

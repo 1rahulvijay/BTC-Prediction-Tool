@@ -1,0 +1,89 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": 9.0,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "BINANCE"
+  },
+  "data_contract": {
+    "causal_rule": "features at ts_ms; future_* columns are labels only",
+    "required_columns": [
+      "rv_15m",
+      "rv_60m",
+      "rv_term",
+      "vol_accel",
+      "compression_ratio",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "delta",
+      "vpin",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_spot",
+      "cvd_perp",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp",
+      "close",
+      "future_direction_5m",
+      "ret_5m",
+      "future_abs_move_5m"
+    ],
+    "source": "btc_matrix",
+    "timestamp": "ts_ms"
+  },
+  "engine": "btc_signal",
+  "experiment_id": "P5_09_SPOT_PERPETUAL_BASIS_RESIDUAL",
+  "method": {
+    "features": [
+      "perp_spot_basis_bps",
+      "cvd_divergence",
+      "funding_velocity",
+      "rv_15m",
+      "rv_term",
+      "vpin",
+      "vol_spot",
+      "vol_perp"
+    ],
+    "holding_seconds": 300,
+    "purge_rows": 5,
+    "return_column": "ret_5m",
+    "return_unit": "usd",
+    "target": "future_direction_5m",
+    "thresholds": [
+      0.55,
+      0.6,
+      0.65,
+      0.7
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "81f64b238a627c3be3698173081dcffed318bf102e251642cd0cc5c5f76ff2dd",
+  "protocol_version": "phase5.v1",
+  "question": "Does abnormal spot/perpetual basis predict continuation or reversal after costs?"
+}

@@ -1,0 +1,23 @@
+{
+  "retractions": [
+    {
+      "paths": [
+        "data/research/phase5_standalone/test_alpha_extractability_upper_bound/20260802T_phase5_matrix_100k/report.json",
+        "data/research/phase5_standalone/test_feed_incremental_economic_value/20260802T_phase5_matrix_100k/report.json",
+        "data/research/phase5_standalone/test_signal_context_sign_reversal/20260802T_phase5_matrix_100k/report.json"
+      ],
+      "reason": "ret_5m is a USD move but was treated as a fractional return; PnL was dimensionally invalid",
+      "replacement_run": "20260802T_phase5_matrix_100k_final",
+      "status": "RETRACTED"
+    },
+    {
+      "paths": [
+        "data/research/phase5_standalone/test_synthetic_metaorder_segmentation/20260802T_phase5_event_targeted/report.json",
+        "data/research/phase5_standalone/test_synthetic_metaorder_segmentation/20260802T_phase5_targeted_final/report.json"
+      ],
+      "reason": "500000 events covered about 15 minutes; the descriptive lift lacked a minimum multi-day stability gate",
+      "replacement_run": "20260802T_phase5_targeted_spanfix",
+      "status": "RETRACTED"
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "features at ts_ms; future_* columns are labels only",
+    "required_columns": [
+      "rv_15m",
+      "rv_60m",
+      "rv_term",
+      "vol_accel",
+      "compression_ratio",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "delta",
+      "vpin",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_spot",
+      "cvd_perp",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp",
+      "close",
+      "future_direction_5m",
+      "ret_5m",
+      "future_abs_move_5m"
+    ],
+    "source": "btc_matrix",
+    "timestamp": "ts_ms"
+  },
+  "engine": "btc_magnitude",
+  "experiment_id": "P5_18_SURPRISE_AS_VOLATILITY_NOT_DIRECTION",
+  "method": {
+    "features": [
+      "rv_15m",
+      "rv_60m",
+      "rv_term",
+      "vol_accel",
+      "compression_ratio",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "delta",
+      "vpin",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_spot",
+      "cvd_perp",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp"
+    ],
+    "magnitude_column": "future_abs_move_5m",
+    "purge_rows": 5,
+    "training_quantile": 0.75
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "ec8fd30ad2930c1afaf8c6474751286097e0d20784f7353721b88b988540438b",
+  "protocol_version": "phase5.v1",
+  "question": "Do market surprises predict movement magnitude even when direction is weak?"
+}

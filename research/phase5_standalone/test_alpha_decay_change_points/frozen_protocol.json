@@ -1,0 +1,44 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {},
+  "engine": "candidate_audit",
+  "experiment_id": "P5_30_ALPHA_DECAY_CHANGE_POINTS",
+  "method": {
+    "candidate_input": "research/phase5_candidate_evidence.parquet",
+    "mode": "decay",
+    "required_columns": [
+      "ts_ms",
+      "net_pnl"
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "95573a79263df0ab9f8c795a02713d184504a09629043d20a5e355adc6a936e1",
+  "protocol_version": "phase5.v1",
+  "question": "Is a candidate temporarily weak or structurally dead?"
+}

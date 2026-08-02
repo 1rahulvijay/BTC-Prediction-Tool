@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -25,6 +26,24 @@ def git_commit(repo: Path) -> str | None:
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+def git_worktree_dirty(repo: Path) -> bool:
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True,
+                            text=True, timeout=15)
+    return bool(result.stdout.strip()) if result.returncode == 0 else True
+
+
+def source_tree_hash(root: Path) -> str:
+    digest = hashlib.sha256()
+    paths = sorted(path for path in root.rglob("*") if path.is_file()
+                   and "__pycache__" not in path.parts and path.suffix in {".py", ".json"})
+    for path in paths:
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def write_report(output: str | Path, payload: dict[str, Any]) -> Path:
     target = Path(output).resolve()
     report = target / "report.json"
@@ -39,7 +58,16 @@ def write_report(output: str | Path, payload: dict[str, Any]) -> Path:
         "capital_authority": False,
         **payload,
     }
-    encoded = json.dumps(full, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    def finite(value):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, dict):
+            return {key: finite(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [finite(item) for item in value]
+        return value
+
+    encoded = json.dumps(finite(full), indent=2, sort_keys=True, allow_nan=False) + "\n"
     temporary = target / "report.json.tmp"
     temporary.write_text(encoded, encoding="utf-8", newline="\n")
     temporary.replace(report)
@@ -56,4 +84,3 @@ def selftest(tmp_path: Path) -> None:
         pass
     else:
         raise AssertionError("immutable report was overwritten")
-

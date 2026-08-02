@@ -1,0 +1,98 @@
+{
+  "capital_authority": false,
+  "controls": [
+    "no_trade",
+    "matched_random",
+    "time_shifted_placebo"
+  ],
+  "cost_model": {
+    "binance_round_trip_bps": null,
+    "polymarket_fee": null,
+    "stress_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
+    "venue": "RESEARCH"
+  },
+  "data_contract": {
+    "causal_rule": "features at ts_ms; future_* columns are labels only",
+    "required_columns": [
+      "rv_15m",
+      "rv_60m",
+      "rv_term",
+      "vol_accel",
+      "compression_ratio",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "delta",
+      "vpin",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_spot",
+      "cvd_perp",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp",
+      "close",
+      "future_direction_5m",
+      "ret_5m",
+      "future_abs_move_5m"
+    ],
+    "source": "btc_matrix",
+    "timestamp": "ts_ms"
+  },
+  "engine": "history_transport",
+  "experiment_id": "P5_02_HISTORY_LIVE_TRANSPORTABILITY",
+  "method": {
+    "features": [
+      "rv_15m",
+      "rv_60m",
+      "rv_term",
+      "vol_accel",
+      "compression_ratio",
+      "shock_magnitude",
+      "cvd_change",
+      "cvd_1m",
+      "cvd_5m",
+      "delta",
+      "vpin",
+      "large_trade_delta",
+      "large_trade_imbalance",
+      "funding_velocity",
+      "cvd_spot",
+      "cvd_perp",
+      "cvd_divergence",
+      "perp_spot_basis_bps",
+      "vol_spot",
+      "vol_perp"
+    ],
+    "history_windows_days": [
+      30,
+      60,
+      90,
+      120,
+      240,
+      400
+    ]
+  },
+  "promotion_gates": {
+    "capital_authority": false,
+    "maximum_day_concentration": 0.35,
+    "minimum_day_blocks": 10,
+    "minimum_profit_factor": 1.2,
+    "minimum_rows": 500,
+    "minimum_test_actions": 100,
+    "minimum_week_blocks": 4,
+    "require_positive_1_5x_cost_stress": true,
+    "require_positive_day_lcb": true,
+    "require_positive_week_lcb": true
+  },
+  "protocol_sha256": "cddef5209263189721cc2fc00518bf00b24f857fb35dedaf16f3fe50f4cc6351",
+  "protocol_version": "phase5.v1",
+  "question": "Is the historical training archive representative of the recent environment?"
+}
