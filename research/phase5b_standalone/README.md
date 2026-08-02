@@ -23,3 +23,12 @@ python research\phase5b_standalone\run_all.py --run
 
 The full run can be expensive. Run it only when the application and model training are stopped.
 Smoke mode verifies real schemas and runtime paths; it is not sufficient evidence for promotion.
+
+## Canonical Results
+
+The audited result ledger is:
+
+`docs/active/PHASE5B_STANDALONE_RESEARCH_RESULTS_2026-08-02.md`
+
+The canonical real-data campaign is `20260802T_phase5b_100k_v4`. Earlier Phase 5B outputs are
+superseded as described in `SUPERSEDED_RUNS.md`.

@@ -25,7 +25,9 @@ from .data import load_contract, load_db_table
 
 
 def _side(value: Any) -> str | None:
-    text = str(value or "").upper()
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).upper()
     if text in {"UP", "1", "1.0", "TRUE"}:
         return "UP"
     if text in {"DOWN", "0", "0.0", "FALSE"}:

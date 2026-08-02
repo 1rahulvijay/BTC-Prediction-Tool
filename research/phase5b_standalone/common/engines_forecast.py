@@ -21,7 +21,9 @@ from .data import load_contract
 
 
 def _clean_direction(value: Any) -> str | None:
-    text = str(value or "").upper()
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).upper()
     if text in {"1", "1.0", "TRUE"}:
         return "UP"
     if text in {"0", "0.0", "FALSE"}:

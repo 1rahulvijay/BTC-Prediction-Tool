@@ -269,6 +269,22 @@ jobs:
       - name: Model vintage comparison estimators separate signal from noise
         run: python research/model_vintage_comparison_v1.py --selftest
 
+      # The action-value engine prices actions from the recorded ladder, so its arithmetic IS
+      # the result. These pin: you buy at the ask and sell at the bid; the spread is crossed
+      # once each way, not twice; exit CAPACITY is unknown because bid-side size was never
+      # recorded; and the hindsight ceiling arm can never be returned by selection.
+      - name: Execution cost (ask/bid, one spread each way, exit capacity unknown)
+        run: python backend/polymarket_policy/execution_cost.py --selftest
+
+      - name: Complete-set lock arithmetic (fees included, thinner ladder caps the pair)
+        run: python backend/polymarket_policy/complete_set.py --selftest
+
+      - name: Action value (hindsight arms are bounds, never selectable)
+        run: python backend/polymarket_policy/action_value.py --selftest
+
+      - name: Action value builder (one implementation, no SQL copy of the arithmetic)
+        run: python backend/research_data/action_value_builder.py --selftest
+
       # Five studies produced economic numbers from a join where the model state was observed
       # AFTER the decision in 93.5% of rows (median +8.1s). One of them was this repository's
       # only positive candidate. Every one passed CI, its own preregistered gates, matched

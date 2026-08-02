@@ -376,6 +376,57 @@ rather than a worse model.
 it does support: **do not promote the newer artifact**, and treat the market price as the
 incumbent any Polymarket model must beat.
 
+### 4.6 Polymarket action-value engine - `2026-08-02`
+
+`backend/polymarket_policy/` prices every action from the **recorded ladder**: you buy at the
+ask, sell at the bid, cross the spread once each way, and pay canonical fees. No probability, no
+model, no forecast — the vintage comparison had just shown the market's own ask beating both
+model vintages, so an engine resting on those models would rest on something already measured as
+worse than the price it is trying to beat.
+
+Applied to 50,272 eligible settled checkpoints:
+
+| action | n | mean | median | p10 | p90 | win% |
+|---|---:|---:|---:|---:|---:|---:|
+| EXIT_AT_HORIZON 15s | 48,308 | −0.0313 | −0.0121 | −0.1531 | 0.0681 | 33.2% |
+| EXIT_AT_HORIZON 30s | 48,378 | −0.0309 | −0.0054 | −0.2034 | 0.1102 | 41.7% |
+| EXIT_AT_HORIZON 60s | 48,427 | −0.0322 | −0.0012 | −0.2919 | 0.1653 | 48.9% |
+| HOLD_TO_SETTLEMENT | 50,272 | **−0.0105** | 0.0561 | −0.6561 | 0.3832 | 77.4% |
+| LOCK_COMPLETE_SET | 50,272 | −0.0302 | −0.0328 | −0.0447 | −0.0121 | **0.1%** |
+| *ORACLE_BEST_EXIT* (hindsight) | 48,460 | *+0.1313* | *0.0902* | −0.0121 | 0.3539 | 80.6% |
+| *ORACLE_PICK_AMONG_TRADEABLE* | 50,272 | *+0.1368* | *0.0748* | 0.0000 | 0.3832 | 66.5% |
+| WAIT | 50,272 | 0.0000 | — | — | — | — |
+
+```
+perfect exit timing (untradeable) : +0.1313
+perfect choice among tradeable    : +0.1368
+best FIXED rule, no foresight     : -0.0105   (HOLD_TO_SETTLEMENT)
+standing aside (WAIT)             : +0.0000
+headroom an action head could win : +0.1473
+```
+
+**Three things follow.**
+
+1. **Every fixed rule loses; WAIT beats all of them.** On this sample the only non-negative
+   policy is to not trade. Hold-to-settlement is the least-bad at −0.0105/share.
+2. **The ceiling is strongly positive (+0.1313).** Unlike direction — which was dead at
+   settlement *and* along the path — exit timing has real headroom. A perfectly-timed exit is
+   positive on 80.6% of checkpoints. This is the first lane measured here with a ceiling worth
+   modelling.
+3. **Locks are effectively unavailable.** Mean −0.0302, positive on **0.1%** of snapshots, and
+   the best action on only 3 of 50,272 checkpoints. Consistent with the raw scan: 515 of
+   1,713,160 snapshots have `up_ask + down_ask + fees < 1`.
+
+Both oracle arms are labelled `requires_hindsight` and `select()` **excludes them before**
+comparing, so a value nobody could realise cannot be returned as a recommendation. They are
+bounds on what a head could win, never strategies.
+
+**Constraint the data imposes:** `pm_round_snapshots` records ask-side depth
+(`top_ask_size`, `d1/d2/d5`) but **no bid-side size**. Entry capacity is measurable; exit
+capacity is not. `execution_cost.exit_fill()` returns `capacity_known = False` rather than
+assuming one share always fills — the assumption that turns an unexitable position into a
+backtest profit.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -389,6 +440,7 @@ incumbent any Polymarket model must beat.
 | pytest step | 86 tests that CI never ran |
 | `backend/research_data/causal_validation.py` | a dataset row using its own future |
 | `backend/research_data/path_label_builder.py` | a label being offered as a model feature |
+| `backend/polymarket_policy/action_value.py` | a hindsight-only action being returned as a recommendation |
 | `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
@@ -442,3 +494,25 @@ python research/causal_decision_join.py
 python backend/test_causal_join_guard.py
 python backend/run_ci_locally.py
 ```
+
+## 9. Phase 5B standalone campaign - `2026-08-02`
+
+Experiments 43-88 were implemented as 46 isolated, frozen-protocol research scripts in
+`research/phase5b_standalone/`. The audited 100,000-row-per-source campaign completed every
+process and found **zero promotion candidates**:
+
+| result | count |
+|---|---:|
+| `FAIL_UNSTABLE` | 21 |
+| `BLOCKED_DATA` | 10 |
+| `FAIL_NO_EDGE` | 8 |
+| `INSUFFICIENT_SAMPLE` | 4 |
+| `FAIL_AFTER_COSTS` | 3 |
+
+The final audit caught a numeric-side encoding defect: the recorder's `0` means DOWN, but an
+early normalizer treated falsey zero as missing. The corrected v4 campaign shows model P(Hold)
+Brier 0.1618 versus the market's better 0.1410, and the sequential wait policy loses 0.9795
+versus act-now. Earlier Phase 5B outputs are superseded.
+
+Canonical detail and all 46 conclusions:
+`docs/active/PHASE5B_STANDALONE_RESEARCH_RESULTS_2026-08-02.md`.

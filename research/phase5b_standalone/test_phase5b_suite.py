@@ -6,6 +6,8 @@ from pathlib import Path
 from research.phase5_standalone.common.protocol import load_protocol
 from research.phase5_standalone.common.report_writer import source_tree_hash
 from research.phase5b_standalone.common.engines import ENGINES
+from research.phase5b_standalone.common.engines_forecast import _clean_direction
+from research.phase5b_standalone.common.engines_polymarket import _side
 
 
 ROOT = Path(__file__).resolve().parent
@@ -45,3 +47,10 @@ def test_suite_source_hash_is_stable() -> None:
     first = source_tree_hash(ROOT)
     second = source_tree_hash(ROOT)
     assert first == second and len(first) == 64
+
+
+def test_numeric_zero_is_down_not_missing() -> None:
+    assert _clean_direction(0) == "DOWN"
+    assert _clean_direction(0.0) == "DOWN"
+    assert _side(0) == "DOWN"
+    assert _side(0.0) == "DOWN"
