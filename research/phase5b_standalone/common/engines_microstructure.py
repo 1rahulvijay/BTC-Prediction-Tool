@@ -50,13 +50,14 @@ def _event_bins(context: EngineContext) -> tuple[pd.DataFrame, dict, dict]:
     events = events.dropna(subset=["price"])
     events["side_sign"] = events["side"].astype(str).str.upper().map(
         {"BUY": 1.0, "B": 1.0, "SELL": -1.0, "S": -1.0}).fillna(0.0)
+    events["signed_size"] = events["side_sign"] * events["size"]
     events["second"] = events["_ts_ms"] // 1000
     bins = events.groupby("second", sort=True).agg(
         _ts_ms=("_ts_ms", "max"),
         price=("price", "last"),
         event_count=("price", "size"),
         volume=("size", "sum"),
-        signed_volume=("side_sign", lambda value: float(value.sum())),
+        signed_volume=("signed_size", "sum"),
     ).reset_index(drop=True)
     bins["return"] = bins["price"].pct_change().fillna(0.0)
     bins["count_mean_30"] = bins["event_count"].rolling(30, min_periods=5).mean()

@@ -27,7 +27,8 @@
       "ask"
     ],
     "source": "multi_venue_events",
-    "timestamp": "recv_ts"
+    "timestamp": "recv_ts",
+    "where": "price IS NOT NULL"
   },
   "engine": "event_research",
   "experiment_id": "P5B_58_EVENT_BURSTINESS_PREDICTABILITY",
@@ -46,7 +47,7 @@
     "require_positive_day_lcb": true,
     "require_positive_week_lcb": true
   },
-  "protocol_sha256": "a98d10ed40e6f05e518bc67b1fc5986d8dd0406375e93745ed11e64c6e8a7d14",
+  "protocol_sha256": "7572ea40bc3a84d1049bfa413a89da9dd4cf1f32d66d34726f6acca7ce1f1168",
   "protocol_version": "phase5b.v1",
   "question": "Does event clustering predict bursts?"
 }

@@ -183,7 +183,7 @@ def _environment_labels(frame: pd.DataFrame, train_idx: np.ndarray) -> dict[str,
     vol_cut = float(frame["rv_15m"].iloc[train_idx].median())
     trend = frame["close"].pct_change(60).fillna(0).to_numpy()
     return {
-        "month": timestamp.dt.to_period("M").astype(str).to_numpy(),
+        "month": timestamp.dt.strftime("%Y-%m").to_numpy(),
         "volatility": np.where(frame["rv_15m"].to_numpy(float) > vol_cut, "HIGH", "LOW"),
         "weekpart": np.where(timestamp.dt.dayofweek.to_numpy() >= 5, "WEEKEND", "WEEKDAY"),
         "session": np.where(timestamp.dt.hour.to_numpy() < 8, "ASIA",
@@ -279,7 +279,7 @@ def _feature_drift(context: EngineContext, frame: pd.DataFrame, identity: dict,
     features = _feature_list(context, frame)
     frame = frame.dropna(subset=["_return", *features]).reset_index(drop=True)
     split = _split(context, frame, 5)
-    month = pd.to_datetime(frame["_ts_ms"], unit="ms", utc=True).dt.to_period("M").astype(str)
+    month = pd.to_datetime(frame["_ts_ms"], unit="ms", utc=True).dt.strftime("%Y-%m")
     target = np.where(frame["_direction"] == 1, 1.0, -1.0)
     rows = {}
     for feature in features:
@@ -328,9 +328,74 @@ def _generic_predictive(context: EngineContext, frame: pd.DataFrame, identity: d
     frame = _derived_path_features(frame)
     base = _feature_list(context, frame)
     if mode == "information_clock":
-        features = [column for column in ["trade_count", "volume", "count_accel_5m", "vol_accel",
-                                          "vpin_15m", "rv_term", "shock_magnitude"] if column in frame]
-        target_source = frame["future_abs_move_5m"]
+        timestamp = pd.to_datetime(frame["_ts_ms"], unit="ms", utc=True)
+        minute = timestamp.dt.hour * 60 + timestamp.dt.minute
+        frame["clock_sin"] = np.sin(2 * np.pi * minute / 1_440)
+        frame["clock_cos"] = np.cos(2 * np.pi * minute / 1_440)
+        frame["weekday_sin"] = np.sin(2 * np.pi * timestamp.dt.dayofweek / 7)
+        frame["weekday_cos"] = np.cos(2 * np.pi * timestamp.dt.dayofweek / 7)
+        feature_sets = {
+            "calendar_clock": ["clock_sin", "clock_cos", "weekday_sin", "weekday_cos"],
+            "volatility_clock": ["rv_15m", "rv_60m", "rv_term"],
+            "trade_clock": ["trade_count", "count_accel_5m"],
+            "volume_clock": ["volume", "vol_accel"],
+            "information_clock": [
+                "trade_count", "volume", "count_accel_5m", "vol_accel", "vpin_15m",
+                "rv_15m", "rv_60m", "rv_term", "shock_magnitude",
+            ],
+        }
+        feature_sets = {
+            name: [column for column in columns if column in frame]
+            for name, columns in feature_sets.items()
+        }
+        features = list(dict.fromkeys(
+            column for columns in feature_sets.values() for column in columns
+        ))
+        frame = frame.dropna(subset=[*features, "future_abs_move_5m"]).reset_index(drop=True)
+        split = _split(context, frame, 15)
+        source = frame["future_abs_move_5m"].to_numpy(float)
+        threshold = float(np.median(source[split.train]))
+        frame["_target"] = (source > threshold).astype(int)
+        comparisons = {}
+        for name, columns in feature_sets.items():
+            if not columns:
+                continue
+            diagnostics, _, _ = _predictive_test(
+                context, frame, features=columns, target="_target", split=split)
+            comparisons[name] = diagnostics
+        information = comparisons.get("information_clock", {})
+        information_auc = information.get("untouched_test", {}).get("auc")
+        baseline_aucs = {
+            name: result.get("untouched_test", {}).get("auc")
+            for name, result in comparisons.items() if name != "information_clock"
+        }
+        finite_baselines = [value for value in baseline_aucs.values() if value is not None]
+        best_baseline = max(finite_baselines) if finite_baselines else None
+        information["target_threshold_from_train"] = threshold
+        information["clock_comparison"] = {
+            name: result for name, result in comparisons.items()
+            if name != "information_clock"
+        }
+        information["best_baseline_auc"] = best_baseline
+        information["information_auc_lift"] = (
+            float(information_auc - best_baseline)
+            if information_auc is not None and best_baseline is not None else None
+        )
+        if information_auc is None or information_auc < 0.55:
+            status, reasons = "FAIL_NO_EDGE", [
+                f"information-clock untouched AUC {information_auc} did not clear 0.55"
+            ]
+        elif best_baseline is not None and information_auc <= best_baseline + 0.005:
+            status, reasons = "FAIL_NO_EDGE", [
+                "information clock did not improve the best frozen clock baseline by 0.005 AUC"
+            ]
+        else:
+            status, reasons = "FAIL_UNSTABLE", [
+                "information-clock lift has not been converted to an executable policy"
+            ]
+        return EngineResult(status, "Information-clock comparison on one untouched window",
+                            information, dict(EMPTY_ECONOMICS), reasons, identity, causal,
+                            split.boundaries)
     elif mode == "information_exhaustion":
         features = [column for column in ["trade_count", "volume", "count_accel_5m", "vol_accel",
                                           "vpin_15m", "shock_magnitude", "rv_15m", "rv_term"] if column in frame]
@@ -339,8 +404,37 @@ def _generic_predictive(context: EngineContext, frame: pd.DataFrame, identity: d
         features = ["path_efficiency", "turn_count_15", "crossing_count_15", "roughness", *base]
         target_source = frame["future_efficiency"]
     elif mode == "path_roughness":
-        features = ["path_efficiency", "turn_count_15", "crossing_count_15", "roughness", *base]
-        target_source = frame["future_abs_move_5m"]
+        path_features = ["path_efficiency", "turn_count_15", "crossing_count_15", "roughness"]
+        features = list(dict.fromkeys([*path_features, *base]))
+        baseline_features = [column for column in base if column not in path_features]
+        frame = frame.dropna(subset=[*features, "_direction"]).reset_index(drop=True)
+        split = _split(context, frame, 15)
+        augmented, _, _ = _predictive_test(
+            context, frame, features=features, target="_direction", split=split)
+        baseline, _, _ = _predictive_test(
+            context, frame, features=baseline_features, target="_direction", split=split)
+        augmented_auc = augmented.get("untouched_test", {}).get("auc")
+        baseline_auc = baseline.get("untouched_test", {}).get("auc")
+        lift = (float(augmented_auc - baseline_auc)
+                if augmented_auc is not None and baseline_auc is not None else None)
+        augmented["baseline_without_path_features"] = baseline
+        augmented["untouched_auc_lift"] = lift
+        augmented["target"] = "terminal_5m_direction"
+        if augmented_auc is None or augmented_auc < 0.55:
+            status, reasons = "FAIL_NO_EDGE", [
+                f"path-augmented untouched AUC {augmented_auc} did not clear 0.55"
+            ]
+        elif lift is None or lift <= 0.005:
+            status, reasons = "FAIL_NO_EDGE", [
+                "path roughness did not improve the frozen baseline by 0.005 AUC"
+            ]
+        else:
+            status, reasons = "FAIL_UNSTABLE", [
+                "terminal-direction lift has no executable after-cost policy"
+            ]
+        return EngineResult(status, "Path roughness versus terminal-direction baseline",
+                            augmented, dict(EMPTY_ECONOMICS), reasons, identity, causal,
+                            split.boundaries)
     elif mode == "volatility_of_volatility":
         features = ["vol_of_vol", "rv_15m", "rv_30m", "rv_60m", "rv_term", "vol_accel"]
         target_source = frame["shock_magnitude"]
@@ -355,7 +449,7 @@ def _generic_predictive(context: EngineContext, frame: pd.DataFrame, identity: d
         source = -frame["future_abs_move_5m"].to_numpy(float)
     elif mode == "path_efficiency":
         source = frame["future_efficiency"].to_numpy(float)
-    elif mode in {"information_clock", "path_roughness"}:
+    elif mode == "information_clock":
         source = frame["future_abs_move_5m"].to_numpy(float)
     else:
         source = frame["shock_magnitude"].to_numpy(float)

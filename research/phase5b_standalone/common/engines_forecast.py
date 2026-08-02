@@ -35,9 +35,10 @@ def _model_vote_groups(context: EngineContext) -> tuple[pd.DataFrame, dict, dict
     frame = loaded.frame.copy()
     frame["direction"] = frame["direction"].map(_clean_direction)
     frame["actual_direction"] = frame["actual_direction"].map(_clean_direction)
-    frame = frame.dropna(subset=["direction", "actual_direction", "model", "horizon"])
+    frame = frame.dropna(subset=["actual_direction", "model", "horizon"])
     frame = frame[frame.get("resolved", True).fillna(False).astype(bool)]
-    frame["vote"] = (frame["direction"] == "UP").astype(int)
+    frame["vote"] = np.where(frame["direction"] == "UP", 1,
+                             np.where(frame["direction"] == "DOWN", -1, 0))
     frame["correct"] = (frame["direction"] == frame["actual_direction"]).astype(int)
     frame["group_key"] = frame["timestamp"].astype(str) + ":" + frame["horizon"].astype(str)
     return frame, loaded.identity, loaded.causal_summary
@@ -48,10 +49,11 @@ def _minority_frame(frame: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for _, group in frame.groupby("group_key", sort=False):
         group = group.drop_duplicates("model", keep="last")
+        group = group[group["vote"] != 0]
         if len(group) < 3:
             continue
-        up = int(group["vote"].sum())
-        down = int(len(group) - up)
+        up = int((group["vote"] == 1).sum())
+        down = int((group["vote"] == -1).sum())
         if up == down or min(up, down) == 0:
             continue
         majority = "UP" if up > down else "DOWN"
@@ -67,7 +69,7 @@ def _minority_frame(frame: pd.DataFrame) -> pd.DataFrame:
             "minority_correct": int(minority == actual),
         }
         votes = dict(zip(group["model"].astype(str), group["vote"].astype(float)))
-        row.update({f"vote_{model}": votes.get(model, 0.5) for model in models})
+        row.update({f"vote_{model}": votes.get(model, 0.0) for model in models})
         rows.append(row)
     return pd.DataFrame(rows).sort_values("_ts_ms").reset_index(drop=True)
 
@@ -134,8 +136,12 @@ def _false_consensus(context: EngineContext, frame: pd.DataFrame, identity: dict
                      causal: dict) -> EngineResult:
     vote = frame.pivot_table(index="group_key", columns="model", values="vote", aggfunc="last")
     correct = frame.pivot_table(index="group_key", columns="model", values="correct", aggfunc="last")
-    common = vote.dropna(axis=0, how="any")
-    common_correct = correct.reindex(common.index).dropna(axis=0, how="any")
+    coverage = vote.notna().mean()
+    core_models = coverage[coverage >= 0.90].index.tolist()
+    if len(core_models) < 3:
+        raise ValueError(f"only {len(core_models)} models have >=90% vote coverage")
+    common = vote[core_models].dropna(axis=0, how="any")
+    common_correct = correct.reindex(common.index)[core_models].dropna(axis=0, how="any")
     common = common.reindex(common_correct.index)
     if len(common) < 100:
         raise ValueError(f"only {len(common)} complete model-vote groups")
@@ -149,6 +155,8 @@ def _false_consensus(context: EngineContext, frame: pd.DataFrame, identity: dict
     diagnostics = {
         "complete_groups": int(len(common)),
         "model_count": model_count,
+        "core_models": core_models,
+        "all_model_coverage": {str(key): float(value) for key, value in coverage.items()},
         "effective_independent_model_count": effective,
         "effective_fraction": float(effective / model_count),
         "mean_pair_prediction_correlation": float(np.nanmean(pair_values)),

@@ -27,7 +27,8 @@
       "ask"
     ],
     "source": "multi_venue_events",
-    "timestamp": "recv_ts"
+    "timestamp": "recv_ts",
+    "where": "price IS NOT NULL"
   },
   "engine": "event_research",
   "experiment_id": "P5B_66_TRADE_SIGN_ENTROPY",
@@ -46,7 +47,7 @@
     "require_positive_day_lcb": true,
     "require_positive_week_lcb": true
   },
-  "protocol_sha256": "84805d9bb12eb4a29668413fa4c5d2f05945e671b32e714de63149fd914d781e",
+  "protocol_sha256": "e5814528987a41db4b971fb1e3d47a57dfd113a02ccb67ddea9ce9d024d7f563",
   "protocol_version": "phase5b.v1",
   "question": "Does trade-sign entropy predict flow persistence?"
 }

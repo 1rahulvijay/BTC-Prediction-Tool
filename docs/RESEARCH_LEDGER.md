@@ -329,6 +329,53 @@ NULL-guarded, and the selftest asserts it.
 Sigma-normalised labels (`0.5/1.0/1.5/2.0`) use a **declared proxy**: `vol_60s_pct` from the
 checkpoint snapshot, scaled by sqrt(time). Causal, but not an implied vol and not claimed as one.
 
+### 4.5 Oracle versus current repository - `2026-08-02`
+
+`research/model_vintage_comparison_v1.py`. Both vintages scored on the **identical** 47,864
+eligible settled checkpoints, same entry rule, canonical fees.
+
+| arm | Brier | log loss | ECE | AUC | trades | net/$1 | day LCB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **MARKET** (the ask) | **0.1453** | **0.4410** | **0.0036** | **0.7918** | 0 | - | - |
+| ORACLE (live, out of sample) | 0.1604 | 0.4878 | 0.0094 | 0.7271 | 12,762 | −0.0159 | −0.0265 |
+| CHALLENGER (in sample) | 0.1617 | 0.4931 | 0.0232 | 0.7227 | 15,039 | −0.0141 | −0.0237 |
+| RANDOM (matched count) | - | - | - | 0.5000 | 12,762 | −0.0125 | −0.0170 |
+
+**Three findings, in order of importance.**
+
+**1. The market beats both models on every metric — including AUC.** Brier 0.1453 vs 0.1604,
+log loss 0.4410 vs 0.4878, ECE 0.0036 vs 0.0094, AUC 0.7918 vs 0.7271. The Polymarket ask is a
+better probability than either model vintage produced. MARKET takes 0 trades by construction
+(`p == ask` can never clear `ask + fee + margin`); it is the calibration bar, not a trading arm.
+
+**2. Both models lose money, and both lose to RANDOM.** Oracle −0.0159/$1, challenger −0.0141,
+matched-count random −0.0125. Model *selection* is worse than picking the same number of rounds
+with no information at all.
+
+**3. The challenger loses despite being in sample.** Its training set spans `2023-01-16 →
+2026-07-30` with `refit_on_all=True`, including 335,060 July 2026 rows — the exact window
+scored. The reading rule was declared before the run: **a challenger loss is informative, a
+challenger win proves nothing.** It lost on Brier, log loss, ECE and AUC, on rounds it had
+memorised. It trades 18% more and its extra trades are the bad ones:
+
+```
+oracle enters, challenger waits :    381   win 0.7717 +/- 0.0215
+challenger enters, oracle waits :  2,658   win 0.7216 +/- 0.0087
+break-even win rate               0.7328
+```
+
+The Oracle's unique picks sit **above** break-even; the challenger's sit **below**. Directionally
+clean, though ±1.8 and ±1.3 standard errors respectively — suggestive, not decisive alone.
+
+**Caveat that cuts against the conclusion:** the Oracle's live `p_hold` could use the 11-feature
+`keeper` variant when volatility keepers were present; those inputs were never recorded, so the
+replay uses the 5-feature base model. Part of the challenger's gap may be missing features
+rather than a worse model.
+
+**This is elimination-grade, never promotion-grade** — zero `FORWARD_UNTOUCHED` rows exist. What
+it does support: **do not promote the newer artifact**, and treat the market price as the
+incumbent any Polymarket model must beat.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |

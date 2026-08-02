@@ -127,6 +127,16 @@ def load_db_table(
 
 def load_contract(data_dir: str | Path, contract: dict[str, Any], maximum_rows: int) -> LoadedData:
     source = contract.get("source")
+    if source == "multi_venue_events" and contract.get("where"):
+        return load_db_table(
+            data_dir,
+            database="multi_venue.duckdb",
+            table="venue_events",
+            columns=list(contract.get("required_columns", [])),
+            timestamp=str(contract.get("timestamp", "recv_ts")),
+            maximum_rows=maximum_rows,
+            where=str(contract["where"]),
+        )
     if source in {
         "btc_matrix", "poly_checkpoints", "crossvenue", "binance_l2",
         "multi_venue_events", "polymarket_l2", "polymarket_l2_trades",

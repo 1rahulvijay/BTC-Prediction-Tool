@@ -218,8 +218,12 @@ def _sequential_voi(context: EngineContext, frame: pd.DataFrame, identity: dict,
     data["ask_now"] = np.where(data["current_side"] == "UP", data["up_ask"], data["down_ask"])
     data["ask_wait"] = np.where(data["current_side"] == "UP", data["next_up_ask"], data["next_down_ask"])
     data["won"] = (data["current_side"] == data["settled_side"]).astype(float)
-    data["pnl_now"] = data["won"] - data["ask_now"] - data["ask_now"].map(polymarket_fee_per_share)
-    data["pnl_wait"] = data["won"] - data["ask_wait"] - data["ask_wait"].map(polymarket_fee_per_share)
+    data["fee_now"] = (data["ask_now"].map(polymarket_fee_per_share) *
+                       context.cost_multiplier)
+    data["fee_wait"] = (data["ask_wait"].map(polymarket_fee_per_share) *
+                        context.cost_multiplier)
+    data["pnl_now"] = data["won"] - data["ask_now"] - data["fee_now"]
+    data["pnl_wait"] = data["won"] - data["ask_wait"] - data["fee_wait"]
     data["wait_better"] = (data["pnl_wait"] > data["pnl_now"]).astype(int)
     features = [column for column in context.protocol.payload["method"]["features"] if column in data]
     data = data.dropna(subset=["ask_now", "ask_wait", "next_seconds_left", *features]).sort_values(
@@ -239,9 +243,8 @@ def _sequential_voi(context: EngineContext, frame: pd.DataFrame, identity: dict,
     wait = p_test >= locked
     gross = np.where(wait, data["won"].to_numpy()[split.test] - data["ask_wait"].to_numpy()[split.test],
                      data["won"].to_numpy()[split.test] - data["ask_now"].to_numpy()[split.test])
-    ask = np.where(wait, data["ask_wait"].to_numpy()[split.test],
-                   data["ask_now"].to_numpy()[split.test])
-    fees = np.array([polymarket_fee_per_share(value) for value in ask]) * context.cost_multiplier
+    fees = np.where(wait, data["fee_wait"].to_numpy()[split.test],
+                    data["fee_now"].to_numpy()[split.test])
     net = gross - fees
     economics = economic_metrics(
         gross_pnls=gross, net_pnls=net,

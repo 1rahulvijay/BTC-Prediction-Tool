@@ -51,6 +51,7 @@ FRONTIER = (
     "settlement_fragility_test.py",
     "policy_threshold_size_test.py",
     "causal_decision_join.py",
+    "model_vintage_comparison_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour

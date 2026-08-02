@@ -49,6 +49,7 @@ PM_CONTRACT = {
 EVENT_CONTRACT = {
     "source": "multi_venue_events", "timestamp": "recv_ts",
     "required_columns": ["price", "size", "side", "venue", "stream", "bid", "ask"],
+    "where": "price IS NOT NULL",
     "causal_rule": "local receive timestamp orders public events; five-day minimum span applies",
 }
 L2_CONTRACT = {

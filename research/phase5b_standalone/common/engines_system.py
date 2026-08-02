@@ -30,18 +30,41 @@ def run_readiness(context: EngineContext) -> EngineResult:
         "resolved_paths": {item: str(path) for item, path in resolved.items()},
         "missing_artifacts": missing,
     }
-    if not missing and method.get("minimum_rows"):
+    if not missing:
         path = next(iter(resolved.values()))
+        required_columns = list(method.get("required_columns", []))
+        if path.suffix.lower() != ".parquet":
+            return EngineResult("BLOCKED_SCHEMA", "Prerequisite audit", diagnostics,
+                                dict(EMPTY_ECONOMICS),
+                                [f"unsupported readiness artifact type: {path.suffix}"], {}, {})
         con = duckdb.connect()
         try:
-            rows = int(con.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()[0])
+            description = con.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+            columns = [str(row[0]) for row in description]
+            rows = int(con.execute(
+                "SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()[0])
         finally:
             con.close()
-        diagnostics["rows"] = rows
-        if rows >= int(method["minimum_rows"]):
-            return EngineResult("FAIL_UNSTABLE", "Prerequisite exists but needs its declared analysis",
-                                diagnostics, dict(EMPTY_ECONOMICS),
-                                ["data presence alone is not evidence of edge"], {}, {})
+        missing_columns = sorted(set(required_columns) - set(columns))
+        diagnostics.update({
+            "rows": rows,
+            "columns": columns,
+            "required_columns": required_columns,
+            "missing_columns": missing_columns,
+        })
+        if missing_columns:
+            return EngineResult("BLOCKED_SCHEMA", "Prerequisite audit", diagnostics,
+                                dict(EMPTY_ECONOMICS),
+                                [f"missing required columns: {missing_columns}"], {}, {})
+        minimum_rows = int(method.get("minimum_rows", 1))
+        if rows < minimum_rows:
+            return EngineResult("INSUFFICIENT_SAMPLE", "Prerequisite audit", diagnostics,
+                                dict(EMPTY_ECONOMICS),
+                                [f"only {rows} rows; requires {minimum_rows}"], {}, {})
+        return EngineResult("FAIL_UNSTABLE", "Prerequisite exists but needs its declared analysis",
+                            diagnostics, dict(EMPTY_ECONOMICS),
+                            ["data and schema presence alone are not evidence of edge"], {}, {})
     reason = str(method.get("blocked_reason") or "required causal dataset is unavailable")
     return EngineResult("BLOCKED_DATA", "Prerequisite audit", diagnostics,
                         dict(EMPTY_ECONOMICS), [reason], {}, {})
@@ -133,7 +156,7 @@ def _pnl_attribution(context: EngineContext, capital_efficiency: bool = False) -
                                         pd.to_numeric(frame["ts"], errors="coerce"),
                                         pd.to_numeric(frame["horizon"], errors="coerce") * 60)
     frame["seconds_locked"] = frame["seconds_locked"].clip(lower=1)
-    settled = frame.dropna(subset=["pnl"])
+    settled = frame.dropna(subset=["pnl"]).copy()
     if capital_efficiency:
         settled["pnl_per_capital_minute"] = settled["pnl"] / (settled["seconds_locked"] / 60)
         diagnostics = {
@@ -176,47 +199,79 @@ def _horizon_consistency(context: EngineContext) -> EngineResult:
             context.data_dir,
             database="analytics.duckdb",
             table=f"predictions_{horizon}m",
-            columns=["final_direction", "actual_direction", "confidence", "resolved"],
+            columns=["final_direction", "actual_move", "confidence", "resolved"],
             timestamp="timestamp",
             maximum_rows=context.maximum_rows,
         )
         data = loaded.frame.copy()
-        data["bucket"] = data["_ts_ms"] // 60_000
-        data["horizon"] = horizon
+        data = data.sort_values("_ts_ms").drop_duplicates("_ts_ms", keep="last")
+        data = data.rename(columns={
+            "_ts_ms": "ts_ms",
+            "final_direction": f"direction_{horizon}",
+            "actual_move": f"actual_move_{horizon}",
+        })[["ts_ms", f"direction_{horizon}", f"actual_move_{horizon}"]]
         frames.append(data)
         identities[str(horizon)] = loaded.identity
         causal[str(horizon)] = loaded.causal_summary
-    merged = pd.concat(frames, ignore_index=True)
-    direction = merged.pivot_table(index="bucket", columns="horizon", values="final_direction",
-                                   aggfunc="last")
-    actual = merged.pivot_table(index="bucket", columns="horizon", values="actual_direction",
-                                aggfunc="last")
-    complete = direction.dropna(subset=horizons)
-    actual = actual.reindex(complete.index)
-    if len(complete) < 50:
-        raise ValueError(f"only {len(complete)} aligned horizon snapshots")
-    encoded = complete.applymap(lambda value: 1 if str(value).upper() == "UP" else
-                                -1 if str(value).upper() == "DOWN" else 0)
-    inconsistent = encoded.nunique(axis=1) > 1
-    valid_actual = actual.applymap(lambda value: str(value).upper() in {"UP", "DOWN"})
-    errors = pd.DataFrame(index=complete.index)
+    merged = frames[-1]
+    for other in reversed(frames[:-1]):
+        merged = pd.merge_asof(
+            merged.sort_values("ts_ms"), other.sort_values("ts_ms"), on="ts_ms",
+            direction="nearest", tolerance=120_000)
+    direction = merged[[f"direction_{horizon}" for horizon in horizons]].copy()
+    direction.columns = horizons
+    actual = pd.DataFrame(index=merged.index)
     for horizon in horizons:
-        errors[horizon] = np.where(valid_actual[horizon],
-                                   complete[horizon].astype(str).str.upper() !=
-                                   actual[horizon].astype(str).str.upper(), np.nan)
+        move = pd.to_numeric(merged[f"actual_move_{horizon}"], errors="coerce")
+        actual[horizon] = np.where(move > 0, "UP", np.where(move < 0, "DOWN", None))
+    complete = direction.dropna(subset=horizons)
+    complete = complete.map(lambda value: str(value).upper())
+    actual = actual.reindex(complete.index)
+    directional_mask = complete.isin({"UP", "DOWN"}).all(axis=1)
+    directional = complete[directional_mask]
+    actual = actual.reindex(directional.index)
     diagnostics = {
-        "aligned_snapshots": int(len(complete)),
-        "inconsistency_rate": float(inconsistent.mean()),
-        "error_rate_when_inconsistent": float(np.nanmean(errors[inconsistent].to_numpy(float))),
-        "error_rate_when_consistent": float(np.nanmean(errors[~inconsistent].to_numpy(float))),
+        "near_aligned_snapshots": int(len(complete)),
+        "directional_snapshots": int(len(directional)),
+        "all_neutral_snapshots": int((complete == "NEUTRAL").all(axis=1).sum()),
+        "mixed_neutral_snapshots": int((~directional_mask & ~(complete == "NEUTRAL").all(axis=1)).sum()),
         "available_horizons": horizons,
         "missing_requested_horizons": [60, 120],
+        "alignment_tolerance_ms": 120_000,
     }
-    lift = diagnostics["error_rate_when_inconsistent"] - diagnostics["error_rate_when_consistent"]
+    if len(directional) < 50:
+        return EngineResult(
+            "INSUFFICIENT_SAMPLE", "Cross-horizon directional-divergence diagnostic",
+            diagnostics, dict(EMPTY_ECONOMICS), [
+                "fewer than 50 aligned snapshots had UP/DOWN forecasts at every horizon",
+                "NEUTRAL is abstention and cannot be counted as directional agreement",
+            ], identities, causal)
+    encoded = directional.map(lambda value: 1 if value == "UP" else -1)
+    inconsistent = encoded.nunique(axis=1) > 1
+    valid_actual = actual.map(lambda value: str(value).upper() in {"UP", "DOWN"})
+    errors = pd.DataFrame(index=directional.index)
+    for horizon in horizons:
+        errors[horizon] = np.where(valid_actual[horizon],
+                                   directional[horizon] !=
+                                   actual[horizon].astype(str).str.upper(), np.nan)
+    inconsistent_values = errors[inconsistent].to_numpy(float)
+    consistent_values = errors[~inconsistent].to_numpy(float)
+    inconsistent_error = (float(np.nanmean(inconsistent_values))
+                          if np.isfinite(inconsistent_values).any() else None)
+    consistent_error = (float(np.nanmean(consistent_values))
+                        if np.isfinite(consistent_values).any() else None)
+    diagnostics.update({
+        "directional_divergence_rate": float(inconsistent.mean()),
+        "error_rate_when_inconsistent": inconsistent_error,
+        "error_rate_when_consistent": consistent_error,
+    })
+    lift = ((inconsistent_error - consistent_error)
+            if inconsistent_error is not None and consistent_error is not None else 0.0)
     status = "FAIL_UNSTABLE" if lift > 0 else "FAIL_NO_EDGE"
-    return EngineResult(status, "Cross-horizon logical-consistency diagnostic", diagnostics,
+    return EngineResult(status, "Cross-horizon directional-divergence diagnostic", diagnostics,
                         dict(EMPTY_ECONOMICS),
-                        ["1h and 2h forecasts are not produced by the application"], identities, causal)
+                        ["different horizons have different terminal times; divergence is diagnostic, not a logical error",
+                         "1h and 2h forecasts are not produced by the application"], identities, causal)
 
 
 def _candidate_completeness(context: EngineContext) -> EngineResult:
