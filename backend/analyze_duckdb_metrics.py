@@ -35,8 +35,16 @@ except Exception:
     pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
-DB = os.path.join(DATA, "analytics.duckdb")
+# ONE RESOLVER. Resolving a path here independently is how the 2026-08-03 edition of this report
+# published a window ending 07-04 while a sibling store held every row through 07-25 - 14,998 of
+# 15,368 paper trades absent, with nothing in the output saying so.
+from datastore_identity import (                                    # noqa: E402
+    resolve as _resolve_store, describe as _describe_store,
+    coverage_warning as _coverage_warning,
+)
+DB = str(_resolve_store())
 OUT = os.path.join(ROOT, "docs", "active", f"DUCKDB_METRICS_ANALYSIS_{date.today().isoformat()}.md")
 HZ = (5, 15)
 DAY5 = "CAST(to_timestamp(timestamp/1000) AS DATE)"
@@ -71,6 +79,24 @@ def main():
         print("no analytics.duckdb"); return
     c = duckdb.connect(DB, read_only=True)
     L = [f"# DuckDB Metrics Analysis — {date.today().isoformat()}", ""]
+
+    # The caveat is EMITTED, not hand-added. A warning that a regeneration silently deletes
+    # is not a warning; the previous edition carried it only until the next run.
+    L.append("> **Diagnostic legacy evidence only.** These rows may predate the current "
+             "feature/model contract and span multiple artifact eras. They must not be used to "
+             "authorize trading or to estimate future performance.")
+    L.append("")
+
+    # WHICH STORE ANSWERED THIS. Four analytics.duckdb files exist with different spans; a
+    # report that does not name its source cannot be checked against the one that matters.
+    identity = _describe_store(__import__("pathlib").Path(DB))
+    L.append(f"**Store** `{identity['path']}` — {identity['bytes']:,} bytes, "
+             f"{identity.get('tables', '?')} tables.")
+    warning = _coverage_warning(__import__("pathlib").Path(DB), "rule_paper_trades", "ts")
+    if warning:
+        L.append("")
+        L.append("> **INCOMPLETE COVERAGE.** " + warning.replace("\n", "\n> "))
+    L.append("")
 
     rng = c.execute(f"SELECT min({DAY5}), max({DAY5}) FROM price_to_beat").fetchone()
     L.append(f"Window **{rng[0]} → {rng[1]}**. Horizons: **5m & 15m**. "

@@ -148,6 +148,101 @@ def describe(path: Path | None = None, *, strict: bool = False) -> dict:
     return identity
 
 
+def sibling_spans(chosen: Path, table: str, column: str) -> list[dict]:
+    """Row count and span of `table` in every OTHER candidate store.
+
+    THE RECURRENCE GUARD. Choosing a store is not the whole problem - publishing a report
+    without saying which store answered it is. `DUCKDB_METRICS_ANALYSIS_2026-08-03.md` stated
+    its window as 2026-06-12..07-04 and omitted 14,998 of 15,368 paper trades, because a
+    sibling store held every row after 07-04 and nothing looked."""
+    chosen = chosen.resolve()
+    out: list[dict] = []
+    for candidate in find_candidates():
+        if candidate.resolve() == chosen:
+            continue
+        entry = {"path": str(candidate), "rows": 0, "min": None, "max": None}
+        try:
+            import duckdb
+            con = duckdb.connect(str(candidate), read_only=True)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            out.append(entry)
+            continue
+        try:
+            present = {r[0] for r in con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='main'").fetchall()}
+            if table in present:
+                columns = {c[0] for c in con.execute(f"DESCRIBE {table}").fetchall()}
+                if column in columns:
+                    rows, low, high = con.execute(
+                        f"SELECT count(*), min({column}), max({column}) FROM {table}").fetchone()
+                    entry.update(rows=int(rows), min=low, max=high)
+        except Exception as exc:                                   # pragma: no cover
+            entry["error"] = str(exc)
+        finally:
+            con.close()
+        out.append(entry)
+    return out
+
+
+def _as_date(value) -> str:
+    """Epoch milliseconds rendered as a date. Raw epoch integers are not a readable warning."""
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(int(value) / 1000, _dt.UTC).strftime("%Y-%m-%d")
+    except Exception:
+        return str(value)
+
+
+def coverage_warning(chosen: Path, table: str, column: str) -> str | None:
+    """Warning about rows a sibling store holds OUTSIDE the chosen store's own span.
+
+    Only rows outside the span count. A byte-identical duplicate of the chosen store holds the
+    same rows, not extra evidence - reporting it as "not covered" trains the reader to skim a
+    warning that is usually wrong, which is worse than printing nothing."""
+    chosen = chosen.resolve()
+    try:
+        import duckdb
+        con = duckdb.connect(str(chosen), read_only=True)
+    except Exception:
+        return None
+    try:
+        low, high = con.execute(f"SELECT min({column}), max({column}) FROM {table}").fetchone()
+    except Exception:
+        return None
+    finally:
+        con.close()
+    if low is None:
+        return None
+
+    uncovered: list[str] = []
+    for sibling in sibling_spans(chosen, table, column):
+        if not sibling["rows"]:
+            continue
+        try:
+            con = duckdb.connect(sibling["path"], read_only=True)
+        except Exception:
+            continue
+        try:
+            outside, out_low, out_high = con.execute(
+                f"SELECT count(*), min({column}), max({column}) FROM {table} "
+                f"WHERE {column} < ? OR {column} > ?", [low, high]).fetchone()
+        except Exception:
+            continue
+        finally:
+            con.close()
+        if outside:
+            uncovered.append(f"- `{sibling['path']}` - **{int(outside):,}** rows outside this "
+                             f"window ({_as_date(out_low)} to {_as_date(out_high)})")
+    if not uncovered:
+        return None
+    return (f"Other candidate store(s) hold `{table}` rows OUTSIDE this report's window "
+            f"({_as_date(low)} to {_as_date(high)}):\n" + "\n".join(uncovered)
+            + "\nA correct query against the wrong store is still wrong, and nothing in the "
+              "numbers says so.")
+
+
 def selftest() -> int:
     import tempfile
     checks = 0

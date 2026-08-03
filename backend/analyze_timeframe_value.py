@@ -39,8 +39,12 @@ except Exception:
     pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
-DB = os.path.join(DATA, "analytics.duckdb")
+# ONE RESOLVER - see datastore_identity. Four analytics.duckdb files exist with disjoint spans,
+# and a script that resolves its own path can silently report on the wrong three weeks.
+from datastore_identity import resolve as _resolve_store        # noqa: E402
+DB = str(_resolve_store())
 HORIZONS = (1, 3, 5, 7, 10, 15, 30)
 
 # Horizons with a real Polymarket market to bet on. The ONLY hard reason to keep a horizon.
