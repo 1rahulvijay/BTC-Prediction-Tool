@@ -47,7 +47,15 @@ PROTOCOL = "PREREG_CROSSING_HEADS_V1.md"
 BAR_MS = 60_000
 TRAIN_FRACTION = 0.70
 MATERIAL_AUC = 0.02
-TARGETS = ("is_final_crossing", "reverted_30s", "reverted_60s")
+# v1 wrote `reverted_Ns`; v2 writes `state_original_side_at_Ns`. They are the SAME
+# measurement - state at the horizon - and v1 was simply misnamed, so they can be
+# unioned. The trainer reports the honest name.
+#
+# `ever_reverted_by_Ns` is a genuinely DIFFERENT target with no v1 equivalent. It is
+# deliberately NOT listed here: backfilling it from v1 rows would invent data, and
+# training on a target that only exists for recent rows would silently change what the
+# head predicts partway through the sample.
+TARGETS = ("is_final_crossing", "state_original_side_at_30s", "state_original_side_at_60s")
 BASELINE_FEATURE = "seconds_left"
 ROUND_FEATURES = ("seconds_left", "horizon_min", "crossing_index", "move_at_crossing",
                   "from_up", "elapsed_fraction")
@@ -70,7 +78,15 @@ def load() -> pd.DataFrame:
         frame = con.execute("""
             SELECT e.crossing_id, e.round_id, e.horizon_min, e.crossing_ts, e.from_side,
                    e.seconds_left, e.move_at_crossing, e.crossing_index,
-                   l.is_final_crossing, l.reverted_30s, l.reverted_60s
+                   l.is_final_crossing,
+                   -- v1 rows carry reverted_Ns, v2 rows carry state_original_side_at_Ns.
+                   -- Same quantity, one honest name. COALESCE is safe ONLY because v2
+                   -- leaves the v1 column NULL, so exactly one side is ever populated.
+                   COALESCE(l.state_original_side_at_30s, l.reverted_30s)
+                       AS state_original_side_at_30s,
+                   COALESCE(l.state_original_side_at_60s, l.reverted_60s)
+                       AS state_original_side_at_60s,
+                   l.label_version
             FROM crossing_events e
             JOIN crossing_labels l ON l.crossing_id = e.crossing_id
             ORDER BY e.crossing_ts""").df()
@@ -135,6 +151,9 @@ def selftest() -> int:
         print(f"  PASS  {text}")
 
     check(len(TARGETS) == 3, "three targets - the 5s/15s horizons are excluded as unresolvable")
+    check(not any(t.startswith("ever_reverted") for t in TARGETS),
+          "ever_reverted_* is NOT trained: no v1 equivalent exists, so it would be "
+          "present for recent rows only and would change the target mid-sample")
     check(BASELINE_FEATURE in ROUND_FEATURES,
           "the incumbent feature is inside the candidate set, so the comparison is nested")
     check(MATERIAL_AUC == 0.02, "the declared materiality bar is in force")

@@ -44,7 +44,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("BTC_DATA_DIR") or ROOT / "data")
 CROSSING_DB = DATA_DIR / "polymarket_crossings.duckdb"
 
-LABEL_VERSION = "crossing_labels_v1"
+# v2 (2026-08-04). v1 wrote `reverted_Ns`, but the computation was
+#     side at the LAST SAMPLE at or before the deadline == side before the crossing
+# which is STATE AT THE HORIZON, not "ever reverted". A path that crossed, reverted at
+# 5s and re-crossed by 20s was labelled False despite having reverted.
+#
+# The v1 columns are NOT renamed in place: 15,428 existing rows carry v1 semantics and
+# renaming would silently reinterpret them. v2 adds correctly-named columns alongside,
+# and rows are distinguished by label_version.
+LABEL_VERSION = "crossing_labels_v2"
 #: Horizons at which a crossing is checked for reversion. A label may only be written once the
 #: horizon has elapsed AND the round is still running - a crossing 3s before settlement has no
 #: 60s reversion outcome, and recording one would be an invention.
@@ -73,10 +81,20 @@ SCHEMA = (
         eligible_after_ts  BIGINT  NOT NULL,
         resolved_ts        BIGINT  NOT NULL,
         is_final_crossing  BOOLEAN,
-        reverted_5s        BOOLEAN,
-        reverted_15s       BOOLEAN,
-        reverted_30s       BOOLEAN,
-        reverted_60s       BOOLEAN,
+        reverted_5s        BOOLEAN,   -- v1 only: misnamed, means state-at-horizon
+        reverted_15s       BOOLEAN,   -- v1 only
+        reverted_30s       BOOLEAN,   -- v1 only
+        reverted_60s       BOOLEAN,   -- v1 only
+        state_original_side_at_5s   BOOLEAN,  -- v2: what v1 actually measured
+        state_original_side_at_15s  BOOLEAN,
+        state_original_side_at_30s  BOOLEAN,
+        state_original_side_at_60s  BOOLEAN,
+        ever_reverted_by_5s         BOOLEAN,  -- v2: genuinely new - touched the
+        ever_reverted_by_15s        BOOLEAN,  -- original side at ANY point in window
+        ever_reverted_by_30s        BOOLEAN,
+        ever_reverted_by_60s        BOOLEAN,
+        first_reversion_ts          BIGINT,   -- v2: NULL if never reverted
+        n_recrossings               INTEGER,  -- v2
         settled_side       VARCHAR,
         PRIMARY KEY (crossing_id, label_version)
     )
@@ -136,17 +154,33 @@ def resolve_labels(event: dict, later_snapshots, settled_side: str | None,
     labels = {"crossing_id": event["crossing_id"], "label_version": LABEL_VERSION,
               "eligible_after_ts": event["crossing_ts"] + REVERSION_HORIZONS_S[0] * 1000,
               "is_final_crossing": None, "settled_side": settled_side}
+    labels["first_reversion_ts"] = None
+    labels["n_recrossings"] = None
     for horizon in REVERSION_HORIZONS_S:
-        labels[f"reverted_{horizon}s"] = None
+        labels[f"reverted_{horizon}s"] = None            # v1 column, left NULL under v2
+        labels[f"state_original_side_at_{horizon}s"] = None
+        labels[f"ever_reverted_by_{horizon}s"] = None
         deadline = event["crossing_ts"] + horizon * 1000
         if now_ms < deadline or deadline > round_end_ts:
             continue                          # not elapsed, or the round ended first
         window = [s for s in after if int(s["ts"]) <= deadline]
         if not window:
-            continue
+            continue                          # unresolvable at this cadence - write NOTHING
+        # STATE AT HORIZON: exactly what v1 computed, now honestly named.
         side = str(window[-1].get("current_position") or "").upper()
         if side in SIDES:
-            labels[f"reverted_{horizon}s"] = (side == event["from_side"])
+            labels[f"state_original_side_at_{horizon}s"] = (side == event["from_side"])
+        # EVER REVERTED: did it touch the original side at ANY observed point in the
+        # window? This is what "reverted" always claimed to mean, and it is a DIFFERENT
+        # target - it can be True where state-at-horizon is False.
+        sides = [str(s.get("current_position") or "").upper() for s in window]
+        touched = [i for i, s in enumerate(sides) if s == event["from_side"]]
+        labels[f"ever_reverted_by_{horizon}s"] = bool(touched)
+        if touched and labels["first_reversion_ts"] is None:
+            labels["first_reversion_ts"] = int(window[touched[0]]["ts"])
+        if horizon == REVERSION_HORIZONS_S[-1]:
+            labels["n_recrossings"] = sum(
+                1 for a, b in zip(sides, sides[1:]) if a in SIDES and b in SIDES and a != b)
 
     # "Final" is knowable only once the round is over.
     if now_ms >= round_end_ts:
@@ -167,7 +201,31 @@ def _connect(read_only: bool = False):
     if not read_only:
         for statement in SCHEMA:
             con.execute(statement)
+        _migrate_v2_columns(con)
     return con
+
+
+# CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so a database
+# written under v1 lacks every v2 column and any query naming one fails to bind. This is
+# ADDITIVE ONLY: columns are added as NULL, no existing row is read, rewritten or
+# reinterpreted. v1 rows keep label_version='crossing_labels_v1' and their v1 columns.
+V2_COLUMNS = (
+    [(f"state_original_side_at_{h}s", "BOOLEAN") for h in REVERSION_HORIZONS_S]
+    + [(f"ever_reverted_by_{h}s", "BOOLEAN") for h in REVERSION_HORIZONS_S]
+    + [("first_reversion_ts", "BIGINT"), ("n_recrossings", "INTEGER")]
+)
+
+
+def _migrate_v2_columns(con) -> int:
+    existing = {r[0] for r in con.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'crossing_labels'").fetchall()}
+    added = 0
+    for name, sqltype in V2_COLUMNS:
+        if name not in existing:
+            con.execute(f"ALTER TABLE crossing_labels ADD COLUMN {name} {sqltype}")
+            added += 1
+    return added
 
 
 def write_events(events: list[dict]) -> int:
