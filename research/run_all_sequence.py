@@ -60,6 +60,7 @@ FRONTIER = (
     "regime_labeler_v1.py",
     "regime_volatility_control_v1.py",
     "tradability_head_v1.py",
+    "conditional_direction_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour

@@ -102,3 +102,10 @@ frozen = 2026-08-03
 bytes  = 4630
 note   = movement gate; scored against rv_60m as the incumbent, not against zero
 ======================================================================
+
+PREREG_CONDITIONAL_DIRECTION_V1.md
+sha256 = dd5c7a75f4544f903f74da38971a1289b94b61c562b464343fe2032cd1769a25
+frozen = 2026-08-03
+bytes  = 4406
+note   = direction inside gated windows; endpoint is post-cost value, not accuracy
+======================================================================
