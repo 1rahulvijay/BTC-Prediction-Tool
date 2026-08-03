@@ -137,3 +137,10 @@ frozen = 2026-08-03
 bytes  = 6008
 note   = real binance book+trades, 22.9h single day; HOUR-block inference only
 ======================================================================
+
+PREREG_ALTCOIN_MAKER_EXECUTION_V1.md
+sha256 = a6ce76dca434573e9ee342aa823c53dac77083f8c6ab2c2123d5f2eabad440da
+frozen = 2026-08-03
+bytes  = 4583
+note   = 4 symbols same 2024-03-28 day; BTC is the within-era control
+======================================================================
