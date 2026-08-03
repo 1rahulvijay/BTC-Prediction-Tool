@@ -88,3 +88,10 @@ frozen = 2026-08-03
 bytes  = 5315
 note   = regime taxonomy; DIAGNOSTIC, admitted by operator under the Phase 6 freeze
 ======================================================================
+
+PREREG_REGIME_VOLATILITY_CONTROL_V1.md
+sha256 = 4d5045519579368517e3784c6a6d503da13c232a848076c89bc4851fdb14feb0
+frozen = 2026-08-03
+bytes  = 4353
+note   = conditions the regime finding on realised volatility; DIAGNOSTIC
+======================================================================
