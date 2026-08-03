@@ -1,0 +1,28 @@
+{
+  "path": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\multihorizon\\multi_15m_180d.parquet",
+  "sha256": "c93c3ab359e9d6a7849ce282cb943801e1bfcea7204a19f0f9b5e2b15a10d96f",
+  "rows": 120967,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "AVAXUSDT",
+    "LINKUSDT"
+  ],
+  "bar_minutes": 15,
+  "days": 180,
+  "fetched_utc": "2026-08-03T19:30:22Z",
+  "span_ms": [
+    1770232500000,
+    1785784500000
+  ],
+  "oi_coverage": 1.0,
+  "funding_coverage": 1.0,
+  "binance_coverage": 1.0,
+  "sources": [
+    "bybit v5 linear kline/open-interest/funding",
+    "binance fapi klines"
+  ]
+}

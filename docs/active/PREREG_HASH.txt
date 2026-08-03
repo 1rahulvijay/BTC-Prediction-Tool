@@ -123,3 +123,10 @@ frozen = 2026-08-03
 bytes  = 4879
 note   = 7 direction heads + voting; null floor measured by day-block label shuffling
 ======================================================================
+
+PREREG_MULTIHORIZON_DIRECTION_V1.md
+sha256 = 2fb2a4815041397b9647ec5599cc4144b79f1a5281e9abe576a3a49a1056a52b
+frozen = 2026-08-03
+bytes  = 5537
+note   = 4 horizons x 7 pairs x 2 exchanges; Bonferroni 98.75% CI on the primary
+======================================================================
