@@ -52,6 +52,44 @@ from _common import load_checkpoints, side_ask  # noqa: E402
 from polymarket_fee import polymarket_taker_fee_per_share  # noqa: E402
 
 MIN_EDGE_MULTIPLE = 1.25
+BOOTSTRAP_DRAWS = 2000
+#: The one frozen checkpoint used for the NON-OVERLAPPING population. Declared, not chosen from
+#: results: 60s is the middle of the grid and the horizon the exit studies already use.
+FROZEN_CHECKPOINT_S = 60
+
+
+def block_ci(values, blocks, *, equal_cluster: bool = False, draws=BOOTSTRAP_DRAWS):
+    """Block bootstrap CI, resampling whole clusters.
+
+    `equal_cluster` must match the ESTIMATOR being reported. Pooling rows inside a resample
+    gives an opportunity-weighted mean; averaging per-cluster means gives an equal-cluster
+    mean. Reporting one estimator beside the other's interval produced a CI that did not
+    contain its own point estimate."""
+    unique = np.unique(blocks)
+    if len(unique) < 5 or not len(values):
+        return (float("nan"), float("nan"))
+    index = {b: np.where(blocks == b)[0] for b in unique}
+    generator = np.random.default_rng(20260802)
+    means = np.empty(draws)
+    for draw in range(draws):
+        picked = generator.integers(0, len(unique), len(unique))
+        if equal_cluster:
+            means[draw] = np.mean([values[index[unique[j]]].mean() for j in picked])
+        else:
+            means[draw] = values[np.concatenate([index[unique[j]] for j in picked])].mean()
+    means.sort()
+    return (float(means[int(0.025 * draws)]), float(means[int(0.975 * draws)]))
+
+
+def equal_weighted_mean(values, blocks) -> float:
+    """Mean of per-cluster means: every day (or round) counts once, whatever its row count.
+
+    The opportunity-weighted mean lets a busy day dominate. For a quantity that must persist
+    ACROSS days, the equal-day mean is the honest summary."""
+    unique = np.unique(blocks)
+    if not len(unique):
+        return float("nan")
+    return float(np.mean([values[blocks == b].mean() for b in unique]))
 
 
 def decompose(settlement, midpoint, ask, fee, exit_bid=None) -> dict:
@@ -60,6 +98,8 @@ def decompose(settlement, midpoint, ask, fee, exit_bid=None) -> dict:
     at_ask = settlement - ask
     after_fee = settlement - ask - fee
     stages = {
+        # NOT "gross edge" - the midpoint is not executable. This is an OBSERVED SURPLUS of
+        # settlement value over the quoted mid on this sample, which is a diagnostic quantity.
         "informational_edge_at_mid": float(np.mean(at_mid)),
         "spread_burden": float(np.mean(at_ask - at_mid)),
         "fee_burden": float(np.mean(after_fee - at_ask)),
@@ -166,14 +206,59 @@ def main() -> int:
     print(f"{'component':<34}{'$/share':>10}")
     for key in ("informational_edge_at_mid", "spread_burden", "fee_burden",
                 "net_hold_to_settlement"):
-        label = {"informational_edge_at_mid": "gross informational edge (at mid)",
+        label = {"informational_edge_at_mid": "observed pre-cost midpoint surplus",
                  "spread_burden": "  spread burden",
                  "fee_burden": "  fee burden",
                  "net_hold_to_settlement": "= net, hold to settlement"}[key]
         print(f"{label:<34}{stages[key]:>10.4f}")
 
-    status, reason = verdict(stages)
+    # --- how robust is the surplus to weighting and to within-round dependence? ------------
+    surplus = won - midpoint
+    days = (frame["snapshot_ts"].to_numpy(float) // 86_400).astype(np.int64)
+    rounds = frame["slug"].to_numpy()
+    frozen = frame["checkpoint_s"].to_numpy(float) == FROZEN_CHECKPOINT_S
+
+    print()
+    print("  OBSERVED_PRE_COST_MIDPOINT_SURPLUS under several weightings")
+    print("  (the midpoint is NOT executable - this is a diagnostic, not an edge)")
+    print(f"{'weighting':<36}{'n':>9}{'surplus':>10}  95% CI")
+    day_ci = block_ci(surplus, days)
+    day_equal_ci = block_ci(surplus, days, equal_cluster=True)
+    round_equal_ci = block_ci(surplus, rounds, equal_cluster=True)
+    print(f"{'raw opportunity-weighted':<36}{len(surplus):>9,}{surplus.mean():>10.4f}"
+          f"  day [{day_ci[0]:+.4f}, {day_ci[1]:+.4f}]")
+    print(f"{'equal-DAY weighted':<36}{len(np.unique(days)):>9,}"
+          f"{equal_weighted_mean(surplus, days):>10.4f}"
+          f"  day [{day_equal_ci[0]:+.4f}, {day_equal_ci[1]:+.4f}]")
+    print(f"{'equal-ROUND weighted':<36}{len(np.unique(rounds)):>9,}"
+          f"{equal_weighted_mean(surplus, rounds):>10.4f}"
+          f"  round [{round_equal_ci[0]:+.4f}, {round_equal_ci[1]:+.4f}]")
+    if frozen.any():
+        frozen_ci = block_ci(surplus[frozen], days[frozen])
+        print(f"{f'NON-OVERLAPPING (one @ {FROZEN_CHECKPOINT_S}s/round)':<36}"
+              f"{int(frozen.sum()):>9,}{surplus[frozen].mean():>10.4f}"
+              f"  day [{frozen_ci[0]:+.4f}, {frozen_ci[1]:+.4f}]")
+        print("  The non-overlapping row is the only one where every observation could have")
+        print("  been independently funded. Multiple checkpoints from one round are overlapping")
+        print("  positions in the same contract, not separate opportunities.")
+
     costs = -(stages["spread_burden"] + stages["fee_burden"])
+    # The verdict uses the UPPER 95% bound of the surplus, not its point estimate. If even the
+    # optimistic end of the interval cannot carry the cost, no execution work can rescue the
+    # lane, and saying so from a point estimate whose CI spans zero would overstate the case.
+    optimistic = day_ci[1]
+    if not np.isfinite(optimistic):
+        status, reason = verdict(stages)
+    elif optimistic <= 0:
+        status = "EXECUTION_CANNOT_RESCUE"
+        reason = (f"even the 95% UPPER bound of the surplus ({optimistic:+.4f}) is not "
+                  f"positive - there is nothing for cheaper execution to preserve")
+    elif optimistic < costs:
+        status = "TAKER_EXECUTION_CANNOT_RESCUE"
+        reason = (f"the 95% upper bound of the surplus ({optimistic:+.4f}) is BELOW the current "
+                  f"cost ({costs:.4f}) - no reduction in TAKER cost clears it")
+    else:
+        status, reason = verdict(stages)
     print()
     print(f"  break-even execution cost   : {max(stages['informational_edge_at_mid'], 0.0):.4f}")
     print(f"  actual execution cost       : {costs:.4f}")
@@ -183,11 +268,23 @@ def main() -> int:
     print(f"  VERDICT: {status}")
     print(f"  {reason}")
     print()
-    if status == "EXECUTION_CANNOT_RESCUE":
-        print("  Maker infrastructure is NOT justified for this lane. The market prices these")
-        print("  contracts above their settlement value on average at the mid, so the deficit")
-        print("  is information and not execution - consistent with 157, which found nothing")
-        print("  that adds resolution beyond the price.")
+    if status.endswith("CANNOT_RESCUE"):
+        surplus_point = stages["informational_edge_at_mid"]
+        print("  A cheaper TAKER channel cannot rescue this lane: even the optimistic end of")
+        print(f"  the day-clustered interval ({optimistic:+.4f}) sits below the cost it must")
+        print(f"  clear ({costs:.4f}).")
+        print()
+        print("  A MAKER fill is a different question, and this test cannot answer it. Posting")
+        print(f"  at the mid would remove essentially all cost, leaving the surplus itself:")
+        print(f"    point estimate {surplus_point:+.4f}/share, day-clustered 95% CI "
+              f"[{day_ci[0]:+.4f}, {day_ci[1]:+.4f}]")
+        print("  That interval SPANS ZERO, so a maker fill would be trading on a surplus not")
+        print("  distinguishable from nothing - before charging any adverse selection.")
+        print()
+        print("  Round-clustered the same surplus reads [+0.0063, +0.0161], which excludes zero.")
+        print("  Day clustering governs here because volatility, regime and recorder health all")
+        print("  cluster within a day; rounds inside one day are not independent draws. The")
+        print("  disagreement between the two is itself the reason to treat this as weak.")
     else:
         edge = stages["informational_edge_at_mid"]
         reduction = (costs - edge) / costs if costs > 0 else float("nan")

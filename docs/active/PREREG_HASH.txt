@@ -74,3 +74,10 @@ frozen = 2026-08-02
 bytes  = 2734
 note   = forward-only; zero FORWARD_UNTOUCHED rows existed at freeze
 ======================================================================
+
+PREREG_FORWARD_D_BOUNDED_MAKER_STUDY_V1.md
+sha256 = e07fa7e03fb6ab6a8ae7f40733af3a461f4f7a5ba944de7e0a99d1f545da61e6
+frozen = 2026-08-02
+bytes  = 4281
+note   = test 165; precondition currently FAILS, may not be scored yet
+======================================================================

@@ -80,7 +80,14 @@ class Endpoint:
     CONTINUOUS_CLUSTER_MEAN = "CONTINUOUS_CLUSTER_MEAN"  # net bps, PnL per share
     PAIRED_CONTINUOUS = "PAIRED_CONTINUOUS"            # action advantage vs HOLD
     PROPER_SCORE_DIFFERENCE = "PROPER_SCORE_DIFFERENCE"  # Brier / log loss / resolution delta
-    SURVIVAL_EVENT = "SURVIVAL_EVENT"                  # time to event, censored
+    # "2z/sqrt(events)" is a minimum detectable LOG HAZARD RATIO under Schoenfeld-style
+    # assumptions. It is NOT an MDE in seconds, in median survival time, in event probability
+    # or in restricted mean survival time. Naming it SURVIVAL_EVENT invited exactly the unit
+    # confusion this class exists to prevent, so each survival estimand is now its own endpoint.
+    SURVIVAL_LOG_HAZARD_RATIO = "SURVIVAL_LOG_HAZARD_RATIO"      # 2z / sqrt(events)
+    SURVIVAL_PROBABILITY_DIFFERENCE = "SURVIVAL_PROBABILITY_DIFFERENCE"   # binary at a horizon
+    RESTRICTED_MEAN_TIME_DIFFERENCE = "RESTRICTED_MEAN_TIME_DIFFERENCE"   # time units, needs SD
+    MEDIAN_TIME_DIFFERENCE = "MEDIAN_TIME_DIFFERENCE"                     # time units, needs SD
 
 
 @dataclass(frozen=True)
@@ -135,12 +142,28 @@ class Declaration:
                 return None
             return POWER_Z * float(self.cluster_sd) / root_k
 
-        if self.endpoint_type == Endpoint.SURVIVAL_EVENT:
-            # Power follows the QUALIFYING EVENT count, not the row count. Schoenfeld: the
-            # detectable log-hazard ratio scales as 1/sqrt(events).
+        if self.endpoint_type == Endpoint.SURVIVAL_LOG_HAZARD_RATIO:
+            # Power follows the QUALIFYING EVENT count, not the row count. The number is a
+            # detectable LOG HAZARD RATIO - dimensionless, and not comparable to seconds.
             if self.qualifying_events is None or self.qualifying_events < 2:
                 return None
             return POWER_Z * 2.0 / float(np.sqrt(self.qualifying_events))
+
+        if self.endpoint_type == Endpoint.SURVIVAL_PROBABILITY_DIFFERENCE:
+            # Survival probability at a fixed horizon is a BINARY rate, so it uses the binary
+            # formula - but on the count of clusters contributing an uncensored observation.
+            if self.qualifying_events is None or self.qualifying_events < 2:
+                return None
+            return POWER_Z * float(np.sqrt(self.base_rate * (1 - self.base_rate)
+                                           / self.qualifying_events)) * 100.0
+
+        if self.endpoint_type in (Endpoint.RESTRICTED_MEAN_TIME_DIFFERENCE,
+                                  Endpoint.MEDIAN_TIME_DIFFERENCE):
+            # Both are differences in TIME. They need a cluster-level SD in time units; the
+            # event count alone cannot produce them.
+            if self.cluster_sd is None or self.cluster_sd <= 0:
+                return None
+            return POWER_Z * float(self.cluster_sd) / root_k
         return None
 
     @property
@@ -230,14 +253,26 @@ def selftest() -> int:
           "a continuous endpoint uses z * cluster_sd / sqrt(k) in the endpoint's OWN units")
     check(adjudicate(sized)[0] == Status.ECONOMIC,
           "supplying the cluster SD resolves the power question and admits the study")
-    survival = Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT})
+    survival = Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_LOG_HAZARD_RATIO})
     check(adjudicate(survival)[0] == Status.UNRESOLVED,
           "a survival endpoint needs an EVENT count, not a row count")
-    check(Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT,
+    check(Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_LOG_HAZARD_RATIO,
                          "qualifying_events": 400}).mde
-          < Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT,
+          < Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_LOG_HAZARD_RATIO,
                            "qualifying_events": 100}).mde,
-          "more qualifying events detect a smaller hazard difference")
+          "more qualifying events detect a smaller hazard RATIO")
+    # The four survival estimands are NOT interchangeable - each has its own units.
+    hazard = Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_LOG_HAZARD_RATIO,
+                            "qualifying_events": 400}).mde
+    probability = Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_PROBABILITY_DIFFERENCE,
+                                 "qualifying_events": 400}).mde
+    check(abs(hazard - probability) > 1.0,
+          "a log-hazard-ratio MDE and a survival-PROBABILITY MDE are different numbers in "
+          "different units - the reason SURVIVAL_EVENT was split into four endpoints")
+    check(Declaration(**{**base, "endpoint_type": Endpoint.RESTRICTED_MEAN_TIME_DIFFERENCE,
+                         "qualifying_events": 400}).mde is None,
+          "a restricted-mean-TIME difference needs an SD in time units; an event count alone "
+          "cannot produce one")
     check(Declaration(**{**continuous, "cluster_sd": 40.0}).mde
           != Declaration(**base).mde,
           "the continuous and binary formulas give DIFFERENT numbers - the bug was treating "
@@ -293,7 +328,7 @@ BACKLOG: tuple[Declaration, ...] = (
     Declaration("167 tail_loss_action_head", "REDUCE/EXIT/LOCK", "expected shortfall",
                 "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None, endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("168 opportunity_decay_latency_budget", None, "edge half-life", "polymarket",
-                "day", 0, 5.0, 5.0, None, None, None, intended_as="DIAGNOSTIC", endpoint_type=Endpoint.SURVIVAL_EVENT),
+                "day", 0, 5.0, 5.0, None, None, None, intended_as="DIAGNOSTIC", endpoint_type=Endpoint.SURVIVAL_LOG_HAZARD_RATIO),
     Declaration("169 sparse_exceptional_state_discovery", None, "rule set", "both",
                 "day", 21, 5.0, 5.0, None, "no rule", None, intended_as="DIAGNOSTIC"),
     Declaration("170 settlement_uncertainty_reserve", None, "reserve $/share", "polymarket",

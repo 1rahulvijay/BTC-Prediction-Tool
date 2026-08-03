@@ -918,21 +918,113 @@ gross informational edge (at mid)   +0.0044
 = net, hold to settlement           -0.0105
 ```
 
-**The gross edge is POSITIVE.** Buying the leader at the midpoint earns +0.0044/share; costs of
-0.0149 are 3.4x that and turn it negative. This is the first measured quantity in the project
-where the information side is not the whole story.
+**Corrected `2026-08-03`.** The `+0.0044` is `OBSERVED_PRE_COST_MIDPOINT_SURPLUS` — an observed
+accounting quantity, not an established edge — and it is now reported under blocked weighting,
+because checkpoints cluster inside rounds and rounds cluster inside days:
 
-**Verdict `BOTH_DOMINANT`.** Costs must fall **70%** to break even. A maker entry removes at
-most the spread (0.0052) and the taker fee (0.0097) — enough *on paper*, and that bound assumes
-every resting order fills with no adverse selection. A resting order fills exactly when someone
-informed wants the other side.
+```
+raw, opportunity-weighted   +0.0044   day-CI    [-0.0007, +0.0099]   SPANS ZERO
+equal-DAY weighted          +0.0043   day-CI    [-0.0005, +0.0095]   SPANS ZERO
+equal-ROUND weighted        +0.0114   round-CI  [+0.0063, +0.0161]   excludes zero
+NON-OVERLAPPING (1/round)   +0.0023   day-CI    [-0.0063, +0.0107]   SPANS ZERO
+```
 
-So: **a bounded maker study (test 165) is justified. Maker infrastructure is not**, until a
-fill-and-adverse-selection bound exists. The gross edge is 0.6% of a 0.70 contract.
+**The clustering choice decides the sign of the conclusion, so it is declared rather than
+selected:** day clustering governs, because volatility, regime and recorder health cluster
+within a day. Under it the surplus is **not distinguishable from zero** before any cost is
+charged. The round-clustered CI excludes zero only by treating 50,272 overlapping checkpoints
+as independent, which they are not — the non-overlapping arm (one checkpoint per round) is the
+honest version of that comparison, and it spans zero too.
+
+**Verdict `TAKER_EXECUTION_CANNOT_RESCUE`**, decided on the CI **upper** bound rather than the
+point estimate: even at +0.0099 the surplus sits below the 0.0149 cost floor. Taker entry is
+closed on the most favourable reading of the evidence, which is the only reading worth closing
+a lane on.
+
+The **maker** question is separate and stays open — it is the only route that removes the
+spread and taker fee instead of paying them. It is preregistered as D and **may not be scored
+yet**: its precondition is a day-clustered lower bound above zero, which currently FAILS.
 
 This sits beside 157 without contradiction: 157 says nothing *we record* adds resolution beyond
-the price; 164 says the price itself sits slightly below settlement value at the mid. The edge
-is in the market's own quote, not in our features — and the spread is what takes it.
+the price; 164 says the price itself may sit slightly below settlement value at the mid, by an
+amount the data cannot separate from zero. Whatever is there is in the market's own quote, not
+in our features — and the spread is larger than it either way.
+
+### 11.5 Survival endpoints split into four estimands - `2026-08-03`
+
+`Endpoint.SURVIVAL_EVENT` carried one MDE formula, `2z/sqrt(events)`. That is the minimum
+detectable **log hazard ratio** specifically, and it was being applied to any time-to-event
+question — so a study asking about median time would have received a power number in the wrong
+units and passed a gate it never met. Dimensional invalidity is not conservative; it is
+arbitrary.
+
+| estimand | MDE units | needs |
+|---|---|---|
+| `SURVIVAL_LOG_HAZARD_RATIO` | log hazard ratio, `2z/sqrt(events)` | event count |
+| `SURVIVAL_PROBABILITY_DIFFERENCE` | probability at a fixed horizon | event count, binary formula |
+| `RESTRICTED_MEAN_TIME_DIFFERENCE` | **time** | a time-unit `cluster_sd` |
+| `MEDIAN_TIME_DIFFERENCE` | **time** | a time-unit `cluster_sd` |
+
+The last two return `POWER_UNITS_UNRESOLVED` when no time-unit dispersion is declared. A
+declaration that cannot be powered is refused rather than approximated. Admission selftest:
+**17 checks**.
+
+### 11.6 Preregistration D sealed, unscorable by construction - `2026-08-03`
+
+`PREREG_FORWARD_D_BOUNDED_MAKER_STUDY_V1.md`, sha256
+`e07fa7e03fb6ab6a8ae7f40733af3a461f4f7a5ba944de7e0a99d1f545da61e6`, registered in
+`EXPECTED_PROTOCOLS`. **11/11 hashes intact.**
+
+It is frozen *now*, while its own precondition fails, precisely so the design cannot be shaped
+by the data that will decide it. Five fill bounds are all reported and none is selected; bound 1
+(immediate fill) is tagged `requires_hindsight_or_unrealistic_fill` and is a **ceiling, never a
+result**. The key quantity is **net value per order SUBMITTED** — a strategy can earn on its
+fills and fill too rarely to matter. Maker fees are not assumed zero merely because taker fees
+disappear.
+
+Three kill rules close the lane immediately, the sharpest being *post-fill adverse selection >=
+spread + taker-fee saving*: if that holds, liquidity provision merely swaps explicit costs for
+informed-flow losses.
+
+### 11.7 Protocol B/C readiness is performance-blind - `2026-08-03`
+
+`backend/bc_forward_readiness_report.py` reports counts and coverage for the two sealed
+protocols and **nothing else**. B and C are scored once; any interim view of PnL, AUC, model
+ranking, threshold or action preference is a look at the evidence, and a protocol that has been
+peeked at is no longer a protocol.
+
+The blindness is enforced at runtime, not promised in prose: `assert_performance_blind()`
+inspects emitted **keys** against a forbidden pattern and raises `PerformanceLeak`. A count
+named `resolved_action_snapshots` passes; one named `mean_pnl` cannot be printed at all. The
+selftest plants seven performance-shaped keys and requires each to be refused.
+
+Exactly four statuses are emitted: `NOT_STARTED`, `COLLECTING`, `DATA_GATE_INCOMPLETE`,
+`DATA_GATE_COMPLETE_UNSCORED`. The terminal one says **UNSCORED** on purpose — reaching a
+complete gate does not trigger scoring, which stays a separate deliberate command.
+
+**Both protocols currently report `NOT_STARTED`:** ledger 0 rows, open-position recorder 0
+rows across all five tables. Schemas exist; evidence does not.
+
+### 11.8 The vacuous-pass defect, caught in the readiness report itself - `2026-08-03`
+
+The first version wrapped its reads in `except Exception: return zeros`. It printed
+`NOT_STARTED` — which was, by luck, the true answer. That is the whole problem: a locked live
+writer, an uninstalled duckdb or a renamed table would have printed the *same* `NOT_STARTED`,
+and "collection has not begun" is indistinguishable from "I failed to look" in the one
+direction that matters.
+
+It also hardcoded every Protocol C field to `0` while `open_position_actions.duckdb` held five
+real tables with the exact columns needed. Those numbers were correct and **not measured** — a
+report that would have kept printing zeros after data arrived.
+
+Both fixed: `_connect()` raises `SourceUnreadable` on a missing file, an unopenable database or
+a drifted schema, and the runner exits **1** without emitting a status, because *"I could not
+look"* is not one of the four. Every count now comes from a real query. Negative-tested against
+a planted missing file and a planted renamed table. Selftest: **15 checks**.
+
+This is the fourth instance of the same defect class in this repository (manifest gate,
+recorder-evidence gate, artifact serviceability, now readiness). The pattern is always a check
+that passes while the property it guarantees is false.
 
 ## 5. Governance added because of the retraction
 
@@ -950,6 +1042,10 @@ is in the market's own quote, not in our features — and the spread is what tak
 | `backend/polymarket_policy/action_value.py` | a hindsight-only action being returned as a recommendation |
 | `backend/audit/recorder_evidence_check.py` | a recorder that is wired and selftests but has never run |
 | `backend/audit/freeze_oracle_release.py --verify` | a frozen champion artifact changing underneath the benchmark |
+| `research/phase5d/admission.py` | a study powered in the wrong units passing a gate it never met |
+| `backend/research/verify_prereg_hashes.py` | a preregistration edited after freezing, or one never registered |
+| `backend/bc_forward_readiness_report.py` | a sealed protocol being peeked at while it collects |
+| `SourceUnreadable` in the readiness report | an unreadable source printing as an honest empty one |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
 
