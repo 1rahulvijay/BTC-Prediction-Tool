@@ -42,8 +42,14 @@ class PerModelVerifier:
             return "DOWN"
         return "NEUTRAL"
 
-    def record(self, model_dirs: dict, horizon: int, ref_price: float, now_ms: int):
-        """Record each base model's directional vote for this horizon."""
+    def record(self, model_dirs: dict, horizon: int, ref_price: float, now_ms: int,
+               prediction_id: str = ""):
+        """Record each base model's directional vote for this horizon.
+
+        ``prediction_id`` is the canonical parent prediction id.  Keeping the child id
+        identical to ``database.log_prediction`` makes both persistence paths idempotent
+        instead of writing a legacy row and a second ``parent::model`` row for one vote.
+        """
         if not model_dirs or ref_price <= 0:
             return
         for name, cls in model_dirs.items():
@@ -51,7 +57,8 @@ class PerModelVerifier:
                 direction = _CLASS_DIR.get(int(cls), "NEUTRAL")
             except Exception:
                 continue
-            pid = f"{name}_{horizon}m_{now_ms}"
+            pid = (f"{prediction_id}::{name}" if prediction_id
+                   else f"{name}_{horizon}m_{now_ms}")
             entry = {
                 "id": pid, "model": name, "horizon": horizon, "ref_price": ref_price,
                 "direction": direction, "verify_at": now_ms + horizon * 60_000, "ts": now_ms,
@@ -63,6 +70,59 @@ class PerModelVerifier:
                                               direction, now_ms + horizon * 60_000)
             except Exception as e:
                 logger.debug(f"Model vote log failed: {e}")
+
+    def restore_from_database(self, unresolved_predictions: list[dict],
+                              resolved_outcomes: list[dict]) -> dict:
+        """Restore durable accuracy and pending votes after a backend restart.
+
+        Resolved history contains committed UP/DOWN votes only.  Pending child votes
+        are reconstructed from the canonical parent prediction rows, so they resolve
+        with the same ids used by ``database.update_outcome``.
+        """
+        resolved = 0
+        pending = 0
+        for row in resolved_outcomes or []:
+            try:
+                model = str(row["model"])
+                horizon = int(row["horizon"])
+                if horizon not in self.horizons or model not in MODELS:
+                    continue
+                self.history[model][horizon].append(1 if bool(row["hit"]) else 0)
+                resolved += 1
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        for parent in unresolved_predictions or []:
+            try:
+                parent_id = str(parent["id"])
+                horizon = int(parent["horizon"])
+                ref_price = float(parent["predicted_price"])
+                timestamp = int(parent["timestamp"])
+                verify_at = int(parent["verify_at"])
+                model_dirs = parent.get("model_dirs") or {}
+            except (KeyError, TypeError, ValueError):
+                continue
+            if horizon not in self.horizons or ref_price <= 0 or not parent_id:
+                continue
+            for name, cls in model_dirs.items():
+                if name not in MODELS:
+                    continue
+                try:
+                    direction = _CLASS_DIR.get(int(cls), "NEUTRAL")
+                except (TypeError, ValueError):
+                    continue
+                self.pending.append({
+                    "id": f"{parent_id}::{name}",
+                    "model": name,
+                    "horizon": horizon,
+                    "ref_price": ref_price,
+                    "direction": direction,
+                    "verify_at": verify_at,
+                    "ts": timestamp,
+                })
+                self.last_vote[name][horizon] = direction
+                pending += 1
+        return {"resolved": resolved, "pending": pending}
 
     def check(self, current_price: float, now_ms: int):
         """Resolve any per-model votes whose horizon has elapsed.

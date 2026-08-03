@@ -79,6 +79,7 @@ _FROZEN = os.environ.get("BTC_FREEZE_MODEL", "1") != "0"
 _FROZEN_LOADED = {}          # path -> (mtime, sha256[:16]) of the artifact this process serves
 _FROZEN_ALERTED = set()
 _IDENTITY_ALERTED = set()
+_HEAD_IDENTITY_CACHE = {}
 
 
 def _artifact_sha(path):
@@ -88,6 +89,63 @@ def _artifact_sha(path):
             return hashlib.sha256(fh.read()).hexdigest()[:16]
     except Exception:
         return "?"
+
+
+def _active_head_identity() -> dict:
+    """Exact artifact identity for every specialist head currently serving this process."""
+    data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "data"
+    )
+    model_dir = os.path.join(data_dir, "saved_models")
+    candidates = {
+        "p_hold": (_PERSIST_MODEL, "persistence_model.pkl"),
+        "big_move": (_BIGMOVE_MODEL, "bigmove_keeper_model.pkl"),
+        "big_drop": (_BIGDROP_MODEL, "bigdrop_keeper_model.pkl"),
+        "directional": (_DIRECTIONAL_MODEL, "directional_keeper_model.pkl"),
+        "activity": (_ACTIVITY_MODEL, "activity_keeper_model.pkl"),
+        "path": (_PATH_FORECASTER, "path_forecaster.pkl"),
+        "signed_quantile": (_SIGNED_QMODEL, "signed_quantile_model.pkl"),
+    }
+    result = {}
+    for label, (bundle, filename) in candidates.items():
+        if not isinstance(bundle, dict):
+            continue
+        path = os.path.join(model_dir, filename)
+        try:
+            mtime = os.path.getmtime(path)
+            cache_key = (path, mtime)
+            identity = _HEAD_IDENTITY_CACHE.get(cache_key)
+            if identity is None:
+                from verified_io import file_sha256
+                identity = {
+                    "sha256": file_sha256(path),
+                    "version": str(bundle.get("version") or bundle.get("model_version") or ""),
+                    "label_basis": str(bundle.get("label_basis") or ""),
+                }
+                _HEAD_IDENTITY_CACHE[cache_key] = identity
+            result[label] = dict(identity)
+        except Exception as exc:
+            result[label] = {"error": str(exc)}
+
+    round_status = round_state_panel.status()
+    if round_status.get("loaded") and round_status.get("artifact"):
+        path = str(round_status["artifact"])
+        try:
+            mtime = os.path.getmtime(path)
+            cache_key = (path, mtime)
+            identity = _HEAD_IDENTITY_CACHE.get(cache_key)
+            if identity is None:
+                from verified_io import file_sha256
+                identity = {
+                    "sha256": file_sha256(path),
+                    "version": str(round_status.get("version") or ""),
+                    "label_basis": "",
+                }
+                _HEAD_IDENTITY_CACHE[cache_key] = identity
+            result["round_state"] = dict(identity)
+        except Exception as exc:
+            result["round_state"] = {"error": str(exc)}
+    return result
 
 
 def _freeze_blocks_reload(path, mtime, label):
@@ -2243,6 +2301,7 @@ class PriceToBeatTracker:
                 except Exception as _se:
                     logger.debug(f"A1 persistence snapshot skipped: {_se}")
                 try:
+                    rnd["head_identity"] = _active_head_identity()
                     database.log_champion_snapshot(rnd, int(now_ms))
                 except Exception as _ce:
                     logger.debug(f"Champion snapshot skipped: {_ce}")

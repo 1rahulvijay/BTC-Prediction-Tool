@@ -24,7 +24,13 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 DEFAULT_PATH = os.path.join(DATA_DIR, "model_metrics.duckdb")
 
 _LOCK = threading.Lock()
-_STATE = {"conn": None, "path": None, "failed": False}
+_STATE = {
+    "conn": None,
+    "path": None,
+    "failed": False,
+    "last_error": "",
+    "last_write_ms": 0,
+}
 
 _DDL = {
     "direction_log": (
@@ -54,8 +60,9 @@ def _conn(path=None):
             conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({cols})")
         _STATE["conn"], _STATE["path"] = conn, p
         return conn
-    except Exception:
+    except Exception as exc:
         _STATE["failed"] = True            # disable quietly if duckdb/file unavailable
+        _STATE["last_error"] = str(exc)
         return None
 
 
@@ -73,19 +80,25 @@ def _i(x):
         return None
 
 
+def _regime_label(regime):
+    if isinstance(regime, dict):
+        regime = regime.get("regime") or regime.get("label") or ""
+    return str(regime or "")
+
+
 def log_direction(predictions, regime="", ts_ms=None, path=None):
     """Log the per-horizon ensemble outputs. `predictions` = the list broadcast to the UI. No-raise."""
     try:
         with _LOCK:
             c = _conn(path)
             if c is None or not predictions:
-                return
+                return False
             ts = ts_ms or int(time.time() * 1000)
             rows = []
             for p in predictions:
                 if not isinstance(p, dict):
                     continue
-                rows.append([ts, _i(p.get("horizon")), str(regime or ""),
+                rows.append([ts, _i(p.get("horizon")), _regime_label(regime),
                              str(p.get("direction") or ""),
                              _f(p.get("probUp") if p.get("probUp") is not None else p.get("prob_up")),
                              _f(p.get("probDown") if p.get("probDown") is not None else p.get("prob_down")),
@@ -95,8 +108,12 @@ def log_direction(predictions, regime="", ts_ms=None, path=None):
                              str(p.get("finalAction") or "")])
             if rows:
                 c.executemany("INSERT INTO direction_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    except Exception:
-        pass
+                _STATE["last_write_ms"] = ts
+                return True
+            return False
+    except Exception as exc:
+        _STATE["last_error"] = str(exc)
+        return False
 
 
 def log_ptb(rounds, venue="binance", ts_ms=None, path=None):
@@ -105,7 +122,7 @@ def log_ptb(rounds, venue="binance", ts_ms=None, path=None):
         with _LOCK:
             c = _conn(path)
             if c is None or not rounds:
-                return
+                return False
             ts = ts_ms or int(time.time() * 1000)
             rows = []
             for r in rounds:
@@ -121,8 +138,41 @@ def log_ptb(rounds, venue="binance", ts_ms=None, path=None):
                              str(r.get("live_lean") or "")])
             if rows:
                 c.executemany("INSERT INTO ptb_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
-    except Exception:
-        pass
+                _STATE["last_write_ms"] = ts
+                return True
+            return False
+    except Exception as exc:
+        _STATE["last_error"] = str(exc)
+        return False
+
+
+def status(stale_after_s=120.0):
+    """Return in-process writer health for the global system-health panel."""
+    last_ms = int(_STATE.get("last_write_ms") or 0)
+    age_ms = max(0.0, time.time() * 1000.0 - last_ms) if last_ms else None
+    if _STATE.get("failed"):
+        state = "FAILED"
+    elif age_ms is None:
+        state = "MISSING"
+    else:
+        state = "HEALTHY" if age_ms <= stale_after_s * 1000.0 else "STALE"
+    return {
+        "status": state,
+        "age_ms": round(age_ms, 1) if age_ms is not None else None,
+        "path": _STATE.get("path") or DEFAULT_PATH,
+        "last_error": _STATE.get("last_error") or "",
+    }
+
+
+def close():
+    """Flush and release the dedicated DuckDB connection during orderly shutdown."""
+    with _LOCK:
+        conn = _STATE.get("conn")
+        if conn is not None:
+            try:
+                conn.close()
+            finally:
+                _STATE["conn"] = None
 
 
 def _selftest():
@@ -139,19 +189,21 @@ def _selftest():
                "p_hold_source": "keeper", "tier": "T3", "expected_move_range": {"low": -135.0, "high": 140.0},
                "projected_close": 67005.0, "projected_vs_beat": 55.0, "band_source": "signed_quantile",
                "live_lean": "UP", "seconds_left": 45.0, "distance": 50.0}]
-    log_direction(preds, regime="VOLATILE", path=tmp)
+    assert log_direction(preds, regime={"regime": "VOLATILE", "confidence": 0.8}, path=tmp)
     log_ptb(rounds, path=tmp)
     log_direction(None, path=tmp)            # must not raise on empty
     log_ptb(["notadict", 123], path=tmp)     # non-dicts skipped by the isinstance guard; no-raise
-    _STATE["conn"].close(); _STATE["conn"] = None; _STATE["failed"] = False
+    close(); _STATE["failed"] = False
     c = duckdb.connect(tmp)
     nd = c.execute("SELECT count(*) FROM direction_log").fetchone()[0]
     npb = c.execute("SELECT count(*) FROM ptb_log").fetchone()[0]
     up5 = c.execute("SELECT prob_up FROM direction_log WHERE horizon=5").fetchone()[0]
     ph = c.execute("SELECT p_hold, band_source FROM ptb_log WHERE horizon=5").fetchone()
+    stored_regime = c.execute("SELECT DISTINCT regime FROM direction_log").fetchone()[0]
     c.close(); os.remove(tmp)
     assert nd == 2 and npb == 1, f"row counts wrong: dir {nd}, ptb {npb}"
     assert abs(up5 - 0.55) < 1e-9 and abs(ph[0] - 0.94) < 1e-9 and ph[1] == "signed_quantile"
+    assert stored_regime == "VOLATILE", f"regime must be a label, got {stored_regime!r}"
     print(f"model_metrics_logger self-test: ALL PASS (direction rows {nd}, ptb rows {npb}, "
           f"p_hold {ph[0]}, band {ph[1]})")
 

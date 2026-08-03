@@ -164,6 +164,49 @@ file size or timestamp alone:
 Likewise, existing leaked Windows temp directories, the nested project copy and Git object storage
 were not destructively cleaned. They are operator hygiene tasks, not correctness edits.
 
+### 10. Model votes and accuracy denominators are now durable and unambiguous
+
+Each base-model vote now has one canonical child identity:
+
+```text
+<parent_prediction_id>::<model_name>
+```
+
+The former live paths could write both that row and a second legacy timestamp-based row for the
+same vote. Reporting now deduplicates old dual writes, and current recording is idempotent. A
+NEUTRAL base-model vote is an abstention: it resolves with `hit=NULL` and is excluded from the
+directional-accuracy denominator instead of being counted as a miss.
+
+On restart, current-model resolved votes and still-live pending votes are restored into the
+per-model verifier. Main ensemble history is also restored, but only from rows created after the
+active architecture marker. This prevents UI accuracy, calibration and regime weighting from
+resetting to zero while also preventing different model eras from being mixed.
+
+### 11. Missed restart boundaries can no longer create false outcomes
+
+Main, base-model, Kronos, FSR-PPO and A/B persistence now distinguish:
+
+```text
+PENDING / RESOLVED / INVALID
+```
+
+If the backend was stopped when a forecast's exact verification boundary passed, the prediction
+is marked `INVALID / RESTART_MISSED_BOUNDARY`. It is never graded against the first price seen on
+restart. Only future-boundary pending predictions are rehydrated. This closes a material source of
+false accuracy and false misses after long shutdowns.
+
+### 12. Every live specialist snapshot records the artifact era
+
+`champion_snapshots` and `round_state_snapshots` now persist `head_identity_json`, including the
+full artifact SHA-256, version and label basis for every loaded specialist head. This binds each
+decision snapshot to the exact P(Hold, big-move, big-drop, directional, activity, path, signed-
+quantile and round-state artifacts that produced it.
+
+The dedicated `model_metrics.duckdb` writer now stores a regime label such as `RANGE`, not a
+stringified regime object, exposes writer health to the System Health panel, and closes cleanly at
+shutdown. Historical malformed regime strings are retained as historical evidence; new writes use
+the corrected schema semantics.
+
 ## Validation Executed
 
 | validation | result |
@@ -171,9 +214,10 @@ were not destructively cleaned. They are operator hygiene tasks, not correctness
 | `start.bat` startup-validation branch | PASS; 1,000d, split 0.98, full refit enabled |
 | `start.bat` self-test-only branch | PASS; all invariant groups; no server/training started |
 | workflow-derived local CI | PASS; 116/116 Python steps in 349.6s |
-| pytest inside CI | PASS; 86 tests |
+| repository pytest | PASS; 109 tests |
 | Python compilation and maintained static checks | PASS |
 | frontend production build | PASS |
+| frontend dependency audit | PASS; zero high-severity vulnerabilities |
 | specialist transactional dry run | PASS; no live promotion |
 | main-model promotion/rollback selftest | PASS |
 | Protocol B/C readiness selftest | PASS; 40 checks |
@@ -181,6 +225,37 @@ were not destructively cleaned. They are operator hygiene tasks, not correctness
 | dynamic-paper degraded-mode selftest | PASS |
 | paper restart/official-settlement integrity | PASS |
 | Binance paper engine and typed API selftests | PASS |
+| model metrics and restart-integrity regression | PASS |
+| exact `start.bat` self-test-only path | PASS in 226s; no app or training started |
+
+## Persistence Ownership Map
+
+| evidence | durable store | correctness rule |
+|---|---|---|
+| ensemble decisions and realized errors | `data/analytics.duckdb` | exact boundary only; missed boundaries invalid |
+| individual base-model votes | `data/analytics.duckdb` | canonical child ID; committed UP/DOWN only |
+| Kronos forecasts | `data/analytics.duckdb` | independent prediction ID and resolution status |
+| specialist/champion/round-state outputs | `data/analytics.duckdb` | exact artifact SHA/version saved per snapshot |
+| high-frequency direction and price-to-beat metrics | `data/model_metrics.duckdb` | writer health is required and visible |
+| Polymarket paper positions and official outcomes | `data/analytics.duckdb` plus execution stores | official settlement required for realized evidence |
+| Binance paper positions and fills | `data/binance_paper.duckdb` | disabled by default; typed accounting and restart tests pass |
+
+Tables can legitimately remain empty until their corresponding model is serviceable, paper engine
+is enabled, or forward event occurs. Empty tables are not backfilled with synthetic live evidence.
+
+## Current Historical Accuracy Warning
+
+The corrected read of the existing June-July DuckDB evidence is not a promotion result:
+
+| legacy evidence | 5m | 15m |
+|---|---:|---:|
+| ensemble directional accuracy | 47.7% | 47.1% |
+| price-to-beat directional accuracy | 49.0% | 48.0% |
+
+Those rows span obsolete and frequently changing model versions. They demonstrate why strict
+artifact-era separation and a fresh forward sample are mandatory; they do not prove that the new
+v14 retrain will improve accuracy. Profit remains unproven until post-cost forward evidence clears
+the frozen promotion gates.
 
 The Node build passed separately. The local CI command without `--all` intentionally skipped npm
 dependency installation/audit because the existing environment was used.
@@ -235,6 +310,11 @@ python backend\report_master_runtime_state.py
 python backend\bc_forward_readiness_report.py
 python backend\check_feature_contract.py --report
 ```
+
+Then run `python backend\verify_artifact_identity.py`. Enable
+`BTC_STRICT_ARTIFACT_IDENTITY=1` only after it reports every required production artifact as
+serviceable. Strict mode is intentionally `0` for the first compatibility retrain because the old
+artifacts have no current manifests; enabling it before retraining would make the app serve blind.
 
 Also inspect the System Health tab for:
 

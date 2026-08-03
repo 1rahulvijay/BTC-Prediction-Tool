@@ -130,11 +130,22 @@ def init_db():
             "ADD COLUMN model_confluence DOUBLE DEFAULT 0.0",
             "ADD COLUMN setup_score DOUBLE DEFAULT 0.0",
             "ADD COLUMN setup_quality_json VARCHAR DEFAULT '{}'",
+            "ADD COLUMN neutral_band DOUBLE DEFAULT 0.0008",
+            "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
+            "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions_{tf}m {ddl};")
             except Exception:
                 pass # column already exists
+        try:
+            conn.execute(f"""
+                UPDATE predictions_{tf}m
+                SET resolution_status='RESOLVED'
+                WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+            """)
+        except Exception:
+            pass
         # One-time backfill of lean_hit for already-resolved historical rows (no-op
         # when nothing qualifies; safe to run every boot).
         try:
@@ -403,7 +414,9 @@ def init_db():
             confidence DOUBLE,
             actual_direction VARCHAR,
             hit BOOLEAN,
-            resolved BOOLEAN DEFAULT FALSE
+            resolved BOOLEAN DEFAULT FALSE,
+            resolution_status VARCHAR DEFAULT 'PENDING',
+            invalid_reason VARCHAR DEFAULT ''
         )
     """)
     for ddl in [
@@ -418,6 +431,8 @@ def init_db():
         "ADD COLUMN resolved BOOLEAN DEFAULT FALSE",
         "ADD COLUMN model_bundle_id VARCHAR DEFAULT ''",
         "ADD COLUMN feature_schema_hash VARCHAR DEFAULT ''",
+        "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
+        "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
     ]:
         try:
             conn.execute(f"ALTER TABLE ab_results {ddl};")
@@ -535,7 +550,9 @@ def init_db():
             actual_price DOUBLE,
             actual_direction VARCHAR DEFAULT '',
             hit BOOLEAN,
-            resolved BOOLEAN DEFAULT FALSE
+            resolved BOOLEAN DEFAULT FALSE,
+            resolution_status VARCHAR DEFAULT 'PENDING',
+            invalid_reason VARCHAR DEFAULT ''
         )
     """)
     # Per-model directional accuracy: one row per base model per recorded prediction.
@@ -551,9 +568,34 @@ def init_db():
             actual_price DOUBLE,
             actual_direction VARCHAR DEFAULT '',
             hit BOOLEAN,
-            resolved BOOLEAN DEFAULT FALSE
+            resolved BOOLEAN DEFAULT FALSE,
+            resolution_status VARCHAR DEFAULT 'PENDING',
+            invalid_reason VARCHAR DEFAULT ''
         )
     """)
+    for table in ("kronos_predictions", "model_predictions"):
+        for ddl in (
+            "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
+            "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE {table} {ddl}")
+            except Exception:
+                pass
+        try:
+            conn.execute(f"""
+                UPDATE {table} SET resolution_status='RESOLVED'
+                WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+            """)
+        except Exception:
+            pass
+    try:
+        conn.execute("""
+            UPDATE ab_results SET resolution_status='RESOLVED'
+            WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+        """)
+    except Exception:
+        pass
     # Offline replay rows are deliberately separate from live predictions_*m tables.
     # They are useful for calibration/backtest research but must never contaminate
     # live accuracy, because replay cannot reproduce feed outages, latency, or slippage.
@@ -662,9 +704,14 @@ def init_db():
             champion_action VARCHAR,
             champion_confidence DOUBLE,
             champion_label VARCHAR,
+            head_identity_json VARCHAR DEFAULT '{}',
             PRIMARY KEY(round_id, ts)
         )
     """)
+    try:
+        conn.execute("ALTER TABLE champion_snapshots ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'")
+    except Exception:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS round_state_snapshots (
             round_id VARCHAR,
@@ -683,9 +730,14 @@ def init_db():
             round_type VARCHAR,
             action VARCHAR,
             execution_status VARCHAR,
+            head_identity_json VARCHAR DEFAULT '{}',
             PRIMARY KEY(round_id, ts)
         )
     """)
+    try:
+        conn.execute("ALTER TABLE round_state_snapshots ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'")
+    except Exception:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fsr_ppo_decisions (
             id VARCHAR PRIMARY KEY,
@@ -707,9 +759,26 @@ def init_db():
             actual_direction VARCHAR DEFAULT '',
             reward_usd DOUBLE,
             hit BOOLEAN,
-            resolved BOOLEAN DEFAULT FALSE
+            resolved BOOLEAN DEFAULT FALSE,
+            resolution_status VARCHAR DEFAULT 'PENDING',
+            invalid_reason VARCHAR DEFAULT ''
         )
     """)
+    for ddl in (
+        "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
+        "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE fsr_ppo_decisions {ddl}")
+        except Exception:
+            pass
+    try:
+        conn.execute("""
+            UPDATE fsr_ppo_decisions SET resolution_status='RESOLVED'
+            WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+        """)
+    except Exception:
+        pass
     conn.close()
 
 
@@ -1583,8 +1652,8 @@ def log_champion_snapshot(round_data: dict, ts: int):
              p_hold, p_big_move, big_move_tier, p_big_drop, big_drop_risk,
              p_big_up, big_up_tier, p_big_down, big_down_tier, p_activity,
              activity_tier, regime, champion_action, champion_confidence,
-             champion_label)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             champion_label, head_identity_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             str(round_data.get("id") or ""),
             int(ts),
@@ -1607,6 +1676,7 @@ def log_champion_snapshot(round_data: dict, ts: int):
             str(champ.get("action") or ""),
             float(champ.get("confidence") or 0.0),
             str(champ.get("label") or ""),
+            json.dumps(round_data.get("head_identity") or {}, sort_keys=True),
         ))
     except Exception as e:
         print(f"DuckDB champion-snapshot Insert Error: {e}")
@@ -1642,8 +1712,9 @@ def log_round_state_snapshot(round_data: dict, ts: int) -> bool:
             (round_id, ts, horizon, seconds_left, current_position, current_move,
              p_leader_holds, flip_risk, flip_risk_status,
              late_shock_20, late_shock_50, late_shock_100,
-             next_opportunity, round_type, action, execution_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             next_opportunity, round_type, action, execution_status,
+             head_identity_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             str(round_data.get("id") or ""),
             int(ts),
@@ -1661,6 +1732,7 @@ def log_round_state_snapshot(round_data: dict, ts: int) -> bool:
             str(rs.get("round_type") or ""),
             str(rs.get("action") or ""),
             str(execu.get("status") or ""),
+            json.dumps(round_data.get("head_identity") or {}, sort_keys=True),
         ))
         return True
     except Exception as e:
@@ -1714,7 +1786,8 @@ def resolve_kronos_prediction(pred_id: str, actual_price: float, actual_directio
         conn = _connect()
         conn.execute("""
             UPDATE kronos_predictions
-            SET actual_price = ?, actual_direction = ?, hit = ?, resolved = TRUE
+            SET actual_price = ?, actual_direction = ?, hit = ?, resolved = TRUE,
+                resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_direction, hit, pred_id))
     except Exception as e:
@@ -1776,7 +1849,8 @@ def resolve_model_prediction(pred_id: str, actual_price: float, actual_direction
         conn = _connect()
         conn.execute("""
             UPDATE model_predictions
-            SET actual_price = ?, actual_direction = ?, hit = ?, resolved = TRUE
+            SET actual_price = ?, actual_direction = ?, hit = ?, resolved = TRUE,
+                resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_direction, hit, pred_id))
     except Exception as e:
@@ -1787,16 +1861,26 @@ def resolve_model_prediction(pred_id: str, actual_price: float, actual_direction
 
 
 def fetch_model_accuracy() -> dict:
-    """Per-model, per-horizon resolved counts + accuracy. -> {model: {horizon: {...}}}."""
+    """Committed-only per-model accuracy, deduplicated across legacy child ids."""
     out = {}
     conn = None
     try:
         conn = _connect()
         df = conn.execute("""
-            SELECT model, horizon,
-                   COUNT(*) FILTER (WHERE resolved) AS total,
-                   SUM(CASE WHEN resolved AND hit THEN 1 ELSE 0 END) AS hits
-            FROM model_predictions
+            WITH ranked AS (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY model, horizon, timestamp
+                    ORDER BY CASE WHEN contains(id, '::') THEN 0 ELSE 1 END, id
+                ) AS occurrence
+                FROM model_predictions
+                WHERE resolved = TRUE
+                  AND direction IN ('UP', 'DOWN')
+                  AND hit IS NOT NULL
+            )
+            SELECT model, horizon, COUNT(*) AS total,
+                   SUM(CASE WHEN hit THEN 1 ELSE 0 END) AS hits
+            FROM ranked
+            WHERE occurrence = 1
             GROUP BY model, horizon
         """).df()
         for r in df.to_dict("records"):
@@ -1813,6 +1897,49 @@ def fetch_model_accuracy() -> dict:
         if conn:
             conn.close()
     return out
+
+
+def fetch_model_verifier_history(limit_per_bucket: int = 500) -> list[dict]:
+    """Recent committed outcomes used to restore the live per-model UI after restart.
+
+    Historical versions briefly wrote two child ids for one vote.  Deduplication by
+    ``(model, horizon, timestamp)`` preserves one observation and prefers the current
+    canonical ``parent::model`` identity.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        df = conn.execute("""
+            WITH deduplicated AS (
+                SELECT model, horizon, timestamp, hit,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY model, horizon, timestamp
+                           ORDER BY CASE WHEN contains(id, '::') THEN 0 ELSE 1 END, id
+                       ) AS occurrence
+                FROM model_predictions
+                WHERE resolved = TRUE
+                  AND direction IN ('UP', 'DOWN')
+                  AND hit IS NOT NULL
+            ), recent AS (
+                SELECT model, horizon, timestamp, hit,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY model, horizon ORDER BY timestamp DESC
+                       ) AS recency
+                FROM deduplicated
+                WHERE occurrence = 1
+            )
+            SELECT model, horizon, timestamp, hit
+            FROM recent
+            WHERE recency <= ?
+            ORDER BY timestamp ASC
+        """, (max(1, int(limit_per_bucket)),)).df()
+        return df.to_dict("records")
+    except Exception as e:
+        print(f"DuckDB Model History Error: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2321,7 +2448,8 @@ def resolve_fsr_ppo_decision(prediction_id: str, actual_price: float, actual_dir
         conn.execute("""
             UPDATE fsr_ppo_decisions
             SET actual_price = ?, actual_direction = ?, reward_usd = ?,
-                hit = ?, resolved = TRUE
+                hit = ?, resolved = TRUE, resolution_status = 'RESOLVED',
+                invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_direction, float(reward), bool(hit), dec_id))
     except Exception as e:
@@ -2460,7 +2588,6 @@ def cleanup_orphan_pending_rows() -> dict:
     """
     out = {}
     now_ms = int(time.time() * 1000)
-    cutoff = now_ms - 600_000  # 10-min DB-row retention grace for diagnostics
     conn = None
     try:
         conn = _connect()
@@ -2479,15 +2606,67 @@ def cleanup_orphan_pending_rows() -> dict:
             out["rule_paper_invalidated"] = len(invalid)
         except Exception:
             out["rule_paper_invalidated"] = -1
-        for tbl in ("price_to_beat", "model_predictions", "kronos_predictions"):
+        try:
+            deleted = conn.execute("""
+                DELETE FROM price_to_beat
+                WHERE resolved=FALSE AND verify_at > 0 AND verify_at <= ?
+                RETURNING id
+            """, (now_ms,)).fetchall()
+            out["price_to_beat"] = len(deleted)
+        except Exception:
+            out["price_to_beat"] = -1
+        # Main predictions whose boundary passed while the process was down are
+        # preserved but explicitly invalidated.  They must never be graded against
+        # the restart price or appear in an accuracy denominator.
+        invalid_parent_ids = []
+        for horizon in (5, 15):
             try:
-                n = conn.execute(f"""
-                    DELETE FROM {tbl}
-                    WHERE resolved = FALSE AND verify_at > 0 AND verify_at < ?
-                """, (cutoff,)).fetchone()
-                out[tbl] = int(n[0]) if n else 0
+                rows = conn.execute(f"""
+                    UPDATE predictions_{horizon}m
+                    SET resolution_status = 'INVALID',
+                        invalid_reason = 'RESTART_MISSED_BOUNDARY'
+                    WHERE resolved = FALSE AND verify_at > 0 AND verify_at <= ?
+                      AND COALESCE(resolution_status, 'PENDING') = 'PENDING'
+                    RETURNING id
+                """, (now_ms,)).fetchall()
+                ids = [str(row[0]) for row in rows]
+                invalid_parent_ids.extend(ids)
+                out[f"predictions_{horizon}m_invalidated"] = len(ids)
             except Exception:
-                out[tbl] = -1  # table missing/no column — skip silently
+                out[f"predictions_{horizon}m_invalidated"] = -1
+
+        if invalid_parent_ids:
+            for parent_id in invalid_parent_ids:
+                conn.execute("""
+                    UPDATE model_predictions
+                    SET resolution_status='INVALID', invalid_reason='RESTART_MISSED_BOUNDARY'
+                    WHERE starts_with(id, ?) AND resolved=FALSE
+                """, (f"{parent_id}::",))
+                conn.execute("""
+                    UPDATE fsr_ppo_decisions
+                    SET resolution_status='INVALID', invalid_reason='RESTART_MISSED_BOUNDARY'
+                    WHERE prediction_id=? AND resolved=FALSE
+                """, (parent_id,))
+                conn.execute("""
+                    UPDATE ab_results
+                    SET resolution_status='INVALID', invalid_reason='RESTART_MISSED_BOUNDARY'
+                    WHERE pred_id=? AND resolved=FALSE
+                """, (parent_id,))
+        out["prediction_dependents_invalidated"] = len(invalid_parent_ids)
+
+        # Independent verifier rows have no parent prediction lifecycle.
+        for table in ("model_predictions", "kronos_predictions", "fsr_ppo_decisions"):
+            try:
+                rows = conn.execute(f"""
+                    UPDATE {table}
+                    SET resolution_status='INVALID', invalid_reason='RESTART_MISSED_BOUNDARY'
+                    WHERE resolved=FALSE AND verify_at > 0 AND verify_at <= ?
+                      AND COALESCE(resolution_status, 'PENDING')='PENDING'
+                    RETURNING 1
+                """, (now_ms,)).fetchall()
+                out[f"{table}_invalidated"] = len(rows)
+            except Exception:
+                out[f"{table}_invalidated"] = -1
     except Exception as e:
         print(f"DuckDB orphan cleanup error: {e}")
     finally:
@@ -2641,7 +2820,8 @@ def resolve_ab_results(pred_id: str, actual_direction: str):
         conn = _connect()
         conn.execute("""
             UPDATE ab_results
-            SET actual_direction = ?, hit = (direction = ?), resolved = TRUE
+            SET actual_direction = ?, hit = (direction = ?), resolved = TRUE,
+                resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE pred_id = ? AND resolved = FALSE
         """, (actual_direction, actual_direction, pred_id))
     except Exception as e:
@@ -2788,7 +2968,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                    pre_server_direction: str = "", final_direction: str = "",
                    trade_verdict: str = "", no_trade_reasons: list = None,
                    decision_state: dict = None, model_confluence: float = 0.0,
-                   setup_score: float = 0.0, setup_quality: dict = None):
+                   setup_score: float = 0.0, setup_quality: dict = None,
+                   neutral_band: float = 0.0008):
     conn = None
     try:
         conn = _connect()
@@ -2802,8 +2983,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                 confluence_grade, expected_precision, calibrated_confidence,
                 model_raw_direction, pre_server_direction, final_direction, trade_verdict,
                 no_trade_reasons_json, decision_state_json, model_confluence, setup_score,
-                setup_quality_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                setup_quality_json, neutral_band
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (pred_id, timestamp, horizon, binance_price, target_price, expected_move,
               confidence, signal, chainlink_price, chainlink_target, False, cascade_active, regime,
               raw_direction or signal, skip_reason or "", avoid_success, prob_up, prob_down,
@@ -2823,7 +3004,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
               json.dumps(decision_state or {}),
               float(model_confluence or 0.0),
               float(setup_score or 0.0),
-              json.dumps(setup_quality or {})))
+              json.dumps(setup_quality or {}),
+              float(neutral_band or 0.0008)))
         # Store prediction-time context for the trained meta-model.
         if context:
             conn.execute(f"""
@@ -2895,7 +3077,8 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
         conn.execute(f"""
             UPDATE predictions_{horizon}m
             SET actual_price = ?, actual_move = ?, hit = ?, price_match = ?, move_error = ?,
-                avoid_success = ?, lean_hit = ?, resolved = ?
+                avoid_success = ?, lean_hit = ?, resolved = ?,
+                resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
               lean_hit, True, pred_id))
@@ -2903,7 +3086,11 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
         conn.execute("""
             UPDATE model_predictions
             SET actual_price = ?, actual_direction = ?,
-                hit = (direction = ?), resolved = TRUE
+                hit = CASE
+                    WHEN direction IN ('UP', 'DOWN') THEN (direction = ?)
+                    ELSE NULL
+                END,
+                resolved = TRUE, resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE starts_with(id, ?)
         """, (
             float(actual_price), strict_direction, strict_direction, f"{pred_id}::",
@@ -2915,9 +3102,10 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
             conn.close()
 
 def fetch_unresolved_predictions(max_age_hours: int = 48) -> list[dict]:
-    """Load unresolved predictions so backend reloads do not lose pending outcomes."""
+    """Load only still-live predictions whose original verification boundary is future."""
     rows = []
     cutoff = int((time.time() - max_age_hours * 3600) * 1000)
+    now_ms = int(time.time() * 1000)
     conn = None
     try:
         conn = _connect()
@@ -2927,8 +3115,9 @@ def fetch_unresolved_predictions(max_age_hours: int = 48) -> list[dict]:
                        target_price, expected_move, binance_price, timestamp, verify_at,
                        prob_up, prob_down, agreement, cascade_active, model_dirs_json, regime
                 FROM predictions_{h}m
-                WHERE resolved = FALSE AND timestamp >= ?
-            """, (cutoff,)).df()
+                WHERE resolved = FALSE AND timestamp >= ? AND verify_at > ?
+                  AND COALESCE(resolution_status, 'PENDING') = 'PENDING'
+            """, (cutoff, now_ms)).df()
             for r in df.to_dict("records"):
                 try:
                     model_dirs = json.loads(r.get("model_dirs_json") or "{}")
@@ -2964,6 +3153,121 @@ def fetch_unresolved_predictions(max_age_hours: int = 48) -> list[dict]:
         if conn:
             conn.close()
     return rows
+
+
+def fetch_prediction_verifier_history(limit_per_horizon: int = 500) -> list[dict]:
+    """Restore current-model resolved outcomes for UI, calibration, and skip policies.
+
+    Only rows after the active architecture marker's mtime are returned.  Mixing old
+    and new model eras makes live accuracy and calibration meaningless after retrain.
+    """
+    out = []
+    conn = None
+    try:
+        min_ts = 0
+        marker = os.path.join(os.path.dirname(DB_PATH), "saved_models", "architecture_version.pkl")
+        if os.path.exists(marker):
+            min_ts = int(os.path.getmtime(marker) * 1000)
+        conn = _connect()
+        for h in (5, 15):
+            df = conn.execute(f"""
+                SELECT id, horizon, signal AS direction, raw_direction,
+                       model_raw_direction, pre_server_direction, final_direction,
+                       trade_verdict, no_trade_reasons_json, skip_reason, confidence,
+                       target_price, expected_move, binance_price AS predicted_price,
+                       timestamp, verify_at, prob_up, prob_down, agreement,
+                       cascade_active, model_dirs_json, regime, neutral_band,
+                       actual_price, actual_move, hit, avoid_success, lean_hit,
+                       price_match, move_error, decision_state_json
+                FROM predictions_{h}m
+                WHERE resolved = TRUE AND timestamp >= ?
+                  AND COALESCE(resolution_status, 'RESOLVED') = 'RESOLVED'
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (min_ts, max(1, int(limit_per_horizon)))).df()
+            for row in reversed(df.to_dict("records")):
+                try:
+                    model_dirs = json.loads(row.get("model_dirs_json") or "{}")
+                except Exception:
+                    model_dirs = {}
+                try:
+                    reasons = json.loads(row.get("no_trade_reasons_json") or "[]")
+                except Exception:
+                    reasons = []
+                try:
+                    decision_state = json.loads(row.get("decision_state_json") or "{}")
+                except Exception:
+                    decision_state = {}
+                predicted = _f(row.get("predicted_price")) or 0.0
+                actual = _f(row.get("actual_price"))
+                actual = predicted if actual is None else actual
+                actual_move = _f(row.get("actual_move"))
+                actual_move = (actual - predicted) if actual_move is None else actual_move
+                neutral_band = _f(row.get("neutral_band")) or 0.0008
+                change = ((actual - predicted) / predicted) if predicted > 0 else 0.0
+                if change > neutral_band:
+                    actual_direction = "UP"
+                elif change < -neutral_band:
+                    actual_direction = "DOWN"
+                else:
+                    actual_direction = "NEUTRAL"
+                target = _f(row.get("target_price")) or predicted
+                expected_signed = target - predicted
+                expected_abs = abs(expected_signed)
+                move_error = _f(row.get("move_error"))
+                move_error = abs(actual_move - expected_signed) if move_error is None else move_error
+                lean_value = row.get("lean_hit")
+                lean_hit = None if lean_value is None or lean_value != lean_value else bool(lean_value)
+                out.append({
+                    "id": str(row.get("id") or ""),
+                    "horizon": int(row.get("horizon") or h),
+                    "direction": str(row.get("direction") or "NEUTRAL"),
+                    "model_raw_direction": str(row.get("model_raw_direction") or ""),
+                    "raw_direction": str(row.get("raw_direction") or "NEUTRAL"),
+                    "pre_server_direction": str(row.get("pre_server_direction") or ""),
+                    "final_direction": str(row.get("final_direction") or row.get("direction") or "NEUTRAL"),
+                    "trade_verdict": str(row.get("trade_verdict") or ""),
+                    "no_trade_reasons": reasons,
+                    "skip_reason": str(row.get("skip_reason") or ""),
+                    "neutral_reason_code": str(decision_state.get("neutralReasonCode") or ""),
+                    "neutral_reason": str(decision_state.get("neutralReason") or ""),
+                    "confidence": float(row.get("confidence") or 0.0),
+                    "target_price": target,
+                    "expected_move_usd": expected_abs,
+                    "signed_expected_move_usd": expected_signed,
+                    "predicted_price": predicted,
+                    "timestamp": int(row.get("timestamp") or 0),
+                    "verify_at": int(row.get("verify_at") or 0),
+                    "signal": str(row.get("direction") or "NEUTRAL"),
+                    "prob_up": float(row.get("prob_up") or 0.0),
+                    "prob_down": float(row.get("prob_down") or 0.0),
+                    "agreement": float(row.get("agreement") or 0.0),
+                    "cascade_active": bool(row.get("cascade_active")),
+                    "model_dirs": model_dirs,
+                    "regime": str(row.get("regime") or "UNKNOWN"),
+                    "neutral_band": neutral_band,
+                    "actual_price": actual,
+                    "actual_direction": actual_direction,
+                    "avoid_success": bool(row.get("avoid_success")),
+                    "actual_move_usd": actual_move,
+                    "actual_abs_move_usd": abs(actual_move),
+                    "move_error_usd": move_error,
+                    "target_error_usd": actual - target,
+                    "move_error_pct": (move_error / expected_abs * 100.0) if expected_abs else 0.0,
+                    "price_match": bool(row.get("price_match")),
+                    "actual_change_pct": change * 100.0,
+                    "hit": bool(row.get("hit")),
+                    "lean_hit": lean_hit,
+                    "verified_at": int(row.get("verify_at") or row.get("timestamp") or 0),
+                })
+        out.sort(key=lambda item: item["timestamp"])
+    except Exception as e:
+        print(f"DuckDB Verified History Error: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+    return out
 
 def get_last_prediction_timestamps() -> dict[int, int]:
     """Latest recorded prediction timestamp by horizon, used to restore cadence after reload."""

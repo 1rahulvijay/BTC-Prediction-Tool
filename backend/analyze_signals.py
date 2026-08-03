@@ -68,13 +68,22 @@ def main():
     print(f"   TOTAL: leans={tot} resolved={res} precision={pct(cor, res)}  committed_BUY/SELL={sig}")
 
     # 3) Per-base-model ----------------------------------------------------
-    print("\n[3] INDIVIDUAL BASE MODELS (model_predictions) — note: graded vs 3-class")
-    print("    neutral band, so ~30% (not 50%) is the random baseline on a flat tape.")
-    rows = con.execute("""SELECT model,
+    print("\n[3] INDIVIDUAL BASE MODELS (model_predictions) — committed votes only")
+    print("    NEUTRAL abstentions are excluded; 50% is the no-edge directional baseline.")
+    rows = con.execute("""WITH unique_votes AS (
+                           SELECT * EXCLUDE(occurrence) FROM (
+                             SELECT *, ROW_NUMBER() OVER (
+                               PARTITION BY model,horizon,timestamp
+                               ORDER BY CASE WHEN contains(id,'::') THEN 0 ELSE 1 END,id
+                             ) occurrence
+                             FROM model_predictions
+                           ) WHERE occurrence=1
+                         )
+                         SELECT model,
                            count(*) FILTER(WHERE direction IN('UP','DOWN')) dv,
-                           count(*) FILTER(WHERE direction IN('UP','DOWN') AND resolved) rs,
-                           count(*) FILTER(WHERE direction IN('UP','DOWN') AND resolved AND hit) ht
-                         FROM model_predictions GROUP BY 1 ORDER BY 4*1.0/NULLIF(3,0) DESC, model""").fetchall()
+                           count(*) FILTER(WHERE direction IN('UP','DOWN') AND resolved AND hit IS NOT NULL) rs,
+                           count(*) FILTER(WHERE direction IN('UP','DOWN') AND resolved AND hit IS TRUE) ht
+                         FROM unique_votes GROUP BY 1 ORDER BY 4*1.0/NULLIF(3,0) DESC, model""").fetchall()
     for m, dv, rs, ht in sorted(rows, key=lambda r: -(r[3] / r[2] if r[2] else 0)):
         print(f"   {m:10s}: votes={dv:4d} resolved={rs:4d} correct={ht:4d} precision={pct(ht, rs)}")
 

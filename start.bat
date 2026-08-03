@@ -390,6 +390,8 @@ python backend\polymarket\model_dynamic_paper.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\test_paper_trading_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
+python backend\test_model_metrics_integrity.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
 echo [selftest] All invariant selftests passed.
 if "%BTC_SELFTEST_ONLY%"=="1" exit /b 0
 goto :selftests_done

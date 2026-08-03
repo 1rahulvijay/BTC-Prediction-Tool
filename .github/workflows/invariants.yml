@@ -215,6 +215,9 @@ jobs:
       - name: PM fair-value wiring actually logs (a silent except cannot hide a dead strategy)
         run: python backend/test_pm_fair_value_wiring.py
 
+      - name: Model vote identity, committed accuracy, restart restore, and metrics regime
+        run: python backend/test_model_metrics_integrity.py
+
       # 21 of 31 trainers wrote model artifacts with NO integrity manifest, which is why
       # artifacts fail identity and phold_challenger refuses to deploy any calibrator
       # (SOURCE_MODEL_REQUIRES_RETRAINING) - the live blocker on the frozen Polymarket

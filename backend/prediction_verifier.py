@@ -81,14 +81,55 @@ class PredictionVerifier:
         """
         existing_ids = {p.get("id") for p in self.pending_predictions if p.get("id")}
         restored = 0
+        now_ms = int(time.time() * 1000)
         for row in pending_rows or []:
             if row.get("id") in existing_ids:
+                continue
+            # A missed verification boundary cannot be graded at the restart price.
+            # The database janitor retains it as INVALID evidence instead.
+            if int(row.get("verify_at") or 0) <= now_ms:
                 continue
             self.pending_predictions.append(row)
             restored += 1
         for h, ts in (last_timestamps or {}).items():
             if h in self.last_record_time:
                 self.last_record_time[h] = max(self.last_record_time[h], int(ts))
+        return restored
+
+    def restore_verified_from_database(self, resolved_rows: list[dict]) -> int:
+        """Rehydrate current-model live metrics without mixing model eras."""
+        restored = 0
+        for row in resolved_rows or []:
+            try:
+                horizon = int(row["horizon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if horizon not in self.verified_by_horizon:
+                continue
+            self.verified_by_horizon[horizon].append(row)
+            self.all_verified.append(row)
+            restored += 1
+
+            model_dirs = row.get("model_dirs") or {}
+            regime = row.get("regime", "UNKNOWN")
+            actual_strict = "UP" if float(row.get("actual_move_usd") or 0.0) >= 0 else "DOWN"
+            labels = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
+            for model_key, direction in model_dirs.items():
+                try:
+                    predicted = labels.get(int(direction))
+                except (TypeError, ValueError):
+                    predicted = None
+                if predicted in ("UP", "DOWN"):
+                    self.regime_model_stats[regime][model_key].append(
+                        1 if predicted == actual_strict else 0
+                    )
+
+        if restored:
+            self._update_accuracy_cache()
+            try:
+                self.refit_confidence_calibrators()
+            except Exception:
+                pass
         return restored
 
     def record_prediction(self, prediction: dict, current_price: float, now_ms: int):

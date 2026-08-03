@@ -6,7 +6,7 @@ Reports, focused on the 5m & 15m horizons:
      directional accuracy, per-class precision, actionable-only accuracy, signal/conviction mix.
   B. PRICE-TO-BEAT tracker (price_to_beat): by day, by direction/regime/confluence — the clean
      UP/DOWN hit rate.
-  C. INDIVIDUAL models    (model_predictions, 8 models): per-model accuracy + precision at 5m/15m,
+  C. INDIVIDUAL models    (model_predictions): per-model accuracy + precision at 5m/15m,
      model ranking, abstain rate.
 
 Metric definitions (printed in the report):
@@ -40,6 +40,15 @@ DB = os.path.join(DATA, "analytics.duckdb")
 OUT = os.path.join(ROOT, "docs", "active", f"DUCKDB_METRICS_ANALYSIS_{date.today().isoformat()}.md")
 HZ = (5, 15)
 DAY5 = "CAST(to_timestamp(timestamp/1000) AS DATE)"
+MODEL_ROWS = """(
+    SELECT * EXCLUDE(occurrence) FROM (
+        SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY model, horizon, timestamp
+            ORDER BY CASE WHEN contains(id, '::') THEN 0 ELSE 1 END, id
+        ) AS occurrence
+        FROM model_predictions
+    ) WHERE occurrence = 1
+)"""
 
 
 def md_table(rows, headers):
@@ -181,7 +190,7 @@ def main():
             L.append(md_table(rows, [col, "dir calls", "acc %"]))
 
     # ─────────────── C. INDIVIDUAL models ───────────────
-    L.append("\n## C. Individual models — `model_predictions` (8 base models)")
+    L.append("\n## C. Individual models — `model_predictions` (deduplicated base-model votes)")
     L.append("\n### C1 — Per-model accuracy & precision at 5m / 15m")
     rows = []
     for h in HZ:
@@ -192,7 +201,7 @@ def main():
                    avg(CASE WHEN direction='UP' AND resolved AND hit IS NOT NULL THEN CASE WHEN hit THEN 1.0 ELSE 0 END END)*100 up_p,
                    avg(CASE WHEN direction='DOWN' AND resolved AND hit IS NOT NULL THEN CASE WHEN hit THEN 1.0 ELSE 0 END END)*100 dn_p,
                    avg(CASE WHEN resolved THEN CASE WHEN direction='NEUTRAL' THEN 1.0 ELSE 0 END END)*100 abst
-            FROM model_predictions WHERE horizon={h} GROUP BY 1
+            FROM {MODEL_ROWS} WHERE horizon={h} GROUP BY 1
             ORDER BY acc DESC NULLS LAST""").fetchall():
             rows.append((f"{h}m", r[0], r[1], r[2], r[3], r[4], r[5]))
     L.append(md_table(rows, ["hz", "model", "dir calls", "acc %", "UP prec %", "DOWN prec %", "abstain %"]))
@@ -204,7 +213,7 @@ def main():
             SELECT model,
                    avg(CASE WHEN direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL THEN CASE WHEN hit THEN 1.0 ELSE 0 END END)*100 acc,
                    sum(CASE WHEN direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL THEN 1 ELSE 0 END) n
-            FROM model_predictions WHERE horizon={h} GROUP BY 1""").fetchall():
+            FROM {MODEL_ROWS} WHERE horizon={h} GROUP BY 1""").fetchall():
             rank.setdefault(r[0], {})[h] = (r[1], r[2])
     rows = []
     for m, d in sorted(rank.items(), key=lambda kv: -(kv[1].get(5, (0,))[0] or 0)):
@@ -219,7 +228,7 @@ def main():
             SELECT {DAY5} d,
                    sum(CASE WHEN direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL THEN 1 ELSE 0 END) dc,
                    avg(CASE WHEN direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL THEN CASE WHEN hit THEN 1.0 ELSE 0 END END)*100 acc
-            FROM model_predictions WHERE horizon={h} GROUP BY 1 ORDER BY 1""").fetchall():
+            FROM {MODEL_ROWS} WHERE horizon={h} GROUP BY 1 ORDER BY 1""").fetchall():
             rows.append((f"{h}m", str(r[0]), r[1], r[2]))
     L.append(md_table(rows, ["hz", "day", "dir calls", "acc %"]))
 
@@ -232,7 +241,7 @@ def main():
     for h in HZ:
         r = c.execute(f"""SELECT model, avg(CASE WHEN hit THEN 1.0 ELSE 0 END)*100 a,
                           sum(CASE WHEN direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL THEN 1 ELSE 0 END) n
-                          FROM model_predictions WHERE horizon={h} AND direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL
+                          FROM {MODEL_ROWS} WHERE horizon={h} AND direction IN ('UP','DOWN') AND resolved AND hit IS NOT NULL
                           GROUP BY 1 ORDER BY a DESC LIMIT 1""").fetchone()
         best[h] = r
     L.append(f"- **Price-to-Beat tracker (clean coin-flip baseline):** 5m **{p2b[5]:.1f}%**, 15m **{p2b[15]:.1f}%** directional.")

@@ -413,12 +413,25 @@ async def lifespan(app: FastAPI):
     binance_paper_service.initialize()
     loaded_signals = signal_buffer.load(SIGNAL_HISTORY_PATH)
     logger.info(f"Loaded {loaded_signals} persisted signal-history snapshots")
+    _pending_predictions = database.fetch_unresolved_predictions()
     restored = verifier.restore_from_database(
-        database.fetch_unresolved_predictions(),
+        _pending_predictions,
         database.get_last_prediction_timestamps(),
     )
     backend_state["restored_pending_predictions"] = restored
     logger.info(f"Restored {restored} pending predictions from DuckDB")
+    _resolved_restored = verifier.restore_verified_from_database(
+        database.fetch_prediction_verifier_history(500)
+    )
+    logger.info("Restored %s current-model verified predictions", _resolved_restored)
+    _model_restore = model_verifier.restore_from_database(
+        _pending_predictions,
+        database.fetch_model_verifier_history(500),
+    )
+    logger.info(
+        "Restored per-model verifier: %s committed outcomes, %s pending votes",
+        _model_restore["resolved"], _model_restore["pending"],
+    )
     ab_restored = ab_runner.restore_from_db()
     logger.info(f"Restored {ab_restored} A/B variant outcomes from DuckDB")
     # Rehydrate the price-to-beat win-rate history so the mirror's accuracy strip
@@ -532,6 +545,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.error("Feed writer shutdown INCOMPLETE - queued writes lost: %s",
                      dict(_feed_shutdown))
+    model_metrics_logger.close()
     database.close_db()
 
 
@@ -4033,7 +4047,10 @@ async def main_loop():
                             exchange_verifier.record(p["direction"], h, current_venue_prices(data_state), now_ms)
 
                         # Per-model live accuracy: record every base model's vote.
-                        model_verifier.record(p.get("modelDirs", {}), h, current_price, now_ms)
+                        model_verifier.record(
+                            p.get("modelDirs", {}), h, current_price, now_ms,
+                            prediction_id=pred_id,
+                        )
 
                         # A10 setup-fingerprint recorder — the per-prediction DECISION context
                         # (regime/conviction/agreement/grade/CVD/GEX), keyed by (now_ms,h) →
@@ -4140,6 +4157,7 @@ async def main_loop():
                             model_confluence=float(p.get("modelConfluenceScore", 0.0) or 0.0),
                             setup_score=float(setup_quality.get("score", 0.0) or 0.0),
                             setup_quality=setup_quality,
+                            neutral_band=float(p.get("neutralBand", 0.0008) or 0.0008),
                         )
                         try:
                             database.log_forward_ev_event({
@@ -4705,6 +4723,8 @@ def _system_health_snapshot() -> dict:
         120_000.0,
     )
     recorders["open_position_actions"]["required"] = True
+    recorders["model_metrics"] = model_metrics_logger.status(stale_after_s=120.0)
+    recorders["model_metrics"]["required"] = True
     polymarket_feed = polymarket_client.status()
     feed_protocols = {
         "binance_spot": ws_client.health_snapshot(),

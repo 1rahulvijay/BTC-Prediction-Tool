@@ -88,11 +88,20 @@ def model_noise(conn):
     """Per-base-model COMMITTED (UP/DOWN) sign-truth accuracy from model_predictions."""
     try:
         rows = conn.execute("""
+            WITH unique_votes AS (
+                SELECT * EXCLUDE(occurrence) FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY model, horizon, timestamp
+                        ORDER BY CASE WHEN contains(id, '::') THEN 0 ELSE 1 END, id
+                    ) AS occurrence
+                    FROM model_predictions
+                ) WHERE occurrence = 1
+            )
             SELECT model,
                    COUNT(*) AS n,
                    AVG(CASE WHEN direction = actual_direction THEN 1.0 ELSE 0.0 END) AS acc
-            FROM model_predictions
-            WHERE resolved AND direction IN ('UP','DOWN')
+            FROM unique_votes
+            WHERE resolved AND direction IN ('UP','DOWN') AND hit IS NOT NULL
             GROUP BY model HAVING COUNT(*) >= 20 ORDER BY acc""").fetchall()
     except Exception as e:
         return {"error": f"no model_predictions ({str(e)[:60]})"}
@@ -172,8 +181,8 @@ def main():
         print(f"   {h:>2}m: n={n:<5} acc={acc*100:.1f}%{flag}")
 
     print("\n2) WEAKEST BASE MODELS (committed accuracy; lowest = dead weight)")
-    print("   [!] reliable ONLY on rows written after the model_verifier sign-truth fix (§5ba) went")
-    print("       live — i.e. after one restart. Pre-fix rows read artificially low; trust §1 first.")
+    print("   [!] legacy duplicate ids are deduplicated and NEUTRAL abstentions are excluded.")
+    print("       Still require a stable post-retrain sample before changing ensemble membership.")
     mn = model_noise(conn)
     if mn.get("by_model"):
         for model, n, acc in mn["by_model"]:
