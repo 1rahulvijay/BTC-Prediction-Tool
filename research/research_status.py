@@ -92,6 +92,21 @@ ADMITTED_WHILE_FROZEN = (
 )
 
 #: Frozen forward protocols. Hashes in docs/active/PREREG_HASH.txt, verified in CI.
+#:
+#: PROTOCOL A IS RETIRED FOR THE CURRENT FEATURE SET (2026-08-02). phase5d test 157 measured
+#: that no frozen feature family adds out-of-fold RESOLUTION beyond the executable market
+#: price - none beats a matched noise arm. A market-prior residual has no raw material in the
+#: recorded features, so running it forward would spend eight weeks to learn what a
+#: cross-fitted historical test already established.
+#:
+#: The protocol FILE is deliberately unedited: its hash must stay valid, exactly as the
+#: retracted studies keep their text. Retirement is recorded here, not by rewriting history.
+#:
+#: This does NOT retire the idea. If the new recorders bring genuinely new inputs - model
+#: revisions, settlement-source basis, paired L2 - that is a different feature set and needs a
+#: NEW protocol with its own hash.
+PROTOCOL_A_RETIRED_FOR_CURRENT_FEATURES = True
+
 FORWARD_PROTOCOLS = {
     "A": "PREREG_FORWARD_A_MARKET_PRIOR_RESIDUAL_V1.md",
     "B": "PREREG_FORWARD_B_FINAL_CROSSING_V1.md",

@@ -260,6 +260,17 @@ jobs:
       - name: Effective independent sample size
         run: python research/phase5c/test_effective_independent_sample_size.py --selftest
 
+      # Phase 5D. The admission contract computes what may run as an economic experiment from
+      # the declaration, so enthusiasm cannot promote a study. Check ORDER is load-bearing: a
+      # sub-cost effect is refused before power, so more data never rescues one.
+      - name: Phase5D admission contract (sub-cost refused before power)
+        run: python research/phase5d/admission.py --selftest
+
+      # 157 pins that a pure-noise feature adds no out-of-fold resolution, and that the first
+      # chronological fold is never scored because it has no past to train on.
+      - name: Phase5D market sufficiency boundary (the null must behave)
+        run: python research/phase5d/test_market_price_sufficiency_boundary.py --selftest
+
       # Phase 5C studies. Each selftest pins the one way its own arithmetic could flatter a
       # result - see the individual check labels.
       - name: Phase5C Brier decomposition (reliability vs resolution)

@@ -811,6 +811,60 @@ Three findings are genuinely new and reusable: large moves are continuous not ju
 volatility half-life is 34 minutes (103), and half of all rounds at T−4m have not yet had their
 final crossing (94).
 
+## 11. Phase 5D - admission contract and the sufficiency boundary - `2026-08-02`
+
+### 11.1 The contract, as code
+
+`research/phase5d/admission.py` implements the Phase 5D admission contract verbatim and
+adjudicates the declared 5D + 5D-B backlog. **0 of 19 may currently run as economic
+experiments:**
+
+```
+COLLECT_MORE_DATA   12    design is fine, the evidence does not exist yet
+DESCRIPTIVE_ONLY     7    diagnostic by design; informs a decision, not a trade
+```
+
+Check order is load-bearing: **a sub-cost effect is refused before power is considered**, so
+more data can never rescue an effect too small to pay. Selftested with a 5,000-cluster
+sub-cost declaration that still returns `REJECT_SUBCOST`.
+
+A first version labelled 157 `REJECT_NO_EXECUTABLE_ACTION` — its own specification says *"this
+test should not generate trades"*. Diagnostic intent is now declared, so the most important
+test in the backlog no longer reads as refused.
+
+### 11.2 Test 157 — the sufficiency boundary. **Preregistration A is retired.**
+
+Three chronological folds, out-of-fold scoring, frozen feature families, judged on
+**incremental resolution** because §10.5 established the deficit is resolution and not
+calibration.
+
+| family | resolution | Δ resolution |
+|---|---:|---:|
+| A market only | 0.0363 | 0.0000 |
+| B + BTC state | 0.0363 | −0.0000 |
+| C + volatility | 0.0361 | −0.0002 |
+| D + model outputs | 0.0363 | −0.0000 |
+| E + book state | 0.0363 | −0.0001 |
+| F + everything | 0.0361 | −0.0003 |
+| **Z null (noise)** | **0.0364** | **+0.0001** |
+
+**No family beats a matched noise arm — the null has the largest gain of all.** Nothing in the
+recorded features adds information beyond the executable market price.
+
+**Verdict: `NO_INCREMENTAL_INFORMATION`.** Preregistration A is **retired for the current
+feature set**. The protocol file is left byte-identical so its hash stays valid; retirement is
+recorded in `research_status.py`, the same discipline used for the retracted studies.
+
+**Narrow reading, deliberately.** This retires the residual lane *for these features*. If the
+new recorders bring genuinely new inputs — model revisions, settlement-source basis, paired
+L2 — that is a different feature set and requires a **new protocol with its own hash**. The
+idea is not refuted; this feature set is.
+
+**A bug this caught in itself.** The first run reported `RESIDUAL_LANE_SUPPORTED` on a
++0.00004 gain, because the verdict tested `> 0` with no materiality bar. Adding the matched
+null flipped it to `NO_INCREMENTAL_INFORMATION` — the honest answer, and the opposite of the
+convenient one.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
