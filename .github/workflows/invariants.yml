@@ -609,6 +609,7 @@ jobs:
           python research/algodesk_ml_rl_dl.py --selftest || exit /b 1
           python research/regime_labeler_v1.py --selftest || exit /b 1
           python research/regime_volatility_control_v1.py --selftest || exit /b 1
+          python research/tradability_head_v1.py --selftest || exit /b 1
           python -m research.algodesk.data --selftest || exit /b 1
           python -m research.algodesk.agents --selftest || exit /b 1
           python -m research.algodesk.backtest --selftest || exit /b 1

@@ -95,3 +95,10 @@ frozen = 2026-08-03
 bytes  = 4353
 note   = conditions the regime finding on realised volatility; DIAGNOSTIC
 ======================================================================
+
+PREREG_TRADABILITY_HEAD_V1.md
+sha256 = bb48c577cc68610152f7a22325a3257d1c1afc402a3aea3c69bb5f4fec24f07d
+frozen = 2026-08-03
+bytes  = 4630
+note   = movement gate; scored against rv_60m as the incumbent, not against zero
+======================================================================
