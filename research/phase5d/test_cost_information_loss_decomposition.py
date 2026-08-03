@@ -254,25 +254,37 @@ def main() -> int:
         reason = (f"even the 95% UPPER bound of the surplus ({optimistic:+.4f}) is not "
                   f"positive - there is nothing for cheaper execution to preserve")
     elif optimistic < costs:
-        status = "TAKER_EXECUTION_CANNOT_RESCUE"
-        reason = (f"the 95% upper bound of the surplus ({optimistic:+.4f}) is BELOW the current "
-                  f"cost ({costs:.4f}) - no reduction in TAKER cost clears it")
+        # NOT "no cost reduction can clear it" - that is false, and was stated here. A cost of
+        # `optimistic` or below WOULD clear the optimistic bound. What the data supports is the
+        # narrower claim: the CURRENT cost structure is negative even on the favourable end.
+        status = "CURRENT_TAKER_COST_STRUCTURE_NEGATIVE"
+        reason = (f"current taker cost ({costs:.4f}) exceeds even the day-clustered UPPER bound "
+                  f"of the surplus ({optimistic:+.4f})")
     else:
         status, reason = verdict(stages)
     print()
-    print(f"  break-even execution cost   : {max(stages['informational_edge_at_mid'], 0.0):.4f}")
-    print(f"  actual execution cost       : {costs:.4f}")
-    print(f"  required improvement        : "
-          f"{max(costs - stages['informational_edge_at_mid'], 0.0):.4f} per share")
+    point = stages["informational_edge_at_mid"]
+    # Two break-even costs, because the estimator changes the answer by a factor of two and
+    # quoting one alone would imply a precision the interval does not have.
+    print(f"  break-even cost, point estimate : {max(point, 0.0):.4f}")
+    print(f"  break-even cost, upper bound    : {max(optimistic, 0.0):.4f}"
+          if np.isfinite(optimistic) else "  break-even cost, upper bound    : n/a")
+    print(f"  actual execution cost           : {costs:.4f}")
+    if np.isfinite(optimistic) and costs > 0:
+        print(f"  required cost reduction         : "
+              f"{max(costs - optimistic, 0.0) / costs:.1%} under the optimistic bound, "
+              f"{max(costs - point, 0.0) / costs:.1%} at the point estimate")
     print()
     print(f"  VERDICT: {status}")
     print(f"  {reason}")
     print()
-    if status.endswith("CANNOT_RESCUE"):
-        surplus_point = stages["informational_edge_at_mid"]
-        print("  A cheaper TAKER channel cannot rescue this lane: even the optimistic end of")
-        print(f"  the day-clustered interval ({optimistic:+.4f}) sits below the cost it must")
-        print(f"  clear ({costs:.4f}).")
+    if status == "CURRENT_TAKER_COST_STRUCTURE_NEGATIVE" or status == "EXECUTION_CANNOT_RESCUE":
+        surplus_point = point
+        print("  This closes taker entry AT THE CURRENT COST STRUCTURE. It does NOT establish")
+        print("  that no cheaper taker channel could ever clear the bar: a cost at or below")
+        print(f"  {max(optimistic, 0.0):.4f} would clear the optimistic bound. But because the")
+        print("  surplus interval SPANS ZERO, a cheaper channel is not shown to be profitable")
+        print("  either - it would be trading on a quantity not distinguishable from nothing.")
         print()
         print("  A MAKER fill is a different question, and this test cannot answer it. Posting")
         print(f"  at the mid would remove essentially all cost, leaving the surplus itself:")
@@ -282,9 +294,13 @@ def main() -> int:
         print("  distinguishable from nothing - before charging any adverse selection.")
         print()
         print("  Round-clustered the same surplus reads [+0.0063, +0.0161], which excludes zero.")
-        print("  Day clustering governs here because volatility, regime and recorder health all")
-        print("  cluster within a day; rounds inside one day are not independent draws. The")
-        print("  disagreement between the two is itself the reason to treat this as weak.")
+        print("  That interval collapses checkpoints to per-round means and resamples whole")
+        print("  ROUNDS, so its assumption is round-level independence - not checkpoint-level.")
+        print("  It is nonetheless weaker than the declared DAY-level standard, because rounds")
+        print("  inside one day share volatility, regime, market conditions and recorder state.")
+        print("  Note the clustering choice does not change the SIGN - all four point estimates")
+        print("  are positive. It changes the magnitude, and whether the surplus is")
+        print("  distinguishable from zero at all. Day clustering governs, and under it, it is not.")
     else:
         edge = stages["informational_edge_at_mid"]
         reduction = (costs - edge) / costs if costs > 0 else float("nan")

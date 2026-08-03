@@ -929,17 +929,35 @@ equal-ROUND weighted        +0.0114   round-CI  [+0.0063, +0.0161]   excludes ze
 NON-OVERLAPPING (1/round)   +0.0023   day-CI    [-0.0063, +0.0107]   SPANS ZERO
 ```
 
-**The clustering choice decides the sign of the conclusion, so it is declared rather than
-selected:** day clustering governs, because volatility, regime and recorder health cluster
-within a day. Under it the surplus is **not distinguishable from zero** before any cost is
-charged. The round-clustered CI excludes zero only by treating 50,272 overlapping checkpoints
-as independent, which they are not — the non-overlapping arm (one checkpoint per round) is the
-honest version of that comparison, and it spans zero too.
+**The clustering choice is declared rather than selected:** day clustering governs, because
+volatility, regime and recorder health cluster within a day. Under it the surplus is **not
+distinguishable from zero** before any cost is charged.
 
-**Verdict `TAKER_EXECUTION_CANNOT_RESCUE`**, decided on the CI **upper** bound rather than the
-point estimate: even at +0.0099 the surplus sits below the 0.0149 cost floor. Taker entry is
-closed on the most favourable reading of the evidence, which is the only reading worth closing
-a lane on.
+Note what the choice does and does not change. **All four point estimates are positive — the
+sign is not in dispute.** What clustering changes is the magnitude and whether the surplus is
+statistically distinguishable from zero at all. The round-clustered interval collapses
+checkpoints to per-round means and resamples whole *rounds*, so its assumption is round-level
+independence, not checkpoint-level. It is nonetheless weaker than the declared day-level
+standard, because rounds inside one day share volatility, regime, market conditions and
+recorder state. The non-overlapping arm (one checkpoint per round) spans zero as well.
+
+**Verdict `CURRENT_TAKER_COST_STRUCTURE_NEGATIVE`**, decided on the CI **upper** bound rather
+than the point estimate: even at +0.0099 the surplus sits below the 0.0149 cost floor.
+
+**Corrected again `2026-08-03`.** The verdict was briefly `TAKER_EXECUTION_CANNOT_RESCUE`,
+and the text claimed *"no reduction in taker cost clears it"*. That does not follow from these
+numbers — a cost at or below 0.0099 **would** clear the optimistic bound:
+
+```
+required reduction, optimistic bound   0.0149 -> 0.0099   = 33.6%
+required reduction, point estimate     0.0149 -> 0.0044   = 70.3%
+```
+
+Both break-even costs are now reported, because the estimator moves the requirement by a factor
+of two. What the evidence supports is the narrower claim: **the current cost structure is
+negative even on the favourable end of the interval.** It does not establish that cheaper taker
+execution would become profitable — the surplus CI spans zero, so a cheaper channel would be
+trading on a quantity not distinguishable from nothing.
 
 The **maker** question is separate and stays open — it is the only route that removes the
 spread and taker fee instead of paying them. It is preregistered as D and **may not be scored
@@ -1025,6 +1043,47 @@ a planted missing file and a planted renamed table. Selftest: **15 checks**.
 This is the fourth instance of the same defect class in this repository (manifest gate,
 recorder-evidence gate, artifact serviceability, now readiness). The pattern is always a check
 that passes while the property it guarantees is false.
+
+### 11.9 The Protocol C denominator, and three more readiness defects - `2026-08-03`
+
+Four further corrections, the first of which could have announced a complete gate for a
+comparison that did not exist.
+
+**The gate counted the wrong thing.** `resolved_action_snapshots` was
+`count(DISTINCT position_snapshot_id) WHERE any arm is complete`. Protocol C is *defined* by
+the five-arm comparison from one state — so 1,000 snapshots carrying a complete `HOLD` and
+nothing else would have satisfied the count and printed `DATA_GATE_COMPLETE_UNSCORED` while
+`EXIT`, `REDUCE_50`, `SWITCH` and `LOCK` were absent entirely.
+
+The gate is now `full_resolved_five_arm_rounds`: distinct **rounds** (Protocol C's frozen unit
+is independent resolved opportunities; many snapshots of one round are one opportunity observed
+repeatedly) in which all five arms are complete **from the same causal snapshot**, settlement is
+resolved, the paired book carries a fee rule, its two sides are within the skew bound, and the
+book was received *before* the snapshot it informed. `any_arm_complete_snapshots` survives as a
+diagnostic, explicitly labelled *NOT the gate*.
+
+Negative-tested against five planted fixtures — the HOLD-only case, a skewed paired book, a book
+received after its snapshot, arms without resolved settlement, and a genuine five-arm database
+that **does** complete, so the gate is not merely always zero.
+
+**Protocol B's zeros were still fabricated.** Four crossing fields were hardcoded, which is the
+same defect in delayed form: correct today, and frozen at 0 forever after the evidence arrived.
+They now require a `post_entry_crossing_outcomes` table (12 named columns); absent it,
+`MeasurementNotWired` fires and the B section reports `NOT_WIRED` with **no status at all** —
+"not yet built" must not print as "measured and found zero".
+
+**`COLLECTING` was unreachable.** Every numeric state returned before it. `NOT_STARTED` and
+`COLLECTING` are both zero-evidence states, and counts cannot separate them, so `gate_status()`
+now *requires* a `writer_active` argument, read from `open_position_capture_attempts` —
+attempts, not successes, because a recorder that runs and rejects everything is alive and
+collecting nothing. Dead writer + zero evidence → `NOT_STARTED`; live writer + zero evidence →
+`COLLECTING`.
+
+**Blindness was top-level only.** It now walks the whole assembled payload recursively,
+including nested lists, and runs after statuses are attached. That immediately caught a bug in
+the matcher itself: substring matching rejected `ledger`, for containing *"edge"*. Whole-token
+matching on snake_case fixed it, and the refusal now names the offending token. A blindness rule
+that fires on honest field names gets worked around rather than obeyed. Selftest: **40 checks**.
 
 ## 5. Governance added because of the retraction
 
