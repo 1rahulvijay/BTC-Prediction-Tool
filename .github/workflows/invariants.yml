@@ -622,6 +622,7 @@ jobs:
           python research/crossing_heads_v1.py --selftest || exit /b 1
           python backend/crossing_recorder_hf.py --selftest || exit /b 1
           python backend/train_crossing_heads.py --selftest || exit /b 1
+          python research/bybit_l2_maker_v1.py --selftest || exit /b 1
           python -m research.algodesk.data --selftest || exit /b 1
           python -m research.algodesk.agents --selftest || exit /b 1
           python -m research.algodesk.backtest --selftest || exit /b 1

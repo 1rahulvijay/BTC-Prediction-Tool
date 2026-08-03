@@ -151,3 +151,10 @@ frozen = 2026-08-03
 bytes  = 4224
 note   = final/reversion heads on 15,428 crossings; incumbent is seconds_left alone
 ======================================================================
+
+PREREG_BYBIT_L2_MAKER_V1.md
+sha256 = fc49c09d9c6870379af565cabb0dcfd5916fafd49284bba47c527c9a2eafb5be
+frozen = 2026-08-03
+bytes  = 4573
+note   = real 200-level Bybit L2 replay; queue position from true depth
+======================================================================
