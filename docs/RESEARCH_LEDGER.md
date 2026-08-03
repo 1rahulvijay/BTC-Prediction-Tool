@@ -784,8 +784,15 @@ against a 12.0 bps round trip. At 10/10 the barriers are near-symmetric (**48.4%
 stop**) — exactly what a martingale predicts. A bar spanning both barriers is charged as a
 *stop*, since the intrabar order is unknown and assuming the favourable one manufactures edge.
 
-**No direction model can rescue a bracket in this lane.** That is a property of the path,
-established without predicting anything.
+**Narrowed after review, `2026-08-02`.** This proves that *no unconditional fixed bracket in
+the frozen grid has positive expectancy across the full tested 60m population*. It does **not**
+prove that no future state selector could find a sparse subset where barrier ordering is
+asymmetric — a sufficiently informative model could in principle select contexts where
+`P(target before stop | state)` differs materially from the unconditional 48.4%/48.7%.
+
+What the evidence does support: **current realisable models do not extract such a subset**
+(§4.10, §4.8, §4.9). The lane is closed until a prefiltered effect clears §10.2, not closed
+forever.
 
 ### 10.6 What the seven add up to
 
@@ -793,8 +800,12 @@ Nothing changes the evidence position, and two things sharpen it:
 
 1. **The model's deficit is resolution, not calibration** (89), which rules out the entire class
    of "recalibrate P(hold)" remedies and points at the market-prior residual.
-2. **The path itself forbids a bracket** (106) and **forbids threshold trading** (123),
-   independently of any forecast.
+2. **The path forbids an unconditional fixed bracket** (106) and **forbids a RAW PROBABILITY
+   threshold** (123), independently of any forecast. Narrowed after review: 123 rules out
+   `buy when p > 0.70`. It does **not** rule out an economic residual rule of the form
+   `fair value - executable ask - costs - uncertainty reserve`. P(hold) cannot supply that
+   today because §10.5 shows it has *less* resolution than the market — but a genuinely
+   orthogonal information source could in principle.
 
 Three findings are genuinely new and reusable: large moves are continuous not jumpy (101), the
 volatility half-life is 34 minutes (103), and half of all rounds at T−4m have not yet had their

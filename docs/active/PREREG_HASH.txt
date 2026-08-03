@@ -55,3 +55,22 @@ frozen = 2026-07-26
 bytes  = 5067
 note   = executable decision procedure
 ======================================================================
+
+PREREG_FORWARD_A_MARKET_PRIOR_RESIDUAL_V1.md
+sha256 = 72697d97d76002dd05f9fb4c5ba79f0c56751b09c2cb226807563e91c642aed9
+frozen = 2026-08-02
+bytes  = 2489
+note   = forward-only; zero FORWARD_UNTOUCHED rows existed at freeze
+
+PREREG_FORWARD_B_FINAL_CROSSING_V1.md
+sha256 = 313ec007bd4a1975c8271795cf9fec790b941ece7ed0a60e0b5b3d86d344ebd4
+frozen = 2026-08-02
+bytes  = 2055
+note   = forward-only; zero FORWARD_UNTOUCHED rows existed at freeze
+
+PREREG_FORWARD_C_OPEN_POSITION_ACTION_VALUE_V1.md
+sha256 = 64745b4795eab0cb814fc33a34c5ae93494bdee9f2b1614b9c4c84a355844bb5
+frozen = 2026-08-02
+bytes  = 2734
+note   = forward-only; zero FORWARD_UNTOUCHED rows existed at freeze
+======================================================================

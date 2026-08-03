@@ -12,8 +12,14 @@ THE QUESTION THIS ANSWERS FIRST
         P(neither hit)
         net expectancy after the round trip
 
-    If no cell in the grid clears zero, no direction model can rescue a bracket in this lane,
-    and that is worth knowing before one is built.
+    If no cell in the grid clears zero, no UNCONDITIONAL fixed bracket pays across this
+    population, and that is worth knowing before a direction model is built for one.
+
+    NARROWED AFTER REVIEW: that is not the same as "no direction model could ever help". A
+    sufficiently informative state selector could in principle find a sparse subset where
+    barrier ordering is asymmetric. What the repository has measured is that CURRENT realisable
+    models do not extract such a subset. The lane is closed until a prefiltered effect clears
+    the cost prefilter, not closed forever.
 
 FROZEN GRID, NO SELECTION
     Targets and stops are declared below. The full surface is published. Picking the best cell
@@ -140,8 +146,10 @@ def main() -> int:
         print("  multiple-comparison discount that a forward run would have to survive.")
     else:
         print("  NO cell in the grid clears costs. The adverse excursion arrives too often and")
-        print("  too early, so no direction model can rescue a bracket in this lane. This is a")
-        print("  property of the PATH, established without predicting anything.")
+        print("  too early for any UNCONDITIONAL fixed bracket in this grid to pay.")
+        print("  This does NOT prove no state selector could find a sparse asymmetric subset -")
+        print("  only that no fixed bracket works across the full population. Current models do")
+        print("  not extract such a subset; revisit only if a prefiltered effect clears costs.")
     return 0
 
 

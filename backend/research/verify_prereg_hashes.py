@@ -89,6 +89,12 @@ EXPECTED_PROTOCOLS = frozenset({
     "PREREG_BINANCE_V1_CLARIFICATION_003.md",
     "PREREG_COMPLETE_TRADE_M0_V2.md",
     "PREREG_COMPLETE_TRADE_M0_V2_CLARIFICATION_001.md",
+    # Frozen 2026-08-02, before the forward window opened. At the moment of freezing there were
+    # ZERO FORWARD_UNTOUCHED rows - which is the point: a protocol cannot have been shaped by
+    # the data it will be scored on if that data does not exist yet.
+    "PREREG_FORWARD_A_MARKET_PRIOR_RESIDUAL_V1.md",
+    "PREREG_FORWARD_B_FINAL_CROSSING_V1.md",
+    "PREREG_FORWARD_C_OPEN_POSITION_ACTION_VALUE_V1.md",
 })
 
 

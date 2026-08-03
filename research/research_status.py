@@ -78,6 +78,43 @@ REGISTRY: dict[str, dict] = {
 }
 
 
+#: Declared 2026-08-02 after Phase 5C. Historical alpha mining is CLOSED - not because the
+#: ideas are bad, but because the window cannot answer them: 21 Polymarket days give a ~25 point
+#: minimum detectable effect and the cross-venue archive holds 2 days. See RESEARCH_LEDGER 10.1.
+HISTORICAL_EXPANSION_FROZEN = True
+
+#: The only categories admitted while the freeze holds. Anything else waits for forward rows.
+ADMITTED_WHILE_FROZEN = (
+    "DATA_INTEGRITY",        # does the recorded data say what we think it says?
+    "RECORDER_HEALTH",       # is the evidence actually being collected?
+    "PREDECLARED_FORWARD",   # a frozen protocol scored on FORWARD_UNTOUCHED rows
+    "PREFILTER_ADMITTED",    # cleared BOTH phase5c 130 (effect/cost) and 136 (sample size)
+)
+
+#: Frozen forward protocols. Hashes in docs/active/PREREG_HASH.txt, verified in CI.
+FORWARD_PROTOCOLS = {
+    "A": "PREREG_FORWARD_A_MARKET_PRIOR_RESIDUAL_V1.md",
+    "B": "PREREG_FORWARD_B_FINAL_CROSSING_V1.md",
+    "C": "PREREG_FORWARD_C_OPEN_POSITION_ACTION_VALUE_V1.md",
+}
+
+
+def admit(category: str) -> None:
+    """Refuse a new historical study while the freeze holds.
+
+    A new lane is not blocked by taste. It is blocked because the sample cannot distinguish its
+    effect from noise, and running it anyway produces a confident description of nothing."""
+    if not HISTORICAL_EXPANSION_FROZEN:
+        return
+    if category not in ADMITTED_WHILE_FROZEN:
+        raise SystemExit(
+            f"HISTORICAL EXPANSION IS FROZEN. Category {category!r} is not admitted.\n"
+            f"  admitted: {', '.join(ADMITTED_WHILE_FROZEN)}\n"
+            "  The 21-day Polymarket window has a ~25 point minimum detectable effect and the\n"
+            "  cross-venue archive holds 2 days. Clear phase5c 130 and 136 first, or wait for\n"
+            "  FORWARD_UNTOUCHED rows.")
+
+
 def guard(script_name: str, argv: list[str] | None = None) -> None:
     """Refuse to run a retracted study unless history is explicitly requested."""
     entry = REGISTRY.get(script_name)
