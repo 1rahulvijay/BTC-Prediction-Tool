@@ -1,5 +1,33 @@
 # Crossing heads — result
 
+> **ROUND-EQUAL WEIGHTING APPLIED 2026-08-04.** The AUCs first reported here were
+> **opportunity-weighted**: a round with 12 crossings contributed 12 rows, so choppy rounds
+> dominated. That is the same defect that flipped the sign of the taker-surplus estimate in
+> test 164, so it was recomputed with each ROUND contributing exactly one crossing (400 draws,
+> both arms on the same sampled crossings so the comparison stays paired).
+>
+> | target | pooled cand. | **round-equal cand.** | pooled gain | **round-equal gain** | CI on gain |
+> |---|---:|---:|---:|---:|---|
+> | `is_final_crossing` | 0.7144 | **0.6694** | +0.0389 | **+0.0557** | [+0.0347, +0.0775] |
+> | `state_original_side_at_30s` | 0.6715 | **0.6814** | +0.1519 | **+0.1582** | [+0.0981, +0.2170] |
+> | `state_original_side_at_60s` | 0.6373 | **0.6547** | +0.1312 | **+0.1413** | [+0.1022, +0.1817] |
+>
+> **The verdict is unchanged on all three: `CROSSING_HEAD_ADDS`, every CI excluding zero.**
+>
+> One number was genuinely inflated and is corrected: `is_final_crossing` is **0.6694**, not
+> 0.7144. But the pooled figure flattered the **clock baseline more than the candidate**
+> (0.6755 → 0.6137), because later crossings in a choppy round have little time left and the
+> clock is trivially good there. Removing that inflation makes the candidate's advantage
+> *larger*, not smaller, on all three targets.
+>
+> Spread across draws is small (sd 0.009–0.018), so the result barely depends on *which*
+> crossing of a round is sampled. The estimator was validated on planted cases first: it
+> collapses 0.62 → 0.44 when one choppy round holds all the signal, agrees with pooled when
+> signal is uniform, and returns a zero-width interval for a model against itself.
+>
+> **Round-equal now governs.** Pooled figures are retained below for continuity.
+
+
 **Protocol** `PREREG_CROSSING_HEADS_V1.md` sha256 `762532c9…`, frozen before training ·
 **Script** `research/crossing_heads_v1.py` · Scored **once**
 

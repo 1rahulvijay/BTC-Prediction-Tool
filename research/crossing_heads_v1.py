@@ -148,6 +148,72 @@ def day_block_diff_ci(scores_a, scores_b, labels, days,
     return (float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5)))
 
 
+#: A round with 12 crossings contributes 12 rows to a pooled AUC, so choppy rounds dominate it.
+#: This is the same defect that flipped the sign of the taker-surplus estimate in test 164,
+#: where equal-round and equal-day weighting disagreed and the pooled figure was the misleading
+#: one. The correction is the same: report every weighting, and declare which governs.
+ROUND_EQUAL_DRAWS = 400
+
+
+def round_equal_auc(scores, labels, rounds, draws: int = ROUND_EQUAL_DRAWS,
+                    seed: int = 181) -> tuple[float, float]:
+    """AUC when each ROUND contributes exactly one crossing, averaged over `draws` samples.
+
+    Returns (mean, standard deviation across draws). One crossing per round is the honest unit:
+    crossings inside a round are the same market state observed repeatedly, not independent
+    opportunities. The spread across draws says how much the pooled number depended on WHICH
+    crossing of a round was counted."""
+    rounds = np.asarray(rounds)
+    order = np.argsort(rounds, kind="mergesort")
+    grouped: dict = {}
+    for idx in order:
+        grouped.setdefault(rounds[idx], []).append(idx)
+    buckets = [np.array(v) for v in grouped.values()]
+    rng = np.random.default_rng(seed)
+    values = []
+    for _ in range(draws):
+        picked = np.array([b[rng.integers(0, len(b))] for b in buckets])
+        y = labels[picked]
+        if len(np.unique(y)) < 2:
+            continue
+        values.append(auc(scores[picked], y))
+    if not values:
+        return (float("nan"), float("nan"))
+    return (float(np.mean(values)), float(np.std(values)))
+
+
+def round_equal_diff_ci(scores_a, scores_b, labels, rounds, days,
+                        iterations: int = 800, seed: int = 191) -> tuple:
+    """CI on the round-equal AUC difference, resampling DAYS and one crossing per round.
+
+    Both arms are evaluated on the SAME sampled crossings, so the comparison stays paired -
+    weighting one arm differently from the other would not be a correction, it would be a
+    different question."""
+    rounds = np.asarray(rounds)
+    unique_days = np.unique(days)
+    if len(unique_days) < 2:
+        return (float("nan"), float("nan"))
+    by_day: dict = {}
+    for idx in range(len(rounds)):
+        by_day.setdefault(days[idx], {}).setdefault(rounds[idx], []).append(idx)
+    rng = np.random.default_rng(seed)
+    draws = []
+    for _ in range(iterations):
+        pick = rng.integers(0, len(unique_days), len(unique_days))
+        chosen = []
+        for j in pick:
+            for _round, idxs in by_day[unique_days[j]].items():
+                chosen.append(idxs[rng.integers(0, len(idxs))])
+        chosen = np.array(chosen)
+        y = labels[chosen]
+        if len(np.unique(y)) < 2:
+            continue
+        draws.append(auc(scores_a[chosen], y) - auc(scores_b[chosen], y))
+    if len(draws) < 50:
+        return (float("nan"), float("nan"))
+    return (float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5)))
+
+
 def verdict_for(candidate: float, incumbent: float, floor_hi: float, ci: tuple) -> tuple:
     gain = candidate - incumbent
     if not np.isfinite(candidate) or candidate <= floor_hi:
@@ -278,9 +344,26 @@ def run() -> int:
         print(f"      null floor 95% [{lo:.4f}, {hi:.4f}]   "
               f"gain over clock {auc_full - auc_clock:+.4f}   "
               f"CI [{ci[0]:+.4f}, {ci[1]:+.4f}]")
-        verdict, reason = verdict_for(auc_full, auc_clock, hi, ci)
-        print(f"      VERDICT: {verdict}")
+        # ROUND-EQUAL WEIGHTING. Both arms on the same sampled crossings, so the comparison
+        # stays paired. This governs; the pooled figure above is reported for continuity.
+        test_rounds = test["round_id"].to_numpy()
+        re_full, re_full_sd = round_equal_auc(full, yte, test_rounds)
+        re_clock, re_clock_sd = round_equal_auc(clock, yte, test_rounds)
+        re_ci = round_equal_diff_ci(full, clock, yte, test_rounds, test_days)
+        per_round = len(test) / max(1, len(np.unique(test_rounds)))
+        print(f"      -- round-equal ({per_round:.2f} crossings/round pooled) --")
+        print(f"      {'BASELINE_TIME (clock)':<24}{re_clock:>10.4f}  (sd {re_clock_sd:.4f})")
+        print(f"      {'CANDIDATE':<24}{re_full:>10.4f}  (sd {re_full_sd:.4f})")
+        print(f"      gain over clock {re_full - re_clock:+.4f}   "
+              f"CI [{re_ci[0]:+.4f}, {re_ci[1]:+.4f}]")
+
+        verdict, reason = verdict_for(re_full, re_clock, hi, re_ci)
+        pooled_verdict, _ = verdict_for(auc_full, auc_clock, hi, ci)
+        print(f"      VERDICT (round-equal, governing): {verdict}")
         print(f"      {reason}")
+        if pooled_verdict != verdict:
+            print(f"      NOTE: the pooled weighting would have said {pooled_verdict} - "
+                  f"the weighting changes the verdict")
 
     print()
     print("  A crossing probability is an INPUT to a decision, not a decision. Every action")
