@@ -93,11 +93,16 @@ ADMITTED_WHILE_FROZEN = (
 
 #: Frozen forward protocols. Hashes in docs/active/PREREG_HASH.txt, verified in CI.
 #:
-#: PROTOCOL A IS RETIRED FOR THE CURRENT FEATURE SET (2026-08-02). phase5d test 157 measured
-#: that no frozen feature family adds out-of-fold RESOLUTION beyond the executable market
-#: price - none beats a matched noise arm. A market-prior residual has no raw material in the
-#: recorded features, so running it forward would spend eight weeks to learn what a
-#: cross-fitted historical test already established.
+#: PROTOCOL A IS RETIRED (2026-08-02) as RETIRED_NO_DETECTABLE_INCREMENTAL_RESOLUTION.
+#: phase5d test 157 found no frozen feature family with a DETECTABLE out-of-fold
+#: resolution gain over the executable market price: none beats a matched noise arm, and
+#: two families are detectably WORSE. Running it forward would spend eight weeks to learn
+#: what a cross-fitted historical test already indicates.
+#:
+#: The claim is deliberately narrow. 21 independent days, ONE learner family and one
+#: probability grouping cannot prove that no information exists - only that none is
+#: detectable here. A future A2 must freeze a new information source, exact learner
+#: families, transforms, a search budget, null controls and a minimum material lift.
 #:
 #: The protocol FILE is deliberately unedited: its hash must stay valid, exactly as the
 #: retracted studies keep their text. Retirement is recorded here, not by rewriting history.
@@ -105,6 +110,10 @@ ADMITTED_WHILE_FROZEN = (
 #: This does NOT retire the idea. If the new recorders bring genuinely new inputs - model
 #: revisions, settlement-source basis, paired L2 - that is a different feature set and needs a
 #: NEW protocol with its own hash.
+PROTOCOL_A_STATUS = "RETIRED_NO_DETECTABLE_INCREMENTAL_RESOLUTION"
+#: Kept as the boolean callers already read. The STATUS string above is the precise claim:
+#: no DETECTABLE gain under one learner family on 21 days - not a proof that no information
+#: exists. Absence of evidence at this sample size is not evidence of absence.
 PROTOCOL_A_RETIRED_FOR_CURRENT_FEATURES = True
 
 FORWARD_PROTOCOLS = {

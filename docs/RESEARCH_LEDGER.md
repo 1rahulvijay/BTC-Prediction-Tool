@@ -865,6 +865,75 @@ idea is not refuted; this feature set is.
 null flipped it to `NO_INCREMENTAL_INFORMATION` — the honest answer, and the opposite of the
 convenient one.
 
+### 11.3 Two corrections to the admission system - `2026-08-02`
+
+**The MDE was dimensionally invalid.** `z * sqrt(p(1-p)/k) * 100` is in PERCENTAGE POINTS, and
+most of the backlog is denominated in net bps, dollars per share, a Brier difference or a time
+to event. The first version applied the binary formula to all of them — including its own
+selftest, which declared `monetized_quantity="net bps"`.
+
+Every declaration now names an `Endpoint`, and power is computed in that endpoint's units:
+
+| endpoint | MDE |
+|---|---|
+| `BINARY_RATE` | `z * sqrt(p(1-p)/k) * 100` — percentage points |
+| `CONTINUOUS_CLUSTER_MEAN` | `z * cluster_sd / sqrt(k)` — endpoint units |
+| `PAIRED_CONTINUOUS` | same, on the SD of paired differences |
+| `PROPER_SCORE_DIFFERENCE` | same, on the SD of score differences |
+| `SURVIVAL_EVENT` | `2z / sqrt(qualifying events)` — events, not rows |
+
+A declaration missing what its endpoint needs reports **`POWER_UNITS_UNRESOLVED`** rather than a
+number that does not apply. The cluster SD must come from daily or weekly aggregates, never
+from rows — row-level SD understates it by the design effect.
+
+**157's verdict was overstated.** Renamed to
+**`NO_DETECTABLE_INCREMENTAL_RESOLUTION`** — *for current features, under the tested learner, at
+this sample size.* 21 independent days and one learner family cannot prove absence.
+
+Day-block bootstrap CIs on the resolution difference now make that concrete:
+
+| family | Δ resolution | 95% day-block CI |
+|---|---:|---|
+| B + BTC state | −0.0000 | [−0.0001, +0.0000] |
+| C + volatility | −0.0002 | **[−0.0004, −0.0000]** |
+| D + model outputs | −0.0000 | [−0.0002, +0.0001] |
+| E + book state | −0.0001 | [−0.0002, +0.0001] |
+| F + everything | −0.0003 | **[−0.0004, −0.0000]** |
+
+Detectable positive gain: **none**. Detectable *harm*: **C and F** — adding features measurably
+hurts. (My first write-up said "every CI spans zero"; two do not.)
+
+Recorded status is now `RETIRED_NO_DETECTABLE_INCREMENTAL_RESOLUTION`. Any A2 must freeze a new
+information source, exact learner families, transforms, a search budget, null controls and a
+minimum material lift.
+
+### 11.4 Test 164 — cost versus information. **A bounded maker study is justified.**
+
+An accounting identity over 50,272 eligible settled checkpoints — nothing fitted:
+
+```
+gross informational edge (at mid)   +0.0044
+  spread burden                     -0.0052
+  fee burden                        -0.0097
+= net, hold to settlement           -0.0105
+```
+
+**The gross edge is POSITIVE.** Buying the leader at the midpoint earns +0.0044/share; costs of
+0.0149 are 3.4x that and turn it negative. This is the first measured quantity in the project
+where the information side is not the whole story.
+
+**Verdict `BOTH_DOMINANT`.** Costs must fall **70%** to break even. A maker entry removes at
+most the spread (0.0052) and the taker fee (0.0097) — enough *on paper*, and that bound assumes
+every resting order fills with no adverse selection. A resting order fills exactly when someone
+informed wants the other side.
+
+So: **a bounded maker study (test 165) is justified. Maker infrastructure is not**, until a
+fill-and-adverse-selection bound exists. The gross edge is 0.6% of a 0.70 contract.
+
+This sits beside 157 without contradiction: 157 says nothing *we record* adds resolution beyond
+the price; 164 says the price itself sits slightly below settlement value at the mid. The edge
+is in the market's own quote, not in our features — and the spread is what takes it.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |

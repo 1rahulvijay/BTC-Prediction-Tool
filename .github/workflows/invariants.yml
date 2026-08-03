@@ -271,6 +271,11 @@ jobs:
       - name: Phase5D market sufficiency boundary (the null must behave)
         run: python research/phase5d/test_market_price_sufficiency_boundary.py --selftest
 
+      # 164 is an accounting IDENTITY, so its selftest pins that the components sum exactly to
+      # the net and that a negative pre-cost edge is checked BEFORE any execution verdict.
+      - name: Phase5D cost vs information decomposition (identity, not a fit)
+        run: python research/phase5d/test_cost_information_loss_decomposition.py --selftest
+
       # Phase 5C studies. Each selftest pins the one way its own arithmetic could flatter a
       # result - see the individual check labels.
       - name: Phase5C Brier decomposition (reliability vs resolution)

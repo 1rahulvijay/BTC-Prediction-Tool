@@ -45,6 +45,29 @@ sys.path.insert(0, str(ROOT / "research" / "phase5c"))
 
 from _common import load_checkpoints, murphy_decomposition, side_ask  # noqa: E402
 
+BOOTSTRAP_DRAWS = 2000
+
+
+def day_block_resolution_ci(probability, outcomes, days, baseline, draws=BOOTSTRAP_DRAWS):
+    """Day-block bootstrap CI on the resolution DIFFERENCE against a baseline forecast.
+
+    A point estimate of -0.0003 says nothing without its spread over 21 days. Resampling DAYS
+    - the same unit day_block_lcb uses - is what makes the interval honest here."""
+    unique = np.unique(days)
+    if len(unique) < 5:
+        return (float("nan"), float("nan"))
+    by_day = {d: np.where(days == d)[0] for d in unique}
+    generator = np.random.default_rng(20260802)
+    deltas = np.empty(draws)
+    for index in range(draws):
+        picked = generator.integers(0, len(unique), len(unique))
+        rows = np.concatenate([by_day[unique[j]] for j in picked])
+        challenger = murphy_decomposition(probability[rows], outcomes[rows])["resolution"]
+        champion = murphy_decomposition(baseline[rows], outcomes[rows])["resolution"]
+        deltas[index] = challenger - champion
+    deltas.sort()
+    return (float(deltas[int(0.025 * draws)]), float(deltas[int(0.975 * draws)]))
+
 FOLDS = 3
 MIN_FOLD_ROWS = 2_000
 
@@ -155,7 +178,7 @@ def main() -> int:
     print("  DESCRIPTIVE_ONLY by design - this test generates no trades.")
     print()
     print(f"{'family':<22}{'n scored':>10}{'Brier':>9}{'resolution':>12}{'d resolution':>14}"
-          f"{'d log loss':>12}")
+          f"  95% day-block CI")
 
     baseline_resolution = None
     results = {}
@@ -175,10 +198,17 @@ def main() -> int:
                                   + (1 - outcomes) * np.log(1 - values)))
         if baseline_resolution is None:
             baseline_resolution, baseline_log_loss = part["resolution"], log_loss
-        results[name] = (part["resolution"] - baseline_resolution, log_loss - baseline_log_loss)
+            baseline_values, baseline_outcomes = values, outcomes
+            baseline_days = days[keep][scored]
+            low, high = 0.0, 0.0
+        else:
+            low, high = day_block_resolution_ci(values, outcomes, days[keep][scored],
+                                                baseline_values)
+        results[name] = (part["resolution"] - baseline_resolution, log_loss - baseline_log_loss,
+                         low, high)
         print(f"{name:<22}{int(scored.sum()):>10,}{part['brier']:>9.4f}"
               f"{part['resolution']:>12.4f}{results[name][0]:>14.4f}"
-              f"{results[name][1]:>12.4f}")
+              f"  [{low:+.4f}, {high:+.4f}]")
 
     # The matched null: same column count as the widest real family, pure noise.
     generator = np.random.default_rng(20260802)
@@ -193,7 +223,7 @@ def main() -> int:
         null_part = murphy_decomposition(values, won[keep][scored])
         null_gain = null_part["resolution"] - baseline_resolution
         print(f"{'Z null (noise)':<22}{int(scored.sum()):>10,}{null_part['brier']:>9.4f}"
-              f"{null_part['resolution']:>12.4f}{null_gain:>14.4f}{'':>12}")
+              f"{null_part['resolution']:>12.4f}{null_gain:>14.4f}")
 
     gains = {k: v for k, v in results.items() if k != "A market only"}
     best = max(gains.items(), key=lambda kv: kv[1][0]) if gains else None
@@ -201,14 +231,27 @@ def main() -> int:
     if best is None:
         print("  VERDICT: NOT MEASURED")
     elif best[1][0] <= max(null_gain, 0.0):
-        print("  VERDICT: NO_INCREMENTAL_INFORMATION")
+        print("  VERDICT: NO_DETECTABLE_INCREMENTAL_RESOLUTION")
+        print("           for CURRENT FEATURES, under the TESTED LEARNER, at THIS SAMPLE SIZE.")
         print(f"  No frozen family beats a MATCHED NOISE arm (null gain {null_gain:+.4f}).")
-        print("  Nothing recorded adds out-of-fold resolution beyond the executable market")
-        print("  price. Preregistration A has no raw material in these features and should be")
-        print("  RETIRED before it consumes eight forward weeks to learn the same thing.")
+        positive = [n for n, v in gains.items() if v[2] > 0]
+        harmful = [n for n, v in gains.items() if v[3] < 0]
+        print(f"  detectable POSITIVE gain (CI above zero): "
+              f"{', '.join(positive) if positive else 'NONE'}")
+        print(f"  detectable HARM (CI below zero)         : "
+              f"{', '.join(harmful) if harmful else 'none'}")
+        print("  Adding features does not merely fail to help - on this sample some of them")
+        print("  measurably HURT out-of-fold resolution. Preregistration A is retired")
+        print("  operationally: eight forward weeks are not justified on this evidence.")
+        print()
+        print("  What this does NOT establish: that no information exists. 21 independent days,")
+        print("  one learner family and one probability grouping cannot prove absence. A future")
+        print("  A2 must freeze a NEW information source, exact learner families, transforms,")
+        print("  a search budget, null controls and a minimum material lift before it is worth")
+        print("  running.")
     else:
-        print(f"  VERDICT: RESIDUAL_LANE_SUPPORTED (best {best[0]}, "
-              f"+{best[1][0]:.4f} resolution)")
+        print(f"  VERDICT: DETECTABLE_RESOLUTION_GAIN (best {best[0]}, "
+              f"+{best[1][0]:.4f}, CI [{best[1][2]:+.4f}, {best[1][3]:+.4f}])")
         print("  At least one family adds out-of-fold resolution beyond the price. That is the")
         print("  raw material Preregistration A needs - necessary, not sufficient: the forward")
         print("  run still has to convert it into executable value.")

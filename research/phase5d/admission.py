@@ -16,7 +16,16 @@ THE CONTRACT, TAKEN VERBATIM FROM THE PHASE 5D PROPOSAL
         independent day/week evidence is sufficient
 
     Otherwise its status is one of DESCRIPTIVE_ONLY, COLLECT_MORE_DATA,
-    REJECT_UNDERPOWERED, REJECT_SUBCOST, REJECT_NO_EXECUTABLE_ACTION.
+    REJECT_UNDERPOWERED, REJECT_SUBCOST, REJECT_NO_EXECUTABLE_ACTION or
+    POWER_UNITS_UNRESOLVED.
+
+POWER IS COMPUTED IN THE ENDPOINT'S OWN UNITS
+    The binary-rate MDE is in PERCENTAGE POINTS. Most of this backlog is denominated in net
+    bps, dollars per share, a Brier difference or a time to event. A first version applied the
+    binary formula to all of them - including its own selftest, which declared
+    monetized_quantity='net bps'. Every declaration now names its Endpoint, and a declaration
+    that has not supplied what its endpoint needs reports POWER_UNITS_UNRESOLVED instead of a
+    dimensionally invalid number.
 
 WHY AS CODE AND NOT AS A CHECKLIST
     Phase 5C proposed 52 tests; the two prefilters killed six of the recommended fifteen before
@@ -53,6 +62,25 @@ class Status:
     UNDERPOWERED = "REJECT_UNDERPOWERED"
     SUBCOST = "REJECT_SUBCOST"
     NO_ACTION = "REJECT_NO_EXECUTABLE_ACTION"
+    #: Structure is fine but the power arithmetic cannot be done in the endpoint's own units.
+    #: Reported honestly rather than borrowing the binary-rate formula, which would claim
+    #: mathematical underpowering from a calculation that does not apply.
+    UNRESOLVED = "POWER_UNITS_UNRESOLVED"
+
+
+class Endpoint:
+    """What kind of quantity the experiment actually measures.
+
+    The binary-rate MDE - z * sqrt(p(1-p)/k) * 100 - is in PERCENTAGE POINTS. Applying it to
+    an endpoint denominated in bps, dollars per share or a Brier difference is dimensionally
+    meaningless, and a first version of this file did exactly that while its own selftest
+    declared monetized_quantity='net bps'."""
+
+    BINARY_RATE = "BINARY_RATE"                        # win rate, crossing probability
+    CONTINUOUS_CLUSTER_MEAN = "CONTINUOUS_CLUSTER_MEAN"  # net bps, PnL per share
+    PAIRED_CONTINUOUS = "PAIRED_CONTINUOUS"            # action advantage vs HOLD
+    PROPER_SCORE_DIFFERENCE = "PROPER_SCORE_DIFFERENCE"  # Brier / log loss / resolution delta
+    SURVIVAL_EVENT = "SURVIVAL_EVENT"                  # time to event, censored
 
 
 @dataclass(frozen=True)
@@ -69,6 +97,13 @@ class Declaration:
     baseline_policy: str | None
     untouched_period: str | None             # None means no untouched evidence exists yet
     base_rate: float = 0.5
+    #: Which power formula applies. See Endpoint.
+    endpoint_type: str = Endpoint.BINARY_RATE
+    #: SD of the CLUSTER-LEVEL outcome (daily/weekly aggregate), in the endpoint's units.
+    #: Required for continuous, paired and proper-score endpoints.
+    cluster_sd: float | None = None
+    #: Qualifying (uncensored) event count. Required for survival endpoints.
+    qualifying_events: int | None = None
     #: DIAGNOSTIC studies deliberately have no executable action - 157 is specified as "this
     #: test should not generate trades". Labelling those REJECT_NO_EXECUTABLE_ACTION would
     #: report the most fundamental test in the backlog as refused, which is simply wrong.
@@ -76,12 +111,37 @@ class Declaration:
     note: str = ""
 
     @property
-    def mde(self) -> float:
-        """Minimum detectable shift given the number of INDEPENDENT clusters."""
+    def mde(self) -> float | None:
+        """Minimum detectable effect IN THE ENDPOINT'S OWN UNITS, or None if not computable.
+
+        None is not a failure - it means the declaration has not supplied what the endpoint
+        needs (a cluster-level SD, or a qualifying event count). Returning a binary-rate number
+        anyway would be a dimensionally invalid claim dressed as rigour."""
         if self.available_clusters < 2:
             return float("inf")
-        return POWER_Z * float(np.sqrt(self.base_rate * (1 - self.base_rate)
-                                       / self.available_clusters)) * 100.0
+        root_k = float(np.sqrt(self.available_clusters))
+
+        if self.endpoint_type == Endpoint.BINARY_RATE:
+            # percentage points
+            return POWER_Z * float(np.sqrt(self.base_rate * (1 - self.base_rate)
+                                           / self.available_clusters)) * 100.0
+
+        if self.endpoint_type in (Endpoint.CONTINUOUS_CLUSTER_MEAN,
+                                  Endpoint.PAIRED_CONTINUOUS,
+                                  Endpoint.PROPER_SCORE_DIFFERENCE):
+            # Units of the endpoint. The SD must be of DAILY (or weekly) aggregate outcomes,
+            # never of individual rows - row-level SD understates it by the design effect.
+            if self.cluster_sd is None or self.cluster_sd <= 0:
+                return None
+            return POWER_Z * float(self.cluster_sd) / root_k
+
+        if self.endpoint_type == Endpoint.SURVIVAL_EVENT:
+            # Power follows the QUALIFYING EVENT count, not the row count. Schoenfeld: the
+            # detectable log-hazard ratio scales as 1/sqrt(events).
+            if self.qualifying_events is None or self.qualifying_events < 2:
+                return None
+            return POWER_Z * 2.0 / float(np.sqrt(self.qualifying_events))
+        return None
 
     @property
     def effect_cost_ratio(self) -> float | None:
@@ -109,9 +169,14 @@ def adjudicate(declaration: Declaration) -> tuple[str, str]:
                                 f"bar - too small to monetize")
     # Power is checked LAST among the hard gates: an underpowered test of a big effect is
     # worth collecting for, whereas a well-powered test of a sub-cost effect never is.
-    if declaration.mde > declaration.minimum_effect_worth_detecting:
+    mde = declaration.mde
+    if mde is None:
+        return Status.UNRESOLVED, (
+            f"structure passes, but a {declaration.endpoint_type} endpoint needs a "
+            f"cluster-level SD (or event count) to compute power in its own units")
+    if mde > declaration.minimum_effect_worth_detecting:
         return Status.UNDERPOWERED, (
-            f"MDE {declaration.mde:.1f} exceeds the {declaration.minimum_effect_worth_detecting} "
+            f"MDE {mde:.1f} exceeds the {declaration.minimum_effect_worth_detecting} "
             f"worth detecting on {declaration.available_clusters} {declaration.cluster_unit} "
             f"clusters")
     return Status.ECONOMIC, "all admission conditions satisfied"
@@ -156,6 +221,28 @@ def selftest() -> int:
     check(Declaration(**{**base, "available_clusters": 21}).mde
           > Declaration(**base).mde,
           "fewer clusters give a larger minimum detectable effect")
+    # Power must be computed in the endpoint's own units, or refused.
+    continuous = {**base, "endpoint_type": Endpoint.CONTINUOUS_CLUSTER_MEAN}
+    check(adjudicate(Declaration(**continuous))[0] == Status.UNRESOLVED,
+          "a net-bps endpoint with no cluster SD is POWER_UNITS_UNRESOLVED, not a binary MDE")
+    sized = Declaration(**{**continuous, "cluster_sd": 40.0})
+    check(abs(sized.mde - 2.80 * 40.0 / np.sqrt(360)) < 1e-9,
+          "a continuous endpoint uses z * cluster_sd / sqrt(k) in the endpoint's OWN units")
+    check(adjudicate(sized)[0] == Status.ECONOMIC,
+          "supplying the cluster SD resolves the power question and admits the study")
+    survival = Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT})
+    check(adjudicate(survival)[0] == Status.UNRESOLVED,
+          "a survival endpoint needs an EVENT count, not a row count")
+    check(Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT,
+                         "qualifying_events": 400}).mde
+          < Declaration(**{**base, "endpoint_type": Endpoint.SURVIVAL_EVENT,
+                           "qualifying_events": 100}).mde,
+          "more qualifying events detect a smaller hazard difference")
+    check(Declaration(**{**continuous, "cluster_sd": 40.0}).mde
+          != Declaration(**base).mde,
+          "the continuous and binary formulas give DIFFERENT numbers - the bug was treating "
+          "them as interchangeable")
+
     check(adjudicate(Declaration(**{**base, "economic_action": None,
                                     "intended_as": "DIAGNOSTIC"}))[0] == Status.DESCRIPTIVE,
           "a study that is DIAGNOSTIC by design is descriptive, not rejected - 157 is "
@@ -171,42 +258,42 @@ def selftest() -> int:
 BACKLOG: tuple[Declaration, ...] = (
     Declaration("141 market_prior_residual_act_skip", "ENTER/WAIT", "net $/share", "polymarket",
                 "day", 21, 5.0, 5.0, None, "market price alone", None,
-                note="forward only by its own readiness note"),
+                note="forward only by its own readiness note", endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("142 model_revision_leads_market", "ENTER", "net $/share", "polymarket",
                 "day", 0, 5.0, 5.0, None, "no revision", None,
-                note="requires the revision ledger, which starts empty"),
+                note="requires the revision ledger, which starts empty", endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("143 feature_family_incremental_resolution", None, "resolution", "polymarket",
-                "day", 21, 5.0, 5.0, None, "market only", None, intended_as="DIAGNOSTIC"),
+                "day", 21, 5.0, 5.0, None, "market only", None, intended_as="DIAGNOSTIC", endpoint_type=Endpoint.PROPER_SCORE_DIFFERENCE),
     Declaration("144 open_position_action_value", "HOLD/EXIT/REDUCE/SWITCH/LOCK", "net $/share",
-                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None),
+                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None, endpoint_type=Endpoint.PAIRED_CONTINUOUS),
     Declaration("145 exit_regret_recoverability", "EXIT/REDUCE", "net $/share", "polymarket",
-                "day", 0, 5.0, 5.0, None, "HOLD", None),
+                "day", 0, 5.0, 5.0, None, "HOLD", None, endpoint_type=Endpoint.PAIRED_CONTINUOUS),
     Declaration("148 server_gate_value", "veto/allow", "net $/share", "polymarket",
-                "day", 0, 5.0, 5.0, None, "current gate", None),
+                "day", 0, 5.0, 5.0, None, "current gate", None, endpoint_type=Endpoint.PAIRED_CONTINUOUS),
     Declaration("150 dynamic_horizon_selector", "EXIT_5M..EXIT_120M", "net bps", "binance_perp",
                 "day", 360, 10.0, 12.0, None, "best fixed horizon", None,
-                note="360-day archive; effect unknown until run"),
+                note="360-day archive; effect unknown until run", endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("151 thesis_survival_after_adverse_move", "HOLD/EXIT/REDUCE", "net bps",
-                "binance_perp", "day", 360, 10.0, 12.0, None, "fixed stop", None),
+                "binance_perp", "day", 360, 10.0, 12.0, None, "fixed stop", None, endpoint_type=Endpoint.PAIRED_CONTINUOUS),
     Declaration("152 conditional_barrier_asymmetry", "bracket", "net bps", "binance_perp",
                 "day", 360, 10.0, 12.0, 2.3, "unconditional bracket", None,
-                note="unconditional best cell was -9.70 bps; gross ~2.3 bps above nothing"),
+                note="unconditional best cell was -9.70 bps; gross ~2.3 bps above nothing", endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("157 market_price_sufficiency_boundary", None, "resolution", "polymarket",
                 "day", 21, 5.0, 5.0, None, "market only", None,
-                note="DECISION test - gates Prereg A. Descriptive by design.", intended_as="DIAGNOSTIC"),
+                note="DECISION test - gates Prereg A. Descriptive by design.", intended_as="DIAGNOSTIC", endpoint_type=Endpoint.PROPER_SCORE_DIFFERENCE),
     Declaration("164 cost_information_loss_decomposition", None, "$/share decomposition",
                 "polymarket", "day", 21, 5.0, 5.0, None, "counterfactual prices", None,
                 note="accounting identity, not an estimate - runnable now", intended_as="DIAGNOSTIC"),
     Declaration("158 future_market_repricing", "ENTER", "net $/share", "polymarket",
-                "day", 0, 5.0, 5.0, None, "persistence", None),
+                "day", 0, 5.0, 5.0, None, "persistence", None, endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("159 market_error_episode_detector", "ENTER", "net $/share", "polymarket",
-                "day", 0, 5.0, 5.0, None, "no trade", None),
+                "day", 0, 5.0, 5.0, None, "no trade", None, endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("166 open_position_action_advantage", "action vs HOLD", "net $/share",
-                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None),
+                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None, endpoint_type=Endpoint.PAIRED_CONTINUOUS),
     Declaration("167 tail_loss_action_head", "REDUCE/EXIT/LOCK", "expected shortfall",
-                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None),
+                "polymarket", "day", 0, 5.0, 5.0, None, "HOLD", None, endpoint_type=Endpoint.CONTINUOUS_CLUSTER_MEAN),
     Declaration("168 opportunity_decay_latency_budget", None, "edge half-life", "polymarket",
-                "day", 0, 5.0, 5.0, None, None, None, intended_as="DIAGNOSTIC"),
+                "day", 0, 5.0, 5.0, None, None, None, intended_as="DIAGNOSTIC", endpoint_type=Endpoint.SURVIVAL_EVENT),
     Declaration("169 sparse_exceptional_state_discovery", None, "rule set", "both",
                 "day", 21, 5.0, 5.0, None, "no rule", None, intended_as="DIAGNOSTIC"),
     Declaration("170 settlement_uncertainty_reserve", None, "reserve $/share", "polymarket",
