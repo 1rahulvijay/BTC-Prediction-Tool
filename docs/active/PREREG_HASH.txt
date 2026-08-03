@@ -109,3 +109,10 @@ frozen = 2026-08-03
 bytes  = 4406
 note   = direction inside gated windows; endpoint is post-cost value, not accuracy
 ======================================================================
+
+PREREG_EXIT_TIMING_V1.md
+sha256 = 09ee0bf3b7e8eeda8fddf3fe02ec38d77fc58d955a874fa4c9832092b910d3cb
+frozen = 2026-08-03
+bytes  = 4700
+note   = exit policy on RANDOM entries; RANDOM_EXIT is the deciding control
+======================================================================
