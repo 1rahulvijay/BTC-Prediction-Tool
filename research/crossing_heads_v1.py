@@ -88,10 +88,32 @@ def load() -> pd.DataFrame:
                        AS state_original_side_at_60s,
                    l.label_version
             FROM crossing_events e
-            JOIN crossing_labels l ON l.crossing_id = e.crossing_id
+            JOIN (
+                -- CANONICAL: exactly one label row per crossing. The backfill re-resolves
+                -- every crossing on each run, so once the recorder writes v2 a crossing
+                -- can carry BOTH a (crossing_id, v1) and a (crossing_id, v2) row. Joining
+                -- both would count the same crossing twice - COALESCE picks between
+                -- columns inside a row, it does not remove duplicate rows. Prefer v2
+                -- (richer, honestly named); fall back to the v1 row otherwise.
+                SELECT * FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY crossing_id
+                        ORDER BY CASE WHEN label_version = 'crossing_labels_v2'
+                                      THEN 0 ELSE 1 END
+                    ) AS _rank
+                    FROM crossing_labels
+                ) WHERE _rank = 1
+            ) l ON l.crossing_id = e.crossing_id
             ORDER BY e.crossing_ts""").df()
     finally:
         con.close()
+
+    # The invariant the canonical subquery exists to guarantee. If it ever fails, the
+    # dataset is double-counting crossings and every AUC downstream is invalid.
+    if frame["crossing_id"].duplicated().any():
+        dupes = int(frame["crossing_id"].duplicated().sum())
+        raise SystemExit(f"crossing_labels join produced {dupes} duplicate crossing_id "
+                         f"rows - canonical selection is broken; refusing to train")
     frame["from_up"] = (frame["from_side"] == "UP").astype(float)
     frame["elapsed_fraction"] = 1.0 - frame["seconds_left"] / (frame["horizon_min"] * 60.0)
     frame["day"] = frame["crossing_ts"] // 86_400_000

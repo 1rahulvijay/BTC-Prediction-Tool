@@ -337,17 +337,32 @@ def report() -> dict:
         per_round = con.execute(
             "SELECT avg(c) FROM (SELECT count(*) c FROM crossing_events GROUP BY round_id)"
         ).fetchone()[0]
-        reversion = {}
+        # v1 wrote reverted_Ns, v2 writes state_original_side_at_Ns for the SAME quantity.
+        # COALESCE unions them (safe: exactly one side is populated per row). Querying
+        # only the v1 column here would hide every v2 row the recorder writes from now on.
+        state_at, ever_reverted = {}, {}
         for horizon in REVERSION_HORIZONS_S:
-            column = f"reverted_{horizon}s"
-            got = con.execute(
-                f"SELECT count(*) FILTER (WHERE {column}), count(*) FROM crossing_labels "
-                f"WHERE {column} IS NOT NULL").fetchone()
-            reversion[horizon] = got
+            v1c, v2c = f"reverted_{horizon}s", f"state_original_side_at_{horizon}s"
+            state_at[horizon] = con.execute(
+                f"SELECT count(*) FILTER (WHERE COALESCE({v2c}, {v1c})), count(*) "
+                f"FROM crossing_labels WHERE COALESCE({v2c}, {v1c}) IS NOT NULL").fetchone()
+            # ever_reverted_by_Ns exists only under v2 - reported separately, never unioned
+            # with v1 (there is nothing to union it with).
+            evc = f"ever_reverted_by_{horizon}s"
+            ever_reverted[horizon] = con.execute(
+                f"SELECT count(*) FILTER (WHERE {evc}), count(*) "
+                f"FROM crossing_labels WHERE {evc} IS NOT NULL").fetchone()
+        by_version = dict(con.execute(
+            "SELECT label_version, count(*) FROM crossing_labels GROUP BY 1").fetchall())
     finally:
         con.close()
     return {"exists": True, "events": events, "rounds": rounds, "labels": labels,
-            "final": final, "per_round": per_round, "reversion": reversion}
+            "final": final, "per_round": per_round,
+            "state_original_side": state_at, "ever_reverted": ever_reverted,
+            "labels_by_version": by_version,
+            # kept so existing callers of report() do not break; same numbers as
+            # state_original_side because COALESCE unions v1 and v2.
+            "reversion": state_at}
 
 
 def selftest() -> int:
@@ -467,10 +482,20 @@ def main() -> int:
     hit, total = info["final"]
     if total:
         print(f"  final crossings: {hit:,}/{total:,} ({hit / total:.1%})")
-    for horizon, (reverted, total) in info["reversion"].items():
+    print(f"  label rows by version: {info['labels_by_version']}")
+    # Two DIFFERENT quantities, printed separately. "reverted within Ns" was the old
+    # wording and it described neither honestly.
+    for horizon, (hits, total) in info["state_original_side"].items():
         if total:
-            print(f"  reverted within {horizon:>2}s: {reverted:,}/{total:,} "
-                  f"({reverted / total:.1%})")
+            print(f"  on original side at {horizon:>2}s: {hits:,}/{total:,} "
+                  f"({hits / total:.1%})")
+    ever = {h: v for h, v in info["ever_reverted"].items() if v[1]}
+    if ever:
+        for horizon, (hits, total) in ever.items():
+            print(f"  EVER reverted by  {horizon:>2}s: {hits:,}/{total:,} "
+                  f"({hits / total:.1%})")
+    else:
+        print("  EVER reverted by Ns: no rows yet - v2 only, needs forward collection")
     return 0
 
 

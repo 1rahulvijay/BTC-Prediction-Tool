@@ -407,6 +407,41 @@ def publish_champion(root: Path, bundle: Path, *, name: str) -> Path:
     return pointer
 
 
+def resolve_champion(root: Path, *, expect_name: str) -> Path:
+    """The bundle champion.json names - verified - or a typed refusal. NEVER newest-mtime.
+
+    Choosing the newest verifying directory made the pointer ceremonial: any copied,
+    restored or experimentally published bundle instantly became the served model with no
+    explicit promotion. Production resolves the pointer or refuses; there is no fallback.
+    """
+    from model_registry import (MODEL_UNAVAILABLE_MISSING, MODEL_UNAVAILABLE_TAMPERED,
+                                MODEL_UNAVAILABLE_UNKNOWN_IDENTITY,
+                                MODEL_UNAVAILABLE_WRONG_TARGET)
+    pointer = root / POINTER_NAME
+    if not pointer.is_file():
+        raise ArtifactRefusal(MODEL_UNAVAILABLE_MISSING,
+            f"no {POINTER_NAME} under {root} - nothing has been promoted")
+    try:
+        meta = json.loads(pointer.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ArtifactRefusal(MODEL_UNAVAILABLE_UNKNOWN_IDENTITY,
+                              f"{POINTER_NAME} unreadable: {exc}") from exc
+    if meta.get("registry_name") != expect_name:
+        raise ArtifactRefusal(MODEL_UNAVAILABLE_WRONG_TARGET,
+            f"{POINTER_NAME} names {meta.get('registry_name')!r}, expected {expect_name!r}")
+    bundle = root / str(meta.get("bundle") or "")
+    if not bundle.is_dir():
+        raise ArtifactRefusal(MODEL_UNAVAILABLE_MISSING,
+            f"champion bundle {meta.get('bundle')!r} missing under {root}")
+    recorded = (bundle / CHECKSUM_NAME).read_text(encoding="utf-8").strip()         if (bundle / CHECKSUM_NAME).is_file() else None
+    if recorded != meta.get("manifest_sha256"):
+        raise ArtifactRefusal(MODEL_UNAVAILABLE_TAMPERED,
+            "champion bundle checksum does not match the pointer - the bundle changed "
+            "after promotion, or the pointer was edited; refusing either way")
+    verify_bundle(bundle, expect_name=expect_name)
+    return bundle
+
+
 def _demo_provenance(**overrides) -> dict[str, Any]:
     """A complete provenance block, so tests exercise the serviceable path by default."""
     base = {

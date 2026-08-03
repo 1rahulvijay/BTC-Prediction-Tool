@@ -112,8 +112,11 @@ REGISTRY: tuple[ModelRegistryEntry, ...] = (
     # granting it later is a visible edit to this table.
     ModelRegistryEntry("crossing_heads", "crossing_heads.pkl", "crossing_probabilities",
                        "train_crossing_heads",
-                       notes="P(final), P(revert 30s/60s). No authority: an input to a "
-                             "decision, never a decision. 5s/15s pending HF recorder data"),
+                       notes="P(final observed crossing), P(state on original side at 30s/60s). "
+                             "Targets renamed 2026-08-04: the old bundle predicted the same "
+                             "quantity under the misleading name reverted_Ns and is refused "
+                             "by target-contract hash. No authority: an input to a decision, "
+                             "never a decision. 5s/15s pending HF recorder data"),
 )
 
 BY_NAME = {entry.name: entry for entry in REGISTRY}

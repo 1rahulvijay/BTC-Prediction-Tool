@@ -55,7 +55,12 @@ POLL_MS = 1000
 MAX_GAP_MS = 3 * POLL_MS
 ROUND_MINUTES = (5, 15)
 REVERSION_HORIZONS_S = (5, 15, 30, 60)
-LABEL_VERSION = "hf_crossing_labels_v1"
+# v2 (2026-08-04), matching polymarket_crossing_recorder. v1 wrote `reverted_Ns` while
+# computing state-at-horizon. This recorder exists to unlock the 5s/15s targets, so it
+# must write the target the study actually needs - ever_reverted_by_Ns - not the misnamed
+# one. Fresh table: this recorder has produced 2 rows total, so there is nothing to
+# migrate and no v1 history worth preserving here.
+LABEL_VERSION = "hf_crossing_labels_v2"
 PRICE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 PRICE_SOURCE = "binance_spot_ticker"
 
@@ -85,10 +90,16 @@ SCHEMA = (
         label_version     VARCHAR NOT NULL,
         eligible_after_ts BIGINT  NOT NULL,
         resolved_ts       BIGINT  NOT NULL,
-        reverted_5s       BOOLEAN,
-        reverted_15s      BOOLEAN,
-        reverted_30s      BOOLEAN,
-        reverted_60s      BOOLEAN,
+        state_original_side_at_5s   BOOLEAN,
+        state_original_side_at_15s  BOOLEAN,
+        state_original_side_at_30s  BOOLEAN,
+        state_original_side_at_60s  BOOLEAN,
+        ever_reverted_by_5s         BOOLEAN,
+        ever_reverted_by_15s        BOOLEAN,
+        ever_reverted_by_30s        BOOLEAN,
+        ever_reverted_by_60s        BOOLEAN,
+        first_reversion_ts          BIGINT,
+        n_recrossings               INTEGER,
         is_final_crossing BOOLEAN,
         PRIMARY KEY (crossing_id, label_version)
     )
@@ -224,19 +235,36 @@ class Recorder:
             row = {"crossing_id": event["crossing_id"], "label_version": LABEL_VERSION,
                    "eligible_after_ts": event["crossing_ts"] + REVERSION_HORIZONS_S[0] * 1000,
                    "is_final_crossing": None}
+            row["first_reversion_ts"] = None
+            row["n_recrossings"] = None
             for horizon in REVERSION_HORIZONS_S:
-                row[f"reverted_{horizon}s"] = None
+                row[f"state_original_side_at_{horizon}s"] = None
+                row[f"ever_reverted_by_{horizon}s"] = None
                 deadline = event["crossing_ts"] + horizon * 1000
                 if now_ms < deadline or deadline > round_end:
                     continue
-                window = [side for ts, side in after if ts <= deadline and side]
-                if window:
-                    row[f"reverted_{horizon}s"] = (window[-1] == event["from_side"])
+                pairs = [(ts, side) for ts, side in after if ts <= deadline and side]
+                if not pairs:
+                    continue
+                # STATE AT HORIZON - what v1 computed.
+                row[f"state_original_side_at_{horizon}s"] = (
+                    pairs[-1][1] == event["from_side"])
+                # EVER REVERTED - the target this recorder exists to make measurable at
+                # 5s/15s. At 1s cadence a brief reversion is finally observable, which is
+                # exactly what the 15s recorder could not see.
+                touched = [ts for ts, side in pairs if side == event["from_side"]]
+                row[f"ever_reverted_by_{horizon}s"] = bool(touched)
+                if touched and row["first_reversion_ts"] is None:
+                    row["first_reversion_ts"] = int(touched[0])
+                if horizon == REVERSION_HORIZONS_S[-1]:
+                    sides = [s for _, s in pairs]
+                    row["n_recrossings"] = sum(
+                        1 for a, b in zip(sides, sides[1:]) if a != b)
             if now_ms >= round_end:
                 row["is_final_crossing"] = event["from_side"] not in {
                     side for _, side in after if side}
-            if any(row[f"reverted_{h}s"] is not None for h in REVERSION_HORIZONS_S) \
-                    or row["is_final_crossing"] is not None:
+            if any(row[f"state_original_side_at_{h}s"] is not None
+                   for h in REVERSION_HORIZONS_S) or row["is_final_crossing"] is not None:
                 row["resolved_ts"] = now_ms
                 out.append(row)
         return out
@@ -259,10 +287,25 @@ def flush(recorder: Recorder, now_ms: int) -> tuple[int, int, int]:
             events += 1
         labels = 0
         for row in recorder.resolve(now_ms):
-            con.execute("INSERT OR REPLACE INTO hf_crossing_labels VALUES (?,?,?,?,?,?,?,?,?)",
-                        [row["crossing_id"], row["label_version"], row["eligible_after_ts"],
-                         row["resolved_ts"], row["reverted_5s"], row["reverted_15s"],
-                         row["reverted_30s"], row["reverted_60s"], row["is_final_crossing"]])
+            # EXPLICIT columns. The positional form here broke the moment the schema grew
+            # in the main recorder; the same trap applies to this table.
+            con.execute(
+                "INSERT OR REPLACE INTO hf_crossing_labels ("
+                " crossing_id, label_version, eligible_after_ts, resolved_ts,"
+                " state_original_side_at_5s, state_original_side_at_15s,"
+                " state_original_side_at_30s, state_original_side_at_60s,"
+                " ever_reverted_by_5s, ever_reverted_by_15s,"
+                " ever_reverted_by_30s, ever_reverted_by_60s,"
+                " first_reversion_ts, n_recrossings, is_final_crossing"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [row["crossing_id"], row["label_version"], row["eligible_after_ts"],
+                 row["resolved_ts"],
+                 row.get("state_original_side_at_5s"), row.get("state_original_side_at_15s"),
+                 row.get("state_original_side_at_30s"), row.get("state_original_side_at_60s"),
+                 row.get("ever_reverted_by_5s"), row.get("ever_reverted_by_15s"),
+                 row.get("ever_reverted_by_30s"), row.get("ever_reverted_by_60s"),
+                 row.get("first_reversion_ts"), row.get("n_recrossings"),
+                 row["is_final_crossing"]])
             labels += 1
         gaps = 0
         for gap in recorder.gaps:
@@ -328,7 +371,7 @@ def report() -> int:
         gaps = con.execute("SELECT count(*), coalesce(max(gap_ms),0) FROM hf_gaps").fetchone()
         resolved = {}
         for horizon in REVERSION_HORIZONS_S:
-            column = f"reverted_{horizon}s"
+            column = f"state_original_side_at_{horizon}s"
             resolved[horizon] = con.execute(
                 f"SELECT count(*) FILTER (WHERE {column}), count(*) FROM hf_crossing_labels "
                 f"WHERE {column} IS NOT NULL").fetchone()
@@ -404,12 +447,13 @@ def selftest() -> int:
     check(lr.resolve(now_ms=event["crossing_ts"] + 1000) == [],
           "one second after a crossing NOTHING is resolvable and no row is produced")
     got = lr.resolve(now_ms=event["crossing_ts"] + 6000)[0]
-    check(got["reverted_5s"] is False,
+    check(got["state_original_side_at_5s"] is False,
           "THE POINT OF THIS RECORDER: the 5s horizon IS resolvable at 1s cadence")
-    check(got["reverted_60s"] is None,
+    check(got["state_original_side_at_60s"] is None,
           "an unelapsed horizon stays NULL - never a default False")
     late = lr.resolve(now_ms=event["crossing_ts"] + 70_000)[0]
-    check(late["reverted_15s"] is False and late["reverted_30s"] is False,
+    check(late["state_original_side_at_15s"] is False
+          and late["state_original_side_at_30s"] is False,
           "15s and 30s resolve too - all four horizons are reachable")
 
     rv = Recorder()
@@ -419,7 +463,8 @@ def selftest() -> int:
     for offset in range(3000, 12_000, 1000):
         rv.record(base + offset, 101.5)                # returns to UP
     reverted = rv.resolve(now_ms=base + 12_000)[0]
-    check(reverted["reverted_5s"] is True,
+    check(reverted["state_original_side_at_5s"] is True
+          and reverted["ever_reverted_by_5s"] is True,
           "a leader that returns to the original side within 5s IS recorded as reverted")
 
     check(crossing_id("r", 1) == crossing_id("r", 1)

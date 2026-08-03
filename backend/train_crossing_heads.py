@@ -58,7 +58,13 @@ BUNDLE_ROOT = DATA_DIR / "saved_models" / "crossing_heads_bundles"
 MODEL_NAME = "crossing_heads"
 TARGET = "crossing_probabilities"
 PROTOCOL_HASH = "762532c9c0d55796d0536d9f4242088c99ee6276d84fd3d44c36783a8479f1e0"
-HEAD_TARGETS = ("is_final_crossing", "reverted_30s", "reverted_60s")
+# v2 names (2026-08-04). The old bundle was trained under `reverted_Ns`, a misnamed
+# target that actually measured state-at-horizon. Renaming HEAD_TARGETS changes
+# target_contract_hash(), so load() now REFUSES the legacy bundle with a stated reason
+# instead of serving probabilities under a name that overstates what they mean.
+# Retrain (--train) publishes a bundle under the honest contract.
+HEAD_TARGETS = ("is_final_crossing", "state_original_side_at_30s",
+                "state_original_side_at_60s")
 
 BAR_MS = 60_000
 ROUND_FEATURES = ("seconds_left", "horizon_min", "crossing_index", "move_at_crossing",
@@ -122,11 +128,27 @@ def train() -> dict:
         rows = con.execute("""
             SELECT e.crossing_id, e.round_id, e.horizon_min, e.crossing_ts, e.from_side,
                    e.seconds_left, e.move_at_crossing, e.crossing_index,
-                   l.is_final_crossing, l.reverted_30s, l.reverted_60s
-            FROM crossing_events e JOIN crossing_labels l ON l.crossing_id = e.crossing_id
+                   l.is_final_crossing,
+                   COALESCE(l.state_original_side_at_30s, l.reverted_30s)
+                       AS state_original_side_at_30s,
+                   COALESCE(l.state_original_side_at_60s, l.reverted_60s)
+                       AS state_original_side_at_60s
+            FROM crossing_events e
+            JOIN (
+                SELECT * FROM (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY crossing_id
+                        ORDER BY CASE WHEN label_version = 'crossing_labels_v2'
+                                      THEN 0 ELSE 1 END
+                    ) AS _rank FROM crossing_labels
+                ) WHERE _rank = 1
+            ) l ON l.crossing_id = e.crossing_id
             ORDER BY e.crossing_ts""").df()
     finally:
         con.close()
+    if rows["crossing_id"].duplicated().any():
+        raise SystemExit("duplicate crossing_id rows out of the canonical label join - "
+                         "refusing to train on double-counted crossings")
     frame = build_features(rows)
     cutoff_ms = int(frame["crossing_ts"].max())
 
@@ -156,7 +178,14 @@ def train() -> dict:
         "metrics": metrics,
     }
     blob = pickle.dumps(payload, protocol=5)
-    dataset_sha = hashlib.sha256(CROSSING_DB.read_bytes()).hexdigest()
+    # Identity over EVERY training source. Hashing only the crossing db meant the same
+    # labels joined to a different feature matrix produced a different model under the
+    # same recorded dataset identity.
+    _h = hashlib.sha256()
+    for src in (CROSSING_DB, MATRIX):
+        _h.update(src.name.encode())
+        _h.update(hashlib.sha256(src.read_bytes()).digest())
+    dataset_sha = _h.hexdigest()
 
     from features import FEATURE_SEMANTICS_VERSION
     from model import TRAINING_SEMANTICS_VERSION
@@ -213,10 +242,14 @@ def load(force: bool = False) -> dict:
     global _CACHE
     if _CACHE is not None and not force:
         return _CACHE
-    from model_artifacts import load_verified
-    bundle = _newest_verifying_bundle()
-    if bundle is None:
-        raise Unavailable(f"no verifying bundle under {BUNDLE_ROOT} - run --train")
+    from model_artifacts import ArtifactRefusal, load_verified, resolve_champion
+    # Serving loads exactly the PROMOTED bundle. _newest_verifying_bundle() remains for
+    # training-time publication only; using it here let any copied verified directory
+    # become the served model without promotion.
+    try:
+        bundle = resolve_champion(BUNDLE_ROOT, expect_name=MODEL_NAME)
+    except ArtifactRefusal as exc:
+        raise Unavailable(f"champion resolution failed: {exc}") from exc
     try:
         # load_verified checks the bundle BEFORE handing the path to a deserializer, so the
         # pickle is never opened until its bytes have been verified.
