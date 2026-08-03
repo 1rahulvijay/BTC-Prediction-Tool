@@ -116,3 +116,10 @@ frozen = 2026-08-03
 bytes  = 4700
 note   = exit policy on RANDOM entries; RANDOM_EXIT is the deciding control
 ======================================================================
+
+PREREG_DIRECTION_ENSEMBLE_V1.md
+sha256 = bd48d3c573c675ea56e59100235cc7b5c7f0ebadad7ab3c9a2d4a2c3b7137d7b
+frozen = 2026-08-03
+bytes  = 4879
+note   = 7 direction heads + voting; null floor measured by day-block label shuffling
+======================================================================
