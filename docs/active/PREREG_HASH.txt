@@ -144,3 +144,10 @@ frozen = 2026-08-03
 bytes  = 4583
 note   = 4 symbols same 2024-03-28 day; BTC is the within-era control
 ======================================================================
+
+PREREG_CROSSING_HEADS_V1.md
+sha256 = 762532c9c0d55796d0536d9f4242088c99ee6276d84fd3d44c36783a8479f1e0
+frozen = 2026-08-03
+bytes  = 4224
+note   = final/reversion heads on 15,428 crossings; incumbent is seconds_left alone
+======================================================================
