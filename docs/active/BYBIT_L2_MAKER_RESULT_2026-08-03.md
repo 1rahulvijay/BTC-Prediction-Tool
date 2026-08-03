@@ -1,5 +1,25 @@
 # Bybit 200-level L2 maker execution — result
 
+> **SUPERSEDED 2026-08-04 by `BYBIT_L2_MAKER_V2_TRADE_DRIVEN`.** The fill rule below counted
+> depth decay as execution, so cancellations ahead in the queue were scored as fills. The 99.5%
+> fill rate was the tell. Rerun against the real trade tape (845,890 prints):
+>
+> | | V1 (this doc) | V2 (trade-driven) |
+> |---|---:|---:|
+> | fill rate | 99.5% | **39.8%** |
+> | gross markout 60s | +0.080 bps | **-0.562 bps** |
+> | net per FILLED order | -0.920 bps | **-1.562 bps** |
+>
+> Roughly 60% of the fills here were cancellations. More importantly the gross markout
+> **flipped sign**: cancellation-fills are the benign case where nobody crossed against you, so
+> V1 reported adverse selection as favourable. Filtered to real executions it is monotone in
+> horizon (1s -0.218 -> 60s -0.562) - textbook adverse selection.
+>
+> The CONCLUSION is unchanged and now honest: a passive fill does not cover the 1.0 bps fee. It
+> is short by 1.56 bps per fill, not 0.92. Numbers below are retained as the historical record.
+
+
+
 **Protocol** `PREREG_BYBIT_L2_MAKER_V1.md` sha256 `fc49c09d…`, frozen before any result ·
 **Script** `research/bybit_l2_maker_v1.py` · Scored **once**
 
