@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +36,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 OUT_DIR = os.path.join(DATA, "reports")
+VENUE_DB_PATH = os.environ.get("BTC_VENUE_DB") or os.path.join(DATA, "multi_venue.duckdb")
 
 
 def _git(*args: str) -> str:
@@ -123,9 +125,40 @@ def collect() -> dict:
         (st.get("archive") or {}).get("db_exists")
         and (st.get("archive") or {}).get("total_rows", 0) > 0
     )
+    # "ever_started" is true forever once a single row lands, so it cannot distinguish a
+    # live recorder from one that stopped days ago. A 5.1-day outage was reported as
+    # healthy by exactly that field. Freshness is what matters: evidence only accrues
+    # while the recorder is actually running.
+    newest_age_s = None
+    try:
+        import duckdb as _d
+        _c = _d.connect(str(VENUE_DB_PATH), read_only=True)
+        _hi = _c.execute("SELECT MAX(recv_ts) FROM venue_events").fetchone()[0]
+        _c.close()
+        if _hi:
+            _hi = float(_hi)
+            if _hi > 1e11:          # normalise ms -> s, same rule the contract uses
+                _hi /= 1000.0
+            newest_age_s = max(0.0, time.time() - _hi)
+    except Exception:
+        newest_age_s = None
+
+    if newest_age_s is None:
+        liveness = "NO_DATA"
+    elif newest_age_s <= 300:
+        liveness = "LIVE"
+    elif newest_age_s <= 3600:
+        liveness = "STALLED"
+    else:
+        liveness = "STOPPED"
+
     st["recorder"] = {
         "log_files_present": [os.path.basename(p) for p in logs if os.path.exists(p)],
         "ever_started": archive_started or any(os.path.exists(p) for p in logs),
+        "liveness": liveness,
+        "newest_event_age_s": None if newest_age_s is None else round(newest_age_s, 1),
+        "newest_event_age_hours": None if newest_age_s is None else round(newest_age_s / 3600.0, 2),
+        "accruing_evidence": liveness == "LIVE",
     }
 
     # --- migration progress ----------------------------------------------------------
@@ -184,7 +217,9 @@ def render(st: dict) -> str:
         f"| archive span (days) | {ar.get('span_days', '?')} |",
         f"| streams present | {ar.get('streams_present', '?')} / {ar.get('streams_total', '?')} |",
         f"| missing streams | `{', '.join(item.get('key', '?') for item in ar.get('missing_streams', [])) or 'none'}` |",
-        f"| recorder ever started | {st['recorder']['ever_started']} |",
+        f"| recorder liveness | **{st['recorder']['liveness']}** |",
+        f"| newest event age | {st['recorder'].get('newest_event_age_hours')} h |",
+        f"| accruing evidence | {st['recorder']['accruing_evidence']} |",
         "",
         "## Artifact migration",
         "",
@@ -265,6 +300,22 @@ def selftest() -> int:
                            "decision_champion.py"), encoding="utf-8").read()
     chk("disc" in dc and "4.0 * rate * target" in dc,
         "max_taker_ask is still QUADRATIC (fee is rate*p*(1-p); linear form is wrong)")
+
+    # Recorder liveness must be REPORTED, not inferred from "ever started". A 5.1-day
+    # outage previously read as healthy because a single historical row set that flag
+    # true forever. These assert the field exists and is honest; the VALUE is runtime-
+    # dependent and deliberately not asserted, so CI never needs a live recorder.
+    rec = st.get("recorder", {})
+    chk("liveness" in rec and rec["liveness"] in
+        ("LIVE", "STALLED", "STOPPED", "NO_DATA"),
+        f"recorder liveness is reported as a state, not a boolean ({rec.get('liveness')})")
+    chk("accruing_evidence" in rec,
+        "the report says whether evidence is ACCRUING, which is the operative question")
+    chk(rec.get("accruing_evidence") is (rec.get("liveness") == "LIVE"),
+        "accruing_evidence is true only when liveness is LIVE (no optimistic default)")
+    if rec.get("newest_event_age_hours") is not None:
+        print(f"  INFO  newest event is {rec['newest_event_age_hours']}h old "
+              f"-> {rec['liveness']} (not asserted; runtime-dependent)")
 
     print("master-doc consistency:", "ALL PASS" if ok else "FAILURES")
     return 0 if ok else 1
