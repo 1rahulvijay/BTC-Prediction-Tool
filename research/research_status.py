@@ -120,7 +120,37 @@ FORWARD_PROTOCOLS = {
     "A": "PREREG_FORWARD_A_MARKET_PRIOR_RESIDUAL_V1.md",
     "B": "PREREG_FORWARD_B_FINAL_CROSSING_V1.md",
     "C": "PREREG_FORWARD_C_OPEN_POSITION_ACTION_VALUE_V1.md",
+    "D": "PREREG_FORWARD_D_BOUNDED_MAKER_STUDY_V1.md",
 }
+
+#: D is sealed but NOT authorised to run: its precondition is a day-clustered lower bound on
+#: the pre-cost midpoint surplus above zero, and test 164 measures [-0.0007, +0.0099]. Recorded
+#: here as a machine-readable fact, because "frozen" and "runnable" are different states and a
+#: sealed protocol sitting in the registry otherwise looks like a green light.
+PROTOCOL_D_STATUS = "SEALED_PRECONDITION_UNMET"
+PROTOCOL_D_PRECONDITION = (
+    "day-clustered 95% lower bound of OBSERVED_PRE_COST_MIDPOINT_SURPLUS > 0 on forward data")
+
+
+def check_protocol_registries() -> list[str]:
+    """FORWARD_PROTOCOLS must agree with the sealed hash registry.
+
+    Two registries naming the same protocols is two places to forget. D was sealed in
+    EXPECTED_PROTOCOLS and missing here, and nothing noticed, because FORWARD_PROTOCOLS had no
+    consumer and no test - a registry that cannot be wrong is not a registry, it is a comment."""
+    import os.path
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from backend.research.verify_prereg_hashes import EXPECTED_PROTOCOLS
+    sealed_forward = {name for name in EXPECTED_PROTOCOLS if name.startswith("PREREG_FORWARD_")}
+    listed = set(FORWARD_PROTOCOLS.values())
+    problems = []
+    for missing in sorted(sealed_forward - listed):
+        problems.append(f"sealed but absent from FORWARD_PROTOCOLS: {missing}")
+    for extra in sorted(listed - sealed_forward):
+        problems.append(f"in FORWARD_PROTOCOLS but not sealed: {extra}")
+    return problems
 
 
 def admit(category: str) -> None:
@@ -181,5 +211,34 @@ def summary_table() -> str:
     return "\n".join(lines)
 
 
+def selftest() -> int:
+    """The registries must agree, and the check must be able to FAIL."""
+    problems = check_protocol_registries()
+    if problems:
+        for problem in problems:
+            print(f"  REGISTRY  {problem}")
+        print("\nPROTOCOL REGISTRIES DISAGREE")
+        return 1
+    print(f"  PASS  FORWARD_PROTOCOLS matches the sealed registry "
+          f"({len(FORWARD_PROTOCOLS)} protocols: {', '.join(sorted(FORWARD_PROTOCOLS))})")
+
+    # Negative test: a registry check that cannot fail is decoration.
+    saved = dict(FORWARD_PROTOCOLS)
+    try:
+        FORWARD_PROTOCOLS.pop("D")
+        assert check_protocol_registries(), "dropping a sealed protocol must be detected"
+    finally:
+        FORWARD_PROTOCOLS.clear()
+        FORWARD_PROTOCOLS.update(saved)
+    print("  PASS  dropping a sealed protocol IS detected - the check can fail")
+
+    assert PROTOCOL_D_STATUS == "SEALED_PRECONDITION_UNMET"
+    print(f"  PASS  D is registered as {PROTOCOL_D_STATUS} - sealed is not runnable")
+    print("\nRESEARCH STATUS SELFTEST: PASS (3 checks)")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        raise SystemExit(selftest())
     print(summary_table())

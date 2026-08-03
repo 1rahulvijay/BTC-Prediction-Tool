@@ -587,6 +587,7 @@ jobs:
           python -m backend.research.event_conditional_v1.readiness || exit /b 1
           python backend/research/verify_prereg_hashes.py || exit /b 1
           python research/phase5d/admission.py --selftest || exit /b 1
+          python research/research_status.py --selftest || exit /b 1
           python backend/bc_forward_readiness_report.py --selftest || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1

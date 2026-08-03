@@ -1079,6 +1079,21 @@ attempts, not successes, because a recorder that runs and rejects everything is 
 collecting nothing. Dead writer + zero evidence → `NOT_STARTED`; live writer + zero evidence →
 `COLLECTING`.
 
+### 11.10 Two protocol registries disagreed - `2026-08-03`
+
+Protocol D was sealed into `EXPECTED_PROTOCOLS` (the hash gate) and **not** added to
+`FORWARD_PROTOCOLS` in `research/research_status.py`. Nothing noticed, because that dict had
+**zero consumers and no test** — a registry that cannot be wrong is not a registry, it is a
+comment.
+
+Fixed: D added, and `check_protocol_registries()` now requires the two to agree, wired into CI
+with a negative test that drops a sealed protocol and confirms the check fails. Also added
+`PROTOCOL_D_STATUS = "SEALED_PRECONDITION_UNMET"` with its precondition as a string, because
+*frozen* and *runnable* are different states and a sealed protocol sitting in a registry
+otherwise reads as a green light.
+
+### 11.11 Blindness scope and the matcher bug - `2026-08-03`
+
 **Blindness was top-level only.** It now walks the whole assembled payload recursively,
 including nested lists, and runs after statuses are attached. That immediately caught a bug in
 the matcher itself: substring matching rejected `ledger`, for containing *"edge"*. Whole-token
@@ -1123,10 +1138,42 @@ answered, all negatively. The binding constraint is no longer ideas — it is fo
 |---|---|---|---|
 | 1 | **round recorders dark since `2026-07-25 15:00`** | operator: `start.bat` | *everything*. `FORWARD_UNTOUCHED` = 0 rows, so nothing can be promoted, ever, until this changes |
 | 2 | **0 of 25 artifacts loadable** | a retrain via `train_heads.py` | every model-backed strategy is `UNAVAILABLE`, not unprofitable |
-| 3 | 8 forward weeks + 1,000 resolved rounds | time, once (1) is fixed | the promotion gate |
+| 3 | **`post_entry_crossing_outcomes` does not exist** | a recorder nobody has written | **Protocol B specifically.** Its readiness reports `NOT_WIRED`, and it will keep doing so through eight weeks of otherwise-healthy collection |
+| 4 | 8 forward weeks + 1,000 resolved rounds | time, once (1) is fixed | the promotion gate |
 
 Nothing below matters until (1). A study run today spends evaluation data on a window that has
 already answered twice, which is how the retracted results were produced.
+
+**(3) is new and easy to miss.** Positions and action arms have recorders; post-entry crossings
+do not. Restarting collection fixes (1) and does nothing for (3) — B would accrue eight weeks of
+open positions and still have zero crossing labels to score. Required table, in
+`open_position_actions.duckdb`:
+
+```
+post_entry_crossing_outcomes(
+  position_id, round_id, position_snapshot_id, crossing_ts, crossing_direction,
+  is_final_crossing, reverted_5s, reverted_15s, reverted_30s, reverted_60s,
+  settlement_resolved, label_version)
+```
+
+`backend/bc_forward_readiness_report.py` names this exact schema in its refusal, so the gap
+announces itself on every run rather than waiting to be discovered at scoring time.
+
+### 6.1a Open ideas, explicitly NOT built - `2026-08-03`
+
+Recorded so they are a backlog rather than a rediscovery. None may be run while
+`HISTORICAL_EXPANSION_FROZEN` holds; each needs its own preregistration and admission check.
+
+| idea | why it is not built | what would admit it |
+|---|---|---|
+| Phase 5C's other 8 of 15 recommended tests | triaged out in §10.3 on power, not on interest | forward days lifting the ~25-point MDE |
+| Phase 5D-B tests 166–172 | the stopping rule fired: 157 and 164 both returned negative, so the chain halts | a positive forward result from B, C or D |
+| Protocol A2 (new feature families) | A is retired for *current* features only | genuinely new inputs — model revisions, settlement-source basis, paired L2 |
+| Binance maker conversion | the Polymarket maker question (D) is sealed and unmet; running the Binance analogue first would answer the easier venue and generalise it | D scored, or an independent Binance surplus measurement |
+| Depth20 L2 microstructure studies | `binance_l2_recorder.py` has NEVER_RAN — zero rows | the recorder running for enough independent days |
+
+The pattern in every row: the blocker is evidence, not ideas. That has been true since
+`2026-08-02` and nothing since has changed it.
 
 ### 6.2 The retrain must write PROVENANCE manifests
 
