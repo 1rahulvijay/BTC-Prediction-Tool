@@ -130,3 +130,10 @@ frozen = 2026-08-03
 bytes  = 5537
 note   = 4 horizons x 7 pairs x 2 exchanges; Bonferroni 98.75% CI on the primary
 ======================================================================
+
+PREREG_BINANCE_MAKER_EXECUTION_V1.md
+sha256 = c15b44437c16d9c051df0d3e851379e74a85af7fa9546238de9598af6bde22ef
+frozen = 2026-08-03
+bytes  = 6008
+note   = real binance book+trades, 22.9h single day; HOUR-block inference only
+======================================================================

@@ -63,6 +63,7 @@ FRONTIER = (
     "conditional_direction_v1.py",
     "exit_timing_v1.py",
     "direction_ensemble_v1.py",
+    "maker_execution_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour

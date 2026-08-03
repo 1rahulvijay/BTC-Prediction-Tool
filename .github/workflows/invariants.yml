@@ -616,6 +616,7 @@ jobs:
           python -m research.multihorizon.fetch --selftest || exit /b 1
           python -m research.multihorizon.features --selftest || exit /b 1
           python -m research.multihorizon.run --selftest || exit /b 1
+          python research/maker_execution_v1.py --selftest || exit /b 1
           python -m research.algodesk.data --selftest || exit /b 1
           python -m research.algodesk.agents --selftest || exit /b 1
           python -m research.algodesk.backtest --selftest || exit /b 1
