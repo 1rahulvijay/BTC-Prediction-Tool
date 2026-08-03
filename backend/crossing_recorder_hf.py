@@ -26,6 +26,14 @@ THE ANCHOR IS A PROXY, AND IS LABELLED AS ONE
     OPEN price on one venue and stores `price_source` alongside, so the proxy is explicit and
     auditable rather than implied.
 
+    It is the OPEN, not "whatever arrived first". A round whose first observation lands more
+    than ANCHOR_MAX_BOUNDARY_DELAY_MS after the boundary was joined mid-flight: its open is
+    unknown, so it is recorded ANCHOR_UNAVAILABLE and produces NO crossings. Previously a
+    restart at 04:32 made 04:32's price the "open" of the 04:30 round, and every crossing in
+    that round measured against the wrong reference. Refusing a round costs one round; a
+    wrong anchor silently corrupts all of them. `hf_round_anchors` records the decision either
+    way, so "no crossings" and "never knew the anchor" are distinguishable in the data.
+
     python backend/crossing_recorder_hf.py --selftest
     python backend/crossing_recorder_hf.py --run --seconds 120
     python backend/crossing_recorder_hf.py --report
@@ -53,6 +61,13 @@ DB = DATA_DIR / "polymarket_crossings_hf.duckdb"
 POLL_MS = 1000
 #: Two missed polls. Beyond this the series is not continuous and must say so.
 MAX_GAP_MS = 3 * POLL_MS
+#: How close to the round boundary the FIRST observation must land for its price to be
+#: usable as that round's anchor. A round first seen later than this was joined mid-flight
+#: and its true open is unknown - the previous behaviour silently used whatever price
+#: happened to arrive first, so a restart at 04:32 made 04:32's price the "open" of the
+#: 04:30 round and every later crossing measured against the wrong reference.
+ANCHOR_MAX_BOUNDARY_DELAY_MS = 2 * POLL_MS
+ANCHOR_UNAVAILABLE = "ANCHOR_UNAVAILABLE"
 ROUND_MINUTES = (5, 15)
 REVERSION_HORIZONS_S = (5, 15, 30, 60)
 # v2 (2026-08-04), matching polymarket_crossing_recorder. v1 wrote `reverted_Ns` while
@@ -116,6 +131,18 @@ SCHEMA = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS hf_round_anchors (
+        round_id          VARCHAR PRIMARY KEY,
+        horizon_min       INTEGER,
+        round_start_ts    BIGINT,
+        anchor            DOUBLE,          -- NULL when unavailable
+        anchor_quality    VARCHAR NOT NULL,-- OPEN_OBSERVED | ANCHOR_UNAVAILABLE
+        boundary_delay_ms BIGINT  NOT NULL,
+        anchor_source     VARCHAR NOT NULL,
+        anchor_recv_ts    BIGINT  NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS hf_gaps (
         gap_start_ts BIGINT PRIMARY KEY,
         gap_end_ts   BIGINT NOT NULL,
@@ -174,7 +201,9 @@ class Recorder:
     def __init__(self, price_source: str = PRICE_SOURCE, cadence_ms: int = POLL_MS):
         self.price_source = price_source
         self.cadence_ms = cadence_ms
-        self.anchors: dict[str, float] = {}
+        self.anchors: dict[str, float | None] = {}
+        self.anchor_quality: dict[str, dict] = {}
+        self.unanchored: set[str] = set()
         self.leaders: dict[str, str] = {}
         self.counts: dict[str, int] = {}
         self.samples: dict[str, list[tuple[int, str]]] = {}
@@ -195,12 +224,29 @@ class Recorder:
         for minutes in ROUND_MINUTES:
             round_id, start, seconds_left = round_id_for(ts_ms, minutes)
             if round_id not in self.anchors:
-                # First observation of a round establishes its anchor. It is never a crossing.
-                self.anchors[round_id] = price
+                # The anchor is the round's OPEN. It is only knowable if this observation
+                # is close enough to the boundary; otherwise the round was joined
+                # mid-flight and is recorded as ANCHOR_UNAVAILABLE rather than anchored to
+                # an arbitrary price. Refusing a round costs one round; a wrong anchor
+                # silently corrupts every crossing in it.
+                delay = ts_ms - start
+                if delay <= ANCHOR_MAX_BOUNDARY_DELAY_MS:
+                    self.anchors[round_id] = price
+                    self.anchor_quality[round_id] = {
+                        "quality": "OPEN_OBSERVED", "boundary_delay_ms": int(delay),
+                        "source": self.price_source, "anchor_recv_ts": int(ts_ms)}
+                else:
+                    self.anchors[round_id] = None
+                    self.anchor_quality[round_id] = {
+                        "quality": ANCHOR_UNAVAILABLE, "boundary_delay_ms": int(delay),
+                        "source": self.price_source, "anchor_recv_ts": int(ts_ms)}
+                    self.unanchored.add(round_id)
                 self.leaders[round_id] = ""
                 self.counts[round_id] = 0
                 self.samples[round_id] = []
             anchor = self.anchors[round_id]
+            if anchor is None:
+                continue                      # unanchored round produces NO crossings
             side = leader_for(price, anchor)
             self.samples[round_id].append((ts_ms, side))
             if not side:
@@ -273,6 +319,21 @@ class Recorder:
 def flush(recorder: Recorder, now_ms: int) -> tuple[int, int, int]:
     con = connect()
     try:
+        # Anchor provenance FIRST, so a reader can always tell which rounds were usable -
+        # including the ones that produced no crossings BECAUSE they were unanchored.
+        # Without this, "no crossings this round" and "we never knew the anchor" look
+        # identical in the data.
+        for round_id, meta in recorder.anchor_quality.items():
+            minutes = int(round_id.split("_")[1].rstrip("m"))
+            start = int(round_id.rsplit("_", 1)[1])
+            con.execute(
+                "INSERT OR REPLACE INTO hf_round_anchors ("
+                " round_id, horizon_min, round_start_ts, anchor, anchor_quality,"
+                " boundary_delay_ms, anchor_source, anchor_recv_ts"
+                ") VALUES (?,?,?,?,?,?,?,?)",
+                [round_id, minutes, start, recorder.anchors.get(round_id),
+                 meta["quality"], meta["boundary_delay_ms"], meta["source"],
+                 meta["anchor_recv_ts"]])
         events = 0
         for event in recorder.events:
             if con.execute("SELECT 1 FROM hf_crossing_events WHERE crossing_id = ?",
@@ -400,7 +461,10 @@ def selftest() -> int:
         checks += 1
         print(f"  PASS  {text}")
 
-    base = 1_785_000_000_000 // 300_000 * 300_000     # an exact 5m boundary
+    # An exact 15m boundary, which is necessarily also a 5m one. A 5m-only boundary would
+    # join the containing 15m round mid-flight, and that round is now correctly refused an
+    # anchor - so the fixture must open BOTH horizons cleanly to exercise crossings at all.
+    base = 1_785_000_000_000 // 900_000 * 900_000
 
     rid, start, left = round_id_for(base + 60_000, 5)
     check(rid == f"ptb_5m_{base}" and start == base and left == 240,
@@ -411,6 +475,27 @@ def selftest() -> int:
     check(leader_for(101, 100) == "UP" and leader_for(99, 100) == "DOWN",
           "the leader is the side of the anchor")
     check(leader_for(100, 100) == "", "exactly AT the anchor is not a side")
+
+    # ANCHOR PROVENANCE. The old rule made the first price the recorder happened to see
+    # into the round's "open", so a restart at 04:32 anchored the 04:30 round to 04:32's
+    # price and every crossing in it measured against the wrong reference.
+    mid = Recorder(cadence_ms=1000)
+    mid.record(base + 90_000, 100.0)                     # join a round 90s late
+    rid, _, _ = round_id_for(base + 90_000, 5)
+    check(mid.anchor_quality[rid]["quality"] == ANCHOR_UNAVAILABLE,
+          "a round joined mid-flight is ANCHOR_UNAVAILABLE, not anchored to a stray price")
+    check(mid.anchors[rid] is None, "and carries no anchor value at all")
+    check(mid.record(base + 91_000, 200.0) == [],
+          "an unanchored round produces NO crossings - a wrong anchor would invent them")
+    check(mid.anchor_quality[rid]["boundary_delay_ms"] == 90_000,
+          "the boundary delay is recorded, so the refusal is auditable")
+
+    clean = Recorder(cadence_ms=1000)
+    clean.record(base, 100.0)
+    rid2, _, _ = round_id_for(base, 5)
+    check(clean.anchor_quality[rid2]["quality"] == "OPEN_OBSERVED",
+          "a round opened at its boundary IS anchored")
+    check(clean.anchors[rid2] == 100.0, "and the anchor is the OPEN price, not a later one")
 
     r = Recorder(cadence_ms=1000)
     check(r.record(base, 100.0) == [], "the first observation of a round is never a crossing")
