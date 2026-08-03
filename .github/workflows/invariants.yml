@@ -260,6 +260,30 @@ jobs:
       - name: Effective independent sample size
         run: python research/phase5c/test_effective_independent_sample_size.py --selftest
 
+      # Phase 5C studies. Each selftest pins the one way its own arithmetic could flatter a
+      # result - see the individual check labels.
+      - name: Phase5C Brier decomposition (reliability vs resolution)
+        run: python research/phase5c/test_brier_decomposition_market_vs_model.py --selftest
+
+      - name: Phase5C Last-crossing timing
+        run: python research/phase5c/test_last_crossing_timing_distribution.py --selftest
+
+      - name: Phase5C Terminal margin bands
+        run: python research/phase5c/test_near_settlement_terminal_margin.py --selftest
+
+      - name: Phase5C Probability monotonicity (win rate can be monotone while value is not)
+        run: python research/phase5c/test_probability_monotonicity.py --selftest
+
+      - name: Phase5C Jump vs diffusion (bipower is robust to the jump)
+        run: python research/phase5c/test_jump_vs_diffusion_decomposition.py --selftest
+
+      - name: Phase5C Volatility half-life (non-reverting reports infinity, not a negative)
+        run: python research/phase5c/test_volatility_clustering_half_life.py --selftest
+
+      - name: Phase5C MFE/MAE geometry (a bar spanning both barriers is a STOP)
+        run: python research/phase5c/test_mfe_mae_joint_distribution.py --selftest
+
+
       # The checkpoint dataset performs NO state-to-quote join - every feature comes from one
       # atomically-written snapshot row - so the retracted defect is structurally impossible.
       # What remains joinable is the GRID (must take the last snapshot at or BEFORE each
