@@ -606,6 +606,9 @@ jobs:
           python backend/test_round_state_causal_contract.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python research/algodesk_17_agents_v1.py --selftest || exit /b 1
+          python -m research.algodesk.data --selftest || exit /b 1
+          python -m research.algodesk.agents --selftest || exit /b 1
+          python -m research.algodesk.backtest --selftest || exit /b 1
           python backend/bc_forward_readiness_report.py --selftest || exit /b 1
           python backend/model_promotion.py || exit /b 1
           python backend/polymarket/model_dynamic_paper.py || exit /b 1

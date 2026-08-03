@@ -1,0 +1,23 @@
+{
+  "path": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\algodesk\\bybit_15m_40d.parquet",
+  "sha256": "8ef6525088f6cbbf930c2ba2a96f05448e7c3dc938a50175d6c99ea2d304836b",
+  "rows": 26887,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "AVAXUSDT",
+    "LINKUSDT"
+  ],
+  "bar_minutes": 15,
+  "fetched_utc": "2026-08-03T18:16:06Z",
+  "span_ms": [
+    1782324000000,
+    1785780000000
+  ],
+  "oi_coverage": 1.0,
+  "funding_coverage": 1.0,
+  "source": "bybit v5 linear: kline, open-interest, funding/history"
+}
