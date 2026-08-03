@@ -1,16 +1,43 @@
 """
-algodesk_ml_rl_dl.py -- ML/DL/RL Evolved Models for the 17 AlgoDesk Agents
-===========================================================================
+algodesk_ml_rl_dl.py -- QUARANTINED legacy prototype. Superseded by research/algodesk_ml_rl_dl.py
+=================================================================================================
 
-This script evolves the 17 rule-based AlgoDesk agents into predictive models using:
-1. Machine Learning (XGBoost): Predicts probability of trade success using agent signals as features.
-2. Deep Learning (PyTorch MLP): Direct classification of market context into Long/Short/Skip.
-3. Reinforcement Learning (SB3 PPO): Trading agent optimizing for P&L in a simulated environment.
+QUARANTINED 2026-08-04. This file predates research/algodesk_ml_rl_dl.py, which fetches REAL
+Bybit funding and open interest, keeps an immutable cached dataset, evaluates post-cost, and
+splits chronologically. That is the canonical implementation and the one CI runs.
+
+This prototype names two of its columns after quantities it never obtained. It does not fetch
+funding or open interest at all -- it derives them from price and volume and then lets the FUND,
+OI and OIDIV agents trade on the result. An agent keying on `funding_rate` here is keying on
+8-hour momentum wearing a funding label, so its measured performance is a statement about
+momentum, not about funding. That is why the output may not be compared with the research
+script's, or cited anywhere.
 
 Usage:
-  python backend/algodesk_ml_rl_dl.py --train-days 30 --test-days 7
+  python research/algodesk_ml_rl_dl.py          <- use this instead
 """
 from __future__ import annotations
+
+QUARANTINED = True
+ALLOW_ENV = "BTC_ALLOW_LEGACY_ALGODESK"
+
+
+class QuarantinedPrototype(RuntimeError):
+    """This module may not be used for anything that informs a decision."""
+
+
+def _refuse(reason: str) -> None:
+    import os
+
+    if os.environ.get(ALLOW_ENV) == "1":
+        print("[algodesk_ml_rl_dl] QUARANTINE OVERRIDDEN via " + ALLOW_ENV
+              + " - output is NOT evidence: " + reason, flush=True)
+        return
+    raise QuarantinedPrototype(
+        "backend/algodesk_ml_rl_dl is QUARANTINED (2026-08-04). " + reason + " Use "
+        "research/algodesk_ml_rl_dl.py, which fetches real funding and open interest. Set "
+        + ALLOW_ENV + "=1 only for isolated inspection; its output may never inform a "
+        "decision, a backtest result or a promotion.")
 
 import argparse
 import time
@@ -196,6 +223,16 @@ def fetch_klines(symbol: str, days: int) -> pd.DataFrame:
     return df
 
 def create_dataset(symbol: str, days: int) -> pd.DataFrame:
+    _refuse(
+        "It fabricates the two inputs its FUND/OI/OIDIV agents key on: funding_rate is "
+        "8h price change * 0.05 and open_interest is 24h base volume * 3.5, so neither is the "
+        "quantity it is named after and the OI thresholds (1e9, 2e9) are compared against a "
+        "volume multiple rather than any exchange's OI unit. It also sums BASE-asset volume "
+        "while the agent thresholds are documented in dollars, uses min_periods=1 so the first "
+        "rows carry '24h' statistics computed from less than 24h, enters at the close of the "
+        "same bar it just read, labels with lookahead=100 bars (~8.3h) while the comment claims "
+        "288 (~24h), leaves no purge gap at the train/test boundary, and reports classification "
+        "accuracy rather than post-cost return.")
     df = fetch_klines(symbol, days)
     if len(df) < CANDLES_PER_DAY: return pd.DataFrame()
     

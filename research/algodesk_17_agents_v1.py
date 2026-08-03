@@ -103,7 +103,9 @@ def _derive(df: pd.DataFrame) -> pd.DataFrame:
     span = (out["high24"] - out["low24"]).replace(0.0, np.nan)
     # pos = (price - low24h) / (high24h - low24h); 0.0 = day low, 1.0 = day high
     out["pos"] = ((close - out["low24"]) / span).clip(0.0, 1.0)
-    out["rsi"] = (out["pos"] * 100).round()
+    # NOT RSI: pos*100, with no average gain/loss, no Wilder smoothing and no period. The
+    # published "RSI 60-80" band does not apply to it. Value unchanged by the rename.
+    out["range_position_pct"] = (out["pos"] * 100).round()
     out["range_pct"] = span / out["low24"] * 100.0
     # Realized volatility proxy over the last hour, in bps.
     out["rv60"] = close.pct_change().rolling(60, min_periods=60).std().shift(1) * 1e4
@@ -267,8 +269,10 @@ def selftest() -> int:
     df = _derive(pd.DataFrame({"ts_ms": ts, "close": price, "volume": np.full(n, 20.0)}))
 
     check(df["pos"].dropna().between(0, 1).all(), "pos is confined to [0, 1]")
-    check(np.isclose(df["rsi"].dropna(), (df["pos"].dropna() * 100).round()).all(),
-          "rsi is the published pos*100 proxy, not a real RSI")
+    check(np.isclose(df["range_position_pct"].dropna(), (df["pos"].dropna() * 100).round()).all(),
+          "range_position_pct is the published pos*100 proxy, not a real RSI")
+    check("rsi" not in df.columns,
+          "no column named rsi survives - the name promised Wilder's RSI and never delivered it")
 
     # CAUSALITY. Every 24h aggregate is shifted, so no bar reads its own bar.
     row = df.iloc[DAY_BARS + 10]

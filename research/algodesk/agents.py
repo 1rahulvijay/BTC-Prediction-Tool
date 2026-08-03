@@ -60,7 +60,10 @@ def derive(frame: pd.DataFrame) -> pd.DataFrame:
         g["vol4"] = g["turnover"].rolling(16, min_periods=16).sum().shift(1)
         span = (g["high24"] - g["low24"]).replace(0.0, np.nan)
         g["pos"] = ((close - g["low24"]) / span).clip(0.0, 1.0)
-        g["rsi"] = (g["pos"] * 100).round()
+        # NOT RSI. This is range position rescaled to 0-100 - no average gain/loss, no Wilder
+        # smoothing, no period. It shares only a range with RSI. Named for what it computes so
+        # nobody wires it into an agent believing the published "RSI 60-80" band applies to it.
+        g["range_position_pct"] = (g["pos"] * 100).round()
         g["range_pct"] = span / g["low24"] * 100.0
         g["rv24"] = close.pct_change().rolling(window, min_periods=window).std().shift(1) * 1e4
         # Open interest: level, its 24h change, and its notional value.

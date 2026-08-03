@@ -1,5 +1,17 @@
 # AlgoDesk: Evolving to ML, DL, and RL Models
 
+> **SUPERSEDED `2026-08-04`.** This document describes `backend/algodesk_ml_rl_dl.py`, which is
+> now **QUARANTINED** and raises `QuarantinedPrototype` on use. It simulated funding
+> (`8h price change * 0.05`) and open interest (`24h base volume * 3.5`), so the FUND, OI and
+> OIDIV results below are statements about momentum and volume, not funding and OI.
+>
+> The canonical implementation is **`research/algodesk/`** (`data.py`, `agents.py`,
+> `backtest.py`) plus `research/algodesk_ml_rl_dl.py`, which fetch real Bybit funding and open
+> interest. Results live in
+> [`docs/active/ALGODESK_ML_RL_DL_2026-08-03.md`](../active/ALGODESK_ML_RL_DL_2026-08-03.md).
+>
+> Kept as a record of what was tried and why it was replaced. **Do not cite its numbers.**
+
 This document details the transition from the 17 rule-based trading agents to advanced predictive models using Machine Learning (XGBoost), Deep Learning (PyTorch), and Reinforcement Learning (Stable-Baselines3).
 
 ## Table of Contents
@@ -45,14 +57,24 @@ graph TB
 
 ## Data & Feature Engineering
 
-**File:** `backend/algodesk_ml_rl_dl.py`
+**File:** `backend/algodesk_ml_rl_dl.py` — **QUARANTINED.** Canonical: `research/algodesk/agents.py`
 
 ### Context Features (Normalized)
-- `change_24h_pct`: Rolling 24h price change.
-- `vol_24h`: Rolling 24h volume.
-- `pos`: Position of the current price relative to the 24h High/Low range.
-- `rsi`: Simplified RSI proxy derived from `pos`.
-- `funding_rate`: Simulated 8h funding rate.
+
+Each row is what the quarantined file computed, followed by what the canonical package does instead.
+
+| Feature | Quarantined prototype | Canonical `research/algodesk/` |
+|---|---|---|
+| `change_24h_pct` | Rolling 24h price change, `min_periods=1` | Same, `min_periods=window`, `.shift(1)` |
+| `vol_24h` | Sum of **base**-asset volume, compared against dollar thresholds | Sum of `turnover` (quote/USD) |
+| `pos` | Price within the 24h high/low range | Same, causally shifted |
+| `rsi` | "Simplified RSI proxy derived from `pos`" — not RSI | Renamed `range_position_pct`; unused by any agent |
+| `funding_rate` | **Simulated:** `8h price change * 0.05` | Real Bybit funding; `SKIP` when missing or stale |
+| `open_interest` | **Simulated:** `24h volume * 3.5` | Real Bybit OI, converted to `oi_usd = oi * close` |
+
+The last two are why the prototype is quarantined rather than merely deprecated: `FUND`, `OI` and
+`OIDIV` keyed on them, so their published thresholds were being compared against a price
+derivative and a volume multiple.
 
 ### Agent Features
 The 17 rule-based agents (TREND, MOMO, BREAK, MEAN, FUND, VOL, OI, CONTRA, SCALP, LIQ, PAT, RANGE, STAT, SENT, FLOW, REGIME, OIDIV) generate categorical outputs which are mapped to integers:

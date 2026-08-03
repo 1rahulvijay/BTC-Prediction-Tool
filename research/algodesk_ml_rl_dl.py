@@ -99,7 +99,10 @@ BREAKEVEN_ORIGINAL = breakeven_win_rate(0.03, 0.015)
 
 AGENT_IDS = ("TREND", "MOMO", "BREAK", "MEAN", "FUND", "VOL", "OI", "CONTRA", "SCALP",
              "LIQ", "PAT", "RANGE", "STAT", "SENT", "FLOW", "REGIME", "OIDIV")
-CONTEXT = ("pos", "rsi", "chg24", "funding_rate", "oi_chg24")
+#: "range_position_pct" was called "rsi". It is pos*100 - no average gain/loss, no Wilder
+#: smoothing, no period - so the published "RSI 60-80" band never applied to it. Renamed to
+#: what it computes; the VALUE is unchanged, so results computed before the rename stand.
+CONTEXT = ("pos", "range_position_pct", "chg24", "funding_rate", "oi_chg24")
 FEATURE_NAMES = AGENT_IDS + CONTEXT          # 17 + 5 = 22
 
 
@@ -236,7 +239,7 @@ def derive(frame: pd.DataFrame) -> pd.DataFrame:
         g["vol_prev"] = g["turnover"].rolling(w, min_periods=w).sum().shift(w + 1)
         span = (g["high24"] - g["low24"]).replace(0.0, np.nan)
         g["pos"] = ((close - g["low24"]) / span).clip(0, 1)
-        g["rsi"] = (g["pos"] * 100).round()
+        g["range_position_pct"] = (g["pos"] * 100).round()   # NOT RSI - see CONTEXT
         g["range_pct"] = span / g["low24"] * 100
         g["rv24"] = close.pct_change().rolling(w, min_periods=w).std().shift(1) * 1e4
 
@@ -354,7 +357,7 @@ def build_samples(frame: pd.DataFrame, *, simulated: bool) -> pd.DataFrame:
                 "symbol": row.symbol, "ts_ms": row.ts_ms,
                 "day": int(row.ts_ms // 86_400_000),
                 "features": list(signals) + [
-                    float(row.pos), float(row.rsi), float(row.chg24),
+                    float(row.pos), float(row.range_position_pct), float(row.chg24),
                     float(fr) if np.isfinite(fr) else 0.0,
                     float(getattr(row, ch_col)) if np.isfinite(getattr(row, ch_col)) else 0.0],
                 "long_win": long_win, "short_win": short_win,

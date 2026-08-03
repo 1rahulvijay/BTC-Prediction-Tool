@@ -2,6 +2,11 @@
 test_algodesk_17_agents_30d.py -- Standalone backtest of all 17 AlgoDesk trading agents
 =======================================================================================
 
+SUPERSEDED 2026-08-04 by research/algodesk_17_agents_v1.py and the research/algodesk/ package,
+which add day-block confidence intervals, post-cost evaluation and real Bybit funding/OI. This
+file is NOT a unit test despite the name, and is not run by CI. Kept for reference; prefer the
+research versions for any number you intend to cite.
+
 Tests every trading strategy described on https://algodesk-bot.pages.dev/landing
 and the AlgoDesk GitHub README (algodesk-bot/algodesk-bot) over 30 days of live
 Bybit 5-minute kline data.

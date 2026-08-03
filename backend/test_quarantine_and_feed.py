@@ -103,6 +103,87 @@ def test_quarantine_overrides_are_independent() -> None:
             chk(True, f"{factory_name} is blocked with no override set")
 
 
+def test_legacy_algodesk_quarantined() -> None:
+    """backend/algodesk_ml_rl_dl.py fabricates funding and open interest.
+
+    It sets funding_rate = 8h price change * 0.05 and open_interest = 24h base volume * 3.5,
+    then lets the FUND, OI and OIDIV agents trade on both. Its numbers therefore describe
+    momentum and volume under the names of funding and OI, and are not comparable with
+    research/algodesk/, which fetches the real series from Bybit.
+
+    Source-level, so this costs nothing: importing the module pulls torch, xgboost and
+    stable_baselines3. The behavioural refusal is asserted by the runtime check below only when
+    those imports are available."""
+    print("legacy algodesk prototype quarantined")
+    path = Path(__file__).resolve().parent / "algodesk_ml_rl_dl.py"
+    src = path.read_text(encoding="utf-8")
+
+    chk("QUARANTINED = True" in src, "declares QUARANTINED")
+    chk('ALLOW_ENV = "BTC_ALLOW_LEGACY_ALGODESK"' in src,
+        "reads its OWN override variable, not another module's")
+    for other in ("BTC_ALLOW_LEGACY_PM_SIMULATOR", "BTC_ALLOW_LEGACY_PM_MODEL"):
+        chk(other not in src, "does not honour " + other)
+
+    # The refusal must be the FIRST statement of create_dataset - every path to a number goes
+    # through it, and refusing after the fetch would still hit the network.
+    body = src.split("def create_dataset(", 1)
+    chk(len(body) == 2, "create_dataset still exists")
+    if len(body) == 2:
+        first = [ln.strip() for ln in body[1].splitlines()[1:] if ln.strip()][:1]
+        chk(bool(first) and first[0].startswith("_refuse("),
+            "create_dataset refuses before fetching or computing anything")
+
+    # The fabrications are still present in the file (it is preserved, not edited), which is
+    # exactly why it must stay quarantined. If someone deletes them, revisit the quarantine.
+    chk("(change_8h * 0.05)" in src, "simulated funding still present -> quarantine still needed")
+    chk('df["vol_24h"] * 3.5' in src, "simulated OI still present -> quarantine still needed")
+
+
+def test_canonical_algodesk_does_not_fabricate() -> None:
+    """The replacement must not reintroduce what the prototype was quarantined for."""
+    print("canonical algodesk uses real funding and OI")
+    agents = Path(__file__).resolve().parents[1] / "research" / "algodesk" / "agents.py"
+    if not agents.exists():
+        chk(False, "research/algodesk/agents.py exists")
+        return
+    src = agents.read_text(encoding="utf-8")
+
+    # CODE only, and that means stripping DOCSTRINGS as well as '#' comments. agents.py names
+    # "change_8h * 0.05" and "volume * 3.5" in its module docstring precisely to record what it
+    # refuses to do, so a raw text search fails on the sentence that documents the fix. Blanking
+    # every ast docstring node is what makes the assertion mean "no such computation" rather
+    # than "nobody mentioned it".
+    import ast
+
+    tree = ast.parse(src)
+    doc_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body or not isinstance(body[0], ast.Expr):
+            continue
+        value = body[0].value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            doc_lines.update(range(value.lineno, (value.end_lineno or value.lineno) + 1))
+
+    code = chr(10).join(
+        ln for i, ln in enumerate(src.splitlines(), start=1)
+        if i not in doc_lines and not ln.strip().startswith("#"))
+
+    chk("0.05" in src and "* 0.05" not in code,
+        "documents the simulated-funding formula but never computes it")
+    chk("* 3.5" not in code, "does not derive open interest from volume")
+    chk("min_periods=1)" not in code, "no partial 24h windows")
+    chk('g["rsi"]' not in code,
+        "no column named rsi (it was range position, not RSI)")
+    chk('g["range_position_pct"]' in code, "range position is named for what it computes")
+    chk('g["oi_usd"] = g["open_interest"] * close' in code,
+        "open interest is converted to USD notional before threshold comparison")
+    chk('g["vol24"] = g["turnover"]' in code,
+        "24h volume uses turnover (quote/USD), not base-asset volume")
+
+
 def test_polymarket_boundary_has_no_trading_authority() -> None:
     """PolymarketClient and PolymarketVerifier remain in the live server. They are permitted to
     read market data and to diagnose; they may not submit an order, price a candidate, size a
@@ -215,6 +296,8 @@ def test_feed_callbacks_do_not_block() -> None:
 def run() -> int:
     for test in (test_prototypes_quarantined,
                  test_quarantine_overrides_are_independent,
+                 test_legacy_algodesk_quarantined,
+                 test_canonical_algodesk_does_not_fabricate,
                  test_polymarket_boundary_has_no_trading_authority,
                  test_fee_formula_is_quadratic,
                  test_feed_callbacks_do_not_block):
