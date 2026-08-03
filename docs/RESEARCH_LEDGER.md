@@ -733,6 +733,73 @@ applying it first removed 40% of the recommended package before any modelling.
 Polymarket and 2 days of cross-venue data. More tests on this window produce more confident
 descriptions of a sample too small to support them.
 
+### 10.5 The seven viable studies - all built, all run
+
+**89 Brier decomposition.** P(hold) loses **+0.0144** of Brier to the market. **99.3% of that
+gap is RESOLUTION** (+0.0143); calibration contributes +0.0001. The model is *well calibrated*
+and simply carries less information — and the gap widens toward settlement:
+
+| bucket | market resolution | P(hold) resolution |
+|---|---:|---:|
+| before T−5m | 0.0215 | 0.0174 |
+| T−90s to T−30s | 0.0403 | 0.0176 |
+| **T−30s and later** | **0.0549** | **0.0109** |
+
+Early in a round the model is nearly as informative as the price. By the last 30 seconds the
+market has 5x its resolution. **Recalibration cannot fix a resolution deficit** — this is why
+the market-prior residual is the only supported modelling direction.
+
+**94 Last-crossing timing.** P(the final crossing has already happened), by checkpoint:
+
+| checkpoint | already final | mean crossings left | leader wins |
+|---:|---:|---:|---:|
+| 15 s | 89.7% | 0.12 | 82.1% |
+| 60 s | 81.5% | 0.30 | 81.8% |
+| 240 s | 50.8% | 1.40 | 68.1% |
+| 720 s | 38.8% | 2.70 | 66.4% |
+
+At 240 s the leader is final only half the time yet wins 68% — because 57% of crossings revert.
+
+**97 Terminal margin.** Median terminal margin **$28.5**; **4.4%** of rounds finish within $2
+of the anchor and **11.4%** within $5. Those are rounds the settlement *source* decides, not the
+price path — and §4.4 measured path-vs-official disagreement at 10.7% at T−15s.
+
+**123 Probability monotonicity.** The market's own ask is **perfectly monotone in win rate (0
+violations)** and **non-monotone in net value (2 violations)**, negative in 8 of 10 deciles.
+A higher probability costs a higher ask. This is the cleanest available statement of why AUC
+does not license threshold trading.
+
+**101 Jump vs diffusion.** Median jump share of hourly variation is **0.087**; only 1.9% of
+windows are jump-dominated. And the share *falls* as moves grow — 0.117 in the smallest quintile
+to **0.061** in the largest, 0.057 in the top 5%. **Large moves are predominantly continuous**,
+which contradicts the usual assumption and means stops are meaningful in this lane.
+
+**103 Volatility half-life.** AR(1) on log RV gives phi 0.7392, **half-life 34.4 minutes**.
+P(still elevated) decays 63.2% → 47.7% at 120 m against a 20% baseline. A 120-minute hold spends
+most of its life in a different regime from the one that justified entry.
+
+**106 MFE/MAE geometry — the decisive one.** Across a frozen 4x4 target/stop grid on 8,639
+disjoint 60m windows, **no cell clears costs**. Best is target 20 / stop 50 at **−9.70 bps**
+against a 12.0 bps round trip. At 10/10 the barriers are near-symmetric (**48.4% target vs 48.7%
+stop**) — exactly what a martingale predicts. A bar spanning both barriers is charged as a
+*stop*, since the intrabar order is unknown and assuming the favourable one manufactures edge.
+
+**No direction model can rescue a bracket in this lane.** That is a property of the path,
+established without predicting anything.
+
+### 10.6 What the seven add up to
+
+Nothing changes the evidence position, and two things sharpen it:
+
+1. **The model's deficit is resolution, not calibration** (89), which rules out the entire class
+   of "recalibrate P(hold)" remedies and points at the market-prior residual.
+2. **The path itself forbids a bracket** (106) and **forbids threshold trading** (123),
+   independently of any forecast.
+
+Three findings are genuinely new and reusable: large moves are continuous not jumpy (101), the
+volatility half-life is 34 minutes (103), and half of all rounds at T−4m have not yet had their
+final crossing (94).
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
