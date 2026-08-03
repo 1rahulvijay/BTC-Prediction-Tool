@@ -2,6 +2,12 @@
 
 Date: 2026-07-30
 
+> **Current correction record:** See
+> `PRODUCTION_CORRECTNESS_AND_RETRAIN_HANDOFF_2026-08-03.md`. The source now includes transactional
+> specialist/main-model promotion, official Protocol B/C resolution semantics, independent
+> recorder liveness and a live-safe evidence-readiness endpoint. Artifact, deployment and forward
+> profitability gates remain unresolved until retraining and evidence collection complete.
+
 ## Verdict
 
 The codebase is suitable for continued paper/shadow operation, but the current machine state is

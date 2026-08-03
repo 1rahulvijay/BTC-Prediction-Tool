@@ -40,7 +40,10 @@ from verified_io import write_manifest as write_integrity_manifest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
-OUT = os.path.join(DATA_DIR, "saved_models", "path_forecaster.pkl")
+OUT = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "path_forecaster.pkl",
+)
 
 FEATURES = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio", "shock_magnitude"]
 HORIZONS = (5, 15)

@@ -713,6 +713,16 @@ def init_db():
     conn.close()
 
 
+def close_db():
+    """Release the process-lifetime DuckDB anchor during an orderly shutdown."""
+    global _ANCHOR_CONN
+    if _ANCHOR_CONN is not None:
+        try:
+            _ANCHOR_CONN.close()
+        finally:
+            _ANCHOR_CONN = None
+
+
 def log_exchange_verification(timestamp: int, horizon: int, direction: str,
                               confirmed: int, checked: int, venues: dict):
     """Durably record per-venue confirmation of a BTC directional call."""
@@ -1069,6 +1079,8 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
     conn = None
     rounds = trades = ledger_outcomes = 0
     evidence_ledger = None
+    action_evidence = None
+    action_resolved_rounds = set()
     try:
         conn = _connect()
         try:
@@ -1076,6 +1088,12 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
             evidence_ledger = OpportunityLedger(os.path.join(_DATA_DIR, "opportunity_ledger.duckdb"))
         except Exception as exc:
             logger.warning("Official outcomes cannot reach the opportunity ledger: %s", exc)
+        try:
+            from open_position_action_recorder import recorder as action_recorder
+            action_evidence = action_recorder()
+            action_resolved_rounds = action_evidence.officially_resolved_round_ids()
+        except Exception as exc:
+            logger.warning("Official outcomes cannot reach the action recorder: %s", exc)
         settlements = conn.execute("""
             SELECT horizon, anchor_ts, settled_side, expiry_btc,
                    resolution_source, resolved_at
@@ -1101,6 +1119,18 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
                                 and (actual_price is None or (ptb[3] is not None
                                      and abs(float(ptb[3]) - actual_price) < 1e-9)))
             if already_official:
+                try:
+                    if action_evidence is not None and round_id not in action_resolved_rounds:
+                        action_evidence.record_settlement(
+                            round_id=round_id,
+                            settled_side=outcome,
+                            settled_ts=int(float(resolved_at or time.time()) * 1000),
+                            settlement_source=source,
+                        )
+                        action_resolved_rounds.add(round_id)
+                except Exception as exc:
+                    logger.warning("Official action-arm backfill failed for %s: %s",
+                                   round_id, exc)
                 continue
             conn.execute("""
                 UPDATE price_to_beat
@@ -1145,6 +1175,18 @@ def reconcile_official_polymarket_settlements(parquet_path: str) -> dict:
                 except Exception as exc:
                     logger.warning("Official opportunity outcome append failed for %s: %s",
                                    round_id, exc)
+            try:
+                if action_evidence is not None and round_id not in action_resolved_rounds:
+                    action_evidence.record_settlement(
+                        round_id=round_id,
+                        settled_side=outcome,
+                        settled_ts=settled_ms,
+                        settlement_source=source,
+                    )
+                    action_resolved_rounds.add(round_id)
+            except Exception as exc:
+                logger.warning("Official action-arm outcome append failed for %s: %s",
+                               round_id, exc)
         _OFFICIAL_SETTLEMENT_MTIME = mtime
         return {"status": "ok", "rounds": rounds, "trades": trades,
                 "ledger_outcomes": ledger_outcomes}

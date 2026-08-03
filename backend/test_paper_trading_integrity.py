@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 
 import database
 import decision_champion
+import open_position_action_recorder as action_recorder_module
 from price_to_beat import PriceToBeatTracker, _predict_path_plan
 
 
@@ -31,8 +32,12 @@ def run() -> None:
     with tempfile.TemporaryDirectory(prefix="btc-paper-integrity-") as td:
         old_path = database.DB_PATH
         old_anchor = database._ANCHOR_CONN
+        old_action_recorder = action_recorder_module._RECORDER
         database.DB_PATH = str(Path(td) / "test.duckdb")
         database._ANCHOR_CONN = None
+        action_recorder_module._RECORDER = action_recorder_module.OpenPositionActionRecorder(
+            Path(td) / "open_position_actions.duckdb"
+        )
         database._OFFICIAL_SETTLEMENT_MTIME = -1.0
         try:
             database.init_db()
@@ -138,6 +143,7 @@ def run() -> None:
                 database._ANCHOR_CONN.close()
             database._ANCHOR_CONN = old_anchor
             database.DB_PATH = old_path
+            action_recorder_module._RECORDER = old_action_recorder
     print("paper-trading-integrity: PASS")
 
 

@@ -26,7 +26,7 @@ REM microstructure features only fill from UPTIME, so after training, LEAVE IT R
 REM 30 = quick overnight run (2026-06-13): ~half the train time of 60, ~43k samples is enough to
 REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sane. BACKFILL follows.
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
-REM head (big-move/up/down/drop/activity, path forecaster, FADE model). Set the window here and every
+REM head (big-move/up/down/drop/activity and path/round-state forecasters). Set the window here and every
 REM model retrains on it. Long windows are resumable through the daily-file cache; the current
 REM 1000d window reuses the existing source-complete backfills and remains a long training run.
 REM 1000d current executable window (operator choice 2026-07-31).
@@ -93,6 +93,9 @@ REM post-boot -> the live price freezes and predictions lag ~30s until it finish
 REM only (not needed for live serving). Run it on demand instead: POST /api/backtest when the box is
 REM idle, or set BTC_RUN_STARTUP_BACKTEST=1 here for a one-off validated boot.
 if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=0"
+REM This launcher starts forward recorders, so stale/missing evidence must be visible as a
+REM DO_NOT_TRUST blocker in the UI. This does not enable real orders.
+if not defined BTC_EVIDENCE_MODE set "BTC_EVIDENCE_MODE=1"
 REM Backtest window: recent N rows (faster) or 0 = full historical replay (heavy on a laptop).
 if not defined BTC_BACKTEST_MAX_ROWS set "BTC_BACKTEST_MAX_ROWS=12000"
 REM Specialist-head move buckets in dollars (big-move/up/down/drop/activity). Each horizon has
@@ -109,11 +112,9 @@ REM model is STABLE and the live feed NEVER freezes (a background retrain pegs a
 REM hours and this box has no headroom for that). 0 = auto-improve, but on 16GB the feed WILL
 REM freeze during each ~4.6h retrain. To improve the model, retrain manually (POST /api/relearn
 REM or set this to 0 briefly) when you can leave it overnight with the IDE/browser closed.
-REM FROZEN (operator 2026-06-14, post-60d-retrain): 1 = no auto/scheduled retraining. The
-REM purged walk-forward showed ALL horizons at the information ceiling (1m 0.36 -> 30m 0.50,
-REM below_chance) — retraining cannot lift that, it only burns ~6h and freezes the feed. The
-REM saved v8 model's arch MATCHES the code, so boot LOADS it (no startup retrain). Set back to
-REM 0 only for a deliberate, operator-chosen retrain (e.g. new features / longer window).
+REM FROZEN means no scheduled retraining after this deliberate startup build. The current saved
+REM v11 model is incompatible with v14, so the missing completion marker forces one evaluated
+REM 1,000d replacement despite freeze mode. Later boots load the completed compatible bundle.
 set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
@@ -238,17 +239,9 @@ if errorlevel 2 (
     exit /b 1
 )
 
-REM One-time rollback snapshot before any forced head can replace an artifact. Robocopy exit
-REM codes 0-7 are success/nonfatal; 8+ means at least one copy failed and training must stop.
-if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not exist "%BTC_DATA_DIR%\saved_models_pre1500d_backup" (
-    echo [preflight] Backing up the current working model bundle before the long retrain...
-    robocopy "%BTC_DATA_DIR%\saved_models" "%BTC_DATA_DIR%\saved_models_pre1500d_backup" /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
-    if errorlevel 8 (
-        echo [preflight] ERROR: model backup failed. Training has not started.
-        exit /b 1
-    )
-    echo [preflight] Model rollback snapshot ready: data\saved_models_pre1500d_backup
-)
+REM Forced head training is transactional inside train_heads.py. It copies the current bundle
+REM to staging, trains there, and swaps only after every required head and manifest succeeds.
+REM Every successful swap receives a new timestamped rollback under data\model_bundle_backups.
 
 REM === INVARIANT SELFTESTS (fast, offline, no network) ===================
 REM These guard the failures that are SILENT: the app keeps running, the report looks healthy,
@@ -386,6 +379,17 @@ python research\maker_lever_test.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_l2
 python research\run_all_sequence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_l3
+echo [selftest] m. Paper evidence, official outcomes, degraded exits, and model rollback:
+python backend\open_position_action_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
+python backend\bc_forward_readiness_report.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
+python backend\model_promotion.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
+python backend\polymarket\model_dynamic_paper.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
+python backend\test_paper_trading_integrity.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
 echo [selftest] All invariant selftests passed.
 if "%BTC_SELFTEST_ONLY%"=="1" exit /b 0
 goto :selftests_done
@@ -444,6 +448,9 @@ goto :selftest_abort
 :selftest_failed_l3
 echo [selftest] FAILED: python research\run_all_sequence.py --selftest
 goto :selftest_abort
+:selftest_failed_m
+echo [selftest] FAILED: paper evidence, settlement, exit, or promotion integrity
+goto :selftest_abort
 
 :selftest_abort
 echo [selftest] ERROR: an invariant selftest failed. Startup stopped.
@@ -498,26 +505,12 @@ if errorlevel 1 (
     echo [0/3c2] Research-matrix build failed or coverage is too low.
     echo          Skipping specialist-head training to avoid stamping stale data as fresh.
 ) else (
-    REM CHALLENGER-ONLY for long windows. A build finishing is NOT a reason to replace the models
-    REM currently driving decisions. For >=1200d runs heads train into a challenger directory and
-    REM the incumbent bundle is untouched; promotion is a separate GATED step that verifies every
-    REM artifact manifest, the matrix monthly-quality gate, the admitted training window, and head
-    REM health:
-    REM   python backend\promote_challenger.py --challenger data\saved_models_challenger_Nd --days N
-    REM   (add --apply to promote; the incumbent is snapshotted first)
-    REM Set BTC_LONG_WINDOW_CHALLENGER=0 to train straight into saved_models (not advised).
-    if not defined BTC_LONG_WINDOW_CHALLENGER set "BTC_LONG_WINDOW_CHALLENGER=1"
-    if %BTC_HISTORICAL_DAYS% GEQ 1200 if "%BTC_LONG_WINDOW_CHALLENGER%"=="1" (
-        set "BTC_MODEL_OUTPUT_DIR=%BTC_DATA_DIR%\saved_models_challenger_%BTC_HISTORICAL_DAYS%d"
-        echo [0/3d] CHALLENGER MODE - heads train into saved_models_challenger_%BTC_HISTORICAL_DAYS%d
-        echo         The live bundle is NOT modified. Promote explicitly via promote_challenger.py.
-    )
     echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
     echo          HEAD_VERSION changed. Set BTC_FORCE_HEAD_RETRAIN=1 to train every head one by one:
     if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (
-        python backend\train_heads.py --force
+        python backend\train_heads.py --force --transactional-live
     ) else (
-        python backend\train_heads.py
+        python backend\train_heads.py --transactional-live
     )
     if errorlevel 1 (
         set "BTC_HEAD_RETRAIN_COMPLETE=0"

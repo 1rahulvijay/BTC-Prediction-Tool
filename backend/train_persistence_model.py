@@ -40,7 +40,10 @@ from verified_io import write_manifest as write_integrity_manifest
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 IN_PATH = os.path.join(DATA_DIR, "persistence_dataset.parquet")
-OUT_PATH = os.path.join(DATA_DIR, "saved_models", "persistence_model.pkl")
+OUT_PATH = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "persistence_model.pkl",
+)
 HEAD_VERSION = "2026-07-03-keeper-dual-perhorizon-iso-prodrefit"   # train_heads.py retrains when this changes
 
 FEATURES = ["abs_distance_pct", "seconds_left", "vol_60s_pct", "horizon", "dist_vol_ratio"]

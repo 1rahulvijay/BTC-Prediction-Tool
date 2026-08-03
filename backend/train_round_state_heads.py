@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get("BTC_DATA_DIR", ROOT / "data"))
 STATE_DIR = DATA / "research" / "round_state_stopping_180d_30s"
 MATRIX = DATA / "research_matrix_1m.parquet"
-OUT = DATA / "saved_models" / "round_state_heads.pkl"
+OUT = Path(os.environ.get("BTC_MODEL_OUTPUT_DIR") or DATA / "saved_models") / "round_state_heads.pkl"
 METRICS_OUT = DATA / "research" / "round_state_live" / "metrics.csv"
 TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
                   or os.environ.get("BTC_BACKFILL_DAYS") or "na")

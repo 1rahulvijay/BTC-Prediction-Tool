@@ -912,8 +912,6 @@ def _capture_open_position_action_evidence(round_data, now_ms, seconds_left, btc
     if not round_id or int(now_ms) - last_capture < _OPEN_ACTION_CAPTURE_MS:
         return None
     positions = database.fetch_open_rule_paper_positions(round_id)
-    if not positions:
-        return None
     round_data["_open_action_capture_ms"] = int(now_ms)
     result = open_position_action_recorder().record_positions(
         positions,
@@ -921,9 +919,11 @@ def _capture_open_position_action_evidence(round_data, now_ms, seconds_left, btc
         recorded_ts=int(now_ms),
         context={
             "mode": "PAPER_RESEARCH_ONLY",
+            "round_id": str(round_id),
             "horizon_min": int(round_data.get("horizon") or 0),
             "seconds_left": int(seconds_left),
             "btc_price": float(round_data.get("current_price") or 0.0),
+            "anchor_price": float(round_data.get("price_to_beat") or 0.0),
             "btc_side": str(btc_side or ""),
             "p_hold": (
                 float(round_data["p_hold"])
@@ -2431,6 +2431,12 @@ class PriceToBeatTracker:
                     # opposite side when Polymarket temporarily disagrees with the anchor feed.
                     _champ_quote = _side_quote(rnd, now_ms, rnd.get("current_position"))
                     _entry = champion_dynamic_entry(rnd, _champ_quote)
+                    rnd["champion_dynamic_status"] = {
+                        "action": _entry.get("action"),
+                        "execution_mode": "ENTRY_GATE",
+                        "degraded": False,
+                        "reason_codes": list(_entry.get("reason_codes") or []),
+                    }
                     if _entry.get("action") == "ENTER":
                         _state = _entry["state"]
                         _sh["champdyn"] = _state
@@ -2446,6 +2452,18 @@ class PriceToBeatTracker:
                 if _champ_state and _champ_state.get("open"):
                     _exit_quote = _side_quote(rnd, now_ms, _champ_state["side"])
                     _exit = champion_dynamic_exit(_champ_state, rnd, _exit_quote)
+                    _dynamic_status = {
+                        "action": _exit.get("action"),
+                        "execution_mode": _exit.get("execution_mode", "UNAVAILABLE"),
+                        "degraded": bool(_exit.get("degraded")),
+                        "reason_codes": list(_exit.get("reason_codes") or []),
+                    }
+                    rnd["champion_dynamic_status"] = _dynamic_status
+                    if _champ_state.get("dynamic_status") != _dynamic_status:
+                        _champ_state["dynamic_status"] = _dynamic_status
+                        database.update_rule_paper_state(
+                            rnd["id"], CHAMPION_DYNAMIC_RULE, _champ_state,
+                        )
                     if _exit.get("action") == "EXIT":
                         _champ_state["open"] = False
                         _champ_state["exit_reason"] = _exit["exit_reason"]
@@ -2459,7 +2477,12 @@ class PriceToBeatTracker:
                         )
                 if (_paper_entries_allowed and "champdyn" not in _sh
                         and secs_left <= 3 and rnd.get("id")):
-                    _sh["champdyn"] = {"open": False, "skipped": True}
+                    _status = rnd.get("champion_dynamic_status") or {}
+                    _sh["champdyn"] = {
+                        "open": False,
+                        "skipped": True,
+                        "reason_codes": list(_status.get("reason_codes") or ["entry_gate_never_passed"]),
+                    }
                     database.log_rule_paper_trade(
                         rnd["id"], CHAMPION_DYNAMIC_RULE, int(now_ms),
                         int(rnd.get("horizon") or 5), "", 0.0, 0.0, 0.0, 0.0,
@@ -3027,6 +3050,18 @@ class PriceToBeatTracker:
                             settlement_source="pyth_proxy")
                     except Exception as _pse:
                         logger.debug(f"Rule paper settle skipped: {_pse}")
+                    try:
+                        open_position_action_recorder().record_settlement(
+                            round_id=str(p["id"]),
+                            settled_side=str(actual_dir),
+                            settled_ts=int(now_ms),
+                            settlement_source="pyth_proxy",
+                        )
+                    except Exception as action_settle_exc:
+                        logger.warning(
+                            "Open-position action proxy settlement failed for %s: %s",
+                            p.get("id"), action_settle_exc,
+                        )
                     _pm_ledger_settle_round(
                         p["id"], actual_dir, int(now_ms), price=float(end_price),
                         kind="SETTLEMENT_PROXY", source="pyth_proxy")

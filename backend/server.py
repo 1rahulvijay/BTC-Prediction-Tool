@@ -58,6 +58,7 @@ from features import (
 )
 from model_verifier import PerModelVerifier
 from price_to_beat import PriceToBeatTracker, persistence_model_status
+from open_position_action_recorder import recorder as open_position_action_recorder
 import round_state_panel
 from trade_forecast import live_forecaster as complete_trade_forecaster
 import model_metrics_logger        # separate DuckDB; logs every model's live output (crash-safe)
@@ -99,6 +100,10 @@ from task_supervisor import (
 )
 from feed_writer import FEED_WRITER
 from model_revision_ledger import ModelRevisionLedger, forecast_identity
+from bc_forward_readiness_report import (
+    SourceUnreadable as ForwardReadinessUnavailable,
+    build_report as build_forward_readiness_report,
+)
 import database
 
 logging.basicConfig(
@@ -128,6 +133,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 MODEL_REVISION_DB = os.path.join(DATA_DIR, "model_revision_ledger.duckdb")
 _MODEL_REVISION_LEDGER = None
+_FORWARD_READINESS_CACHE = {"generated_at_s": 0.0, "payload": None}
 
 
 def _model_revision_ledger() -> ModelRevisionLedger:
@@ -390,6 +396,15 @@ def _write_active_train_boundary(train_boundary_ts=None, *, full_refit: bool = F
 async def lifespan(app: FastAPI):
     logger.info("Initializing Database...")
     database.init_db()
+    try:
+        open_position_action_recorder().record_positions(
+            [],
+            market_snapshot=None,
+            recorded_ts=int(time.time() * 1000),
+            context={"round_id": "startup", "mode": "PAPER_RESEARCH_ONLY"},
+        )
+    except Exception as exc:
+        logger.error("Open-position evidence recorder startup failed: %s", exc)
     # The feed writer is owned HERE, not started at import. An import-time thread starts during
     # test collection, hot reloads, pre-fork workers and any module that imports server.py merely
     # to inspect it - and it was never stopped, so queued writes were abandoned at shutdown.
@@ -517,6 +532,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.error("Feed writer shutdown INCOMPLETE - queued writes lost: %s",
                      dict(_feed_shutdown))
+    database.close_db()
 
 
 app = FastAPI(
@@ -2654,8 +2670,12 @@ async def relearn_models_background(reason: str = "manual"):
             if not had_trained_incumbent:
                 # First-ever boot has no incumbent to keep serving. The evaluated 98% candidate
                 # becomes the temporary primary; the 100% refit remains the silent challenger.
-                if not candidate._save_models(MODEL_DIR):
-                    raise RuntimeError("evaluated candidate could not be committed as bootstrap primary")
+                promotion = model_promotion.promote_model_bundle(
+                    candidate.model_dir,
+                    MODEL_DIR,
+                    os.path.join(DATA_DIR, "model_bundle_backups"),
+                )
+                logger.info("[PROMOTION] Bootstrap candidate committed with rollback: %s", promotion)
                 candidate.model_dir = MODEL_DIR
                 model = candidate
                 model.cascade_monitor = cascade_monitor
@@ -4239,10 +4259,21 @@ async def main_loop():
                         promoted_variant = ab_runner.challenger
                         if (promoted_variant
                                 and promoted_variant.label.startswith("full_refit_shadow_")):
-                            if not promoted_variant.model._save_models(MODEL_DIR):
+                            try:
+                                promotion = model_promotion.promote_model_bundle(
+                                    promoted_variant.model.model_dir,
+                                    MODEL_DIR,
+                                    os.path.join(DATA_DIR, "model_bundle_backups"),
+                                )
+                                logger.info(
+                                    "[PROMOTION] Full-refit bundle committed with rollback: %s",
+                                    promotion,
+                                )
+                            except Exception as promotion_exc:
                                 logger.error(
-                                    "[PROMOTION] Live gates passed but active-bundle commit failed; "
-                                    "keeping incumbent primary."
+                                    "[PROMOTION] Live gates passed but transactional active-bundle "
+                                    "commit failed; keeping incumbent primary: %s",
+                                    promotion_exc,
                                 )
                                 continue
                             promoted_variant.model.model_dir = MODEL_DIR
@@ -4602,6 +4633,22 @@ def _recorder_file_status(path: str, stale_after_s: float = 30.0) -> dict:
     }
 
 
+def _forward_readiness_snapshot(max_age_s: float = 15.0) -> dict:
+    now = time.time()
+    cached = _FORWARD_READINESS_CACHE.get("payload")
+    if cached is not None and now - float(_FORWARD_READINESS_CACHE["generated_at_s"]) <= max_age_s:
+        return copy.deepcopy(cached)
+    try:
+        payload = build_forward_readiness_report()
+        payload["available"] = True
+        payload["error"] = None
+    except ForwardReadinessUnavailable as exc:
+        payload = {"available": False, "error": str(exc), "B": None, "C": None}
+    _FORWARD_READINESS_CACHE["generated_at_s"] = now
+    _FORWARD_READINESS_CACHE["payload"] = payload
+    return copy.deepcopy(payload)
+
+
 def _system_health_snapshot() -> dict:
     timestamps = _safe_dict(data_state.get("feed_timestamps_ms"))
     pyth_ts = data_state.get("pyth_price_ts")
@@ -4622,10 +4669,42 @@ def _system_health_snapshot() -> dict:
             float(pyth_ts) * 1000.0 if pyth_ts else None, 10_000.0
         ),
     }
-    execution_db = os.path.join(DATA_DIR, "execution_layer.duckdb")
     recorders = {
-        "polymarket_l2": _recorder_file_status(execution_db),
+        "polymarket_quotes_settlements": _recorder_file_status(
+            os.path.join(DATA_DIR, "execution_layer.duckdb"), 120.0
+        ),
+        "polymarket_l2": _recorder_file_status(
+            os.path.join(DATA_DIR, "polymarket_l2.duckdb"), 120.0
+        ),
+        "microstructure": _recorder_file_status(
+            os.path.join(DATA_DIR, "microstructure.duckdb"), 120.0
+        ),
+        "multi_venue": _recorder_file_status(
+            os.path.join(DATA_DIR, "multi_venue.duckdb"), 120.0
+        ),
+        "binance_l2": _recorder_file_status(
+            os.path.join(DATA_DIR, "binance_l2.duckdb"), 120.0
+        ),
+        "deribit_options_optional": _recorder_file_status(
+            os.path.join(DATA_DIR, "deribit_options.duckdb"), 180.0
+        ),
+        "model_revisions": _recorder_file_status(
+            MODEL_REVISION_DB, 120.0
+        ),
+        "opportunity_ledger": _recorder_file_status(
+            os.path.join(DATA_DIR, "opportunity_ledger.duckdb"), 120.0
+        ),
     }
+    for recorder_name, recorder_status in recorders.items():
+        recorder_status["required"] = recorder_name != "deribit_options_optional"
+    forward_readiness = _forward_readiness_snapshot()
+    action_recorder = forward_readiness.get("recorder") or {}
+    heartbeat_ms = int(action_recorder.get("last_heartbeat_ms") or 0)
+    recorders["open_position_actions"] = _source_age_status(
+        heartbeat_ms if heartbeat_ms > 0 else None,
+        120_000.0,
+    )
+    recorders["open_position_actions"]["required"] = True
     polymarket_feed = polymarket_client.status()
     feed_protocols = {
         "binance_spot": ws_client.health_snapshot(),
@@ -4641,6 +4720,20 @@ def _system_health_snapshot() -> dict:
     ]
     if disk_hash != BACKEND_BOOT_CODE_HASH:
         blockers.append("backend_code_changed_after_boot")
+    if os.getenv("BTC_EVIDENCE_MODE", "0") == "1":
+        blockers.extend(
+            f"recorder:{name}:{item['status'].lower()}"
+            for name, item in recorders.items()
+            if item.get("required") and item.get("status") != "HEALTHY"
+        )
+        if not forward_readiness.get("available"):
+            blockers.append("forward_readiness_unavailable")
+    p_hold_status = persistence_model_status()
+    round_state_status = round_state_panel.status()
+    if not getattr(model, "is_trained", False):
+        blockers.append("model:main_ensemble_unavailable")
+    if not p_hold_status.get("loaded"):
+        blockers.append("model:p_hold_unavailable")
     if os.getenv(
         "BTC_REQUIRE_POLYMARKET_FEED",
         "1" if DEPLOYMENT_ENV == "production" else "0",
@@ -4688,9 +4781,16 @@ def _system_health_snapshot() -> dict:
         "feed_protocols": feed_protocols,
         "polymarket_feed": polymarket_feed,
         "recorders": recorders,
+        "forward_protocols": forward_readiness,
+        "model_readiness": {
+            "main_ensemble": "READY" if getattr(model, "is_trained", False) else "UNAVAILABLE",
+            "p_hold": p_hold_status,
+            "round_state": round_state_status,
+        },
         "database_writer": {
             "status": "HEALTHY" if os.access(DATA_DIR, os.W_OK) else "BLOCKED",
-            "data_directory": DATA_DIR,
+            "data_directory": os.path.relpath(DATA_DIR, PROJECT_ROOT),
+            "analytics_db": os.path.relpath(database.DB_PATH, PROJECT_ROOT),
         },
         "backend": {
             "started_at_s": backend_state.get("startup_start_time"),
@@ -4703,6 +4803,14 @@ def _system_health_snapshot() -> dict:
         "live_execution": {
             "available": False,
             "reason": "real-order adapters are not implemented or loaded",
+        },
+        "paper_engines": {
+            "polymarket": {"status": "ENABLED", "paper_only": True},
+            "binance": {
+                "status": binance_paper_service.status().get("runtime_state", "UNKNOWN"),
+                "enabled": bool(binance_paper_service.config.hard_enabled),
+                "paper_only": True,
+            },
         },
         "control_plane": {
             "browser_admin_enabled": DEPLOYMENT_ENV != "production",
@@ -4735,6 +4843,15 @@ async def runtime_status():
 @app.get("/api/system-health")
 async def api_system_health():
     return _system_health_snapshot()
+
+
+@app.get("/api/evidence-readiness")
+async def api_evidence_readiness():
+    """Performance-blind Protocol B/C counts from the live writer process."""
+    payload = _forward_readiness_snapshot(max_age_s=0.0)
+    if not payload.get("available"):
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @app.get("/healthz", include_in_schema=False)

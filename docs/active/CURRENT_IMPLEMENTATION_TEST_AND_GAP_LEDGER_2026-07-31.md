@@ -2,6 +2,12 @@
 
 Date: 2026-07-31
 
+> **2026-08-03 correctness addendum:** See
+> `PRODUCTION_CORRECTNESS_AND_RETRAIN_HANDOFF_2026-08-03.md` for the current transactional retrain,
+> official Protocol B/C outcome, independent recorder-heartbeat, live-safe readiness, degraded
+> dynamic-exit and expanded System Health implementation. This dated ledger remains the broader
+> capability catalog; the addendum takes precedence where runtime status differs.
+
 Reconciled against source baseline `404d9d9` plus the model-driven paper-strategy changes recorded
 in `MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.
 
@@ -83,6 +89,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | Polymarket canonical CLOB | `polymarket_client.py`, `polymarket/l2_book.py` | IMPLEMENTED_TESTED | Snapshot/increment, identity and stale-content invariants pass. | Profitability still needs forward quote, fill and settlement evidence. |
 | Pyth/round anchor | Price-to-Beat tracker | IMPLEMENTED_TESTED | Boundary, late-anchor invalidation and settlement tests pass. | Continue recorder evidence; do not mix Binance settlement with Pyth rounds. |
 | DuckDB analytics/predictions | `database.py` | IMPLEMENTED_TESTED | Persistence, restore and ledger tests pass. | Backups/service supervision remain deployment work. |
+| Open-position action evidence | `open_position_action_recorder.py` | SHADOW_PAPER | Independent heartbeat, same-time action arms, post-crossing reversion and official settlement tests pass. | Accumulate untouched official Protocol B/C outcomes; proxy settlement cannot complete either gate. |
 | Multi-venue event archive | `venues/multi_venue_recorder.py` | IMPLEMENTED_BLOCKED | 20,085,631 rows over 0.95d. | Need at least 60d for event families and four continuous qualifying weeks for the preregistered lane. |
 | Sequenced Binance L2 archive | `venues/binance_l2_recorder.py` | NOT_READY_DATA | Recorder/replay invariants pass; local archive absent. | Start the recorder and collect sequenced snapshot/diff/gap history. |
 | Deribit option chain archive | `venues/deribit_option_chain_recorder.py` | NOT_READY_DATA | 2,650 rows; latest batch stale. | Run continuously and join implied prices to subsequent realized movement. |
@@ -94,6 +101,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | 136-column diagnostic feature engine | `features.py` | IMPLEMENTED_TESTED | Schema hash and train/serve checks pass. | Many external/live-only columns remain excluded from main training. |
 | 63-column parity-safe model mask | `model_contract.py` | IMPLEMENTED_TESTED | v14 contract and retirement assertions pass. | Complete the compatible retrain. |
 | Main direction ensemble | `model.py` | IMPLEMENTED_BLOCKED | Training, stacking and save/load invariants pass. | Current saved v11 bundle is incompatible; retrain v14. |
+| Transactional model promotion | `train_heads.py`, `model_promotion.py` | IMPLEMENTED_TESTED | Specialist-head staging/swap and main-bundle manifest-last promotion/rollback tests pass. | Complete the compatible retrain from a clean committed tree. |
 | Move-size/conformal output | `model.py` | IMPLEMENTED_BLOCKED | Target/alignment and conformal tests pass. | Requires the compatible main bundle. |
 | XGBoost OOF stacker | `model.py` | IMPLEMENTED_BLOCKED | Persistence and OOF invariants pass. | Retrain and evaluate; no current trusted stacker artifact. |
 | Regime routing | `regime.py`, model routing | IMPLEMENTED_TESTED | Causal HMM forward-filter test passes. | Promotion still depends on model and live evidence. |
@@ -115,6 +123,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | Binance futures paper engine | `binance_paper/` | SHADOW_PAPER | Five isolated strategies; execution, partial fills, funding, recovery, risk and accounting suites pass. | Forward economic evidence is still required. |
 | Binance model-consensus strategy | `binance_paper/strategies/model_consensus.py` | SHADOW_PAPER | Uses the final calibrated 5m decision, conservative post-cost EV and causal dynamic exits. | Dormant without a compatible trained bundle and live calibration; must beat `random_control` forward. |
 | Polymarket Champion dynamic strategy | `polymarket/model_dynamic_paper.py` | SHADOW_PAPER | Requires the existing Champion `PAPER_BET`, exact ask/bid fees and depth; dynamic exit is ledger-tested. | Existing calibration lockdown remains default-off; forward profitability is unproven. |
+| Dynamic strategy degraded state | `polymarket/model_dynamic_paper.py`, Polymarket UI | IMPLEMENTED_TESTED | Entry fails closed without P(Hold); an existing position is explicitly marked `STATIC_RISK_ONLY` and can use only target/stop controls. | Restore model-backed exits only after compatible calibrated P(Hold) is serviceable. |
 | Exact Polymarket ladder VWAP | `polymarket/l2_book.py` | IMPLEMENTED_TESTED | Deterministic depth/VWAP tests pass. | Passive queue priority cannot be exact from public aggregate L2. |
 | Control-plane authentication | `control_auth.py` | IMPLEMENTED_TESTED | Real HTTP auth tests pass. | Production tokens/origins are not configured on this machine. |
 | Order lifecycle and reservations | `order_lifecycle.py` | IMPLEMENTED_TESTED | Timeout=UNKNOWN, transition and recovery tests pass. | No real venue adapter consumes it. |
@@ -131,6 +140,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | Binance Paper | IMPLEMENTED_TESTED | Isolated accounts, positions, orders, fills, funding, equity and controls. |
 | Analysis | IMPLEMENTED_TESTED | Plain-language technical/order-flow context; not an independent profit signal. |
 | System Health | IMPLEMENTED_TESTED | Feed, database, artifact, task, code and execution-readiness status. |
+| System Health evidence readiness | IMPLEMENTED_TESTED | All required/optional recorders, Protocol B/C counts, model prerequisites, paper-engine state and canonical DB path; required failures produce `DO_NOT_TRUST`. |
 | How to bet | IMPLEMENTED_TESTED | Operator explanation page; paper-only guidance, not financial advice. |
 
 Frontend production build and high-severity dependency audit pass. Hidden historical DOM views are

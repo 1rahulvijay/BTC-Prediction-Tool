@@ -53,6 +53,22 @@ wire a live Binance futures aggTrade stream computing the same per-bar CVD, then
 | **Deribit chain** | `deribit_options.duckdb` (`deribit_chain_batches`, `deribit_chain_snapshots`) | per-expiry/strike BTC call/put bid, ask, mark, IV, OI and receive/exchange time | standalone public recorder | *(forward-only)* |
 | outcomes | `predictions_{h}m`, `price_to_beat`, `model_predictions`, `ab_results` | predictions + resolved outcomes (labels) | live | — |
 
+### Open-position Protocol B/C recorder (2026-08-03)
+
+`backend/open_position_action_recorder.py` writes causal open-position evidence into the dedicated
+`data/open_position_actions.duckdb` store. The main app database remains
+`data/analytics.duckdb`:
+
+- `open_position_recorder_heartbeats`: one row per capture cycle, including no-open-position cycles;
+- `open_position_action_snapshots`: same-time HOLD/EXIT/REDUCE_50/SWITCH/LOCK inputs;
+- `position_crossing_state`: causal anchor-side transition state;
+- `post_entry_crossing_outcomes`: 5/15/30/60-second reversion and official final-crossing outcomes;
+- `open_position_action_outcomes`: append-only proxy and official action-arm values.
+
+Only official Polymarket settlement can complete Protocol B/C evidence gates. A Pyth proxy may be
+recorded for diagnostics, but it cannot turn a forward protocol into `COMPLETE`. Readiness can be
+queried while the writer owns DuckDB through `/api/evidence-readiness`.
+
 B1 is the ONLY collector with no offline twin — live L2 order-book depth (slots ~52–72) is not
 archived by Binance. That subset alone needs live accumulation (or a paid Tardis.dev L2 archive).
 

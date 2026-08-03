@@ -673,13 +673,55 @@ function renderSystemHealthStatus(payload) {
   }));
   const recorderTiles = Object.entries(payload.recorders || {}).map(([name, item]) => ({
     name,
-    value: item.age_s == null ? '--' : `${item.age_s} s`,
-    status: item.status,
+    value: item.age_s != null
+      ? `${item.age_s} s since write${item.required === false ? ' · optional' : ''}`
+      : item.age_ms != null
+        ? `${Math.round(item.age_ms / 1000)} s since heartbeat${item.required === false ? ' · optional' : ''}`
+        : `no evidence yet${item.required === false ? ' · optional' : ''}`,
+    status: item.required === false && item.status !== 'HEALTHY' ? 'INFO' : item.status,
+  }));
+  const protocols = payload.forward_protocols || {};
+  const protocolTiles = ['B', 'C'].filter(key => protocols[key]).map(key => {
+    const item = protocols[key] || {};
+    const resolved = key === 'B'
+      ? Number(item.final_crossing_labels_resolved || 0)
+      : Number(item.full_resolved_five_arm_rounds || 0);
+    return {
+      name: key === 'B' ? 'Protocol B · crossing outcomes' : 'Protocol C · action outcomes',
+      value: item.measurement === 'NOT_WIRED'
+        ? 'measurement not wired'
+        : `${resolved}/1,200 resolved · ${Number(item.calendar_days || 0)}/60 days`,
+      status: item.measurement === 'NOT_WIRED' ? 'BLOCKED' : (item.status || 'UNKNOWN'),
+    };
+  });
+  const models = payload.model_readiness || {};
+  const modelTiles = [
+    {
+      name: 'main prediction ensemble',
+      value: models.main_ensemble === 'READY' ? 'available to score' : 'retrain required',
+      status: models.main_ensemble === 'READY' ? 'HEALTHY' : 'BLOCKED',
+    },
+    {
+      name: 'P(Hold) model',
+      value: models.p_hold?.loaded ? 'available to price hold risk' : (models.p_hold?.error || 'retrain required'),
+      status: models.p_hold?.loaded ? 'HEALTHY' : 'BLOCKED',
+    },
+    {
+      name: 'round-state heads',
+      value: models.round_state?.loaded ? `shadow ${models.round_state.version || ''}` : (models.round_state?.error || 'not available'),
+      status: models.round_state?.loaded ? 'HEALTHY' : 'INFO',
+    },
+  ];
+  const paperEngines = payload.paper_engines || {};
+  const paperTiles = Object.entries(paperEngines).map(([name, item]) => ({
+    name: `${name} paper engine`,
+    value: item.enabled === false ? 'disabled by operator config' : 'paper only · no real orders',
+    status: item.enabled === false ? 'INFO' : 'HEALTHY',
   }));
   const extra = [
     {
       name: 'database writer',
-      value: escapePlatformText(payload.database_writer?.status || 'UNKNOWN'),
+      value: payload.database_writer?.analytics_db || payload.database_writer?.data_directory || 'path unavailable',
       status: payload.database_writer?.status || 'UNKNOWN',
     },
     {
@@ -693,11 +735,16 @@ function renderSystemHealthStatus(payload) {
       status: payload.live_execution?.available ? 'HEALTHY' : 'INFO',
     },
   ];
-  grid.innerHTML = [...feedTiles, ...recorderTiles, ...extra].map(item => {
-    const tileColor = item.status === 'HEALTHY' ? 'var(--green)' : item.status === 'INFO' ? 'var(--text-secondary)' : 'var(--red)';
+  grid.innerHTML = [...modelTiles, ...protocolTiles, ...feedTiles, ...recorderTiles, ...paperTiles, ...extra].map(item => {
+    const status = String(item.status || 'UNKNOWN').toUpperCase();
+    const warning = status === 'COLLECTING' || status === 'DATA_GATE_INCOMPLETE' || status === 'NOT_STARTED';
+    const tileColor = status === 'HEALTHY' || status === 'DATA_GATE_COMPLETE_UNSCORED'
+      ? 'var(--green)'
+      : warning ? '#ffb74d'
+        : status === 'INFO' ? 'var(--text-secondary)' : 'var(--red)';
     return `<div style="border:1px solid rgba(255,255,255,.12);padding:.7rem;background:rgba(255,255,255,.02)">
       <div style="font-size:.72em;text-transform:uppercase;color:var(--text-secondary)">${escapePlatformText(item.name.replaceAll('_', ' '))}</div>
-      <strong style="display:block;margin-top:.25rem;color:${tileColor}">${escapePlatformText(item.status)}</strong>
+      <strong style="display:block;margin-top:.25rem;color:${tileColor}">${escapePlatformText(status)}</strong>
       <span style="font-size:.82em">${escapePlatformText(item.value)}</span>
     </div>`;
   }).join('');
@@ -3696,6 +3743,29 @@ function renderPMCore(data, cfg) {
         <div style="width:100%;font-size:.68em;color:#8892a6">Buy = current ask you would pay. Sell now = current bid available to exit. Prices exclude the displayed strategy's separate fee calculation.</div>
       </div>`;
     })();
+    const dynamicPaperHtml = (() => {
+      if (resolved || !r.champion_dynamic_status) return '';
+      const status = r.champion_dynamic_status;
+      const mode = String(status.execution_mode || 'UNAVAILABLE');
+      const action = String(status.action || 'HOLD');
+      const reasons = (status.reason_codes || []).map(reason => String(reason).replaceAll('_', ' '));
+      const degraded = status.degraded === true || mode === 'STATIC_RISK_ONLY';
+      const color = degraded ? '#ff5252' : mode === 'MODEL_DYNAMIC' ? '#00e676' : '#ffb74d';
+      const title = degraded
+        ? 'PAPER EXIT DEGRADED · TARGET/STOP ONLY'
+        : mode === 'MODEL_DYNAMIC'
+          ? `PAPER EXIT MODEL ACTIVE · ${action}`
+          : `PAPER ENTRY GATE · ${action.replaceAll('_', ' ')}`;
+      const explanation = degraded
+        ? 'P(Hold) is unavailable. Existing paper inventory is protected only by its fixed net target and stop; model invalidation and profit-lock exits are disabled.'
+        : mode === 'MODEL_DYNAMIC'
+          ? 'The paper position can react to P(Hold) invalidation, edge decay, late risk, target, or stop.'
+          : (reasons.length ? reasons.join(' · ') : 'Waiting for the Champion and executable-price gates.');
+      return `<div style="margin-top:.4rem;padding:.42rem .6rem;border-left:3px solid ${color};background:${color}12;font-size:.75em">
+        <strong style="color:${color}">${title}</strong>
+        <div style="margin-top:.15rem;color:var(--text-secondary)">${escapePlatformText(explanation)}</div>
+      </div>`;
+    })();
     // Complete-trade forecaster: entry, executable bid path, exit math and capacity.
     // This lane is deliberately SHADOW/PILOT and is visually separate from Champion.
     const completeTradeHtml = (() => {
@@ -3797,6 +3867,7 @@ function renderPMCore(data, cfg) {
       ${actionHtml}
       ${leaderHtml}
       ${sharePricesHtml}
+      ${dynamicPaperHtml}
       ${completeTradeHtml}
       ${pathStrip}
       ${headsGrid}

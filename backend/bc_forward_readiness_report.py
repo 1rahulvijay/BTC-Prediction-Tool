@@ -19,8 +19,11 @@ WHY IT EXPOSES NO PERFORMANCE
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -86,8 +89,8 @@ class MeasurementNotWired(SourceUnreadable):
     "not yet implemented" and "measured and found zero" print identically."""
 
 
-#: Protocol B is scored on post-entry crossings. No recorder writes these yet, so the fields
-#: are UNWIRED rather than zero, and the report refuses instead of inventing them.
+#: Protocol B is scored on post-entry crossings. Older stores without this table are explicitly
+#: reported as unwired; current recorder schemas create and populate it causally.
 CROSSING_TABLE = "post_entry_crossing_outcomes"
 CROSSING_COLUMNS = (
     "position_id", "round_id", "position_snapshot_id", "crossing_ts", "crossing_direction",
@@ -169,9 +172,9 @@ def _rate(numerator: int, denominator: int) -> float:
     return (numerator / denominator) if denominator else 0.0
 
 
-def _ledger_counts() -> dict:
+def _ledger_counts(db: Path | None = None) -> dict:
     """Counts from the causal decision ledger. Raises rather than reporting a false zero."""
-    con = _connect(LEDGER_DB, ("opportunity_decisions",))
+    con = _connect(db or LEDGER_DB, ("opportunity_decisions",))
     try:
         row = con.execute("""
             SELECT count(*),
@@ -206,7 +209,8 @@ def _position_counts(db: Path | None = None) -> dict:
     """Protocol C coverage, read from the open-position recorder. Raises on unreadable."""
     con = _connect(db or POSITIONS_DB, (
         "open_position_snapshots", "paired_book_snapshots", "open_position_action_arms",
-        "open_position_recorder_refusals", "open_position_capture_attempts"))
+        "open_position_recorder_refusals", "open_position_capture_attempts",
+        "open_position_recorder_heartbeats", "open_position_action_outcomes"))
     try:
         snaps, positions, days, weeks, paired_linked = con.execute("""
             SELECT count(*), count(DISTINCT position_id),
@@ -236,13 +240,17 @@ def _position_counts(db: Path | None = None) -> dict:
                 GROUP BY position_snapshot_id
                 HAVING count(DISTINCT action) = {len(ACTION_ARMS)})""",
             list(ACTION_ARMS)).fetchone()[0]
-        residual, settled, partial = con.execute("""
+        residual, partial = con.execute("""
             SELECT count(*) FILTER (WHERE up_shares_after IS NOT NULL
                                       AND down_shares_after IS NOT NULL),
-                   count(*) FILTER (WHERE settlement_floor_net IS NOT NULL),
                    count(*) FILTER (WHERE execution_json IS NOT NULL
                                       AND execution_json LIKE '%partial%')
             FROM open_position_action_arms WHERE complete""").fetchone()
+        settled = con.execute("""
+            SELECT count(DISTINCT position_snapshot_id || ':' || action)
+            FROM open_position_action_outcomes
+            WHERE lower(settlement_source) LIKE 'official:%'
+        """).fetchone()[0]
 
         # THE ACTUAL PROTOCOL C GATE. A qualifying unit is a distinct ROUND - not a snapshot,
         # not an arm row - in which all five arms are complete FROM THE SAME causal snapshot
@@ -261,14 +269,20 @@ def _position_counts(db: Path | None = None) -> dict:
                   FROM open_position_action_arms
                   WHERE complete AND action IN ({placeholders})
                   GROUP BY position_snapshot_id
-                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}
-                     AND count(*) FILTER (WHERE settlement_floor_net IS NULL) = 0) a
+                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) a
               ON a.position_snapshot_id = s.position_snapshot_id
+            JOIN (SELECT position_snapshot_id
+                  FROM open_position_action_outcomes
+                  WHERE action IN ({placeholders})
+                    AND lower(settlement_source) LIKE 'official:%'
+                  GROUP BY position_snapshot_id
+                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) o
+              ON o.position_snapshot_id = s.position_snapshot_id
             WHERE p.fee_rate IS NOT NULL AND p.fees_enabled IS NOT NULL
               AND abs(coalesce(p.pair_skew_ms, 0)) <= {MAX_PAIR_SKEW_MS}
               AND p.up_recv_ts <= s.snapshot_ts AND p.down_recv_ts <= s.snapshot_ts
               AND s.recorded_ts >= s.snapshot_ts
-              AND s.round_id IS NOT NULL""", list(ACTION_ARMS)).fetchone()[0]
+              AND s.round_id IS NOT NULL""", list(ACTION_ARMS) + list(ACTION_ARMS)).fetchone()[0]
         # The gate's own span must come from the qualifying rounds, not from every snapshot
         # ever written - otherwise a long dark stretch of unusable captures inflates it.
         gate_days, gate_weeks = con.execute(f"""
@@ -281,22 +295,31 @@ def _position_counts(db: Path | None = None) -> dict:
                   FROM open_position_action_arms
                   WHERE complete AND action IN ({placeholders})
                   GROUP BY position_snapshot_id
-                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}
-                     AND count(*) FILTER (WHERE settlement_floor_net IS NULL) = 0) a
+                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) a
               ON a.position_snapshot_id = s.position_snapshot_id
+            JOIN (SELECT position_snapshot_id
+                  FROM open_position_action_outcomes
+                  WHERE action IN ({placeholders})
+                    AND lower(settlement_source) LIKE 'official:%'
+                  GROUP BY position_snapshot_id
+                  HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) o
+              ON o.position_snapshot_id = s.position_snapshot_id
             WHERE p.fee_rate IS NOT NULL AND p.fees_enabled IS NOT NULL
               AND abs(coalesce(p.pair_skew_ms, 0)) <= {MAX_PAIR_SKEW_MS}
               AND p.up_recv_ts <= s.snapshot_ts AND p.down_recv_ts <= s.snapshot_ts
               AND s.recorded_ts >= s.snapshot_ts
-              AND s.round_id IS NOT NULL""", list(ACTION_ARMS)).fetchone()
+              AND s.round_id IS NOT NULL""", list(ACTION_ARMS) + list(ACTION_ARMS)).fetchone()
 
         # RECORDER LIVENESS. Capture ATTEMPTS, not successes: a recorder that runs and rejects
         # everything is alive and collecting nothing, which is COLLECTING, not NOT_STARTED.
-        attempts, last_attempt, accepted, refused = con.execute("""
+        attempts, _last_attempt, accepted, refused = con.execute("""
             SELECT count(*), max(attempted_ts),
                    count(*) FILTER (WHERE upper(status) IN ('OK', 'ACCEPTED', 'RECORDED')),
                    count(*) FILTER (WHERE upper(status) NOT IN ('OK', 'ACCEPTED', 'RECORDED'))
             FROM open_position_capture_attempts""").fetchone()
+        heartbeats, last_heartbeat = con.execute("""
+            SELECT count(*), max(heartbeat_ts)
+            FROM open_position_recorder_heartbeats""").fetchone()
         stale = con.execute(
             "SELECT count(*) FROM open_position_recorder_refusals "
             "WHERE lower(category) LIKE '%stale%'").fetchone()[0]
@@ -307,8 +330,8 @@ def _position_counts(db: Path | None = None) -> dict:
         con.close()
     import time
     now_ms = int(time.time() * 1000)
-    alive = (last_attempt is not None
-             and (now_ms - int(last_attempt)) <= HEARTBEAT_WINDOW_MS)
+    alive = (last_heartbeat is not None
+             and (now_ms - int(last_heartbeat)) <= HEARTBEAT_WINDOW_MS)
     return {
         "snapshots": int(snaps), "positions": int(positions), "days": int(days),
         "weeks": int(weeks), "paired_linked": int(paired_linked), "paired": int(paired),
@@ -319,7 +342,8 @@ def _position_counts(db: Path | None = None) -> dict:
         "residual": int(residual), "settled": int(settled), "partial": int(partial),
         "stale_refusals": int(stale), "skew_refusals": int(skew_refused) + int(skewed),
         "capture_attempts": int(attempts),
-        "last_attempt_ms": int(last_attempt) if last_attempt is not None else 0,
+        "heartbeats": int(heartbeats),
+        "last_heartbeat_ms": int(last_heartbeat) if last_heartbeat is not None else 0,
         "captures_accepted": int(accepted), "captures_refused": int(refused),
         "writer_active": bool(alive),
     }
@@ -340,7 +364,7 @@ def _crossing_counts(db: Path | None = None) -> dict:
         if CROSSING_TABLE not in present:
             raise MeasurementNotWired(
                 f"Protocol B needs table '{CROSSING_TABLE}' in {target.name} with columns "
-                f"{list(CROSSING_COLUMNS)}. No recorder writes it yet, so crossing readiness "
+                f"{list(CROSSING_COLUMNS)}. This store predates the crossing recorder, so readiness "
                 f"is UNMEASURED - it is not zero.")
         columns = {r[0] for r in con.execute(f"DESCRIBE {CROSSING_TABLE}").fetchall()}
         missing = [c for c in CROSSING_COLUMNS if c not in columns]
@@ -349,10 +373,14 @@ def _crossing_counts(db: Path | None = None) -> dict:
                 f"'{CROSSING_TABLE}' exists but lacks {missing} - Protocol B labels cannot be "
                 f"counted from it")
         rounds, crossings, final_labels, reversions, settled, dupes = con.execute("""
-            SELECT count(DISTINCT round_id), count(*),
-                   count(*) FILTER (WHERE is_final_crossing IS NOT NULL),
+            SELECT count(DISTINCT round_id) FILTER (
+                       WHERE settlement_resolved AND is_final_crossing = TRUE),
+                   count(*),
+                   count(*) FILTER (WHERE settlement_resolved
+                                      AND is_final_crossing IS NOT NULL),
                    count(*) FILTER (WHERE reverted_5s IS NOT NULL AND reverted_15s IS NOT NULL
-                                      AND reverted_30s IS NOT NULL AND reverted_60s IS NOT NULL),
+                                      AND reverted_30s IS NOT NULL AND reverted_60s IS NOT NULL
+                                      AND settlement_resolved),
                    count(*) FILTER (WHERE settlement_resolved),
                    count(*) - count(DISTINCT (position_snapshot_id, crossing_ts))
             FROM post_entry_crossing_outcomes""").fetchone()
@@ -363,8 +391,9 @@ def _crossing_counts(db: Path | None = None) -> dict:
             "settled": int(settled), "duplicates": int(dupes)}
 
 
-def build_report(*, positions_db: Path | None = None) -> dict:
-    ledger = _ledger_counts()
+def build_report(*, positions_db: Path | None = None,
+                 ledger_db: Path | None = None) -> dict:
+    ledger = _ledger_counts(ledger_db)
     pos = _position_counts(positions_db)
     active = pos["writer_active"]
 
@@ -440,7 +469,8 @@ def build_report(*, positions_db: Path | None = None) -> dict:
         "recorder": {
             "writer_active": active,
             "capture_attempts": pos["capture_attempts"],
-            "last_attempt_ms": pos["last_attempt_ms"],
+            "heartbeats": pos["heartbeats"],
+            "last_heartbeat_ms": pos["last_heartbeat_ms"],
             "captures_accepted": pos["captures_accepted"],
             "captures_refused": pos["captures_refused"],
             "heartbeat_window_ms": HEARTBEAT_WINDOW_MS,
@@ -485,22 +515,56 @@ def _plant_positions(db: Path, *, arms, snapshots: int, days: int,
     con.execute("""CREATE TABLE open_position_capture_attempts(
         attempt_id BIGINT, schema_version INTEGER, position_id BIGINT, round_id BIGINT,
         strategy_id VARCHAR, attempted_ts BIGINT, status VARCHAR, reason VARCHAR)""")
-    day_ms = 86_400_000
-    for i in range(snapshots):
-        ts = (i % days) * day_ms + (i // days) * 60_000 + day_ms
-        recv = ts + 5_000 if book_after else ts - 5_000
-        con.execute("INSERT INTO open_position_snapshots VALUES "
-                    "(?,1,?,?,'s',5,?,?,?,?,1,1,0.7,0.01,'live','{}','{}','h')",
-                    [i, i, i, ts - 60_000, i, ts, ts + 100])
-        con.execute("INSERT INTO paired_book_snapshots VALUES "
-                    "(?,1,?,?,?,?,0.02,true,'u','d','{}',?)",
-                    [i, ts, recv, recv, pair_skew_ms, ts])
-        for arm in arms:
-            con.execute("INSERT INTO open_position_action_arms VALUES "
-                        "(?,?,false,true,true,NULL,0.0,0.0,1,1,0.5,?,'{}')",
-                        [i, arm, 0.5 if settled else None])
-        con.execute("INSERT INTO open_position_capture_attempts VALUES "
-                    "(?,1,?,?,'s',?,'OK',NULL)", [i, i, i, ts])
+    con.execute("""CREATE TABLE open_position_recorder_heartbeats(
+        heartbeat_id BIGINT, schema_version INTEGER, heartbeat_ts BIGINT, round_id BIGINT,
+        open_position_count INTEGER, status VARCHAR, reason VARCHAR)""")
+    con.execute("""CREATE TABLE open_position_action_outcomes(
+        outcome_id VARCHAR, position_snapshot_id BIGINT, action VARCHAR, round_id BIGINT,
+        settled_ts BIGINT, settled_side VARCHAR, realized_gross DOUBLE, realized_net DOUBLE,
+        settlement_source VARCHAR, recorded_ts BIGINT, label_version VARCHAR)""")
+    con.execute("CREATE TEMP TABLE fixture_arms(action VARCHAR)")
+    con.executemany("INSERT INTO fixture_arms VALUES (?)", [(arm,) for arm in arms])
+    con.execute(
+        """CREATE TEMP TABLE fixture_rows AS
+           SELECT i,
+                  ((i % ?) * 86400000 + floor(i / ?) * 60000 + 86400000)::BIGINT AS ts
+           FROM range(?) AS rows(i)""",
+        [days, days, snapshots],
+    )
+    con.execute(
+        """INSERT INTO open_position_snapshots
+           SELECT i, 1, i, i, 's', 5, ts - 60000, i, ts, ts + 100,
+                  1.0, 1.0, 0.7, 0.01, 'live', '{}', '{}', 'h'
+           FROM fixture_rows"""
+    )
+    recv_offset = 5_000 if book_after else -5_000
+    con.execute(
+        """INSERT INTO paired_book_snapshots
+           SELECT i, 1, ts, ts + ?, ts + ?, ?, 0.02, true, 'u', 'd', '{}', ts
+           FROM fixture_rows""",
+        [recv_offset, recv_offset, pair_skew_ms],
+    )
+    con.execute(
+        """INSERT INTO open_position_action_arms
+           SELECT i, action, false, true, true, NULL, 0.0, 0.0,
+                  1.0, 1.0, 0.5, 0.5, '{}'
+           FROM fixture_rows CROSS JOIN fixture_arms"""
+    )
+    if settled:
+        con.execute(
+            """INSERT INTO open_position_action_outcomes
+               SELECT concat(i, ':', action), i, action, i, ts + 60000,
+                      'UP', 1.0, 0.3, 'official:test', ts + 60000, 'v1'
+               FROM fixture_rows CROSS JOIN fixture_arms"""
+        )
+    con.execute(
+        """INSERT INTO open_position_capture_attempts
+           SELECT i, 1, i, i, 's', ts, 'OK', NULL FROM fixture_rows"""
+    )
+    con.execute(
+        """INSERT INTO open_position_recorder_heartbeats
+           SELECT i, 1, ts, i, 1, 'CAPTURE_CYCLE', 'test' FROM fixture_rows"""
+    )
     con.close()
 
 
@@ -517,6 +581,14 @@ def _plant_crossings(db: Path, *, rows: int) -> None:
         con.execute(f"INSERT INTO {CROSSING_TABLE} VALUES "
                     "(?,?,?,?,'UP',true,false,false,true,true,true,'v1')",
                     [i, i, i, 1_000 + i])
+    con.close()
+
+
+def _plant_ledger(db: Path) -> None:
+    import duckdb
+    con = duckdb.connect(str(db))
+    con.execute("""CREATE TABLE opportunity_decisions(
+        decision_ts BIGINT, action VARCHAR, state_snapshot_ts BIGINT, quote_recv_ts BIGINT)""")
     con.close()
 
 
@@ -648,27 +720,33 @@ def selftest() -> int:
         check(_position_counts(unsettled)["five_arm_rounds"] == 0,
               "five complete arms without a resolved settlement do not qualify")
 
-        # Protocol B must refuse rather than report zero, until a recorder writes the table.
+        # A legacy store without the new crossing table must refuse rather than report zero.
         try:
             _crossing_counts(full)
             check(False, "unreachable")
         except MeasurementNotWired:
             pass
-        check(True, "Protocol B crossing labels raise MeasurementNotWired - never a false 0")
+        check(True, "a pre-crossing-recorder store raises MeasurementNotWired - never a false 0")
 
         _plant_crossings(full, rows=3)
         cross = _crossing_counts(full)
         check(cross["crossings"] == 3 and cross["rounds"] == 3,
               "...and once the table exists, the counts are READ rather than assumed")
 
-    report = build_report()
+    with tempfile.TemporaryDirectory() as tmp:
+        positions = Path(tmp) / "report_positions.duckdb"
+        ledger_db = Path(tmp) / "report_ledger.duckdb"
+        _plant_positions(positions, arms=ACTION_ARMS, snapshots=3, days=3)
+        _plant_crossings(positions, rows=3)
+        _plant_ledger(ledger_db)
+        report = build_report(positions_db=positions, ledger_db=ledger_db)
     check(set(report) == {"recorder", "ledger", "B", "C"},
           "the report exposes exactly four sections")
     check(not any(forbidden_reason(k) for k in iter_keys(report)),
           "the REAL report contains no performance-shaped key at ANY depth")
     check(report["C"]["status"] in STATUSES, "Protocol C emits a declared status")
-    check(report["B"]["measurement"] == "NOT_WIRED" and report["B"]["status"] is None,
-          "Protocol B reports NOT_WIRED with NO status - it does not claim NOT_STARTED")
+    check(report["B"]["measurement"] in {"WIRED", "NOT_WIRED"},
+          "Protocol B reports the measured schema state rather than fabricating counts")
     check(set(ACTION_ARMS) == {"HOLD", "EXIT", "REDUCE_50", "SWITCH", "LOCK"},
           "coverage is measured against Protocol C's five declared arms")
 
@@ -679,18 +757,37 @@ def selftest() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selftest", action="store_true")
-    if parser.parse_args().selftest:
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("BTC_READINESS_API_URL", ""),
+        help="read the live process endpoint instead of opening its DuckDB files",
+    )
+    args = parser.parse_args()
+    if args.selftest:
         return selftest()
 
     print("=" * 88)
     print("PROTOCOL B / C FORWARD READINESS - counts and coverage only, never performance")
     print("=" * 88)
     try:
-        report = build_report()
+        if args.api_url:
+            with urllib.request.urlopen(args.api_url, timeout=5.0) as response:
+                report = json.loads(response.read().decode("utf-8"))
+            assert_performance_blind(report)
+        else:
+            report = build_report()
     except SourceUnreadable as exc:
-        print(f"  SOURCE UNREADABLE: {exc}")
-        print("  No status is emitted. 'I could not look' is not one of the four statuses.")
-        return 1
+        fallback = "http://127.0.0.1:8000/api/evidence-readiness"
+        try:
+            with urllib.request.urlopen(fallback, timeout=3.0) as response:
+                report = json.loads(response.read().decode("utf-8"))
+            assert_performance_blind(report)
+            print(f"  live-safe source: {fallback} (direct DuckDB read unavailable)")
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, PerformanceLeak) as api_exc:
+            print(f"  SOURCE UNREADABLE: {exc}")
+            print(f"  LIVE API UNAVAILABLE: {api_exc}")
+            print("  No status is emitted. 'I could not look' is not one of the four statuses.")
+            return 1
     rec, ledger = report["recorder"], report["ledger"]
     print(f"  recorder    : {'ALIVE' if rec['writer_active'] else 'NOT RUNNING'} "
           f"| {rec['capture_attempts']:,} capture attempts "

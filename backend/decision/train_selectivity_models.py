@@ -46,7 +46,10 @@ from verified_io import write_manifest as write_integrity_manifest
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
-OUT = os.path.join(DATA_DIR, "saved_models", "selectivity_models.pkl")
+OUT = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "selectivity_models.pkl",
+)
 TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
                   or os.environ.get("BTC_BACKFILL_DAYS") or "na")
 

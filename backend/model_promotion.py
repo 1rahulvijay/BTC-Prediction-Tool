@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
 import numpy as np
+
+from artifact_identity import artifact_compatibility, hash_directory_files
 
 
 def promotion_required(enabled: bool, reason: str | None = None) -> bool:
@@ -198,7 +201,109 @@ def atomic_json(path: str | Path, payload: dict) -> None:
             temporary.unlink()
 
 
+def promote_model_bundle(source_dir: str | Path, destination_dir: str | Path,
+                         backup_root: str | Path) -> dict:
+    """Promote one verified main-model bundle without replacing specialist-head files."""
+    source = Path(source_dir).resolve()
+    destination = Path(destination_dir).resolve()
+    source_manifest_path = source / "artifact_manifest.json"
+    if not source_manifest_path.is_file():
+        raise RuntimeError(f"staged bundle has no artifact manifest: {source}")
+    manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    artifact_files = [str(item) for item in manifest.get("artifact_files") or []]
+    if not artifact_files:
+        raise RuntimeError("staged bundle manifest has no artifact_files")
+    if manifest.get("artifact_hash") != hash_directory_files(source, artifact_files):
+        raise RuntimeError("staged bundle hash does not match its manifest")
+    for relative in artifact_files:
+        candidate = (source / relative).resolve()
+        if source not in candidate.parents or not candidate.is_file():
+            raise RuntimeError(f"staged bundle file is missing or escapes its root: {relative}")
+        integrity = Path(f"{candidate}.integrity.json")
+        if not integrity.is_file():
+            raise RuntimeError(f"staged bundle integrity sidecar is missing: {relative}")
+
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup = Path(backup_root).resolve() / f"main_pre_promotion_{stamp}_{os.getpid()}"
+    backup.mkdir(parents=True, exist_ok=False)
+    destination.mkdir(parents=True, exist_ok=True)
+    replaced: list[tuple[Path, Path | None]] = []
+
+    def backup_existing(target: Path) -> Path | None:
+        if not target.exists():
+            return None
+        relative = target.relative_to(destination)
+        saved = backup / relative
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, saved)
+        return saved
+
+    try:
+        for relative in artifact_files:
+            source_file = source / relative
+            target_file = destination / relative
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            for source_item, target_item in (
+                (source_file, target_file),
+                (Path(f"{source_file}.integrity.json"), Path(f"{target_file}.integrity.json")),
+            ):
+                saved = backup_existing(target_item)
+                replaced.append((target_item, saved))
+                temporary = target_item.with_name(target_item.name + f".tmp.{os.getpid()}")
+                shutil.copy2(source_item, temporary)
+                os.replace(temporary, target_item)
+
+        target_manifest = destination / "artifact_manifest.json"
+        saved_manifest = backup_existing(target_manifest)
+        replaced.append((target_manifest, saved_manifest))
+        temporary_manifest = target_manifest.with_name(
+            target_manifest.name + f".tmp.{os.getpid()}"
+        )
+        shutil.copy2(source_manifest_path, temporary_manifest)
+        os.replace(temporary_manifest, target_manifest)
+        compatible, reasons = artifact_compatibility(destination, {}, strict=True)
+        if not compatible:
+            raise RuntimeError("promoted bundle failed hash validation: " + "; ".join(reasons))
+    except Exception as promotion_error:
+        restore_errors = []
+        # Restore data files first and the old manifest last, mirroring the commit order.
+        manifest_record = replaced[-1] if replaced and replaced[-1][0].name == "artifact_manifest.json" else None
+        data_records = replaced[:-1] if manifest_record else replaced
+        for target, saved in reversed(data_records):
+            try:
+                if saved is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(saved, target)
+            except OSError as exc:
+                restore_errors.append(f"{target}: {exc}")
+        if manifest_record:
+            target, saved = manifest_record
+            try:
+                if saved is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    shutil.copy2(saved, target)
+            except OSError as exc:
+                restore_errors.append(f"{target}: {exc}")
+        if restore_errors:
+            raise RuntimeError(
+                f"promotion failed ({promotion_error}); rollback was incomplete: "
+                + "; ".join(restore_errors)
+            ) from promotion_error
+        raise
+    return {
+        "source": str(source),
+        "destination": str(destination),
+        "backup": str(backup),
+        "artifact_files": len(artifact_files),
+    }
+
+
 def selftest() -> None:
+    import tempfile
+
     rng = np.random.default_rng(4)
     actual = rng.integers(0, 3, 500)
     probability = np.full((500, 3), 0.15)
@@ -211,6 +316,47 @@ def selftest() -> None:
         assert not promotion_required(False, reason)
     assert promotion_gates()["min_directional_calls"] > 0
     assert promotion_gates()["min_directional_precision"] > 0
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "staged"
+        live = root / "live"
+        backups = root / "backups"
+        source.mkdir()
+        live.mkdir()
+        relative = "RANGE/xgb_5.pkl"
+        (source / relative).parent.mkdir(parents=True)
+        (live / relative).parent.mkdir(parents=True)
+        (source / relative).write_bytes(b"new-model")
+        Path(f"{source / relative}.integrity.json").write_text("{}", encoding="utf-8")
+        (live / relative).write_bytes(b"old-model")
+        Path(f"{live / relative}.integrity.json").write_text("{}", encoding="utf-8")
+        (live / "persistence_model.pkl").write_bytes(b"specialist-head")
+        staged_manifest = {
+            "artifact_files": [relative],
+            "artifact_hash": hash_directory_files(source, [relative]),
+        }
+        (source / "artifact_manifest.json").write_text(
+            json.dumps(staged_manifest), encoding="utf-8"
+        )
+        old_manifest = {
+            "artifact_files": [relative],
+            "artifact_hash": hash_directory_files(live, [relative]),
+        }
+        (live / "artifact_manifest.json").write_text(
+            json.dumps(old_manifest), encoding="utf-8"
+        )
+        result = promote_model_bundle(source, live, backups)
+        assert (live / relative).read_bytes() == b"new-model"
+        assert (live / "persistence_model.pkl").read_bytes() == b"specialist-head"
+        assert (Path(result["backup"]) / relative).read_bytes() == b"old-model"
+
+        (source / relative).write_bytes(b"tampered")
+        try:
+            promote_model_bundle(source, live, backups)
+            raise AssertionError("tampered staged bundle was promoted")
+        except RuntimeError as exc:
+            assert "hash" in str(exc)
+        assert (live / relative).read_bytes() == b"new-model"
     print("model_promotion selftest: PASS")
 
 

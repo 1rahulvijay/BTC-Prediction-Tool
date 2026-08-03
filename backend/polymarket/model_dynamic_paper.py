@@ -99,17 +99,19 @@ def exit_decision(state: dict, round_data: dict, quote: dict | None) -> dict:
     if None in (entry, fee_in, target_net, stop_net) or entry <= 0.0 or fee_in < 0.0:
         return {"action": "HOLD", "reason_codes": ["position_state_invalid"]}
     net = bid - fee_out - entry - fee_in
+    current_leader = str(round_data.get("current_position") or "")
+    p_hold = _float(round_data.get("p_hold"))
+    p_side = None
+    if p_hold is not None and current_leader in ("UP", "DOWN"):
+        p_side = p_hold if current_leader == state["side"] else 1.0 - p_hold
+    degraded = p_side is None
+    degradation_reasons = ["p_hold_unavailable_static_risk_only"] if degraded else []
     reason = None
     if net >= target_net:
         reason = "DYNAMIC_TARGET"
     elif net <= stop_net:
         reason = "DYNAMIC_STOP"
     else:
-        current_leader = str(round_data.get("current_position") or "")
-        p_hold = _float(round_data.get("p_hold"))
-        p_side = None
-        if p_hold is not None and current_leader in ("UP", "DOWN"):
-            p_side = p_hold if current_leader == state["side"] else 1.0 - p_hold
         if p_side is not None and p_side <= 0.35:
             reason = "MODEL_INVALIDATED"
         else:
@@ -126,12 +128,56 @@ def exit_decision(state: dict, round_data: dict, quote: dict | None) -> dict:
                 if p_side is not None and p_side < 0.50:
                     reason = "LAST_CHANCE_MODEL_EXIT"
     if reason is None:
-        return {"action": "HOLD", "net_pnl": net, "reason_codes": []}
+        return {
+            "action": "HOLD",
+            "net_pnl": net,
+            "reason_codes": degradation_reasons,
+            "degraded": degraded,
+            "execution_mode": "STATIC_RISK_ONLY" if degraded else "MODEL_DYNAMIC",
+        }
     return {
         "action": "EXIT",
         "exit_reason": reason,
         "net_pnl": net,
         "exit_gross": bid,
         "exit_fee": fee_out,
-        "reason_codes": [reason.lower()],
+        "reason_codes": [reason.lower(), *degradation_reasons],
+        "degraded": degraded,
+        "execution_mode": "STATIC_RISK_ONLY" if degraded else "MODEL_DYNAMIC",
     }
+
+
+def selftest() -> int:
+    quote = {
+        "side": "UP", "ask": 0.60, "bid": 0.59, "spread": 0.01,
+        "depth": 10.0, "fee_in": 0.01, "fee_out": 0.01,
+    }
+    round_data = {
+        "current_position": "UP", "seconds_left": 60, "p_hold": 0.80,
+        "champion": {"action": "PAPER_BET", "bet_candidate": True, "edge": 0.08},
+    }
+    entered = entry_decision(round_data, quote)
+    assert entered["action"] == "ENTER"
+
+    missing = entry_decision({**round_data, "p_hold": None}, quote)
+    assert missing["action"] == "NO_TRADE" and "p_hold_unavailable" in missing["reason_codes"]
+
+    state = entered["state"]
+    degraded = exit_decision(state, {"current_position": "UP", "p_hold": None}, quote)
+    assert degraded["action"] == "HOLD"
+    assert degraded["execution_mode"] == "STATIC_RISK_ONLY" and degraded["degraded"] is True
+    assert "p_hold_unavailable_static_risk_only" in degraded["reason_codes"]
+
+    invalidated = exit_decision(
+        state, {"current_position": "UP", "p_hold": 0.30, "seconds_left": 30}, quote,
+    )
+    assert invalidated["action"] == "EXIT"
+    assert invalidated["exit_reason"] == "MODEL_INVALIDATED"
+    assert invalidated["execution_mode"] == "MODEL_DYNAMIC"
+
+    print("model-dynamic-paper: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(selftest())

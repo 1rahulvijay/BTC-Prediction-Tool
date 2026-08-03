@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -133,6 +134,16 @@ def _identity_changes(before: dict, after: dict) -> list[str]:
     return [key for key in keys if before.get(key) != after.get(key)]
 
 
+def _remove_artifact_family(path: str) -> None:
+    """Remove a declined staged artifact so an incumbent copy cannot masquerade as fresh."""
+    for candidate in (path, f"{path}.integrity.json", f"{path}.manifest.json"):
+        try:
+            if os.path.isfile(candidate):
+                os.remove(candidate)
+        except OSError as exc:
+            raise RuntimeError(f"could not remove stale staged artifact {candidate}: {exc}") from exc
+
+
 def _import_version(rel_dir: str, module: str) -> str | None:
     try:
         sys.path.insert(0, os.path.join(ROOT, rel_dir))
@@ -151,16 +162,43 @@ def _saved_version(path: str):
 
 
 def main():
+    global SM
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="retrain every head regardless of version")
     ap.add_argument("--dry-run", action="store_true", help="print decisions only; do not train")
+    ap.add_argument(
+        "--transactional-live",
+        action="store_true",
+        help="train in a copied staging bundle and swap saved_models only after every head succeeds",
+    )
     args = ap.parse_args()
 
-    if _git_dirty() and os.environ.get("BTC_ALLOW_DIRTY_TRAINING", "0") != "1":
+    live_dir = os.path.abspath(os.path.join(DATA_DIR, "saved_models"))
+    staging_dir = None
+    if args.transactional_live:
+        if os.environ.get("BTC_MODEL_OUTPUT_DIR"):
+            print("[heads] ERROR: --transactional-live cannot be combined with BTC_MODEL_OUTPUT_DIR")
+            return 2
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        staging_dir = os.path.abspath(os.path.join(DATA_DIR, f".saved_models_stage_{stamp}_{os.getpid()}"))
+        if os.path.exists(staging_dir):
+            shutil.rmtree(staging_dir)
+        if os.path.isdir(live_dir):
+            shutil.copytree(live_dir, staging_dir)
+        else:
+            os.makedirs(staging_dir, exist_ok=False)
+        SM = staging_dir
+        os.environ["BTC_MODEL_OUTPUT_DIR"] = staging_dir
+        print(f"[heads] transactional staging={staging_dir}")
+
+    if (not args.dry_run and _git_dirty()
+            and os.environ.get("BTC_ALLOW_DIRTY_TRAINING", "0") != "1"):
         print(
             "[heads] ERROR: repository has uncommitted code changes. "
             "Commit the exact training code first so artifact provenance is reproducible."
         )
+        if staging_dir:
+            shutil.rmtree(staging_dir, ignore_errors=True)
         return 2
 
     current_identity = current_training_identity(requested_days=_requested_days())
@@ -170,6 +208,8 @@ def main():
         for issue in identity_issues:
             print(f"[heads]   - {issue}")
         print("[heads] No standalone model will be trained or stamped.")
+        if staging_dir:
+            shutil.rmtree(staging_dir, ignore_errors=True)
         return 2
 
     sel_ver = _import_version("backend/decision", "train_selectivity_models")
@@ -257,12 +297,14 @@ def main():
         training_identity = _head_identity(h)
         optional = h["name"] in OPTIONAL_HEADS
         try:
-            result = subprocess.run(h["cmd"], cwd=ROOT, check=False)
+            result = subprocess.run(h["cmd"], cwd=ROOT, check=False, env=os.environ.copy())
             after_mtime = os.path.getmtime(h["out"]) if os.path.exists(h["out"]) else None
             if result.returncode != 0:
                 failures.append((h["name"], f"exit={result.returncode}"))
             elif optional and (after_mtime is None or (before_mtime is not None and after_mtime <= before_mtime)):
                 # exit 0 but no fresh artifact: a noise-gated head that correctly declined to save.
+                if h["out"].startswith(SM + os.sep):
+                    _remove_artifact_family(h["out"])
                 print(f"[heads] OK    {h['name']:16} (exit 0; noise/data gate -> not saved, valid)")
             elif after_mtime is None:
                 failures.append((h["name"], "expected output missing"))
@@ -315,11 +357,55 @@ def main():
         except Exception as e:
             print(f"[heads] {h['name']} training error (continuing): {e}")
             failures.append((h["name"], str(e)))
+    if args.dry_run:
+        if staging_dir and os.path.isdir(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            print("[heads] dry-run staging copy removed; active saved_models unchanged")
+        print("[heads] dry run complete; no artifact was trained or promoted")
+        return 0
     if failures:
         print(f"[heads] completed with {len(failures)} failure(s):")
         for name, reason in failures:
             print(f"[heads] FAIL  {name:16} ({reason})")
+        if staging_dir and os.path.isdir(staging_dir):
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            print("[heads] active saved_models unchanged; failed staging bundle removed")
         return 1
+    if staging_dir:
+        mandatory_failures = []
+        for head in heads:
+            if head["name"] in OPTIONAL_HEADS:
+                continue
+            compatible, reasons = _identity_status(head)
+            if not compatible:
+                mandatory_failures.append(
+                    f"{head['name']}: " + "; ".join(reasons or ["artifact missing"])
+                )
+        if mandatory_failures:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            print("[heads] ERROR: staged bundle failed mandatory identity validation:")
+            for failure in mandatory_failures:
+                print(f"[heads]   - {failure}")
+            print("[heads] active saved_models unchanged; invalid staging bundle removed")
+            return 1
+        backup_root = os.path.join(DATA_DIR, "model_bundle_backups")
+        os.makedirs(backup_root, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = os.path.join(
+            backup_root, f"saved_models_pre_heads_{stamp}_{os.getpid()}"
+        )
+        moved_live = False
+        try:
+            if os.path.isdir(live_dir):
+                os.replace(live_dir, backup_dir)
+                moved_live = True
+            os.replace(staging_dir, live_dir)
+        except Exception as exc:
+            if moved_live and not os.path.exists(live_dir) and os.path.isdir(backup_dir):
+                os.replace(backup_dir, live_dir)
+            print(f"[heads] ERROR: atomic bundle swap failed; incumbent restored: {exc}")
+            return 1
+        print(f"[heads] active bundle swapped atomically; rollback={backup_dir}")
     print("[heads] done: all requested heads completed successfully.")
     return 0
 

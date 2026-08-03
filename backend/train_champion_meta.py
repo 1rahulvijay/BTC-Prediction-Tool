@@ -31,7 +31,10 @@ from verified_io import write_manifest as write_integrity_manifest
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
 )
-OUT = os.path.join(DATA_DIR, "saved_models", "champion_meta_model.pkl")
+OUT = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "champion_meta_model.pkl",
+)
 HEAD_VERSION = "2026-06-17-champion-meta-v1"
 MIN_ROWS = int(os.environ.get("BTC_CHAMPION_META_MIN_ROWS", "500"))
 

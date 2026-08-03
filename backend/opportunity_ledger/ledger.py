@@ -526,7 +526,7 @@ def _selftest() -> int:
                 decision_context=decision_context,
                 action=Action.ENTER, reason="edge above margin")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         ledger = OpportunityLedger(Path(tmp) / "ledger.duckdb")
 
         did = ledger.record(Decision(**base), now_ms=1_000_050)

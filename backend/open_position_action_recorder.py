@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("BTC_DATA_DIR") or ROOT / "data")
 DEFAULT_DB = DATA_DIR / "open_position_actions.duckdb"
 SCHEMA_VERSION = "open-position-action-snapshot-v1"
+CROSSING_LABEL_VERSION = "post-entry-crossing-v1"
+ACTION_OUTCOME_VERSION = "open-position-action-outcome-v1"
 MAX_BOOK_AGE_MS = 5_000
 MAX_PAIR_RECV_SKEW_MS = 1_000
 ACTIONS = ("HOLD", "EXIT", "REDUCE_50", "SWITCH", "LOCK")
@@ -458,8 +460,151 @@ class OpenPositionActionRecorder:
                         PRIMARY KEY (position_snapshot_id, action)
                     )
                 """)
+                con.execute("""
+                    CREATE TABLE IF NOT EXISTS open_position_recorder_heartbeats (
+                        heartbeat_id VARCHAR PRIMARY KEY,
+                        schema_version VARCHAR NOT NULL,
+                        heartbeat_ts BIGINT NOT NULL,
+                        round_id VARCHAR NOT NULL,
+                        open_position_count INTEGER NOT NULL,
+                        status VARCHAR NOT NULL,
+                        reason VARCHAR NOT NULL
+                    )
+                """)
+                con.execute("""
+                    CREATE TABLE IF NOT EXISTS position_crossing_state (
+                        position_id VARCHAR PRIMARY KEY,
+                        round_id VARCHAR NOT NULL,
+                        last_position_snapshot_id VARCHAR NOT NULL,
+                        last_observed_ts BIGINT NOT NULL,
+                        last_btc_side VARCHAR NOT NULL
+                    )
+                """)
+                con.execute("""
+                    CREATE TABLE IF NOT EXISTS post_entry_crossing_outcomes (
+                        position_id VARCHAR NOT NULL,
+                        round_id VARCHAR NOT NULL,
+                        position_snapshot_id VARCHAR NOT NULL,
+                        crossing_ts BIGINT NOT NULL,
+                        crossing_direction VARCHAR NOT NULL,
+                        is_final_crossing BOOLEAN,
+                        reverted_5s BOOLEAN,
+                        reverted_15s BOOLEAN,
+                        reverted_30s BOOLEAN,
+                        reverted_60s BOOLEAN,
+                        settlement_resolved BOOLEAN NOT NULL,
+                        label_version VARCHAR NOT NULL,
+                        PRIMARY KEY (position_id, crossing_ts)
+                    )
+                """)
+                con.execute("""
+                    CREATE TABLE IF NOT EXISTS open_position_action_outcomes (
+                        outcome_id VARCHAR PRIMARY KEY,
+                        position_snapshot_id VARCHAR NOT NULL,
+                        action VARCHAR NOT NULL,
+                        round_id VARCHAR NOT NULL,
+                        settled_ts BIGINT NOT NULL,
+                        settled_side VARCHAR NOT NULL,
+                        realized_gross DOUBLE NOT NULL,
+                        realized_net DOUBLE NOT NULL,
+                        settlement_source VARCHAR NOT NULL,
+                        recorded_ts BIGINT NOT NULL,
+                        label_version VARCHAR NOT NULL
+                    )
+                """)
             finally:
                 con.close()
+
+    @staticmethod
+    def _heartbeat(con: Any, *, round_id: str, heartbeat_ts: int,
+                   open_position_count: int, status: str, reason: str) -> None:
+        heartbeat_id = _hash({
+            "round_id": str(round_id), "heartbeat_ts": int(heartbeat_ts),
+            "status": str(status),
+        })
+        con.execute(
+            "INSERT INTO open_position_recorder_heartbeats VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT (heartbeat_id) DO NOTHING",
+            [heartbeat_id, SCHEMA_VERSION, int(heartbeat_ts), str(round_id or ""),
+             int(open_position_count), str(status), str(reason)[:500]],
+        )
+
+    @staticmethod
+    def _record_crossing_observations(
+        con: Any,
+        positions: list[PaperInventory],
+        *,
+        observed_ts: int,
+        btc_side: str,
+    ) -> int:
+        """Record only crossings observable at this timestamp; future labels remain NULL."""
+        current_side = str(btc_side or "").upper()
+        if current_side not in ("UP", "DOWN"):
+            return 0
+        written = 0
+        horizons = ((5, "reverted_5s"), (15, "reverted_15s"),
+                    (30, "reverted_30s"), (60, "reverted_60s"))
+        for position in positions:
+            latest = con.execute(
+                "SELECT position_snapshot_id FROM open_position_snapshots "
+                "WHERE position_id = ? AND snapshot_ts <= ? "
+                "ORDER BY snapshot_ts DESC LIMIT 1",
+                [position.position_id, int(observed_ts)],
+            ).fetchone()
+            if not latest:
+                continue
+            snapshot_id = str(latest[0])
+            pending = con.execute(
+                "SELECT crossing_ts, crossing_direction, reverted_5s, reverted_15s, "
+                "reverted_30s, reverted_60s FROM post_entry_crossing_outcomes "
+                "WHERE position_id = ? AND NOT settlement_resolved",
+                [position.position_id],
+            ).fetchall()
+            for row in pending:
+                crossing_ts, crossing_direction, *values = row
+                elapsed = max(0, int(observed_ts) - int(crossing_ts))
+                reverted_now = current_side != str(crossing_direction)
+                assignments: list[str] = []
+                params: list[Any] = []
+                for index, (seconds, column) in enumerate(horizons):
+                    if values[index] is not None:
+                        continue
+                    if reverted_now and elapsed <= seconds * 1000:
+                        assignments.append(f"{column} = TRUE")
+                    elif elapsed > seconds * 1000:
+                        assignments.append(f"{column} = FALSE")
+                if assignments:
+                    params.extend([position.position_id, int(crossing_ts)])
+                    con.execute(
+                        f"UPDATE post_entry_crossing_outcomes SET {', '.join(assignments)} "
+                        "WHERE position_id = ? AND crossing_ts = ?",
+                        params,
+                    )
+
+            state = con.execute(
+                "SELECT last_btc_side FROM position_crossing_state WHERE position_id = ?",
+                [position.position_id],
+            ).fetchone()
+            if state and str(state[0]) != current_side:
+                con.execute(
+                    "INSERT INTO post_entry_crossing_outcomes VALUES "
+                    "(?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,FALSE,?) "
+                    "ON CONFLICT (position_id, crossing_ts) DO NOTHING",
+                    [position.position_id, position.round_id, snapshot_id, int(observed_ts),
+                     current_side, CROSSING_LABEL_VERSION],
+                )
+                written += 1
+            con.execute(
+                "INSERT INTO position_crossing_state VALUES (?,?,?,?,?) "
+                "ON CONFLICT (position_id) DO UPDATE SET "
+                "round_id = excluded.round_id, "
+                "last_position_snapshot_id = excluded.last_position_snapshot_id, "
+                "last_observed_ts = excluded.last_observed_ts, "
+                "last_btc_side = excluded.last_btc_side",
+                [position.position_id, position.round_id, snapshot_id,
+                 int(observed_ts), current_side],
+            )
+        return written
 
     @staticmethod
     def _attempt(con: Any, position: PaperInventory, attempted_ts: int,
@@ -497,6 +642,20 @@ class OpenPositionActionRecorder:
     ) -> dict[str, int]:
         recorded_ts = int(recorded_ts)
         attempted = len(positions)
+        round_id = str((context or {}).get("round_id") or "")
+        with self._lock:
+            con = self._connect()
+            try:
+                self._heartbeat(
+                    con,
+                    round_id=round_id,
+                    heartbeat_ts=recorded_ts,
+                    open_position_count=attempted,
+                    status="CAPTURE_CYCLE",
+                    reason="open positions supplied" if attempted else "no open positions",
+                )
+            finally:
+                con.close()
         normalized: list[PaperInventory] = []
         invalid_rows: list[tuple[Any, str]] = []
         for row in positions:
@@ -515,7 +674,7 @@ class OpenPositionActionRecorder:
         invalid = len(invalid_rows)
         if not normalized:
             return {"positions": attempted, "normalized_positions": 0,
-                    "snapshots": 0, "arms": 0, "refused": invalid}
+                    "snapshots": 0, "arms": 0, "crossings": 0, "refused": invalid}
         try:
             books = normalize_paired_books(market_snapshot or {}, recorded_ts=recorded_ts)
         except SnapshotRefusal as exc:
@@ -527,9 +686,10 @@ class OpenPositionActionRecorder:
                 finally:
                     con.close()
             return {"positions": attempted, "normalized_positions": len(normalized),
-                    "snapshots": 0, "arms": 0, "refused": len(normalized) + invalid}
+                    "snapshots": 0, "arms": 0, "crossings": 0,
+                    "refused": len(normalized) + invalid}
 
-        snapshots = arms_written = 0
+        snapshots = arms_written = crossings_written = 0
         with self._lock:
             con = self._connect()
             try:
@@ -588,6 +748,12 @@ class OpenPositionActionRecorder:
                         )
                         arms_written += 1
                     self._attempt(con, position, recorded_ts, "RECORDED", "paired books captured")
+                crossings_written = self._record_crossing_observations(
+                    con,
+                    normalized,
+                    observed_ts=recorded_ts,
+                    btc_side=str((context or {}).get("btc_side") or ""),
+                )
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -598,7 +764,109 @@ class OpenPositionActionRecorder:
             finally:
                 con.close()
         return {"positions": attempted, "normalized_positions": len(normalized),
-                "snapshots": snapshots, "arms": arms_written, "refused": invalid}
+                "snapshots": snapshots, "arms": arms_written,
+                "crossings": crossings_written, "refused": invalid}
+
+    def record_settlement(
+        self,
+        *,
+        round_id: str,
+        settled_side: str,
+        settled_ts: int,
+        settlement_source: str,
+        recorded_ts: int | None = None,
+    ) -> dict[str, int]:
+        """Append realized arm values and finalize crossing labels for a resolved round."""
+        side = str(settled_side or "").upper()
+        if side not in ("UP", "DOWN"):
+            raise SnapshotRefusal(f"settled_side must be UP or DOWN, got {settled_side!r}")
+        source = str(settlement_source or "").strip()
+        if not source:
+            raise SnapshotRefusal("settlement_source is required")
+        settled_ts = int(settled_ts)
+        recorded_ts = int(recorded_ts if recorded_ts is not None else settled_ts)
+        outcomes = 0
+        positions_resolved = 0
+        with self._lock:
+            con = self._connect()
+            try:
+                con.execute("BEGIN TRANSACTION")
+                rows = con.execute("""
+                    SELECT s.position_snapshot_id, a.action, s.net_cost_basis,
+                           a.cash_flow, a.up_shares_after, a.down_shares_after
+                    FROM open_position_snapshots s
+                    JOIN open_position_action_arms a USING (position_snapshot_id)
+                    WHERE s.round_id = ? AND a.complete
+                """, [str(round_id)]).fetchall()
+                for snapshot_id, action, cost_basis, cash_flow, up_after, down_after in rows:
+                    winning_inventory = float(up_after if side == "UP" else down_after)
+                    gross = float(cash_flow) + winning_inventory
+                    net = gross - float(cost_basis)
+                    outcome_id = _hash({
+                        "position_snapshot_id": snapshot_id,
+                        "action": action,
+                        "settled_ts": settled_ts,
+                        "settled_side": side,
+                        "settlement_source": source,
+                    })
+                    before = con.execute(
+                        "SELECT 1 FROM open_position_action_outcomes WHERE outcome_id = ?",
+                        [outcome_id],
+                    ).fetchone()
+                    con.execute(
+                        "INSERT INTO open_position_action_outcomes VALUES "
+                        "(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (outcome_id) DO NOTHING",
+                        [outcome_id, str(snapshot_id), str(action), str(round_id), settled_ts,
+                         side, gross, net, source, recorded_ts, ACTION_OUTCOME_VERSION],
+                    )
+                    outcomes += 0 if before else 1
+
+                if source.lower().startswith("official:"):
+                    positions = con.execute(
+                        "SELECT DISTINCT position_id FROM post_entry_crossing_outcomes "
+                        "WHERE round_id = ?",
+                        [str(round_id)],
+                    ).fetchall()
+                    for (position_id,) in positions:
+                        final = con.execute(
+                            "SELECT max(crossing_ts) FROM post_entry_crossing_outcomes "
+                            "WHERE position_id = ?",
+                            [position_id],
+                        ).fetchone()[0]
+                        con.execute(
+                            "UPDATE post_entry_crossing_outcomes SET "
+                            "is_final_crossing = (crossing_ts = ?), "
+                            "reverted_5s = coalesce(reverted_5s, FALSE), "
+                            "reverted_15s = coalesce(reverted_15s, FALSE), "
+                            "reverted_30s = coalesce(reverted_30s, FALSE), "
+                            "reverted_60s = coalesce(reverted_60s, FALSE), "
+                            "settlement_resolved = TRUE WHERE position_id = ?",
+                            [int(final), position_id],
+                        )
+                        positions_resolved += 1
+                con.execute("COMMIT")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+        return {"action_outcomes": outcomes, "positions_resolved": positions_resolved}
+
+    def officially_resolved_round_ids(self) -> set[str]:
+        """Return the small de-duplication index used by official settlement reconciliation."""
+        with self._lock:
+            con = self._connect(read_only=True)
+            try:
+                rows = con.execute(
+                    "SELECT DISTINCT round_id FROM open_position_action_outcomes "
+                    "WHERE lower(settlement_source) LIKE 'official:%'"
+                ).fetchall()
+            finally:
+                con.close()
+        return {str(row[0]) for row in rows}
 
     def coverage(self) -> dict[str, Any]:
         with self._lock:
@@ -623,11 +891,23 @@ class OpenPositionActionRecorder:
                 refusals = {str(k): int(v) for k, v in con.execute(
                     "SELECT category, count(*) FROM open_position_recorder_refusals GROUP BY 1"
                 ).fetchall()}
+                heartbeats, last_heartbeat = con.execute(
+                    "SELECT count(*), max(heartbeat_ts) FROM open_position_recorder_heartbeats"
+                ).fetchone()
+                crossings = int(con.execute(
+                    "SELECT count(*) FROM post_entry_crossing_outcomes"
+                ).fetchone()[0])
+                action_outcomes = int(con.execute(
+                    "SELECT count(*) FROM open_position_action_outcomes"
+                ).fetchone()[0])
             finally:
                 con.close()
         return {"paired_book_snapshots": paired, "position_snapshots": snapshots,
                 "attempts_by_status": attempts, "arms_by_action": arms,
                 "partial_fill_arms": partial, "refusals_by_category": refusals,
+                "heartbeats": int(heartbeats),
+                "last_heartbeat_ms": int(last_heartbeat or 0),
+                "crossings": crossings, "action_outcomes": action_outcomes,
                 "capital_authority": False}
 
 
@@ -711,11 +991,11 @@ def selftest() -> int:
           scarce_switch["down_shares_after"] == 0.5,
           "a partial SWITCH buys only the quantity actually sold and preserves residual inventory")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         ledger = OpenPositionActionRecorder(Path(tmp) / "actions.duckdb")
         result = ledger.record_positions(
             [row], market_snapshot=_sample_market(), recorded_ts=1_000_100,
-            context={"mode": "PAPER_ONLY"},
+            context={"mode": "PAPER_ONLY", "round_id": "r1", "btc_side": "UP"},
         )
         check(result["snapshots"] == 1 and result["arms"] == 5,
               "one position snapshot writes five normalized arms")
@@ -742,6 +1022,56 @@ def selftest() -> int:
               "coverage preserves a separate denominator for every action")
         check(coverage["capital_authority"] is False,
               "the recorder exposes no capital or execution authority")
+        idle = ledger.record_positions(
+            [], market_snapshot=None, recorded_ts=1_007_100,
+            context={"round_id": "r-idle", "btc_side": "UP"},
+        )
+        check(idle["positions"] == 0 and ledger.coverage()["heartbeats"] >= 1,
+              "a capture cycle with no position still proves recorder liveness")
+        crossed = ledger.record_positions(
+            [row], market_snapshot=_sample_market(ts=1008.0), recorded_ts=1_008_100,
+            context={"round_id": "r1", "btc_side": "DOWN"},
+        )
+        check(crossed["crossings"] == 1,
+              "an observed post-entry anchor side change writes one crossing")
+        ledger.record_positions(
+            [row], market_snapshot=_sample_market(ts=1014.0), recorded_ts=1_014_100,
+            context={"round_id": "r1", "btc_side": "UP"},
+        )
+        proxy = ledger.record_settlement(
+            round_id="r1", settled_side="UP", settled_ts=1_019_000,
+            settlement_source="pyth_proxy",
+        )
+        con = ledger._connect(read_only=True)
+        try:
+            proxy_resolved = con.execute(
+                "SELECT count(*) FILTER (WHERE settlement_resolved) "
+                "FROM post_entry_crossing_outcomes"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        check(proxy["action_outcomes"] == 15 and proxy["positions_resolved"] == 0
+              and proxy_resolved == 0,
+              "proxy settlement is stored but cannot finalize Protocol B labels")
+        settled = ledger.record_settlement(
+            round_id="r1", settled_side="UP", settled_ts=1_020_000,
+            settlement_source="official:test",
+        )
+        final_coverage = ledger.coverage()
+        check(settled["action_outcomes"] == 15 and final_coverage["action_outcomes"] == 30,
+              "official settlement appends realized values for every complete action arm")
+        con = ledger._connect(read_only=True)
+        try:
+            resolved_crossings = con.execute(
+                "SELECT count(*), count(*) FILTER (WHERE is_final_crossing), "
+                "count(*) FILTER (WHERE settlement_resolved) "
+                "FROM post_entry_crossing_outcomes"
+            ).fetchone()
+        finally:
+            con.close()
+        check(resolved_crossings[0] == 2 and resolved_crossings[1] == 1
+              and resolved_crossings[2] == 2,
+              "settlement marks exactly the last crossing final and resolves every label")
 
     try:
         normalize_paired_books(_sample_market(ts=1001.0), recorded_ts=1_000_100)

@@ -110,6 +110,10 @@ def collect() -> dict:
                          for k, v in rep.family_ready.items()},
             "streams_present": sum(1 for s in rep.streams if s.present),
             "streams_total": len(rep.streams),
+            "missing_streams": [
+                {"key": s.key, "venue": s.venue, "stream": s.stream}
+                for s in rep.streams if not s.present
+            ],
         }
     except Exception as exc:
         st["archive"] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -179,6 +183,7 @@ def render(st: dict) -> str:
         f"| archive rows | {ar.get('total_rows', '?')} |",
         f"| archive span (days) | {ar.get('span_days', '?')} |",
         f"| streams present | {ar.get('streams_present', '?')} / {ar.get('streams_total', '?')} |",
+        f"| missing streams | `{', '.join(item.get('key', '?') for item in ar.get('missing_streams', [])) or 'none'}` |",
         f"| recorder ever started | {st['recorder']['ever_started']} |",
         "",
         "## Artifact migration",

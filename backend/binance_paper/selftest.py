@@ -121,7 +121,7 @@ def queue_manual(service, decision, snapshot):
 
 
 def test_default_off() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client, config=config(Path(directory) / "paper.duckdb", hard_enabled=False)
@@ -140,7 +140,7 @@ def test_default_off() -> None:
 
 
 def test_schema_v1_migration() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         db_path = Path(directory) / "paper.duckdb"
         connection = duckdb.connect(str(db_path))
         connection.execute(
@@ -256,7 +256,7 @@ def test_governor_modes_and_fail_closed_inputs() -> None:
 
 
 def test_signal_expiry_entry_bound_and_order_transitions() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client,
@@ -349,7 +349,7 @@ def test_signal_expiry_entry_bound_and_order_transitions() -> None:
 
 
 def test_governor_emergency_flatten_integration() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client,
@@ -410,7 +410,7 @@ def test_governor_emergency_flatten_integration() -> None:
 
 
 def test_long_short_accounting_and_isolation() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(client, config=config(Path(directory) / "paper.duckdb"))
         service.initialize()
@@ -457,7 +457,7 @@ def test_long_short_accounting_and_isolation() -> None:
 
 
 def test_observed_funding_accounting() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         derivatives = {"funding_rate": None}
         service = BinancePaperService(
@@ -520,7 +520,7 @@ def test_observed_funding_accounting() -> None:
 
 
 def test_opposing_signal_order() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client, config=config(Path(directory) / "paper.duckdb", latency_ms=0)
@@ -571,7 +571,7 @@ def test_opposing_signal_order() -> None:
 
 
 def test_actual_strategies_end_to_end() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client,
@@ -680,7 +680,7 @@ def test_no_lookahead_stale_missing_and_liquidity() -> None:
     )
     assert partial.filled_quantity == 1.0 and partial.unfilled_quantity == 1.0
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         service = BinancePaperService(
             client, config=config(Path(directory) / "paper.duckdb")
         )
@@ -760,7 +760,7 @@ def test_feed_contract_and_pending_entry_cancellation() -> None:
     else:
         raise AssertionError("bookTicker without an exchange timestamp was accepted")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client,
@@ -795,7 +795,7 @@ def test_feed_contract_and_pending_entry_cancellation() -> None:
 
 
 def test_duplicate_restart_and_database_isolation() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         db_path = Path(directory) / "binance_paper.duckdb"
         analytics_path = Path(directory) / "analytics.duckdb"
         client = FakeFuturesClient()
@@ -834,7 +834,7 @@ def test_duplicate_restart_and_database_isolation() -> None:
 
 
 def test_atomic_fill_accounting() -> None:
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
             client,

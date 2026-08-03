@@ -65,10 +65,7 @@ def main() -> int:
               "inert BECAUSE the source artifacts fail identity, not because of a code fault")
 
     # --- the exact database call the wiring makes -----------------------------------------
-    # ignore_cleanup_errors: on Windows DuckDB keeps the file handle open past the
-    # last query, so the directory cannot always be removed. That is a teardown
-    # detail and must not be reported as a test failure.
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         os.environ["BTC_DATA_DIR"] = tmp
         for module in [m for m in list(sys.modules) if m.startswith("database")]:
             del sys.modules[module]
@@ -88,6 +85,8 @@ def main() -> int:
             round_id + 1, "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1", 1_700_000_001_000, 15,
             "UP", 0.70, 0.68, 0.01, 0.02, 25.0, "ENTER", btc_entry=64_000.0)
         check(True, "ENTER branch: positional + btc_entry keyword is accepted")
+
+        database.close_db()
 
         # Read back through database's OWN connector. Opening a second duckdb handle with a
         # different read_only flag raises "Can't open a connection to same database file with

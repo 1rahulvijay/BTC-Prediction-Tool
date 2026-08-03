@@ -18,11 +18,20 @@ Checked in priority order (safety first, then profit-taking, then thesis-decay):
   9. max_hold_backstop    — absolute safety timeout (NOT the primary exit)
 
 Pure: no DB, no model, no network. Needs NO retraining.
+
+RESEARCH STATUS
+    This module is intentionally not exported by ``backend.decision`` and has no live
+    caller. Its thresholds have not cleared forward execution gates. Import it explicitly
+    only from research tests; it has no paper- or real-capital authority.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+
+
+RESEARCH_ONLY = True
+CAPITAL_AUTHORITY = False
 
 
 @dataclass

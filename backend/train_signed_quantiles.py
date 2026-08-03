@@ -35,7 +35,10 @@ from verified_io import write_manifest as write_integrity_manifest
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
-OUT = os.path.join(DATA_DIR, "saved_models", "signed_quantile_model.pkl")
+OUT = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "signed_quantile_model.pkl",
+)
 
 MOVE_FEATS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio"]
 HORIZONS = [5, 15]   # pruned 2026-06-21: band only for the tradeable markets

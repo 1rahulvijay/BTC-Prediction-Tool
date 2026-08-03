@@ -30,7 +30,10 @@ from verified_io import write_manifest as write_integrity_manifest
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
-OUT_PATH = os.path.join(DATA_DIR, "saved_models", "magnitude_model.pkl")
+OUT_PATH = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "magnitude_model.pkl",
+)
 HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30
 QUANTILES = (0.1, 0.5, 0.9)
 MAX_SAMPLES = 40_000

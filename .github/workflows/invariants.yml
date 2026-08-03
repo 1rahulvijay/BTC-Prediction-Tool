@@ -399,6 +399,18 @@ jobs:
       - name: Open-position action recorder is reached by the live price-to-beat path
         run: python backend/test_open_position_action_wiring.py
 
+      - name: Protocol B/C readiness counts only official causal outcomes
+        run: python backend/bc_forward_readiness_report.py --selftest
+
+      - name: Main-model staged promotion preserves heads and rollback
+        run: python backend/model_promotion.py
+
+      - name: Champion dynamic paper entry and degraded exit semantics
+        run: python backend/polymarket/model_dynamic_paper.py
+
+      - name: Paper trading restart and official settlement integrity
+        run: python backend/test_paper_trading_integrity.py
+
       # Pins ENTER versus WAIT economics and the no-asof-join export contract used by the
       # candidate-dependent Phase 5 tests.
       - name: Candidate evidence builder (exact decision and counterfactual separation)
@@ -589,6 +601,9 @@ jobs:
           python research/phase5d/admission.py --selftest || exit /b 1
           python research/research_status.py --selftest || exit /b 1
           python backend/bc_forward_readiness_report.py --selftest || exit /b 1
+          python backend/model_promotion.py || exit /b 1
+          python backend/polymarket/model_dynamic_paper.py || exit /b 1
+          python backend/test_paper_trading_integrity.py || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1
           python -m compileall -q backend || exit /b 1

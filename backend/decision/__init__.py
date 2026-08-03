@@ -22,7 +22,6 @@ Build stage (STRATEGY_VOLATILITY_TIMING_AND_ENSEMBLES §Staged build): this is
 """
 from .cost_gate import cost_gate, expected_cost_bps, MIN_MOVE_COST_RATIO, EXEC_BASE_COST_BPS
 from .decision_composer import compose_decision, DecisionContext, DecisionResult
-from .event_exits import should_exit, ExitContext
 from .drift_monitor import recommend_cap, TierHealth
 
 __all__ = [
@@ -35,6 +34,4 @@ __all__ = [
     "compose_decision",
     "DecisionContext",
     "DecisionResult",
-    "should_exit",
-    "ExitContext",
 ]

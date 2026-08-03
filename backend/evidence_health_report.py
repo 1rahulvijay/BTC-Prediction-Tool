@@ -583,7 +583,7 @@ def selftest() -> int:
         checks += 1
         print(f"  PASS  {label}")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         revision_db = root / "revisions.duckdb"
         opportunity_db = root / "opportunities.duckdb"

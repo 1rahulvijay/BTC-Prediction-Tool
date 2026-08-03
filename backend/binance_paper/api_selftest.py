@@ -30,7 +30,7 @@ def app_for(service) -> TestClient:
 
 def run() -> None:
     print("Binance paper API selftest")
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         disabled = BinancePaperService(
             FakeFuturesClient(),
             config=config(Path(directory) / "disabled.duckdb", hard_enabled=False),
@@ -57,7 +57,7 @@ def run() -> None:
         disabled.shutdown()
     print("  PASS  disabled-engine typed API")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+    with tempfile.TemporaryDirectory() as directory:
         enabled = BinancePaperService(
             FakeFuturesClient(),
             config=config(Path(directory) / "enabled.duckdb", hard_enabled=True),

@@ -2,6 +2,11 @@
 
 Date: 2026-07-31
 
+> **Updated handoff:** The later 2026-08-03 reliability pass is documented in
+> `PRODUCTION_CORRECTNESS_AND_RETRAIN_HANDOFF_2026-08-03.md`. It adds transactional whole-bundle
+> model promotion, official Protocol B/C outcomes, independent recorder liveness, live-safe
+> readiness and explicit degraded dynamic exits. Use that document for the next retrain.
+
 Source audited: `master` baseline `404d9d9` plus the model-driven paper-strategy changes described
 in `MODEL_DRIVEN_PAPER_STRATEGIES_2026-07-31.md`.
 
