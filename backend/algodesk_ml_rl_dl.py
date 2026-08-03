@@ -277,7 +277,6 @@ def train_xgboost(train_df: pd.DataFrame, test_df: pd.DataFrame, features: list[
     model.fit(X_train, y_train)
     
     preds = model.predict(X_test)
-    probs = model.predict_proba(X_test)[:, 1]
     
     accuracy = (preds == y_test).mean()
     print(f"XGBoost Long Prediction Accuracy: {accuracy*100:.2f}%")

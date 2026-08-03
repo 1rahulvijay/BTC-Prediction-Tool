@@ -101,6 +101,19 @@ REGISTRY: tuple[ModelRegistryEntry, ...] = (
                        "train_heads", may_rank=True),
     ModelRegistryEntry("magnitude", "magnitude_model.pkl", "move_magnitude", "train_heads",
                        may_rank=True),
+    # Measured in CROSSING_HEADS_V1 (protocol sha256 762532c9): reversion at 30s reaches AUC
+    # 0.6715 against a 0.5196 clock baseline - the first head here to beat its incumbent by a
+    # material margin, on a target that is not forward direction.
+    #
+    # EVERY AUTHORITY FLAG IS FALSE, deliberately. A crossing probability is an input to a
+    # decision, not a decision, and every action lane measured in this repository is closed on
+    # cost. The head is loadable and may inform a display or a later study; it may not price,
+    # rank or size. Authority is declared here rather than at the call site precisely so that
+    # granting it later is a visible edit to this table.
+    ModelRegistryEntry("crossing_heads", "crossing_heads.pkl", "crossing_probabilities",
+                       "train_crossing_heads",
+                       notes="P(final), P(revert 30s/60s). No authority: an input to a "
+                             "decision, never a decision. 5s/15s pending HF recorder data"),
 )
 
 BY_NAME = {entry.name: entry for entry in REGISTRY}

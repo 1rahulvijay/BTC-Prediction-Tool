@@ -25,12 +25,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import os
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -38,11 +34,6 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Optional imports -- the script must work without heavyweight ML libraries
 # ---------------------------------------------------------------------------
-try:
-    import numpy as np
-except ImportError:
-    print("ERROR: numpy is required.  pip install numpy"); sys.exit(1)
-
 try:
     import requests
 except ImportError:
@@ -239,8 +230,6 @@ def compute_market_context(candles: list[Candle]) -> None:
     and AlgoDesk derived values (pos, rsi) for each candle.
     """
     window = CANDLES_PER_DAY  # 288 candles = 24h at 5m
-    closes = [c.close for c in candles]
-    volumes = [c.volume for c in candles]
 
     for i, c in enumerate(candles):
         start = max(0, i - window)
@@ -620,8 +609,6 @@ def sig_regime(c: Candle) -> str:
 
     # Classify regime
     is_trending = abs_chg > 4.0 and range_pct > 3.0
-    is_volatile = range_pct > 8.0
-    is_ranging = abs_chg < 2.0 and range_pct < 4.0
 
     if is_trending:
         # In trending regime, only trade aligned direction
