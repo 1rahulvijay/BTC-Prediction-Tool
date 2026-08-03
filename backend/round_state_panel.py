@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -13,8 +14,40 @@ from artifact_identity import artifact_matches_current_training
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get("BTC_DATA_DIR", ROOT / "data"))
 MODEL_PATH = DATA / "saved_models" / "round_state_heads.pkl"
-EXPECTED_VERSION = "2026-07-02-round-state-shadow-v1"
+#: SCHEMA compatibility, not run identity. The trainer stamps a version that also carries the
+#: training-window tag ("...-v1-1000d"), so requiring equality with the bare schema string meant
+#: every freshly trained artifact was refused by serving. A retrain could succeed completely and
+#: still leave this head UNAVAILABLE - which reads as missing data, not as a version contract.
+#:
+#: What must match is the SCHEMA this loader understands. The training window is run metadata: it
+#: belongs in the manifest, and it is already policed by artifact identity and the feature
+#: contract. Encoding it in an equality test made those gates unreachable.
+#: v2 (2026-08-03): the same-minute feature leak is fixed. v1 artifacts were trained on the bar
+#: CONTAINING each decision, so they saw the remainder of that minute. They must be refused, not
+#: merely regenerated - which is exactly what this bump does.
+EXPECTED_SCHEMA_VERSION = "2026-08-03-round-state-shadow-v2"
+#: Retained under the old name for callers and payloads that already read it.
+EXPECTED_VERSION = EXPECTED_SCHEMA_VERSION
 OPPORTUNITY_TARGET = "next_opportunity_within_3_rounds"
+
+
+def schema_version_of(version: str | None) -> str | None:
+    """The schema part of a stamped version, dropping any trailing '-<N>d' window tag.
+
+    "2026-07-02-round-state-shadow-v1-1000d" -> "2026-07-02-round-state-shadow-v1"
+    "2026-07-02-round-state-shadow-v1"       -> unchanged
+    """
+    if not version:
+        return None
+    # The trainer's window tag is BTC_HISTORICAL_DAYS, or the literal "na" when it is unset -
+    # so the suffix is "-1000d" or "-nad". Matching only digits refused every artifact trained
+    # without that variable set, which is the same P0-01 failure wearing different clothes.
+    return re.sub(r"-(?:\d+|na)d$", "", str(version))
+
+
+def version_is_compatible(version: str | None) -> bool:
+    """True when a stamped artifact version is the schema this loader serves."""
+    return schema_version_of(version) == EXPECTED_SCHEMA_VERSION
 
 _MODEL = None
 _MTIME = -2.0
@@ -40,8 +73,11 @@ def load_model() -> dict | None:
             _MODEL, _ERROR = None, "artifact identity mismatch: " + "; ".join(reasons)
             return None
         loaded = _verified_load(MODEL_PATH)
-        if loaded.get("version") != EXPECTED_VERSION:
-            _MODEL, _ERROR = None, f"incompatible version {loaded.get('version')}"
+        if not version_is_compatible(loaded.get("version")):
+            _MODEL, _ERROR = None, (
+                f"incompatible schema {schema_version_of(loaded.get('version'))!r} "
+                f"(artifact version {loaded.get('version')!r}); "
+                f"this loader serves {EXPECTED_SCHEMA_VERSION!r}")
             return None
         _MODEL, _MTIME, _ERROR = loaded, mtime, ""
     except Exception as exc:

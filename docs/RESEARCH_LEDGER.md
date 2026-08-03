@@ -1100,6 +1100,91 @@ the matcher itself: substring matching rejected `ledger`, for containing *"edge"
 matching on snake_case fixed it, and the refusal now names the offending token. A blindness rule
 that fires on honest field names gets worked around rather than obeyed. Selftest: **40 checks**.
 
+## 12. External audit of `83652ce` — verified, and three defects fixed - `2026-08-03`
+
+An external audit raised twelve P0/P1 defects. I verified the load-bearing ones in source rather
+than accepting them. **The audit was substantially correct**, including about code committed
+hours earlier in this same ledger.
+
+### 12.1 P0-06 — my own Protocol C gate was vacuous. Fixed by the parallel session.
+
+§11.9 recorded the C gate as fixed and negative-tested. It was not. The condition
+`count(*) FILTER (WHERE settlement_floor_net IS NULL) = 0` **can never be false**:
+
+```
+settlement_floor      = min(up_after, down_after)          # available at snapshot time
+settlement_floor_net  = floor + cash_flow - net_cost_basis
+schema                = settlement_floor_net DOUBLE NOT NULL
+```
+
+It is a guaranteed worst-case floor computed from share counts, not a realized settlement, and
+it is declared `NOT NULL`. The fixture that "proved" the check worked inserted a NULL the real
+recorder cannot produce — so it demonstrated that NULLs are rejected, never that settlement was
+resolved. **1,000 five-arm rounds could have completed the gate with zero realized outcomes for
+any arm.**
+
+This is the fifth instance of the vacuous-pass class, and the first one written *by the tooling
+built to prevent it*. The lesson is narrow and worth stating: a fixture must be constructed from
+the same schema the writer uses, or it tests a state that cannot occur.
+
+Fixed in the parallel session's `open_position_action_outcomes` work — the gate now requires all
+five arms to carry an outcome row with `settlement_source LIKE 'official:%'`. Verified in source.
+
+### 12.2 P0-02 — the round-state trainer trained on its own future
+
+`_join_keepers` keyed features as `snapshot_ts // 60_000 * 60_000` — the bar **containing** the
+decision. Research-matrix rows are keyed by bar OPEN time (the convention
+`_official_ohlc_parity` validates against official Binance klines) while their OHLC and keeper
+values span the whole minute. So a decision at `12:30:15` was trained on high/low/close/volume
+running through `12:30:59`, on every row.
+
+Fixed: `causal_feature_ts_ms()` returns the last bar that had **closed** by the snapshot, with
+`bar_available_from_ms()` naming the availability rule. Pinned by
+`backend/test_round_state_causal_contract.py`, which reconstructs the old rule and requires it
+to fail the same assertion.
+
+**All v1 round-state metrics are non-causal.** The schema is bumped to
+`2026-08-03-round-state-shadow-v2` so v1 artifacts are *refused*, not merely regenerated —
+otherwise a leaked model keeps serving quietly under a corrected trainer.
+
+### 12.3 P0-01 — a successful retrain produced an artifact serving always rejected
+
+The trainer stamped `<schema>-1000d`; the loader required equality with `<schema>`. Every
+freshly trained round-state artifact was refused, and the failure surfaced as "artifact missing"
+rather than as a version contract — indistinguishable from the retrain not having run.
+
+Fixed by separating `ARTIFACT_SCHEMA_VERSION` (compatibility) from `TRAINING_WINDOW_DAYS` (run
+metadata). The window is already policed by artifact identity and the feature contract; encoding
+it in a string equality made those gates unreachable.
+
+The new test immediately caught a **second live variant**: with `BTC_HISTORICAL_DAYS` unset the
+tag is the literal `"na"`, stamping `-nad`, which a digits-only suffix rule still refused.
+
+### 12.4 Database identity — the default store is not the live archive
+
+`backend/datastore_identity.py` resolves one store, records its identity, and **refuses to guess
+in strict mode**. Measured:
+
+| store | tables | span |
+|---|---|---|
+| `data/analytics.duckdb` (the default) | 35 | **2026-07-02 → 07-04** |
+| `data/btc_duckdbs/analytics.duckdb` | 30 | **2026-07-05 → 07-25 14:59** |
+| `btc_full_project/btc-tool/data/…` | 30 | identical copy |
+
+**The two spans are disjoint.** The default path — which every module resolves to when
+`BTC_DB_PATH` is unset — ends where the live archive begins. The 21-day Polymarket window that
+every conclusion in this ledger rests on lives in `btc_duckdbs`, and its last row is
+`2026-07-25 14:59`, the exact minute the recorders went dark.
+
+A correct query against the wrong store is still wrong, and nothing in the result says so.
+Strict mode now names both candidates and raises instead of defaulting.
+
+### 12.5 One more fail-open, mine
+
+The five-arm gate used `abs(coalesce(p.pair_skew_ms, 0)) <= 2000`, scoring an *unmeasured* skew
+as a perfect zero — fail-open on the exact axis the check exists to enforce, while its
+neighbouring conditions fail closed. Now `IS NOT NULL` and compared directly, in both places.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -1120,6 +1205,9 @@ that fires on honest field names gets worked around rather than obeyed. Selftest
 | `backend/research/verify_prereg_hashes.py` | a preregistration edited after freezing, or one never registered |
 | `backend/bc_forward_readiness_report.py` | a sealed protocol being peeked at while it collects |
 | `SourceUnreadable` in the readiness report | an unreadable source printing as an honest empty one |
+| `backend/test_round_state_causal_contract.py` | a training join that reads the bar containing its own decision |
+| `round_state_panel.version_is_compatible` | a retrain producing artifacts serving silently refuses |
+| `backend/datastore_identity.py --strict` | a correct query answered by the wrong database |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
 

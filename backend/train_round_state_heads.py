@@ -36,7 +36,15 @@ METRICS_OUT = DATA / "research" / "round_state_live" / "metrics.csv"
 TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
                   or os.environ.get("BTC_BACKFILL_DAYS") or "na")
 
-VERSION = f"2026-07-02-round-state-shadow-v1-{TRAIN_DAYS_TAG}d"
+#: SCHEMA version, bumped to v2 on 2026-08-03 when the same-minute feature leak was fixed.
+#: Every v1 artifact was trained on features that included the tail of the minute the decision
+#: was made in, so v1 metrics are not causal and v1 artifacts must NOT keep loading after the
+#: fix. Bumping the schema is what makes serving refuse them; leaving it at v1 would let a
+#: leaked model serve quietly under a corrected trainer.
+ARTIFACT_SCHEMA_VERSION = "2026-08-03-round-state-shadow-v2"
+#: Run metadata, not compatibility. The loader matches the SCHEMA and ignores this suffix.
+TRAINING_WINDOW_DAYS = TRAIN_DAYS_TAG
+VERSION = f"{ARTIFACT_SCHEMA_VERSION}-{TRAIN_DAYS_TAG}d"
 HEAD_VERSION = VERSION
 
 KEEPERS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio", "shock_magnitude"]
@@ -173,14 +181,42 @@ def _fit_head(frame: pd.DataFrame, features: list[str], target: str, horizon: in
     return head, metrics
 
 
+#: One research-matrix bar. Rows are keyed by the bar's OPEN time - the convention official
+#: Binance klines use, and the one `_official_ohlc_parity` validates the matrix against - while
+#: their OHLC and keeper values are computed across the WHOLE minute.
+BAR_INTERVAL_MS = 60_000
+
+
+def bar_available_from_ms(bar_open_ts: int) -> int:
+    """Earliest instant a bar's values could have been known: its CLOSE."""
+    return int(bar_open_ts) + BAR_INTERVAL_MS
+
+
+def causal_feature_ts_ms(snapshot_ts_ms):
+    """Open time of the latest bar that had already CLOSED at `snapshot_ts_ms`.
+
+    THE LEAK THIS REPLACES. The previous key was `snapshot_ts // 60_000 * 60_000` - the bar
+    CONTAINING the snapshot. A decision at 12:30:15 was therefore trained on the 12:30 bar,
+    whose high, low, close and volume span through 12:30:59. Every row saw its own near future,
+    inside the training set.
+
+    A manifest cannot catch this. It certifies WHICH dataset was used, faithfully, including a
+    leaked one. Only the join rule can.
+
+    The bar containing a snapshot closes at `floor + 60s`, strictly after it, so that bar is
+    never admissible. The latest admissible bar is the previous one.
+    """
+    floor = snapshot_ts_ms // BAR_INTERVAL_MS * BAR_INTERVAL_MS
+    return floor - BAR_INTERVAL_MS
+
+
 def _join_keepers(frame: pd.DataFrame, timestamp_column: str, matrix: pd.DataFrame) -> pd.DataFrame:
     # The 30-second research lane carries older features with some of the same
     # names. Serving uses live_keepers.py, whose contract matches the current
     # 1-minute research matrix, so matrix values must win without suffixes.
     work = frame.drop(columns=KEEPERS, errors="ignore").copy()
-    work["feature_ts_ms"] = (
-        work[timestamp_column].astype("int64") // 60_000 * 60_000
-    )
+    # CAUSAL JOIN: the last bar that had CLOSED by the snapshot, never the one containing it.
+    work["feature_ts_ms"] = causal_feature_ts_ms(work[timestamp_column].astype("int64"))
     joined = work.merge(
         matrix.rename(columns={"ts_ms": "feature_ts_ms"}),
         on="feature_ts_ms",

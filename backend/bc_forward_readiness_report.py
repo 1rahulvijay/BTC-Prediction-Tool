@@ -322,7 +322,8 @@ def _position_counts(db: Path | None = None) -> dict:
                   HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) o
               ON o.position_snapshot_id = s.position_snapshot_id
             WHERE p.fee_rate IS NOT NULL AND p.fees_enabled IS NOT NULL
-              AND abs(coalesce(p.pair_skew_ms, 0)) <= {MAX_PAIR_SKEW_MS}
+              AND p.pair_skew_ms IS NOT NULL
+              AND abs(p.pair_skew_ms) <= {MAX_PAIR_SKEW_MS}
               AND p.up_recv_ts <= s.snapshot_ts AND p.down_recv_ts <= s.snapshot_ts
               AND s.recorded_ts >= s.snapshot_ts
               AND s.round_id IS NOT NULL""", list(ACTION_ARMS) + list(ACTION_ARMS)).fetchone()[0]
@@ -356,7 +357,8 @@ def _position_counts(db: Path | None = None) -> dict:
                   HAVING count(DISTINCT action) = {len(ACTION_ARMS)}) o
               ON o.position_snapshot_id = s.position_snapshot_id
             WHERE p.fee_rate IS NOT NULL AND p.fees_enabled IS NOT NULL
-              AND abs(coalesce(p.pair_skew_ms, 0)) <= {MAX_PAIR_SKEW_MS}
+              AND p.pair_skew_ms IS NOT NULL
+              AND abs(p.pair_skew_ms) <= {MAX_PAIR_SKEW_MS}
               AND p.up_recv_ts <= s.snapshot_ts AND p.down_recv_ts <= s.snapshot_ts
               AND s.recorded_ts >= s.snapshot_ts
               AND s.round_id IS NOT NULL""", list(ACTION_ARMS) + list(ACTION_ARMS)).fetchone()
