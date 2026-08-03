@@ -384,6 +384,8 @@ python backend\open_position_action_recorder.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\bc_forward_readiness_report.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
+python backend\evidence_health_report.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
 python backend\model_promotion.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\polymarket\model_dynamic_paper.py >nul 2>&1

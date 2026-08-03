@@ -681,6 +681,9 @@ function renderSystemHealthStatus(payload) {
     status: item.required === false && item.status !== 'HEALTHY' ? 'INFO' : item.status,
   }));
   const protocols = payload.forward_protocols || {};
+  const protocolRequirements = protocols.requirements || {};
+  const requiredRounds = Number(protocolRequirements.required_resolved_rounds || 1000);
+  const requiredDays = Number(protocolRequirements.required_days || 56);
   const protocolTiles = ['B', 'C'].filter(key => protocols[key]).map(key => {
     const item = protocols[key] || {};
     const resolved = key === 'B'
@@ -690,10 +693,51 @@ function renderSystemHealthStatus(payload) {
       name: key === 'B' ? 'Protocol B · crossing outcomes' : 'Protocol C · action outcomes',
       value: item.measurement === 'NOT_WIRED'
         ? 'measurement not wired'
-        : `${resolved}/1,200 resolved · ${Number(item.calendar_days || 0)}/60 days`,
+        : `${resolved.toLocaleString()}/${requiredRounds.toLocaleString()} resolved · ${Number(item.calendar_days || 0)}/${requiredDays} days`,
       status: item.measurement === 'NOT_WIRED' ? 'BLOCKED' : (item.status || 'UNKNOWN'),
     };
   });
+  const makerRecorder = payload.recorders?.polymarket_l2 || {};
+  const protocolDTiles = [{
+    name: 'Protocol D · passive execution',
+    value: makerRecorder.status === 'HEALTHY'
+      ? 'raw L2 collecting · scoring precondition blocked'
+      : 'raw L2 recorder unavailable · scoring blocked',
+    status: makerRecorder.status === 'HEALTHY' ? 'COLLECTING' : 'BLOCKED',
+  }];
+  const collection = protocols.daily_collection || {};
+  const collectionTiles = Object.keys(collection).length ? [
+    {
+      name: 'forward rows today',
+      value: `${Number(collection.opportunity_rows_today || 0).toLocaleString()} decisions · ${Number(collection.position_snapshots_today || 0).toLocaleString()} position snapshots`,
+      status: protocols.recorder?.writer_active ? 'HEALTHY' : 'NOT_STARTED',
+    },
+    {
+      name: 'paired action evidence',
+      value: `${(Number(collection.paired_book_coverage || 0) * 100).toFixed(1)}% books · ${(Number(collection.five_arm_coverage || 0) * 100).toFixed(1)}% five-arm`,
+      status: Number(collection.five_arm_snapshots_missing_official_outcomes || 0) > 0 ? 'COLLECTING' : 'INFO',
+    },
+    {
+      name: 'recorder refusals',
+      value: `${Number(collection.stale_book_refusals || 0).toLocaleString()} stale · ${Number(collection.clock_skew_refusals || 0).toLocaleString()} clock-skew`,
+      status: 'INFO',
+    },
+  ] : [];
+  const evidenceCollection = payload.evidence_collection || {};
+  const revisionEvidence = evidenceCollection.model_revisions || {};
+  const opportunityEvidence = evidenceCollection.opportunities || {};
+  const evidenceTiles = evidenceCollection.available ? [
+    {
+      name: 'model revision recorder',
+      value: `${Number(revisionEvidence.revision_rows || 0).toLocaleString()} revisions · ${Number(revisionEvidence.missing_outcomes || 0).toLocaleString()} missing outcomes`,
+      status: revisionEvidence.status || 'UNKNOWN',
+    },
+    {
+      name: 'opportunity recorder',
+      value: `${Number(opportunityEvidence.decision_rows || 0).toLocaleString()} decisions · ${Number(opportunityEvidence.unresolved_decisions || 0).toLocaleString()} unresolved`,
+      status: opportunityEvidence.status || 'UNKNOWN',
+    },
+  ] : [];
   const models = payload.model_readiness || {};
   const modelTiles = [
     {
@@ -735,7 +779,7 @@ function renderSystemHealthStatus(payload) {
       status: payload.live_execution?.available ? 'HEALTHY' : 'INFO',
     },
   ];
-  grid.innerHTML = [...modelTiles, ...protocolTiles, ...feedTiles, ...recorderTiles, ...paperTiles, ...extra].map(item => {
+  grid.innerHTML = [...modelTiles, ...protocolTiles, ...protocolDTiles, ...collectionTiles, ...evidenceTiles, ...feedTiles, ...recorderTiles, ...paperTiles, ...extra].map(item => {
     const status = String(item.status || 'UNKNOWN').toUpperCase();
     const warning = status === 'COLLECTING' || status === 'DATA_GATE_INCOMPLETE' || status === 'NOT_STARTED';
     const tileColor = status === 'HEALTHY' || status === 'DATA_GATE_COMPLETE_UNSCORED'

@@ -172,18 +172,41 @@ def _rate(numerator: int, denominator: int) -> float:
     return (numerator / denominator) if denominator else 0.0
 
 
+def _database_bytes(path: Path) -> int:
+    """Current database footprint including its active WAL, without opening the store."""
+    return sum(
+        candidate.stat().st_size
+        for candidate in (path, Path(f"{path}.wal"))
+        if candidate.exists()
+    )
+
+
 def _ledger_counts(db: Path | None = None) -> dict:
     """Counts from the causal decision ledger. Raises rather than reporting a false zero."""
-    con = _connect(db or LEDGER_DB, ("opportunity_decisions",))
+    target = db or LEDGER_DB
+    con = _connect(target, ("opportunity_decisions",))
     try:
+        import time
+        today_ms = (int(time.time() * 1000) // 86_400_000) * 86_400_000
         row = con.execute("""
             SELECT count(*),
                    count(DISTINCT CAST(decision_ts / 86400000 AS BIGINT)),
                    count(DISTINCT CAST(decision_ts / 604800000 AS BIGINT)),
                    count(*) FILTER (WHERE action = 'ENTER'),
                    count(*) FILTER (WHERE action = 'WAIT'),
-                   count(*) FILTER (WHERE action = 'UNAVAILABLE')
-            FROM opportunity_decisions""").fetchone()
+                   count(*) FILTER (WHERE action = 'UNAVAILABLE'),
+                   max(decision_ts),
+                   count(*) FILTER (WHERE decision_ts >= ?)
+            FROM opportunity_decisions""", [today_ms]).fetchone()
+        columns = {str(item[0]) for item in con.execute(
+            "DESCRIBE opportunity_decisions"
+        ).fetchall()}
+        rounds_today = 0
+        if "round_id" in columns:
+            rounds_today = int(con.execute(
+                "SELECT count(DISTINCT round_id) FROM opportunity_decisions "
+                "WHERE decision_ts >= ?", [today_ms]
+            ).fetchone()[0])
         violations = con.execute(
             "SELECT count(*) FROM opportunity_decisions "
             "WHERE state_snapshot_ts > decision_ts OR quote_recv_ts > decision_ts").fetchone()[0]
@@ -191,7 +214,11 @@ def _ledger_counts(db: Path | None = None) -> dict:
         con.close()
     return {"decisions": int(row[0]), "days": int(row[1]), "weeks": int(row[2]),
             "enter_rows": int(row[3]), "wait_rows": int(row[4]),
-            "unavailable_rows": int(row[5]), "causal_refusals": int(violations)}
+            "unavailable_rows": int(row[5]),
+            "last_decision_ms": int(row[6]) if row[6] is not None else 0,
+            "rows_today": int(row[7]), "independent_rounds_today": rounds_today,
+            "database_bytes": _database_bytes(Path(target)),
+            "causal_refusals": int(violations)}
 
 
 #: Protocol C's five declared arms. Coverage is measured against this exact set.
@@ -207,23 +234,30 @@ HEARTBEAT_WINDOW_MS = 30 * 60 * 1000
 
 def _position_counts(db: Path | None = None) -> dict:
     """Protocol C coverage, read from the open-position recorder. Raises on unreadable."""
-    con = _connect(db or POSITIONS_DB, (
+    target = db or POSITIONS_DB
+    con = _connect(target, (
         "open_position_snapshots", "paired_book_snapshots", "open_position_action_arms",
         "open_position_recorder_refusals", "open_position_capture_attempts",
         "open_position_recorder_heartbeats", "open_position_action_outcomes"))
     try:
-        snaps, positions, days, weeks, paired_linked = con.execute("""
+        import time
+        today_ms = (int(time.time() * 1000) // 86_400_000) * 86_400_000
+        snaps, positions, days, weeks, paired_linked, latest_snapshot, snapshots_today, rounds_today = con.execute("""
             SELECT count(*), count(DISTINCT position_id),
                    count(DISTINCT CAST(snapshot_ts / 86400000 AS BIGINT)),
                    count(DISTINCT CAST(snapshot_ts / 604800000 AS BIGINT)),
-                   count(*) FILTER (WHERE paired_snapshot_id IS NOT NULL)
-            FROM open_position_snapshots""").fetchone()
-        paired, fee_ruled, skewed = con.execute("""
+                   count(*) FILTER (WHERE paired_snapshot_id IS NOT NULL),
+                   max(recorded_ts),
+                   count(*) FILTER (WHERE recorded_ts >= ?),
+                   count(DISTINCT round_id) FILTER (WHERE recorded_ts >= ?)
+            FROM open_position_snapshots""", [today_ms, today_ms]).fetchone()
+        paired, fee_ruled, skewed, paired_today = con.execute("""
             SELECT count(*),
                    count(*) FILTER (WHERE fee_rate IS NOT NULL AND fees_enabled IS NOT NULL),
                    count(*) FILTER (WHERE pair_skew_ms IS NOT NULL
-                                      AND abs(pair_skew_ms) > 2000)
-            FROM paired_book_snapshots""").fetchone()
+                                      AND abs(pair_skew_ms) > 2000),
+                   count(*) FILTER (WHERE written_ts >= ?)
+            FROM paired_book_snapshots""", [today_ms]).fetchone()
         # DIAGNOSTIC ONLY - a snapshot with at least one complete arm. This must never be the
         # gate: 1,000 snapshots carrying a complete HOLD and nothing else would satisfy the
         # count while the five-arm comparison that DEFINES Protocol C does not exist.
@@ -251,6 +285,15 @@ def _position_counts(db: Path | None = None) -> dict:
             FROM open_position_action_outcomes
             WHERE lower(settlement_source) LIKE 'official:%'
         """).fetchone()[0]
+        arms_today = con.execute("""
+            SELECT count(*) FROM open_position_action_arms a
+            JOIN open_position_snapshots s USING (position_snapshot_id)
+            WHERE s.recorded_ts >= ?
+        """, [today_ms]).fetchone()[0]
+        outcomes_today = con.execute(
+            "SELECT count(*) FROM open_position_action_outcomes WHERE recorded_ts >= ?",
+            [today_ms],
+        ).fetchone()[0]
 
         # THE ACTUAL PROTOCOL C GATE. A qualifying unit is a distinct ROUND - not a snapshot,
         # not an arm row - in which all five arms are complete FROM THE SAME causal snapshot
@@ -283,6 +326,14 @@ def _position_counts(db: Path | None = None) -> dict:
               AND p.up_recv_ts <= s.snapshot_ts AND p.down_recv_ts <= s.snapshot_ts
               AND s.recorded_ts >= s.snapshot_ts
               AND s.round_id IS NOT NULL""", list(ACTION_ARMS) + list(ACTION_ARMS)).fetchone()[0]
+        all_five_official = con.execute(f"""
+            SELECT count(DISTINCT position_snapshot_id)
+            FROM open_position_action_outcomes
+            WHERE action IN ({placeholders})
+              AND lower(settlement_source) LIKE 'official:%'
+            GROUP BY position_snapshot_id
+            HAVING count(DISTINCT action) = {len(ACTION_ARMS)}
+        """, list(ACTION_ARMS)).fetchall()
         # The gate's own span must come from the qualifying rounds, not from every snapshot
         # ever written - otherwise a long dark stretch of unusable captures inflates it.
         gate_days, gate_weeks = con.execute(f"""
@@ -345,6 +396,15 @@ def _position_counts(db: Path | None = None) -> dict:
         "heartbeats": int(heartbeats),
         "last_heartbeat_ms": int(last_heartbeat) if last_heartbeat is not None else 0,
         "captures_accepted": int(accepted), "captures_refused": int(refused),
+        "latest_snapshot_ms": int(latest_snapshot) if latest_snapshot is not None else 0,
+        "snapshots_today": int(snapshots_today),
+        "independent_rounds_today": int(rounds_today),
+        "paired_today": int(paired_today), "arms_today": int(arms_today),
+        "outcomes_today": int(outcomes_today),
+        "five_arm_snapshots_missing_official_outcomes": max(
+            0, int(all_five) - len(all_five_official)
+        ),
+        "database_bytes": _database_bytes(Path(target)),
         "writer_active": bool(alive),
     }
 
@@ -466,6 +526,31 @@ def build_report(*, positions_db: Path | None = None,
         protocol_c["full_resolved_five_arm_rounds"], writer_active=active)
 
     report = {
+        "requirements": {
+            "required_days": REQUIRED_DAYS,
+            "required_weeks": REQUIRED_WEEKS,
+            "required_resolved_rounds": REQUIRED_RESOLVED,
+        },
+        "daily_collection": {
+            "last_successful_position_write_ms": pos["latest_snapshot_ms"],
+            "last_recorder_heartbeat_ms": pos["last_heartbeat_ms"],
+            "opportunity_rows_today": ledger["rows_today"],
+            "opportunity_rounds_today": ledger["independent_rounds_today"],
+            "position_snapshots_today": pos["snapshots_today"],
+            "position_rounds_today": pos["independent_rounds_today"],
+            "paired_books_today": pos["paired_today"],
+            "action_arms_today": pos["arms_today"],
+            "action_outcomes_today": pos["outcomes_today"],
+            "five_arm_snapshots_missing_official_outcomes": pos[
+                "five_arm_snapshots_missing_official_outcomes"
+            ],
+            "paired_book_coverage": _rate(pos["paired_linked"], pos["snapshots"]),
+            "five_arm_coverage": _rate(pos["all_five"], pos["snapshots"]),
+            "stale_book_refusals": pos["stale_refusals"],
+            "clock_skew_refusals": pos["skew_refusals"],
+            "opportunity_database_bytes": ledger["database_bytes"],
+            "position_database_bytes": pos["database_bytes"],
+        },
         "recorder": {
             "writer_active": active,
             "capture_attempts": pos["capture_attempts"],
@@ -740,8 +825,15 @@ def selftest() -> int:
         _plant_crossings(positions, rows=3)
         _plant_ledger(ledger_db)
         report = build_report(positions_db=positions, ledger_db=ledger_db)
-    check(set(report) == {"recorder", "ledger", "B", "C"},
-          "the report exposes exactly four sections")
+    check(set(report) == {"requirements", "daily_collection", "recorder", "ledger", "B", "C"},
+          "the report exposes only requirements, collection health and sealed protocols")
+    check(report["requirements"] == {
+        "required_days": REQUIRED_DAYS,
+        "required_weeks": REQUIRED_WEEKS,
+        "required_resolved_rounds": REQUIRED_RESOLVED,
+    }, "the UI receives the same frozen gate constants used by backend scoring")
+    check(report["daily_collection"]["five_arm_snapshots_missing_official_outcomes"] == 0,
+          "daily health reports official action-outcome completeness without performance")
     check(not any(forbidden_reason(k) for k in iter_keys(report)),
           "the REAL report contains no performance-shaped key at ANY depth")
     check(report["C"]["status"] in STATUSES, "Protocol C emits a declared status")
@@ -789,6 +881,8 @@ def main() -> int:
             print("  No status is emitted. 'I could not look' is not one of the four statuses.")
             return 1
     rec, ledger = report["recorder"], report["ledger"]
+    daily = report.get("daily_collection") or {}
+    requirements = report.get("requirements") or {}
     print(f"  recorder    : {'ALIVE' if rec['writer_active'] else 'NOT RUNNING'} "
           f"| {rec['capture_attempts']:,} capture attempts "
           f"({rec['captures_accepted']:,} accepted, {rec['captures_refused']:,} refused)")
@@ -796,6 +890,20 @@ def main() -> int:
           f"| causal refusals {ledger['causal_refusals']}")
     print(f"                ENTER {ledger['enter_rows']:,}  WAIT {ledger['wait_rows']:,}  "
           f"UNAVAILABLE {ledger['unavailable_rows']:,}")
+    print("  today       : "
+          f"opportunities {int(daily.get('opportunity_rows_today', 0)):,} | "
+          f"position snapshots {int(daily.get('position_snapshots_today', 0)):,} | "
+          f"paired books {int(daily.get('paired_books_today', 0)):,} | "
+          f"action arms {int(daily.get('action_arms_today', 0)):,} | "
+          f"outcomes {int(daily.get('action_outcomes_today', 0)):,}")
+    print("  coverage    : "
+          f"paired books {float(daily.get('paired_book_coverage', 0.0)):.1%} | "
+          f"five arms {float(daily.get('five_arm_coverage', 0.0)):.1%} | "
+          f"missing official action sets "
+          f"{int(daily.get('five_arm_snapshots_missing_official_outcomes', 0)):,}")
+    print("  refusals    : "
+          f"stale book {int(daily.get('stale_book_refusals', 0)):,} | "
+          f"clock skew {int(daily.get('clock_skew_refusals', 0)):,}")
 
     for key, title, gate_field, unit in (
             ("B", "Protocol B - final crossing vs reversion",
@@ -811,10 +919,13 @@ def main() -> int:
             print(f"    reason                : {section['unmeasured_reason']}")
             print("    status                : (none - an unmeasured gate has no status)")
             continue
-        print(f"    span                  : {section['calendar_days']}/{REQUIRED_DAYS} "
+        required_days = int(requirements.get("required_days", REQUIRED_DAYS))
+        required_weeks = int(requirements.get("required_weeks", REQUIRED_WEEKS))
+        required_rounds = int(requirements.get("required_resolved_rounds", REQUIRED_RESOLVED))
+        print(f"    span                  : {section['calendar_days']}/{required_days} "
               f"qualifying days")
-        print(f"    independent weeks     : {section['independent_weeks']}/{REQUIRED_WEEKS}")
-        print(f"    {unit:<22}: {section[gate_field]:,}/{REQUIRED_RESOLVED:,}")
+        print(f"    independent weeks     : {section['independent_weeks']}/{required_weeks}")
+        print(f"    {unit:<22}: {section[gate_field]:,}/{required_rounds:,}")
         if key == "C":
             print(f"    (diagnostic) any-arm  : "
                   f"{section['any_arm_complete_snapshots']:,} snapshots - NOT the gate")

@@ -48,6 +48,10 @@ def main() -> int:
           "CSP prevents framing")
     replay = client.post("/api/historical-replay/run")
     check(replay.status_code == 403, "admin mutation without token is refused")
+    evidence = client.get("/api/evidence-health")
+    evidence_payload = evidence.json()
+    check(evidence.status_code == 200 and evidence_payload.get("capital_authority") is False,
+          "performance-blind evidence health is readable and grants no capital authority")
 
     rejected = False
     try:

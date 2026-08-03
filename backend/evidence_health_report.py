@@ -15,6 +15,8 @@ import json
 import os
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import zlib
 from pathlib import Path
 from typing import Any
@@ -682,27 +684,59 @@ def main() -> int:
     parser.add_argument("--expect-live", action="store_true")
     parser.add_argument("--stale-after-ms", type=int, default=120_000)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("BTC_EVIDENCE_HEALTH_API_URL", ""),
+        help="read the live writer's endpoint instead of opening its DuckDB files",
+    )
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
     if args.selftest:
         return selftest()
 
-    report = build_report(
-        args.revision_db, args.opportunity_db,
-        outcome_grace_ms=max(0, args.outcome_grace_ms),
-        late_threshold_ms=max(0, args.late_threshold_ms),
-        minimum_eligible=max(1, args.minimum_eligible),
-        full_state_scan=bool(args.full_state_scan),
-        state_scan_limit=max(1, args.state_scan_limit),
-        expect_live=bool(args.expect_live),
-        stale_after_ms=max(1, args.stale_after_ms),
-    )
+    source = "direct DuckDB"
+    api_url = str(args.api_url or "").strip()
+    if api_url:
+        try:
+            with urllib.request.urlopen(api_url, timeout=5.0) as response:
+                report = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            print(f"Evidence health API unavailable: {exc}")
+            return 1
+        source = api_url
+    else:
+        report = build_report(
+            args.revision_db, args.opportunity_db,
+            outcome_grace_ms=max(0, args.outcome_grace_ms),
+            late_threshold_ms=max(0, args.late_threshold_ms),
+            minimum_eligible=max(1, args.minimum_eligible),
+            full_state_scan=bool(args.full_state_scan),
+            state_scan_limit=max(1, args.state_scan_limit),
+            expect_live=bool(args.expect_live),
+            stale_after_ms=max(1, args.stale_after_ms),
+        )
+        # DuckDB permits one writer process. When the app owns the stores, use its
+        # counts-only endpoint rather than relabeling a healthy writer as failed.
+        if report.get("status") == "FAIL":
+            fallback = "http://127.0.0.1:8000/api/evidence-health"
+            try:
+                with urllib.request.urlopen(fallback, timeout=3.0) as response:
+                    report = json.loads(response.read().decode("utf-8"))
+                source = fallback
+            except (OSError, urllib.error.URLError, json.JSONDecodeError):
+                pass
+    if not isinstance(report.get("model_revisions"), dict) or not isinstance(
+        report.get("opportunities"), dict
+    ):
+        print("Evidence health source returned an incomplete payload")
+        return 1
     write_report(
         report, args.output, None if args.no_history else args.history_db,
     )
     print(f"Evidence health: {report['status']}")
     print(f"  revisions: {report['model_revisions']['status']}")
     print(f"  opportunities: {report['opportunities']['status']}")
+    print(f"  source: {source}")
     print(f"  report: {args.output}")
     if args.strict and report["status"] != "HEALTHY":
         return 1

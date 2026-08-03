@@ -12,6 +12,10 @@ It does not claim that a model is accurate, that a paper strategy is profitable,
 orders are authorized. The current model artifacts remain unavailable until the compatible
 retrain completes and the promotion gates pass.
 
+The post-retrain operating policy is defined in
+`PHASE6_EVIDENCE_COLLECTION_AND_ACTION_CONTROL_2026-08-03.md`: 30 days of recorder and action-
+control evidence, with new alpha searches and strategy promotion frozen.
+
 ## Current Verdict
 
 The maintained source tree passes its launcher and workflow-derived validation suites. The app is
@@ -220,13 +224,13 @@ the corrected schema semantics.
 | frontend dependency audit | PASS; zero high-severity vulnerabilities |
 | specialist transactional dry run | PASS; no live promotion |
 | main-model promotion/rollback selftest | PASS |
-| Protocol B/C readiness selftest | PASS; 40 checks |
+| Protocol B/C readiness selftest | PASS; 42 checks, including UI/backend gate parity and daily health |
 | open-position action recorder selftest | PASS; 23 checks |
 | dynamic-paper degraded-mode selftest | PASS |
 | paper restart/official-settlement integrity | PASS |
 | Binance paper engine and typed API selftests | PASS |
 | model metrics and restart-integrity regression | PASS |
-| exact `start.bat` self-test-only path | PASS in 226s; no app or training started |
+| exact `start.bat` self-test-only path | PASS in 226.7s; no app or training started |
 
 ## Persistence Ownership Map
 

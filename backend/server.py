@@ -104,6 +104,7 @@ from bc_forward_readiness_report import (
     SourceUnreadable as ForwardReadinessUnavailable,
     build_report as build_forward_readiness_report,
 )
+from evidence_health_report import build_report as build_evidence_health_report
 import database
 
 logging.basicConfig(
@@ -134,6 +135,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 MODEL_REVISION_DB = os.path.join(DATA_DIR, "model_revision_ledger.duckdb")
 _MODEL_REVISION_LEDGER = None
 _FORWARD_READINESS_CACHE = {"generated_at_s": 0.0, "payload": None}
+_EVIDENCE_HEALTH_CACHE = {"generated_at_s": 0.0, "payload": None}
 
 
 def _model_revision_ledger() -> ModelRevisionLedger:
@@ -4667,6 +4669,28 @@ def _forward_readiness_snapshot(max_age_s: float = 15.0) -> dict:
     return copy.deepcopy(payload)
 
 
+def _evidence_health_snapshot(max_age_s: float = 60.0) -> dict:
+    """Performance-blind revision/opportunity recorder health from the writer process."""
+    now = time.time()
+    cached = _EVIDENCE_HEALTH_CACHE.get("payload")
+    if cached is not None and now - float(_EVIDENCE_HEALTH_CACHE["generated_at_s"]) <= max_age_s:
+        return copy.deepcopy(cached)
+    try:
+        payload = build_evidence_health_report(
+            os.path.join(DATA_DIR, "model_revision_ledger.duckdb"),
+            os.path.join(DATA_DIR, "opportunity_ledger.duckdb"),
+            expect_live=True,
+            state_scan_limit=25,
+        )
+        payload["available"] = True
+        payload["error"] = None
+    except Exception as exc:
+        payload = {"available": False, "status": "FAIL", "error": str(exc)}
+    _EVIDENCE_HEALTH_CACHE["generated_at_s"] = now
+    _EVIDENCE_HEALTH_CACHE["payload"] = payload
+    return copy.deepcopy(payload)
+
+
 def _system_health_snapshot() -> dict:
     timestamps = _safe_dict(data_state.get("feed_timestamps_ms"))
     pyth_ts = data_state.get("pyth_price_ts")
@@ -4716,6 +4740,7 @@ def _system_health_snapshot() -> dict:
     for recorder_name, recorder_status in recorders.items():
         recorder_status["required"] = recorder_name != "deribit_options_optional"
     forward_readiness = _forward_readiness_snapshot()
+    evidence_health = _evidence_health_snapshot()
     action_recorder = forward_readiness.get("recorder") or {}
     heartbeat_ms = int(action_recorder.get("last_heartbeat_ms") or 0)
     recorders["open_position_actions"] = _source_age_status(
@@ -4748,6 +4773,8 @@ def _system_health_snapshot() -> dict:
         )
         if not forward_readiness.get("available"):
             blockers.append("forward_readiness_unavailable")
+        if evidence_health.get("status") in ("FAIL", "DEGRADED"):
+            blockers.append(f"evidence_health:{str(evidence_health.get('status')).lower()}")
     p_hold_status = persistence_model_status()
     round_state_status = round_state_panel.status()
     if not getattr(model, "is_trained", False):
@@ -4802,6 +4829,7 @@ def _system_health_snapshot() -> dict:
         "polymarket_feed": polymarket_feed,
         "recorders": recorders,
         "forward_protocols": forward_readiness,
+        "evidence_collection": evidence_health,
         "model_readiness": {
             "main_ensemble": "READY" if getattr(model, "is_trained", False) else "UNAVAILABLE",
             "p_hold": p_hold_status,
@@ -4872,6 +4900,16 @@ async def api_evidence_readiness():
     if not payload.get("available"):
         return JSONResponse(status_code=503, content=payload)
     return payload
+
+
+@app.get("/api/evidence-health")
+async def api_evidence_health():
+    """Performance-blind model-revision and opportunity recorder diagnostics."""
+    payload = _evidence_health_snapshot(max_age_s=0.0)
+    return JSONResponse(
+        status_code=200 if payload.get("available") else 503,
+        content=payload,
+    )
 
 
 @app.get("/healthz", include_in_schema=False)
