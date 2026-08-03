@@ -187,7 +187,10 @@ def resolve_labels(event: dict, later_snapshots, settled_side: str | None,
         later_sides = {str(s.get("current_position") or "").upper() for s in after}
         labels["is_final_crossing"] = event["from_side"] not in later_sides
 
-    if all(labels[f"reverted_{h}s"] is None for h in REVERSION_HORIZONS_S) \
+    # v2 leaves the v1 `reverted_Ns` columns NULL, so the guard MUST check the columns v2
+    # actually populates. Checking the v1 names here made resolve_labels return None for
+    # every pre-settlement crossing - the horizon labels were computed and thrown away.
+    if all(labels[f"state_original_side_at_{h}s"] is None for h in REVERSION_HORIZONS_S) \
             and labels["is_final_crossing"] is None:
         return None                           # nothing resolved yet; write nothing
     labels["resolved_ts"] = now_ms
@@ -262,11 +265,19 @@ def write_labels(labels: list[dict]) -> int:
         written = 0
         for row in labels:
             con.execute(
-                "INSERT OR REPLACE INTO crossing_labels VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [row["crossing_id"], row["label_version"], row["eligible_after_ts"],
-                 row["resolved_ts"], row["is_final_crossing"], row["reverted_5s"],
-                 row["reverted_15s"], row["reverted_30s"], row["reverted_60s"],
-                 row["settled_side"]])
+                # EXPLICIT column list. A positional VALUES(...) silently breaks the moment
+                # the schema grows - which it just did, from 10 columns to 20.
+                "INSERT OR REPLACE INTO crossing_labels ("
+                " crossing_id, label_version, eligible_after_ts, resolved_ts,"
+                " is_final_crossing,"
+                " reverted_5s, reverted_15s, reverted_30s, reverted_60s,"
+                " state_original_side_at_5s, state_original_side_at_15s,"
+                " state_original_side_at_30s, state_original_side_at_60s,"
+                " ever_reverted_by_5s, ever_reverted_by_15s,"
+                " ever_reverted_by_30s, ever_reverted_by_60s,"
+                " first_reversion_ts, n_recrossings, settled_side"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [row.get("crossing_id"), row.get("label_version"), row.get("eligible_after_ts"), row.get("resolved_ts"), row.get("is_final_crossing"), row.get("reverted_5s"), row.get("reverted_15s"), row.get("reverted_30s"), row.get("reverted_60s"), row.get("state_original_side_at_5s"), row.get("state_original_side_at_15s"), row.get("state_original_side_at_30s"), row.get("state_original_side_at_60s"), row.get("ever_reverted_by_5s"), row.get("ever_reverted_by_15s"), row.get("ever_reverted_by_30s"), row.get("ever_reverted_by_60s"), row.get("first_reversion_ts"), row.get("n_recrossings"), row.get("settled_side")])
             written += 1
         return written
     finally:
@@ -393,9 +404,13 @@ def selftest() -> int:
     resolved = resolve_labels(event, later, None,
                               now_ms=event["crossing_ts"] + 20_000)
     check(resolved is not None, "once 5s and 15s have elapsed, a label row IS written")
-    check(resolved["reverted_5s"] is False,
-          "the leader stayed DOWN at +5s, so the crossing did not revert")
-    check(resolved["reverted_60s"] is None,
+    check(resolved["state_original_side_at_5s"] is False,
+          "the leader stayed DOWN at +5s, so it was NOT back on the original side")
+    check(resolved["ever_reverted_by_5s"] is False,
+          "and it never touched the original side within 5s either")
+    check(resolved["reverted_5s"] is None,
+          "the v1 column stays NULL under v2 - v1 rows keep v1 meaning, never mixed")
+    check(resolved["state_original_side_at_60s"] is None,
           "the 60s horizon has NOT elapsed and stays NULL - never a default False")
     check(resolved["is_final_crossing"] is None,
           "'final' is unknowable before the round ends and stays NULL")
@@ -404,8 +419,10 @@ def selftest() -> int:
     got = resolve_labels(reverted, later_snapshots=reverted, settled_side=None,
                          now_ms=event["crossing_ts"] + 20_000) if False else \
         resolve_labels(event, reverted, None, now_ms=event["crossing_ts"] + 20_000)
-    check(got["reverted_5s"] is True,
-          "a leader that returns to the original side IS recorded as reverted")
+    check(got["state_original_side_at_5s"] is True,
+          "a leader back on the original side at +5s IS recorded as such")
+    check(got["ever_reverted_by_5s"] is True,
+          "and ever_reverted agrees here - the two only diverge on a re-crossing path")
 
     ended = resolve_labels(event, later, "DOWN",
                            now_ms=event["crossing_ts"] + 400_000)
