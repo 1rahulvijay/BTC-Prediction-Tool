@@ -56,6 +56,7 @@ FRONTIER = (
     "ev_magnitude_rule_v1.py",
     "binance_opportunity_head_v1.py",
     "algodesk_17_agents_v1.py",
+    "algodesk_ml_rl_dl.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour
