@@ -1004,8 +1004,19 @@ def selftest() -> int:
     check(mid.anchor_quality[rid]["quality"] == ANCHOR_UNAVAILABLE,
           "a round joined mid-flight is ANCHOR_UNAVAILABLE, not anchored to a stray price")
     check(mid.anchors[rid] is None, "and carries no anchor value at all")
-    check(mid.record(base + 91_000, 200.0) == [],
-          "an unanchored round produces NO crossings - a wrong anchor would invent them")
+    # A SEQUENCE, not one observation. A single call proves almost nothing: if the refusal were
+    # replaced by "anchor = price", that one price would sit exactly ON its own anchor, produce
+    # no side, and return [] anyway - so the mutation would pass a single-call check. Driving
+    # the price back and forth across the would-be anchor is what makes the check able to fail.
+    invented = []
+    for offset, price in ((91_000, 200.0), (92_000, 50.0), (93_000, 300.0),
+                          (94_000, 25.0), (95_000, 400.0)):
+        invented += mid.record(base + offset, price)
+    check(invented == [],
+          "an unanchored round produces NO crossings across a whipsawing price - a wrong "
+          "anchor would have invented one on every reversal")
+    check(mid.samples.get(rid) in (None, []),
+          "and it accumulates no samples, so nothing downstream can resolve against it")
     check(mid.anchor_quality[rid]["boundary_delay_ms"] == 90_000,
           "the boundary delay is recorded, so the refusal is auditable")
 
@@ -1157,6 +1168,22 @@ def selftest() -> int:
         check(fr.prune(base + 3000) == 0,
               "a live round is NOT pruned - its horizons have not elapsed")
         check(len(fr.samples) > 0, "so its samples are still held")
+
+        # THE CASE ONLY THE TIME GUARD PROTECTS. The check above passes even without it,
+        # because the finality guard independently blocks a round that still has pending
+        # events. A round in flight that has produced NO crossings yet has nothing pending,
+        # so its anchor and its samples are held by the elapsed-time condition ALONE - and
+        # pruning it mid-round would discard a verified OPEN anchor that cannot be recovered.
+        quiet = Recorder()
+        quiet.record(base, 100.0)
+        quiet.record(base + 1000, 100.5)               # one side only: no crossing, ever
+        flush(quiet, base + 2000, con=con)
+        qid, _, _ = round_id_for(base, 15)
+        check(not [e for e in quiet.events if e["round_id"] == qid],
+              "the quiet round has no events, so no finality guard applies to it")
+        check(quiet.prune(base + 2000) == 0 and qid in quiet.anchors,
+              "a live round with NO crossings is still held - the elapsed-time guard is "
+              "the only thing standing between it and a discarded anchor")
         far = base + 15 * 60_000 + PRUNE_MARGIN_MS + 1000
         flush(fr, far, con=con)                    # resolves and marks final
         fr.prune(far)
