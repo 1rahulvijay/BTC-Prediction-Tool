@@ -161,3 +161,10 @@ note   = real 200-level Bybit L2 replay; queue position from true depth
 
 PREREG_LIQUIDITY_VACUUM_CONTINUATION_V1.md
 sha256 = 8a81a2eecd0d4e5366addecaed424b56b8c4325057c243d51838c8fb06392b2a
+
+PREREG_CROSSING_CALIBRATION_V1.md
+sha256 = add7cb22d4c6f04f7a920c45fc1a0f94cb43d584056f06fddacd85130cfde540
+frozen = 2026-08-04
+bytes  = 4358
+note   = calibration of the crossing heads; gate for every EV-based action test
+======================================================================

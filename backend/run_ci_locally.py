@@ -69,9 +69,66 @@ def workflow_steps(job: str = "invariants") -> list[tuple[str, list[str]]]:
     return steps
 
 
+def all_jobs() -> list[str]:
+    import yaml
+
+    return list(yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"])
+
+
+def every_step() -> list[tuple[str, list[str]]]:
+    """Every step of EVERY job, not just `invariants`.
+
+    THE GAP THIS CLOSES
+        This runner parsed job="invariants" and nothing else. The workflow has a second job,
+        `startbat`, holding 27 commands that appear in NO other job - among them
+        test_round_state_causal_contract (which pins the P0-01 version contract and the P0-02
+        same-minute feature leak), recorder_health, datastore_identity, and every research study
+        built since the crossing work began.
+
+        GitHub Actions has never executed a step because the account is billing-locked, and this
+        file skipped the job those 27 live in. So they were gated by nothing at all - the exact
+        state this runner exists to prevent, reproduced one level up.
+
+        `startbat` also invokes start.bat under BTC_VALIDATE_STARTUP=1. That is excluded here by
+        operator instruction: launching it is the operator's action, not this runner's.
+    """
+    seen: set[str] = set()
+    steps: list[tuple[str, list[str]]] = []
+    for job in all_jobs():
+        for name, commands in workflow_steps(job):
+            # Skip the WHOLE step, not just the launcher line: dropping `call start.bat` alone
+            # would leave its `set ...` and `if errorlevel` fragments to fail under sh.
+            if any("start.bat" in c for c in commands):
+                continue
+            kept = []
+            for command in commands:
+                # cmd-shell guards are noise under sh; the return code gates either way.
+                command = command.replace("|| exit /b 1", "").strip()
+                # Dedupe per COMMAND, not per step: startbat packs 99 commands into a single
+                # step while invariants lists them individually, so a step-level key would
+                # never match and the whole Windows block would re-run.
+                key = command_identity(command)
+                if key in seen:
+                    continue
+                seen.add(key)
+                kept.append(command)
+            if kept:
+                steps.append((f"[{job}] {name}", kept))
+    return steps
+
+
+def command_identity(command: str) -> str:
+    """Normalise so `python backend/x.py --selftest` and `python -m backend.x --selftest`
+    are recognised as the same gate. They differ only in import style."""
+    text = " ".join(command.split())
+    return (text.replace("python -m ", "python ").replace("backend/", "backend.")
+                .replace("research/", "research.").replace("tests/", "tests.")
+                .replace(".py", ""))
+
+
 def main() -> int:
     include_node = "--all" in sys.argv
-    steps = workflow_steps()
+    steps = every_step()
 
     selected: list[tuple[str, list[str]]] = []
     skipped: list[str] = []

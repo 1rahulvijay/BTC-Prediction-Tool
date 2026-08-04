@@ -66,6 +66,7 @@ FRONTIER = (
     "maker_execution_v1.py",
     "altcoin_maker_execution_v1.py",
     "crossing_heads_v1.py",
+    "crossing_calibration_v1.py",
     "bybit_l2_maker_v1.py",
     "bybit_l2_maker_v2_trade_driven.py",
     "bybit_l2_depth_heads_v1.py",
