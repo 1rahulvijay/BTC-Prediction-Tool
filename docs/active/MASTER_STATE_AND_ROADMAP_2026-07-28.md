@@ -278,7 +278,7 @@ python backend/report_master_runtime_state.py
 writes `data/reports/MASTER_RUNTIME_STATE.{json,md}`.
 
 `--selftest` is a documentation consistency test wired into both CI jobs. It asserts only
-what code can prove (semantics v4/v3, calibration default off, legacy flag fails closed,
+what code can prove (semantics v5/v3, calibration default off, legacy flag fails closed,
 calibrators non-deployable, loader enforcement wired, max_taker_ask still quadratic)
 and deliberately does **not** assert runtime values, so CI never depends on a recorder.
 

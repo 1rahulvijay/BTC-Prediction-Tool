@@ -3902,8 +3902,15 @@ async def main_loop():
                 # come from [-2], the newest CLOSED bar.
                 _closed = recent_klines[:-1] if len(recent_klines) > 1 else recent_klines
                 _obs_id = _closed[-1].get("time") if _closed else None
+                # ALIGNMENT. adx_arr/atr_arr were computed from the FULL arrays, which
+                # retain the forming candle, while closes/volumes were sliced to closed bars.
+                # detect_regime then read closes[-1] (newest CLOSED bar) alongside adx_arr[-1]
+                # and atr_arr[-1] (the still-forming bar) - two different market moments in
+                # one regime decision, and the threshold fallback compares them directly.
+                _n_closed = len(_closed)
                 regime = regime_engine.detect_regime(
-                    closes[:len(_closed)], adx_arr, atr_arr, volumes[:len(_closed)],
+                    closes[:_n_closed], adx_arr[:_n_closed], atr_arr[:_n_closed],
+                    volumes[:_n_closed],
                     observation_id=_obs_id,
                 )
             data_state["regime_info"] = regime

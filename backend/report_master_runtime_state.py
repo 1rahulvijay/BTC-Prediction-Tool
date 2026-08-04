@@ -259,7 +259,10 @@ def selftest() -> int:
     print("master-doc consistency selftest")
     st = collect()
 
-    chk(st["feature_semantics_version"] == 4, "document claims feature semantics v4")
+    # Bumped to 5 on 2026-08-04: LVN empty-bin selection, the symmetric single-cosine
+    # funding phase, and the dimensionally-incoherent unlagged cross_exchange_lead_lag.
+    # All three change feature VALUES, so artifacts trained under v4 must be retrained.
+    chk(st["feature_semantics_version"] == 5, "document claims feature semantics v5")
     chk(st["training_semantics_version"] == 3, "document claims training semantics v3")
 
     import phold_calibrator as pc

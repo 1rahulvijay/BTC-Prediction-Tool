@@ -132,6 +132,9 @@ jobs:
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
+      - name: Feature semantics v5 (LVN, funding phase, lead-lag, regime alignment)
+        run: python backend/test_feature_semantics_v5.py
+
       - name: Target contract (train and serve label identically)
         run: python backend/target_contract.py --selftest
 
@@ -629,6 +632,7 @@ jobs:
           python research/research_status.py --selftest || exit /b 1
           python backend/test_round_state_causal_contract.py || exit /b 1
           python backend/target_contract.py --selftest || exit /b 1
+          python backend/test_feature_semantics_v5.py || exit /b 1
           python backend/forward_evidence_gate.py --selftest || exit /b 1
           python backend/decision_snapshot.py --selftest || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1

@@ -297,8 +297,16 @@ def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 1
 # invalidates artifacts under strict mode - but strict mode can be off, and a hash
 # says only "something changed". This constant says WHAT changed, and
 # check_feature_contract.py reports it in plain words.
-FEATURE_SEMANTICS_VERSION = 4
+FEATURE_SEMANTICS_VERSION = 5
 FEATURE_SEMANTICS_CHANGELOG = {
+    5: "2026-08-04 three feature defects, all value-changing. (a) volume_profile_lvn_distance: "
+       "argmin() over ALL bins selected the first ZERO-volume bin - normally the lowest price "
+       "never traded - so it measured the range bottom, not a low-volume node; now restricted "
+       "to occupied bins. (b) time_to_funding: a single cos() is symmetric, so 25% and 75% "
+       "through the cycle both mapped to 0; now a monotone fraction remaining. (c) "
+       "cross_exchange_lead_lag: subtracted an ETH dollar change from a BTC dollar change "
+       "(incomparable scales) with no lag at all; now ETH's LAGGED log return minus BTC's "
+       "current log return. Models trained under v4 consumed all three and MUST be retrained.",
     4: "2026-07-31 cvd_slope_divergence: full-dataset standard deviation -> "
        "causal trailing scale; cross-asset leading gaps no longer backfill from a "
        "future first observation. Appending future data previously changed past rows.",
@@ -529,7 +537,16 @@ def rolling_volume_profile(closes: np.ndarray, volumes: np.ndarray,
         idx = ((wc - pmin) / rng * (n_bins - 1)).astype(np.int64)
         vol_by_bin = np.bincount(idx, weights=wv, minlength=n_bins)
         poc_price = pmin + (vol_by_bin.argmax() + 0.5) / n_bins * rng
-        lvn_price = pmin + (vol_by_bin.argmin() + 0.5) / n_bins * rng
+        # A low-volume NODE is a thin bin that trading actually reached, not the emptiest
+        # slot in the histogram. argmin() over all bins returns the first ZERO-volume bin -
+        # usually the lowest price never traded in the window - so this feature was measuring
+        # the bottom of the range rather than a node. Restrict to OCCUPIED bins.
+        _occupied = np.flatnonzero(vol_by_bin > 0)
+        if len(_occupied) == 0:
+            lvn_dist[i] = 0.0
+            continue
+        _lvn_bin = _occupied[np.argmin(vol_by_bin[_occupied])]
+        lvn_price = pmin + (_lvn_bin + 0.5) / n_bins * rng
         poc_dist[i] = (closes[i] - poc_price) / closes[i]
         lvn_dist[i] = (closes[i] - lvn_price) / closes[i]
         va_pos[i] = (closes[i] - pmin) / rng
@@ -1219,8 +1236,26 @@ def build_features_from_klines(
     features[:, 98] = np.clip(absorb_pers[1:] / 5.0, 0, 1.0)
     replenish = series("book_replenishment_rate", of.get("book_replenishment_rate", 1.0))
     features[:, 99] = np.clip(replenish[1:] / 5.0, 0, 1.0)
-    eth_ret = eth_price_raw[1:] - eth_price_raw[:-1]
-    features[:, 100] = np.clip((eth_ret - ret_1m) / (safe[1:] + 1e-9) * 1000, -1.0, 1.0)
+    # This subtracted an ETH DOLLAR change from a BTC DOLLAR change and divided by the BTC
+    # price. ETH and BTC trade two orders of magnitude apart, so the difference was dominated
+    # by BTC's larger nominal moves and the result was not a spread in any unit. It was also
+    # SIMULTANEOUS, so it could not measure lead-lag at all.
+    #
+    # Now: ETH's LAGGED log return minus BTC's current log return. Same units (log return),
+    # and the ETH term is genuinely from the previous bar, so the feature can express "ETH
+    # moved first". Whether that has value is an empirical question this makes askable.
+    _eth_safe = np.where(eth_price_raw > 0, eth_price_raw, np.nan)
+    _eth_logret = np.zeros_like(safe)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        _eth_logret[1:] = np.log(_eth_safe[1:] / _eth_safe[:-1])
+    _eth_logret = np.nan_to_num(_eth_logret, nan=0.0, posinf=0.0, neginf=0.0)
+    _btc_logret = np.zeros_like(safe)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        _btc_logret[1:] = np.log(safe[1:] / safe[:-1])
+    _btc_logret = np.nan_to_num(_btc_logret, nan=0.0, posinf=0.0, neginf=0.0)
+    _eth_lagged = np.zeros_like(_eth_logret)
+    _eth_lagged[1:] = _eth_logret[:-1]          # ETH from the PREVIOUS bar
+    features[:, 100] = np.clip((_eth_lagged[1:] - _btc_logret[1:]) * 100.0, -1.0, 1.0)
 
     # Rolling Volume Profile (101-102) — REAL TPO/market-profile (was VWAP proxy / 0.0 stub).
     _poc_dist, _lvn_dist, _va_pos = rolling_volume_profile(closes, volumes)
@@ -1235,7 +1270,11 @@ def build_features_from_klines(
     _cycle = 8 * 3600.0
     _into = np.mod(_t_s, _cycle)
     _ttf = 1.0 - (_into / _cycle)                          # 1.0 just-settled → 0.0 about-to-settle
-    features[:, 104] = np.cos(2.0 * np.pi * _ttf[1:])      # cyclical encoding ∈ [-1,1]
+    # A SINGLE cosine is not a cyclical encoding - it is symmetric, so 25% and 75% through
+    # the funding cycle both map to 0 and the model cannot tell "just settled" from "about to
+    # settle". Slot 104 keeps a monotone fraction-remaining (unambiguous, and the quantity the
+    # name promises); the sin/cos pair belongs in two slots and is a future append.
+    features[:, 104] = np.clip(_ttf[1:], 0.0, 1.0)
 
     # Polymarket / Events (105-108) (Stubbed as requested)
     features[:, 105] = 0.0
