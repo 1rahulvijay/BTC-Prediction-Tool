@@ -67,6 +67,9 @@ FRONTIER = (
     "altcoin_maker_execution_v1.py",
     "crossing_heads_v1.py",
     "bybit_l2_maker_v1.py",
+    "bybit_l2_maker_v2_trade_driven.py",
+    "bybit_l2_depth_heads_v1.py",
+    "score_liquidity_vacuum_continuation_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour
@@ -77,8 +80,12 @@ FRONTIER = (
 #                              tell "deliberately excluded" from "silently forgotten".
 #   research_status.py       - the retraction registry itself. A registry that ran as a
 #                              study would be a study auditing its own status.
+#   bybit_trade_driven_fill  - the shared trade-driven fill rule imported by the V2
+#                             maker test. A library, not a study; its selftest runs
+#                             in CI, but running it as a "study" would report a
+#                             verdict for a module that has no population.
 NON_STUDY = {"harness.py", "run_all_sequence.py", "download_binance_l2_data.py",
-             "research_status.py"}
+             "research_status.py", "bybit_trade_driven_fill.py"}
 
 VERDICT = re.compile(r"VERDICT:\s*(.+)")
 OOS_RETURN = re.compile(r"total return %\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)")
