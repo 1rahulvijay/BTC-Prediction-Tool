@@ -158,7 +158,19 @@ REM   The honest state is "identity is not yet enforced because no artifact can 
 REM   The 1000d run writes real manifests; AFTER it completes, set this back to 1 and the gate
 REM   becomes meaningful instead of merely fatal. Verify with:
 REM     python backend/verify_artifact_identity.py
-if not defined BTC_STRICT_ARTIFACT_IDENTITY set "BTC_STRICT_ARTIFACT_IDENTITY=0"
+REM   2026-08-04 (P0-8): the reasoning above described a TEMPORARY state that became the
+REM   standing one. "Identity is not yet enforced because no artifact can satisfy it" is an
+REM   accurate description of the debt and a bad default, because it means every ordinary
+REM   launch serves artifacts nothing can vouch for. check_feature_contract currently reports
+REM   12 UNKNOWN of 12 present artifacts and a VWAP v1->v2 train/serve skew.
+REM   The flag now defaults to 1, matching the code default and production.
+REM
+REM   CONSEQUENCE, STATED PLAINLY: with 0/25 artifacts serviceable the ensemble will REFUSE
+REM   to load and the app will not serve predictions until a retrain publishes manifests.
+REM   That is the honest state - it was always true, and the flag was hiding it.
+REM   To reproduce the old behaviour deliberately, set BTC_STRICT_ARTIFACT_IDENTITY=0 in the
+REM   environment before launching. It is no longer the default anyone gets by accident.
+if not defined BTC_STRICT_ARTIFACT_IDENTITY set "BTC_STRICT_ARTIFACT_IDENTITY=1"
 REM === HEAD-HEALTH ENFORCEMENT (Blueprint 31.2) ==========================
 REM A head that live outcomes say cannot price is not allowed to price. Specifically:
 REM BTC_ENABLE_PAPER_BET=1 used to be enough on its own to re-enable betting on P(hold) even
