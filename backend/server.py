@@ -1961,7 +1961,7 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     # The learners never consume retired raw columns. Prune before sequence expansion so a
     # 150-day run allocates ~3.6 GB (69 columns), not ~7.0 GB (136 columns), with identical inputs.
     del features
-    X, Y, Ymag = build_sequences(
+    X, Y, Ymag, Yvalid = build_sequences(
         sequence_features,
         closes,
         lookback=LOOKBACK,
@@ -1971,7 +1971,15 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
         lows=lows,
         return_magnitude=True,
         memmap_path=sequence_memmap_path,
+        return_valid_mask=True,
     )
+    for _h, _mask in Yvalid.items():
+        _amb = int((~_mask).sum())
+        if _amb:
+            logger.info(
+                "[TRAIN] h=%sm: %s of %s rows are AMBIGUOUS (one bar touched both barriers); "
+                "they are excluded from directional training, not relabelled NEUTRAL.",
+                _h, _amb, len(_mask))
     del sequence_features
     # P4.3 regime alignment: label every training row with the SAME HMM that routes at
     # serving time, so the regime experts train on the partition they answer for. X rows
@@ -2027,6 +2035,7 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
         try:
             await loop.run_in_executor(
                 None, functools.partial(target_model.train, X, Y, Ymag,
+                                        valid_mask=Yvalid,
                                         regime_labels=regime_labels))
 
             if promotion_pipeline:
@@ -2092,6 +2101,7 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                             X,
                             Y,
                             Ymag,
+                            valid_mask=Yvalid,
                             regime_labels=regime_labels,
                             full_refit=True,
                             calibration_source=target_model,
@@ -3731,6 +3741,24 @@ async def main_loop():
             # blocks the event loop. We only consume the last LOOKBACK rows for the
             # sequence, so slice to a recent window. Training still uses full history.
             recent_klines = copy.deepcopy(data_state["klines"][-1500:])
+            # P0-2 CLOSED-BAR INFERENCE. handle_kline() overwrites klines[-1] on every tick,
+            # so the last row is the FORMING candle: partial high, low, volume, trade count and
+            # every indicator derived from them. Training is built from completed REST candles,
+            # so serving on a partial bar feeds the model a row that cannot occur in its
+            # training distribution - a half-finished minute reads as an unusually quiet one.
+            # The HMM path already excluded it; the ensemble sequence did not.
+            # The live price is kept separately below as the DECISION price; only the model's
+            # feature window is trimmed.
+            # A SEPARATE list, deliberately. `recent_klines` keeps the forming bar because the
+            # HMM block below already does its own `recent_klines[:-1]` on the assumption that
+            # the last row is unfinished - trimming in place would make that drop the newest
+            # CLOSED bar instead, breaking a path this fix was not meant to touch.
+            if recent_klines and recent_klines[-1].get("is_closed") is False:
+                model_klines = recent_klines[:-1]
+            else:
+                model_klines = recent_klines
+            if len(model_klines) < LOOKBACK:
+                continue
             order_flow_snapshot = copy.deepcopy(data_state["order_flow"])
             derivatives_snapshot = copy.deepcopy(data_state["derivatives"])
             sentiment_snapshot = copy.deepcopy(data_state["sentiment"])
@@ -3738,7 +3766,7 @@ async def main_loop():
             # Current Features (per-bar signal history keeps the sequence window
             # consistent with how the model was trained).
             live_sig_hist = signal_buffer.get_aligned_series(
-                [k["time"] for k in recent_klines]
+                [k["time"] for k in model_klines]
             )
             # LIVE PARITY FIX (2026-06-28): get_aligned_series fills every UNCOVERED candle with a 0.0
             # default, and build_features_from_klines.series() then uses that all-zero array INSTEAD of the
@@ -3750,8 +3778,45 @@ async def main_loop():
             # live analyzer vpin land. NOTE vpin is a slow warmup -- 50 buckets x 15 BTC = 750 BTC of spot
             # volume (~1h continuous) and the deque resets on restart -- so it reads 0 until warm (cold-start,
             # not a bug).
-            for _msk in ("cvd_change", "cvd_1m", "cvd_5m", "large_trade_delta", "large_trade_imbalance", "vpin"):
-                live_sig_hist.pop(_msk, None)
+            # P0-3 CURRENT-ROW OVERLAY, NOT HISTORY BROADCAST.
+            # Popping the key made features.series() fall back to np.full(n, snapshot) - the
+            # CURRENT value painted across every historical row. The model was trained on a
+            # time series and served a constant. That is not "the live equivalent of the
+            # train-time overlay": the backfill overlay fills each historical candle with ITS
+            # OWN historical value; this filled all of them with now.
+            # Correct behaviour: keep the history, replace only the last row.
+            _overlay_src = {
+                "cvd_change": order_flow_snapshot.get("cvd_change"),
+                "cvd_1m": order_flow_snapshot.get("cvd_1m"),
+                "cvd_5m": order_flow_snapshot.get("cvd_5m"),
+                "large_trade_delta": order_flow_snapshot.get("large_trade_delta"),
+                "large_trade_imbalance": order_flow_snapshot.get("large_trade_imbalance"),
+                "vpin": order_flow_snapshot.get("vpin"),
+            }
+            _overlay_n = len(model_klines)
+            _overlaid, _broadcast = [], []
+            for _key, _live_val in _overlay_src.items():
+                if _live_val is None:
+                    continue
+                _arr = live_sig_hist.get(_key)
+                if _arr is not None and len(_arr) == _overlay_n:
+                    _arr = np.asarray(_arr, dtype=np.float64).copy()
+                    _arr[-1] = float(_live_val)      # only the CURRENT bar is live
+                    live_sig_hist[_key] = _arr
+                    _overlaid.append(_key)
+                else:
+                    # No usable history for this key. Falling back to a broadcast would invent
+                    # a past, so the key is dropped and the degradation is COUNTED and
+                    # surfaced rather than silently papered over.
+                    live_sig_hist.pop(_key, None)
+                    _broadcast.append(_key)
+            data_state.setdefault("feature_parity", {})
+            data_state["feature_parity"] = {
+                "overlaid_current_row": _overlaid,
+                "no_history_fell_back": _broadcast,
+                "degraded": bool(_broadcast),
+                "ts_ms": int(time.time() * 1000),
+            }
             # Build features off the event loop. This is a heavy synchronous numpy job
             # (~0.3s/tick on the live window) and running it inline stalls WebSocket
             # pings — the stale-feed/ping-timeout disconnects seen in the UI. (#6)
@@ -3759,7 +3824,7 @@ async def main_loop():
                 None,
                 functools.partial(
                     build_features_from_klines,
-                    recent_klines,
+                    model_klines,
                     order_flow_snapshot,
                     derivatives_snapshot,
                     sentiment_snapshot,
@@ -4220,7 +4285,11 @@ async def main_loop():
 
             # Check pending verifications
             current_price = data_state["klines"][-1]["close"]
-            newly_verified = verifier.check_and_verify(current_price, now_ms)
+            # The 1m bars are the intrabar path the FIRST_TOUCH contract is graded on.
+            # Without them every row would return GRADE_UNAVAILABLE and verification
+            # would silently stop, so this argument is load-bearing, not optional.
+            newly_verified = verifier.check_and_verify(
+                current_price, now_ms, klines=data_state["klines"][-2000:])
             model_verifier.check(current_price, now_ms)  # resolve per-model votes
             exchange_verifier.check(current_venue_prices(data_state), now_ms)  # per-venue confirmation
 

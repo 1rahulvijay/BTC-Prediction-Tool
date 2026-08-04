@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 ALL_HORIZONS = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30
 
 
+import target_contract as _tc  # noqa: E402
+
+
 class PredictionVerifier:
     """
     Tracks prediction outcomes in real-time with full history.
@@ -146,6 +149,11 @@ class PredictionVerifier:
             "raw_direction": prediction.get("rawDirection", prediction["direction"]),
             "pre_server_direction": prediction.get("preServerDirection", prediction["direction"]),
             "final_direction": prediction.get("finalDirection", prediction["direction"]),
+            # The contract this model was TRAINED under. The grader dispatches on it instead of
+            # assuming endpoint settlement, which is how a first-touch model came to be
+            # corrected by settlement feedback.
+            "target_contract": _tc.TRAINING_CONTRACT,
+            "predicted_at": now_ms,
             "trade_verdict": prediction.get("trade_verdict", ""),
             "no_trade_reasons": prediction.get("no_trade_reasons", []),
             "skip_reason": prediction.get("skipReason", ""),
@@ -173,10 +181,55 @@ class PredictionVerifier:
         self.pending_predictions.append(entry)
         self.last_record_time[h] = now_ms
 
-    def check_and_verify(self, current_price: float, current_time_ms: int):
+
+    #: Grading rules, keyed by the contract a prediction was trained under.
+    def _grade(self, pred: dict, current_price: float, threshold: float, klines):
+        """Return (direction, status). `direction` is None when the row must not be graded."""
+        import target_contract as tc
+
+        contract = pred.get("target_contract") or tc.TRAINING_CONTRACT
+        if contract not in tc.KNOWN_CONTRACTS:
+            return None, f"UNKNOWN_CONTRACT:{contract}"
+
+        if contract == tc.ENDPOINT_SETTLEMENT_V1:
+            return tc.label_endpoint(
+                pred["predicted_price"], current_price, threshold), "GRADED_ENDPOINT"
+
+        # FIRST_TOUCH needs the intrabar path between entry and the horizon end.
+        entry_ts = int(pred.get("predicted_at") or pred.get("created_at") or 0)
+        verify_ts = int(pred.get("verify_at") or 0)
+        path = [k for k in (klines or [])
+                if entry_ts < int(k.get("time", 0)) <= verify_ts
+                and k.get("is_closed") is not False]
+        if not path:
+            return None, "GRADE_UNAVAILABLE:no_intrabar_path"
+        outcome = tc.label_first_touch(
+            pred["predicted_price"],
+            [float(k["high"]) for k in path],
+            [float(k["low"]) for k in path],
+            threshold)
+        if outcome == tc.AMBIGUOUS:
+            # A bar touched both barriers. The model's target is undefined here, so grading it
+            # either way would manufacture a hit or a miss.
+            return None, "GRADE_UNAVAILABLE:ambiguous_bar"
+        return outcome, "GRADED_FIRST_TOUCH"
+
+    def check_and_verify(self, current_price: float, current_time_ms: int, klines=None):
         """
         Check all pending predictions. If their horizon has elapsed, verify them.
         Returns list of newly verified predictions.
+
+        P0-1 TARGET CONTRACT. This used to grade EVERY prediction by comparing the price at the
+        horizon end against entry, while the model was trained on a first-touch triple barrier.
+        Those are different random variables and they disagree on ~25% of random-walk paths
+        (measured in target_contract.selftest). A first-touch model could be graded wrong for
+        being right, and that wrong grade then fed confidence recalibration, regime weights,
+        auto-learning and the accuracy panels.
+
+        Each prediction now carries the NAME of the contract it was trained under, and is graded
+        by the matching rule. Grading a first-touch prediction needs the intrabar path, so
+        `klines` (1m bars covering entry..verify_at) must be supplied; without them the row is
+        marked GRADE_UNAVAILABLE rather than silently graded by the wrong rule.
         """
         newly_verified = []
         still_pending = []
@@ -189,12 +242,14 @@ class PredictionVerifier:
                 # hardcoded 0.01% that almost never classifies the outcome as NEUTRAL.
                 threshold = float(pred.get("neutral_band", 0.0008) or 0.0008)
 
-                if actual_change > threshold:
-                    actual_direction = "UP"
-                elif actual_change < -threshold:
-                    actual_direction = "DOWN"
-                else:
-                    actual_direction = "NEUTRAL"
+                actual_direction, grade_status = self._grade(
+                    pred, current_price, threshold, klines)
+                pred["grade_status"] = grade_status
+                if actual_direction is None:
+                    # Cannot grade under the declared contract. Leave PENDING rather than
+                    # emitting a label produced by a rule the model was not trained on.
+                    still_pending.append(pred)
+                    continue
 
                 hit = (pred["direction"] == actual_direction)
                 avoid_success = False

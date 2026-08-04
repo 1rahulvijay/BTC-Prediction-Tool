@@ -114,6 +114,12 @@ jobs:
       - name: Repository launcher layout
         run: python tests/test_repository_layout.py
 
+      - name: Target contract (train and serve label identically)
+        run: python backend/target_contract.py --selftest
+
+      - name: Target contract parity end-to-end
+        run: python backend/test_target_contract_parity.py
+
       - name: Model registry (single source of artifact identity)
         run: python backend/model_registry.py --selftest
 
@@ -604,6 +610,8 @@ jobs:
           python research/phase5d/admission.py --selftest || exit /b 1
           python research/research_status.py --selftest || exit /b 1
           python backend/test_round_state_causal_contract.py || exit /b 1
+          python backend/target_contract.py --selftest || exit /b 1
+          python backend/test_target_contract_parity.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1
           python research/algodesk_17_agents_v1.py --selftest || exit /b 1

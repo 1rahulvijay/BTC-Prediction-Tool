@@ -761,6 +761,7 @@ class MultiModelEnsemble:
         return arr
 
     def train(self, X: np.ndarray, Y: dict[int, np.ndarray], Ymag: dict = None,
+              valid_mask: dict[int, np.ndarray] = None,
               regime_labels: list = None, full_refit: bool = False,
               calibration_source=None):
         """
@@ -1011,6 +1012,28 @@ class MultiModelEnsemble:
             y_classes = np.argmax(Y[h], axis=1)
             y_train = y_classes[:split_idx]
 
+            # AMBIGUOUS EXCLUSION. A bar that touched BOTH barriers has no knowable
+            # first-touch order; it used to be labelled NEUTRAL, which asserts "price went
+            # nowhere" about the most violent bars in the sample. Excluded by ZEROING the
+            # sample weight rather than dropping the row, because X rows are index-aligned
+            # with regime_labels and the train/test split - reindexing here would silently
+            # desynchronise all three.
+            h_weight = np.ones(split_idx, dtype=np.float64)
+            if valid_mask and h in valid_mask:
+                _vm = np.asarray(valid_mask[h], dtype=bool)
+                if len(_vm) == len(y_classes):
+                    h_weight = _vm[:split_idx].astype(np.float64)
+                    _dropped = int((~_vm[:split_idx]).sum())
+                    if _dropped:
+                        logger.info(
+                            "[TRAIN] h=%sm excluding %s AMBIGUOUS rows (%.2f%%) - both "
+                            "barriers touched in one bar, first-touch order unknowable.",
+                            h, _dropped, 100.0 * _dropped / max(split_idx, 1))
+                else:
+                    logger.warning(
+                        "[TRAIN] h=%sm valid_mask length %s != labels %s - NOT applying it "
+                        "rather than misaligning the weights.", h, len(_vm), len(y_classes))
+
             # V5 §1 — CLASS-BALANCED LOSS (root-cause fix for the one-sided lean).
             # Recency-only weights let the window's majority class dominate the loss,
             # so the model learned to fade the minority side (the measured DOWN-machine:
@@ -1036,7 +1059,9 @@ class MultiModelEnsemble:
 
                 X_train_h = X_flat[reg_idx]
                 y_train_h = y_train[reg_idx]
-                sw = recency_w[reg_idx] * class_w[y_train_h]
+                # h_weight is 0 for AMBIGUOUS rows, so they contribute nothing to the
+                # loss while every index alignment is preserved.
+                sw = recency_w[reg_idx] * class_w[y_train_h] * h_weight[reg_idx]
 
                 if len(np.unique(y_train_h)) < 2:
                     continue

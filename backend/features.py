@@ -1503,6 +1503,11 @@ def _ob_os_status(val, ob_thresh, os_thresh):
     return "neutral"
 
 
+from target_contract import (  # noqa: E402
+    AMBIGUOUS as _AMBIGUOUS, DOWN as _DOWN, UP as _UP,
+    label_first_touch as _label_first_touch)
+
+
 def build_sequences(
     features: np.ndarray,
     closes: np.ndarray,
@@ -1513,6 +1518,7 @@ def build_sequences(
     lows: np.ndarray = None,
     return_magnitude: bool = False,
     memmap_path: str = None,
+    return_valid_mask: bool = False,
 ):
     """
     Build sliding-window sequences for ML training.
@@ -1553,6 +1559,9 @@ def build_sequences(
         X = np.empty(shape, dtype=np.float32)
     Y = {h: np.zeros((n_samples, 3), dtype=np.float32) for h in horizons}
     Ymag = {h: np.zeros(n_samples, dtype=np.float32) for h in horizons}
+    # True where the row carries a USABLE directional label. False only for AMBIGUOUS
+    # rows - a single bar touched both barriers, so first-touch order is unknowable.
+    Yvalid = {h: np.ones(n_samples, dtype=bool) for h in horizons}
 
     for row, i in enumerate(range(lookback, len(features) - max_h)):
         X[row] = features[i - lookback: i]
@@ -1575,46 +1584,36 @@ def build_sequences(
             # Barrier 2 (SL): current_price * (1 - threshold)
             # Barrier 3 (Timeout): end of h periods
             
-            upper_barrier = current_price * (1 + threshold)
-            lower_barrier = current_price * (1 - threshold)
-            
-            hit_up = False
-            hit_down = False
-            
-            for j in range(1, h + 1):
-                idx = i + j
-                if idx >= len(closes):
-                    break
+            # ONE definition of the label, shared with the live grader. See
+            # backend/target_contract.py: two implementations of "direction" cannot be kept in
+            # agreement by discipline, and when they drifted apart a first-touch model was being
+            # graded on endpoint settlement and corrected by the difference.
+            stop = min(i + h + 1, len(closes))
+            path_high = (highs[i + 1:stop] if highs is not None else closes[i + 1:stop])
+            path_low = (lows[i + 1:stop] if lows is not None else closes[i + 1:stop])
+            outcome = _label_first_touch(current_price, path_high, path_low, threshold)
 
-                # Use true intrabar high/low when available, else approximate with close.
-                future_high = highs[idx] if highs is not None else closes[idx]
-                future_low = lows[idx] if lows is not None else closes[idx]
-
-                touched_up = future_high >= upper_barrier
-                touched_down = future_low <= lower_barrier
-
-                if touched_up and touched_down:
-                    # Both barriers touched in the same bar — intrabar order is
-                    # unknown. Leave both flags false so this becomes a conservative
-                    # no-trade label instead of an invented directional first hit.
-                    break
-                elif touched_up:
-                    hit_up = True
-                    break
-                elif touched_down:
-                    hit_down = True
-                    break
-                    
-            if hit_up:
-                Y[h][row, 2] = 1.0   # UP
-            elif hit_down:
-                Y[h][row, 0] = 1.0   # DOWN
+            if outcome == _UP:
+                Y[h][row, 2] = 1.0
+            elif outcome == _DOWN:
+                Y[h][row, 0] = 1.0
             else:
-                Y[h][row, 1] = 1.0   # NEUTRAL (Timeout)
+                # AMBIGUOUS keeps a NEUTRAL one-hot so `argmax` stays well defined for any
+                # caller that ignores the mask (an all-zero row would argmax to DOWN, which is
+                # worse than the bug being fixed). The MASK is what excludes it from training.
+                Y[h][row, 1] = 1.0
+                if outcome == _AMBIGUOUS:
+                    Yvalid[h][row] = False
 
     if isinstance(X, np.memmap):
         X.flush()
 
+    if return_valid_mask:
+        # Callers that ask for the mask get it; callers that do not are UNCHANGED, which is why
+        # AMBIGUOUS still carries a NEUTRAL one-hot rather than an all-zero row.
+        if return_magnitude:
+            return X, Y, Ymag, Yvalid
+        return X, Y, Yvalid
     if return_magnitude:
         return X, Y, Ymag
     return X, Y

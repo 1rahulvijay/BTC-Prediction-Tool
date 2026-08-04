@@ -80,7 +80,7 @@ def main() -> int:
     low_path = close_path.copy()
     high_path[6] = 101.0
     low_path[6] = 99.0
-    _, dual_touch_labels = build_sequences(
+    _, dual_touch_labels, dual_touch_valid = build_sequences(
         np.zeros((99, 2), dtype=np.float32),
         close_path,
         lookback=5,
@@ -88,8 +88,16 @@ def main() -> int:
         atr_arr=np.full(100, 1.0),
         highs=high_path,
         lows=low_path,
+        return_valid_mask=True,
     )
+    # A bar that touched BOTH barriers keeps a NEUTRAL one-hot so `argmax` stays safe for any
+    # caller that ignores the mask - an all-zero row would argmax to DOWN.
     assert int(np.argmax(dual_touch_labels[5][0])) == 1
+    # ...but it is NOT a usable directional label. This half is the actual contract: unknown
+    # intrabar order must be EXCLUDED, not asserted to mean "price went nowhere". Before
+    # 2026-08-04 only the line above existed, so the test pinned the defect.
+    assert not bool(dual_touch_valid[5][0]), "double-touch row must be marked AMBIGUOUS"
+    assert bool(dual_touch_valid[5][1:].all()), "only the double-touch row may be excluded"
 
     labels = np.resize(np.array([0, 1, 2], dtype=np.int64), 3_000)
     splits = _purged_calibration_splits(labels, horizon=15)
