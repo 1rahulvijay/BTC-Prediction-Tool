@@ -11,6 +11,18 @@ from __future__ import annotations
 import math
 from typing import Any
 
+# `target_contract` lives in backend/, which is on sys.path when a backend script is run
+# directly but NOT when this package is imported as `backend.binance_paper.*`. Both
+# invocations are used (CI runs the package with -m), so resolve it either way rather than
+# assuming one - a bare `import target_contract` broke seven CI steps.
+import sys as _sys
+from pathlib import Path as _Path
+
+_BACKEND = str(_Path(__file__).resolve().parents[2])
+if _BACKEND not in _sys.path:
+    _sys.path.insert(0, _BACKEND)
+import target_contract as _tc  # noqa: E402
+
 from ..schemas import Action, DataQuality, MarketSnapshot, PositionSide
 from ..strategy_base import StrategyBase
 
@@ -185,6 +197,19 @@ class ModelConsensusStrategy(StrategyBase):
             return self._no_edge(snapshot, features, "final_model_gate_rejected")
         if direction not in ("UP", "DOWN"):
             return self._no_edge(snapshot, features, "model_direction_unavailable")
+
+        # CONTRACT ADMISSIBILITY. The EV below is (2p - 1) * move - costs, which treats p as
+        # the probability that the ENDPOINT lands on the predicted side. A first-touch
+        # probability answers "which barrier is touched first" - a different random variable
+        # that disagrees on roughly a quarter of paths. Both are floats in [0, 1], so nothing
+        # about the value would have revealed the substitution.
+        try:
+            _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_EV,
+                                  prediction.get("targetContract"))
+        except _tc.ContractMisuse as exc:
+            features["target_contract"] = prediction.get("targetContract")
+            features["contract_misuse"] = str(exc)[:300]
+            return self._no_edge(snapshot, features, "target_contract_inadmissible")
 
         probability = calibrated
         agreement = self._finite_float(prediction.get("agreement"))

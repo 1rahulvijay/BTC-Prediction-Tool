@@ -46,11 +46,17 @@ def label_via_training(closes, highs, lows, horizon):
     return int(np.argmax(Y[horizon][0])), bool(valid[horizon][0])
 
 
+#: A real epoch-millisecond base. The fixtures used to count from 0 in units of 1000, which
+#: is neither seconds nor milliseconds - and a fake unit cannot expose a unit mismatch.
+BASE_MS = 1_785_000_000_000
+
+
 def label_via_serving(entry, bars, threshold, contract=tc.FIRST_TOUCH_TRIPLE_BARRIER_V1):
     verifier = PredictionVerifier.__new__(PredictionVerifier)
-    klines = [{"time": (i + 1) * 1000, "high": h, "low": lo, "is_closed": True}
-              for i, (h, lo) in enumerate(bars)]
-    pred = {"predicted_price": entry, "predicted_at": 0, "verify_at": len(bars) * 1000,
+    klines = [{"time": BASE_MS + (i + 1) * 60_000, "high": h, "low": lo, "close": entry,
+               "is_closed": True} for i, (h, lo) in enumerate(bars)]
+    pred = {"predicted_price": entry, "predicted_at": BASE_MS,
+            "verify_at": BASE_MS + len(bars) * 60_000,
             "neutral_band": threshold, "target_contract": contract}
     return verifier._grade(pred, entry, threshold, klines)
 
@@ -107,8 +113,9 @@ def main() -> int:
 
     verifier = PredictionVerifier.__new__(PredictionVerifier)
     d, s = verifier._grade(
-        {"predicted_price": entry, "predicted_at": 0, "verify_at": 5000,
-         "neutral_band": threshold, "target_contract": tc.FIRST_TOUCH_TRIPLE_BARRIER_V1},
+        {"predicted_price": entry, "predicted_at": BASE_MS,
+         "verify_at": BASE_MS + 300_000, "neutral_band": threshold,
+         "target_contract": tc.FIRST_TOUCH_TRIPLE_BARRIER_V1},
         98.0, threshold, None)
     check(d is None and s == "GRADE_UNAVAILABLE:no_intrabar_path",
           "first-touch without the intrabar path is refused, not graded on the endpoint")
@@ -117,20 +124,21 @@ def main() -> int:
     # The bar at verify_at closed DOWN; by the time the loop resolved it, price had run up.
     # Grading from `current_price` would call this UP. It must follow the as-of close.
     late_klines = [
-        {"time": 1000, "high": entry, "low": entry, "close": entry, "is_closed": True},
-        {"time": 5000, "high": entry, "low": lower - 1.0, "close": lower - 1.0,
+        {"time": BASE_MS + 60_000, "high": entry, "low": entry, "close": entry,
+         "is_closed": True},
+        {"time": BASE_MS + 300_000, "high": entry, "low": lower - 1.0, "close": lower - 1.0,
          "is_closed": True},                      # the horizon-end bar: clearly DOWN
-        {"time": 9000, "high": upper + 5.0, "low": entry, "close": upper + 5.0,
+        {"time": BASE_MS + 540_000, "high": upper + 5.0, "low": entry, "close": upper + 5.0,
          "is_closed": True},                      # AFTER verify_at - must be ignored
     ]
-    endpoint_pred = {"predicted_price": entry, "predicted_at": 0, "verify_at": 5000,
-                     "neutral_band": threshold,
+    endpoint_pred = {"predicted_price": entry, "predicted_at": BASE_MS,
+                     "verify_at": BASE_MS + 300_000, "neutral_band": threshold,
                      "target_contract": tc.ENDPOINT_SETTLEMENT_V1}
     late_dir, late_status = verifier._grade(endpoint_pred, upper + 5.0, threshold, late_klines)
     check(late_dir == tc.DOWN and late_status == "GRADED_ENDPOINT",
           "a LATE resolution grades from the bar at the horizon end, not from the price the "
           "loop happened to see - the P0-11 defect")
-    check(endpoint_pred.get("resolution_event_ts") == 5000,
+    check(endpoint_pred.get("resolution_event_ts") == BASE_MS + 300_000,
           "and it records WHICH event it resolved against")
     check(tc.label_endpoint(entry, upper + 5.0, threshold) == tc.UP,
           "loop-time price would have said UP - so the two genuinely differ here")
@@ -144,6 +152,73 @@ def main() -> int:
     check(NAMES[q_cls] == tc.NEUTRAL and q_dir == tc.NEUTRAL and q_valid,
           "a quiet path is NEUTRAL on both sides - agreement is not achieved by refusing "
           "everything")
+
+    # ---- THE HEAD SPLIT, END TO END --------------------------------------------------
+    # The SAME row must produce different labels for the two heads on a path where the
+    # contracts disagree - otherwise the "split" is a naming exercise.
+    _X, Ypath, Vpath, Ysettle = build_sequences(
+        np.zeros((n - 1, 2), dtype=np.float32), np.asarray(closes, dtype=np.float64),
+        lookback=5, horizons=[horizon], atr_arr=np.full(n, 1.0),
+        highs=np.asarray(highs, dtype=np.float64), lows=np.asarray(lows, dtype=np.float64),
+        return_valid_mask=True, return_settlement_labels=True)
+    path_label = NAMES[int(np.argmax(Ypath[horizon][0]))]
+    settle_label = NAMES[int(np.argmax(Ysettle[horizon][0]))]
+    check(path_label == tc.UP and settle_label == tc.DOWN,
+          f"one row, two heads: PATH says {path_label} and SETTLEMENT says {settle_label} - "
+          f"the split produces genuinely different training targets")
+    check(Ysettle[horizon].shape == Ypath[horizon].shape,
+          "the settlement labels are shaped like the path labels, so a trainer can consume "
+          "either without reshaping")
+    check(bool(np.all(Ysettle[horizon].sum(axis=1) == 1.0)),
+          "every settlement row is one-hot - endpoint direction has no ambiguous case, unlike "
+          "first-touch where one bar can touch both barriers")
+    check(tc.assert_admissible(tc.STOP_TARGET_PLANNING, tc.TRAINING_CONTRACT)
+          == tc.TRAINING_CONTRACT,
+          "the head that DOES exist is admissible for the path questions it answers")
+
+    # ---- PRODUCTION TIMESTAMP UNITS --------------------------------------------------
+    # The fixtures above build klines and prediction bounds in ONE artificial unit, so they
+    # could never catch a unit mismatch. Production does not: data_ingestion stores
+    # `"time": k["t"] // 1000` (SECONDS) while the verifier builds verify_at from now_ms
+    # (MILLISECONDS). Comparing them raw made every first-touch path empty and every endpoint
+    # grade select the newest bar instead of the horizon bar.
+    ingestion_src = (Path(__file__).resolve().parent / "data_ingestion.py").read_text(
+        encoding="utf-8")
+    check('"time": k["t"] // 1000' in ingestion_src,
+          "production really does emit kline time in SECONDS - asserted against the ingestion "
+          "source so this test fails if that contract changes")
+
+    now_ms = 1_785_000_000_000
+    entry_price = 100.0
+    # Klines exactly as ingestion emits them: SECONDS, and real epoch magnitudes.
+    seconds_klines = [
+        {"time": (now_ms + i * 60_000) // 1000, "high": entry_price, "low": entry_price,
+         "close": entry_price, "is_closed": True} for i in range(1, 4)
+    ]
+    seconds_klines[0]["high"] = entry_price * (1 + threshold) + 0.5      # touch UP first
+    seconds_klines[-1]["close"] = entry_price * 0.98                     # settle DOWN
+
+    prod_pred = {"predicted_price": entry_price, "predicted_at": now_ms,
+                 "verify_at": now_ms + 5 * 60_000, "neutral_band": threshold,
+                 "target_contract": tc.FIRST_TOUCH_TRIPLE_BARRIER_V1}
+    direction, status = verifier._grade(prod_pred, entry_price, threshold, seconds_klines)
+    check(status == "GRADED_FIRST_TOUCH",
+          f"a SECONDS-valued production kline now grades first-touch (got {status}) - before "
+          f"normalisation the path was always empty and every grade returned "
+          f"GRADE_UNAVAILABLE, then aged out as INVALID_LATE")
+    check(direction == tc.UP, "and it finds the upper barrier touched first")
+
+    endpoint_pred = dict(prod_pred, target_contract=tc.ENDPOINT_SETTLEMENT_V1)
+    end_dir, end_status = verifier._grade(endpoint_pred, entry_price, threshold, seconds_klines)
+    check(end_status == "GRADED_ENDPOINT" and end_dir == tc.DOWN,
+          "endpoint grading resolves from the bar at the horizon, not the newest one")
+    check(endpoint_pred["resolution_event_ts"] >= 1_577_836_800_000,
+          "and the recorded resolution timestamp is in MILLISECONDS, not raw seconds")
+
+    check(tc.kline_open_ms({"time": 1_785_000_000}) == 1_785_000_000_000,
+          "seconds are promoted to milliseconds")
+    check(tc.kline_open_ms({"time": 1_785_000_000_000}) == 1_785_000_000_000,
+          "milliseconds pass through unchanged, so a normalised feed is not double-scaled")
 
     print(f"\nTARGET CONTRACT PARITY: PASS ({CHECKS} checks)")
     return 0

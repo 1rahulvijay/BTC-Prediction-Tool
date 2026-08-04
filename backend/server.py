@@ -79,6 +79,7 @@ from institutional_feeds import (
 )
 from ab_testing import ABTestRunner, ModelVariant
 from decision_snapshot import build as _build_decision_snapshot
+import target_contract as _target_contract
 from polymarket_client import PolymarketClient
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
@@ -4007,6 +4008,12 @@ async def main_loop():
                         _cal = precision_engine.calibrated(h, float(p.get("confidence", 0.0) or 0.0))
                         if _cal is not None:
                             p["calibratedConfidence"] = round(_cal, 4)
+                        # WHICH QUESTION THIS PROBABILITY ANSWERS. Consumers were reading
+                        # `calibratedConfidence` with no way to tell a first-touch probability
+                        # from a settlement one - both are floats in [0, 1] and nothing about
+                        # the value reveals the difference. Stamped here so a consumer can
+                        # declare what it needs and refuse a mismatch.
+                        p["targetContract"] = _target_contract.TRAINING_CONTRACT
                         _ep = precision_engine.expected_precision(
                             h, p.get("regime", "UNKNOWN"), float(p.get("conviction", 0.0) or 0.0))
                         if _ep is not None:

@@ -13,6 +13,7 @@ from backend.binance_paper.schemas import Action, DataQuality, MarketSnapshot
 from backend.binance_paper.service import BinancePaperService
 from backend.binance_paper.strategies.model_consensus import ModelConsensusStrategy
 from backend.polymarket.model_dynamic_paper import entry_decision, exit_decision
+import target_contract as _tc
 
 
 NOW = 1_800_000_000_000
@@ -36,6 +37,10 @@ def _prediction(**overrides):
         "stopLoss": MARK * 0.998,
         "model_bundle_id": "bundle-v14-test",
         "regime": "TRENDING_UP",
+        # The EV this strategy computes is an ENDPOINT question, so the fixture
+        # supplies a settlement-contract probability. Omitting it is now itself a
+        # refusal, which the dedicated test below pins.
+        "targetContract": _tc.ENDPOINT_SETTLEMENT_V1,
     }
     value.update(overrides)
     return value
@@ -71,6 +76,39 @@ def _snapshot(prediction=None, *, updated_at_ms=NOW, bid=None, ask=None):
             "predictions": {5: prediction} if prediction else {},
         },
     )
+
+
+def test_binance_model_consensus_refuses_a_path_probability():
+    """A first-touch probability may not price an endpoint EV.
+
+    The EV is (2p - 1) * move - costs, which treats p as the probability that the ENDPOINT
+    lands on the predicted side. A first-touch probability answers "which barrier is touched
+    first" and disagrees on roughly a quarter of random-walk paths. Both are floats in [0, 1],
+    so nothing about the value would have revealed the substitution - only the declared
+    contract can.
+    """
+    strategy = ModelConsensusStrategy()
+
+    path = _prediction(targetContract=_tc.FIRST_TOUCH_TRIPLE_BARRIER_V1)
+    decision = strategy.decide(_snapshot(path))
+    assert decision.action is Action.NO_EDGE
+    assert "target_contract_inadmissible" in decision.reason_codes, decision.reason_codes
+
+    unlabelled = _prediction()
+    del unlabelled["targetContract"]
+    decision = strategy.decide(_snapshot(unlabelled))
+    assert decision.action is Action.NO_EDGE, "an UNLABELLED probability must be refused too"
+    assert "target_contract_inadmissible" in decision.reason_codes
+
+    # THE OPERATIONAL CONSEQUENCE, pinned. The models currently trained produce first-touch
+    # labels, so this strategy cannot act until a SETTLEMENT head exists. That is the honest
+    # state of the mismatch, not a test artefact.
+    assert _tc.TRAINING_CONTRACT in _tc.PATH_CONTRACTS
+    try:
+        _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_EV, _tc.TRAINING_CONTRACT)
+        raise AssertionError("the current training contract was accepted for an endpoint EV")
+    except _tc.ContractMisuse:
+        pass
 
 
 def test_binance_model_consensus_abstains_on_heuristic_uncertainty():

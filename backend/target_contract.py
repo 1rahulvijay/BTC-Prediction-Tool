@@ -55,8 +55,111 @@ TRAINING_CONTRACT = FIRST_TOUCH_TRIPLE_BARRIER_V1
 CLASS_ORDER = (DOWN, NEUTRAL, UP)
 
 
+#: Contracts grouped by the QUESTION they answer. These are not interchangeable:
+#: a path probability answers "which barrier is touched first", a settlement probability
+#: answers "where does price END". They disagree on ~25% of random-walk paths.
+PATH_CONTRACTS = frozenset({FIRST_TOUCH_TRIPLE_BARRIER_V1})
+SETTLEMENT_CONTRACTS = frozenset({ENDPOINT_SETTLEMENT_V1})
+
+#: What each CONSUMER needs. The point of naming purposes is that a consumer declares the
+#: question it is asking, and a probability answering a different question is refused rather
+#: than silently accepted because both happen to be floats in [0, 1].
+POLYMARKET_SETTLEMENT_EV = "polymarket_settlement_ev"
+BINANCE_DIRECTIONAL_EV = "binance_directional_ev"
+STOP_TARGET_PLANNING = "stop_target_planning"
+HOLD_EXIT_DECISION = "hold_exit_decision"
+PATH_EXCURSION_FORECAST = "path_excursion_forecast"
+
+PURPOSE_REQUIREMENTS: dict[str, frozenset] = {
+    # Polymarket resolves on where price ENDS relative to the strike. A first-touch
+    # probability is a different random variable and may not price it.
+    POLYMARKET_SETTLEMENT_EV: SETTLEMENT_CONTRACTS,
+    # The Binance EV is (2p-1) * expected_move - costs, which treats p as the probability
+    # that the ENDPOINT lands on the predicted side.
+    BINANCE_DIRECTIONAL_EV: SETTLEMENT_CONTRACTS,
+    # These are genuinely path questions, and the first-touch head is the right input.
+    STOP_TARGET_PLANNING: PATH_CONTRACTS,
+    HOLD_EXIT_DECISION: PATH_CONTRACTS,
+    PATH_EXCURSION_FORECAST: PATH_CONTRACTS,
+}
+
+
+class ContractMisuse(ValueError):
+    """A probability was offered to a consumer asking a different question.
+
+    Raised rather than returned so it cannot be ignored by a caller that only checks a
+    boolean. The whole class of defect this guards against is silent: both quantities are
+    floats in [0, 1], both look like probabilities, and nothing about the value reveals which
+    question it answers.
+    """
+
+
+def is_path(contract: str) -> bool:
+    return contract in PATH_CONTRACTS
+
+
+def is_settlement(contract: str) -> bool:
+    return contract in SETTLEMENT_CONTRACTS
+
+
+def assert_admissible(purpose: str, contract: str | None) -> str:
+    """Refuse a probability whose contract does not answer the purpose's question."""
+    if purpose not in PURPOSE_REQUIREMENTS:
+        raise ContractMisuse(
+            f"unknown consumer purpose {purpose!r}; declared purposes: "
+            f"{sorted(PURPOSE_REQUIREMENTS)}. An undeclared purpose cannot be checked, and "
+            f"an unchecked consumer is how a path probability came to price a settlement.")
+    if contract is None:
+        raise ContractMisuse(
+            f"{purpose} requires a probability with a DECLARED target contract; got none. "
+            f"An unlabelled probability is not usable evidence - it may answer any question.")
+    if contract not in KNOWN_CONTRACTS:
+        raise ContractMisuse(f"unknown target contract {contract!r} offered to {purpose}")
+    allowed = PURPOSE_REQUIREMENTS[purpose]
+    if contract not in allowed:
+        raise ContractMisuse(
+            f"{purpose} needs one of {sorted(allowed)} but was given {contract!r}. "
+            f"These answer different questions and disagree on roughly a quarter of paths; "
+            f"substituting one for the other is not an approximation.")
+    return contract
+
+
 class UnknownTargetContract(ValueError):
     """Refuse to grade rather than silently pick a rule. A wrong grade is worse than no grade."""
+
+
+#: Epoch milliseconds for 2020-01-01. Anything below this magnitude is seconds, not millis.
+_MS_FLOOR = 1_577_836_800_000
+
+
+def kline_open_ms(kline) -> int:
+    """Open time in MILLISECONDS, whatever unit the producer used.
+
+    THE DEFECT THIS EXISTS TO REMOVE
+        `data_ingestion` stores `"time": k["t"] // 1000` - SECONDS. `PredictionVerifier` builds
+        `predicted_at` and `verify_at` from `now_ms` - MILLISECONDS. The grader then compared
+        them directly:
+
+            entry_ts < kline_time <= verify_ts
+            1.78e12   < 1.78e9                  -> always False
+
+        so the intrabar path was ALWAYS empty, every first-touch grade returned
+        GRADE_UNAVAILABLE, and the row was then dropped as INVALID_LATE. The first-touch
+        contract could not grade a single production prediction.
+
+        The endpoint path failed the other way: `ts <= verify_at_ms` is true for every second-
+        valued bar, so `_as_of_price` selected the NEWEST bar rather than the one at the
+        horizon boundary - silently grading at the wrong moment instead of refusing.
+
+        Unit detection by magnitude is safe here because seconds-since-epoch will not reach
+        1.578e12 for ~48,000 years.
+    """
+    if isinstance(kline, dict):
+        raw = kline.get("time", kline.get("t", 0))
+    else:
+        raw = kline
+    value = int(raw or 0)
+    return value if value >= _MS_FLOOR else value * 1000
 
 
 def label_first_touch(entry: float, highs, lows, threshold: float) -> str:
@@ -185,6 +288,80 @@ def selftest() -> int:
         checks += 1
         print("  PASS  first-touch REFUSES to be graded from an endpoint price - the exact "
               "substitution that caused the defect")
+
+    # --- THE HEAD SPLIT: two questions, never interchangeable ------------------------
+    check(is_path(FIRST_TOUCH_TRIPLE_BARRIER_V1) and not is_settlement(
+        FIRST_TOUCH_TRIPLE_BARRIER_V1), "first-touch is a PATH contract, not a settlement one")
+    check(is_settlement(ENDPOINT_SETTLEMENT_V1) and not is_path(ENDPOINT_SETTLEMENT_V1),
+          "endpoint is a SETTLEMENT contract, not a path one")
+    check(not (PATH_CONTRACTS & SETTLEMENT_CONTRACTS),
+          "the two families are disjoint - no contract may satisfy both questions")
+
+    check(assert_admissible(POLYMARKET_SETTLEMENT_EV, ENDPOINT_SETTLEMENT_V1)
+          == ENDPOINT_SETTLEMENT_V1, "settlement EV accepts a settlement probability")
+    check(assert_admissible(STOP_TARGET_PLANNING, FIRST_TOUCH_TRIPLE_BARRIER_V1)
+          == FIRST_TOUCH_TRIPLE_BARRIER_V1, "stop/target planning accepts a PATH probability")
+
+    for purpose in (POLYMARKET_SETTLEMENT_EV, BINANCE_DIRECTIONAL_EV):
+        try:
+            assert_admissible(purpose, FIRST_TOUCH_TRIPLE_BARRIER_V1)
+            raise AssertionError(f"{purpose} accepted a path probability")
+        except ContractMisuse:
+            pass
+    checks += 1
+    print("  PASS  no EV purpose accepts a PATH probability - the substitution that made a "
+          "first-touch model price an endpoint question")
+
+    for purpose in (STOP_TARGET_PLANNING, HOLD_EXIT_DECISION, PATH_EXCURSION_FORECAST):
+        try:
+            assert_admissible(purpose, ENDPOINT_SETTLEMENT_V1)
+            raise AssertionError(f"{purpose} accepted a settlement probability")
+        except ContractMisuse:
+            pass
+    checks += 1
+    print("  PASS  and no PATH purpose accepts a settlement probability - the guard runs "
+          "both ways, so it is not simply refusing everything")
+
+    for bad in (None, "", "made_up_contract"):
+        try:
+            assert_admissible(POLYMARKET_SETTLEMENT_EV, bad)
+            raise AssertionError(f"contract {bad!r} was accepted")
+        except ContractMisuse:
+            pass
+    checks += 1
+    print("  PASS  an unlabelled or unknown contract is REFUSED - an unlabelled probability "
+          "may answer any question")
+
+    # MISSING and UNKNOWN are different failures and must read differently. Both raise
+    # anyway - dropping the None branch is an equivalent mutant behaviourally - but a caller
+    # logging the reason gets "no contract was declared" rather than "contract None is not a
+    # known name", and only the first tells them what to fix.
+    try:
+        assert_admissible(POLYMARKET_SETTLEMENT_EV, None)
+        raise AssertionError("None was accepted")
+    except ContractMisuse as exc:
+        missing_reason = str(exc)
+    try:
+        assert_admissible(POLYMARKET_SETTLEMENT_EV, "made_up_contract")
+        raise AssertionError("an unknown contract was accepted")
+    except ContractMisuse as exc:
+        unknown_reason = str(exc)
+    check("DECLARED target contract" in missing_reason,
+          "a MISSING contract says the probability was never labelled")
+    check("unknown target contract" in unknown_reason and missing_reason != unknown_reason,
+          "and an UNKNOWN one says the label is unrecognised - two different fixes")
+
+    try:
+        assert_admissible("some_undeclared_purpose", ENDPOINT_SETTLEMENT_V1)
+        raise AssertionError("an undeclared purpose was accepted")
+    except ContractMisuse:
+        checks += 1
+        print("  PASS  an UNDECLARED consumer purpose is refused - an unchecked consumer is "
+              "how the mismatch happened in the first place")
+
+    check(TRAINING_CONTRACT in PATH_CONTRACTS,
+          "the CURRENT training contract is a path contract, so no settlement head exists yet "
+          "- every settlement-EV consumer must refuse until one is trained")
 
     check(TRAINING_CONTRACT in KNOWN_CONTRACTS,
           "the declared training contract is one the grader knows about")

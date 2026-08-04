@@ -1544,6 +1544,7 @@ def _ob_os_status(val, ob_thresh, os_thresh):
 
 from target_contract import (  # noqa: E402
     AMBIGUOUS as _AMBIGUOUS, DOWN as _DOWN, UP as _UP,
+    label_endpoint as _label_endpoint,
     label_first_touch as _label_first_touch)
 
 
@@ -1558,6 +1559,7 @@ def build_sequences(
     return_magnitude: bool = False,
     memmap_path: str = None,
     return_valid_mask: bool = False,
+    return_settlement_labels: bool = False,
 ):
     """
     Build sliding-window sequences for ML training.
@@ -1601,6 +1603,9 @@ def build_sequences(
     # True where the row carries a USABLE directional label. False only for AMBIGUOUS
     # rows - a single bar touched both barriers, so first-touch order is unknowable.
     Yvalid = {h: np.ones(n_samples, dtype=bool) for h in horizons}
+    #: SETTLEMENT labels: where price ENDS, the question Polymarket resolves on.
+    #: Every settlement row is usable - endpoint direction has no ambiguous case.
+    Ysettle = {h: np.zeros((n_samples, 3), dtype=np.float32) for h in horizons}
 
     for row, i in enumerate(range(lookback, len(features) - max_h)):
         X[row] = features[i - lookback: i]
@@ -1630,7 +1635,20 @@ def build_sequences(
             stop = min(i + h + 1, len(closes))
             path_high = (highs[i + 1:stop] if highs is not None else closes[i + 1:stop])
             path_low = (lows[i + 1:stop] if lows is not None else closes[i + 1:stop])
+
+            # BOTH questions are labelled, because they are different questions and a head
+            # trained on one may not price the other. The PATH label is which barrier is
+            # touched first; the SETTLEMENT label is where price actually ENDS. Emitting only
+            # the first is what left the product with no settlement head to train.
             outcome = _label_first_touch(current_price, path_high, path_low, threshold)
+            settle_idx = min(i + h, len(closes) - 1)
+            settlement = _label_endpoint(current_price, closes[settle_idx], threshold)
+            if settlement == _UP:
+                Ysettle[h][row, 2] = 1.0
+            elif settlement == _DOWN:
+                Ysettle[h][row, 0] = 1.0
+            else:
+                Ysettle[h][row, 1] = 1.0
 
             if outcome == _UP:
                 Y[h][row, 2] = 1.0
@@ -1647,6 +1665,15 @@ def build_sequences(
     if isinstance(X, np.memmap):
         X.flush()
 
+    if return_settlement_labels:
+        # The SETTLEMENT head's labels. Returned only on request so every existing caller is
+        # untouched, but available so a settlement head can actually be trained - without
+        # these, "use a settlement probability" was advice with no way to follow it.
+        if return_magnitude and return_valid_mask:
+            return X, Y, Ymag, Yvalid, Ysettle
+        if return_valid_mask:
+            return X, Y, Yvalid, Ysettle
+        return X, Y, Ysettle
     if return_valid_mask:
         # Callers that ask for the mask get it; callers that do not are UNCHANGED, which is why
         # AMBIGUOUS still carries a NEUTRAL one-hot rather than an all-zero row.

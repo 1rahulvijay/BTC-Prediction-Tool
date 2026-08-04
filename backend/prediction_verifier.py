@@ -195,14 +195,18 @@ class PredictionVerifier:
 
         Resolving from `current_price` grades at loop time, not at horizon end."""
         best = None
+        best_ms = None
         for k in (klines or []):
-            ts = int(k.get("time", 0))
+            # NORMALISED. Production klines carry SECONDS; verify_at is MILLISECONDS.
+            # Comparing them raw made this select the newest bar rather than the one at the
+            # horizon boundary, on every single grade.
+            ts = _tc.kline_open_ms(k)
             if ts <= verify_at_ms and k.get("is_closed") is not False:
-                if best is None or ts > int(best.get("time", 0)):
-                    best = k
+                if best_ms is None or ts > best_ms:
+                    best, best_ms = k, ts
         if best is None:
             return None, None
-        return float(best["close"]), int(best["time"])
+        return float(best["close"]), int(best_ms)
 
     #: Grading rules, keyed by the contract a prediction was trained under.
     def _grade(self, pred: dict, current_price: float, threshold: float, klines):
@@ -226,8 +230,10 @@ class PredictionVerifier:
         # FIRST_TOUCH needs the intrabar path between entry and the horizon end.
         entry_ts = int(pred.get("predicted_at") or pred.get("created_at") or 0)
         verify_ts = int(pred.get("verify_at") or 0)
+        # NORMALISED, for the same reason: raw seconds vs millisecond bounds made this list
+        # ALWAYS empty, so first-touch grading never graded anything in production.
         path = [k for k in (klines or [])
-                if entry_ts < int(k.get("time", 0)) <= verify_ts
+                if entry_ts < _tc.kline_open_ms(k) <= verify_ts
                 and k.get("is_closed") is not False]
         if not path:
             return None, "GRADE_UNAVAILABLE:no_intrabar_path"
