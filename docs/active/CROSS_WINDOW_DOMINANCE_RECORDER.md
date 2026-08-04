@@ -3,7 +3,7 @@
 `backend/cross_window_recorder.py` — **records only. It cannot place an order**, and that is
 enforced by an AST scan of its own source, not by a promise.
 
-47 selftest checks, **8/8 mutations caught**.
+55 selftest checks, **8/8 mutations caught**.
 
 ---
 
@@ -130,3 +130,60 @@ edge, and every equivalence issue that blocked it.
 
 Leave it running for at least a warm-up cycle before expecting complete pairs. Like every other
 recorder in this repository, it produces nothing while it is not running.
+
+
+---
+
+## 7. Six defects found by external audit, all mine, all fixed
+
+The first version passed its own selftest while being unable to work at all. Recorded here
+because the pattern matters more than the individual bugs.
+
+### It never captured a strike (the fatal one)
+
+`record_strike_observation()` was defined and called **only from the selftest**. The live
+`collect_once()` path called `observe_strike()` — a read — and nothing ever wrote. So
+`_STRIKE_CACHE` stayed empty in production and every candidate was refused forever.
+
+**The selftest passed because it populated the cache by hand.** A test that supplies the input
+production never produces is not testing production. The live loop now observes every round's
+open on every pass.
+
+### Simultaneity was mistaken for freshness
+
+`MAX_BOOK_AGE_MS` was declared and never referenced. `equivalence_issues` compared only the
+*difference* between the two books, so two books both 30 seconds old with 100 ms of skew passed
+as an executable opportunity. Per-leg age is now enforced, and an unknown timestamp is refused
+rather than assumed fresh.
+
+### Timestamps could be laundered
+
+Each market's freshness came from `max(up_book.recv_ts, down_book.recv_ts)` — across **both**
+tokens, while only one is priced. A stale bought leg inherited freshness from the untouched
+opposite token. Worse, a missing timestamp fell back to `time.time()`, converting absent
+evidence into apparent freshness. Timestamps are now per-token, the priced leg is selected
+explicitly, and absent stays absent.
+
+### Market status defaulted to open
+
+`_market_rules()` computed a status that was then discarded by `r.get("status") or "open"`,
+because discovery never supplies that field. A closed market always looked tradeable. Status now
+comes from the fetched rules, defaulting to `unknown` — which is an issue, not a pass.
+
+### One failed book aborted the whole pass
+
+`get_book()` returns `None` on failure, and the caller did `.get()` on it. One unavailable token
+raised `AttributeError` and abandoned the entire collection pass. The outer `except` kept the
+process alive — but *process alive is not evidence advancing*. Books are now coerced and the
+observation is recorded as refused.
+
+### A proxy strike could have claimed a guaranteed floor
+
+`get_btc()` prefers **Pyth**, falling back to Binance. These markets settle on **Chainlink**. A
+wrong strike can invert the dominance ordering, and the inverted pair pays **$0** in the middle
+band rather than $1. Strikes now carry their source, and anything that is not the settlement
+oracle is recorded as evidence and **refused as a floor**.
+
+This is why the live output currently reads `0 with an observed strike`: every visible round
+opened minutes ago, and an observation more than 20s from the anchor is refused. The recorder
+must be running when a round opens. That is the honest constraint, not a bug.

@@ -72,6 +72,13 @@ MAX_BOOK_AGE_MS = 5_000
 #: Capacity curve. An edge that exists only for 10 shares is a curiosity, not a strategy.
 SIZE_LADDER = (10.0, 50.0, 100.0, 500.0, 1_000.0)
 
+#: The oracle these markets actually settle on, read from each market's resolutionSource.
+#: A strike observed from anything else is a PROXY: close, usually, but a wrong strike can
+#: invert the dominance ordering, and an inverted pair pays $0 in the middle band. So a proxy
+#: strike is recorded as evidence and refused as a floor.
+SETTLEMENT_ORACLE = "chainlink-btc-usd"
+OFFICIAL_STRIKE_SOURCES = frozenset({"chainlink"})
+
 #: The guaranteed payout floor of a correctly ordered dominance pair.
 GUARANTEED_FLOOR = 1.0
 
@@ -257,6 +264,19 @@ def equivalence_issues(round_5m: dict, round_15m: dict,
         if str(market.get("status", "")).lower() in ("closed", "resolved", "paused"):
             issues.append(f"{label} market status {market.get('status')!r} is not tradeable")
 
+    # SIMULTANEITY IS NOT FRESHNESS. Two books captured together can BOTH be twenty seconds
+    # old and still show zero skew. The first version checked only the difference between
+    # them, so a pair of equally stale books passed as an executable opportunity.
+    now = time.time()
+    for label, book_ts in (("5m", book_ts_5m), ("15m", book_ts_15m)):
+        if book_ts is None:
+            issues.append(f"{label} selected-leg timestamp unknown - unknown timing is not "
+                          f"evidence of freshness")
+            continue
+        age_ms = (now - float(book_ts)) * 1000.0
+        if age_ms > MAX_BOOK_AGE_MS:
+            issues.append(f"{label} selected-leg book is {age_ms:.0f}ms old "
+                          f"(> {MAX_BOOK_AGE_MS}ms)")
     if book_ts_5m is not None and book_ts_15m is not None:
         skew_ms = abs(float(book_ts_5m) - float(book_ts_15m)) * 1000.0
         if skew_ms > MAX_BOOK_SKEW_MS:
@@ -268,11 +288,26 @@ def equivalence_issues(round_5m: dict, round_15m: dict,
 def evaluate(round_5m: dict, round_15m: dict, book_5m: dict, book_15m: dict,
              sizes=SIZE_LADDER, fee_rate: float = FEE_RATE) -> dict:
     """Full candidate assessment. `admissible` is False unless EVERY condition holds."""
-    issues = equivalence_issues(round_5m, round_15m,
-                                book_5m.get("recv_ts"), book_15m.get("recv_ts"))
     legs = dominance_legs(round_5m.get("strike"), round_15m.get("strike"))
+    # The timestamp of the leg actually being PRICED. Taking max(up, down) per market let a
+    # stale selected book inherit freshness from the unused opposite token.
+    def selected_ts(book, side):
+        return book.get("recv_ts_up" if side == "UP" else "recv_ts_down")
+    ts_5m = selected_ts(book_5m, legs[0]) if legs else None
+    ts_15m = selected_ts(book_15m, legs[1]) if legs else None
+    issues = equivalence_issues(round_5m, round_15m, ts_5m, ts_15m)
     if legs is None:
         issues.append("no dominance ordering (equal or missing strikes)")
+
+    # A proxy strike may not claim a guaranteed floor: a wrong strike can invert the
+    # ordering, and the inverted pair pays $0 in the middle band.
+    for label, market in (("5m", round_5m), ("15m", round_15m)):
+        source = (market.get("strike_source") or "").lower()
+        if market.get("strike") is not None and not any(
+                official in source for official in OFFICIAL_STRIKE_SOURCES):
+            issues.append(f"{label} strike came from {source or 'unknown'}, not the settlement "
+                          f"oracle ({SETTLEMENT_ORACLE}) - recorded as evidence, refused as a "
+                          f"floor")
 
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -479,42 +514,58 @@ def selftest() -> int:
 
     # --- EQUIVALENCE IS FAIL-CLOSED ---------------------------------------------------
     good_5 = {"anchor_ts": 1_000, "strike": 100_000.0, "oracle": "chainlink-btc-usd",
-              "tie_rule": "down", "status": "open", "slug": "btc-updown-5m-1000"}
+              "tie_rule": "down", "status": "open", "slug": "btc-updown-5m-1000",
+              "strike_source": "chainlink"}
     good_15 = {"anchor_ts": 400, "strike": 100_100.0, "oracle": "chainlink-btc-usd",
-               "tie_rule": "down", "status": "open", "slug": "btc-updown-15m-400"}
-    check(equivalence_issues(good_5, good_15, 1.0, 1.2) == [],
+               "tie_rule": "down", "status": "open", "slug": "btc-updown-15m-400",
+               "strike_source": "chainlink"}
+    fresh, fresh_b = time.time(), time.time() - 0.2
+    check(equivalence_issues(good_5, good_15, fresh, fresh_b) == [],
           "matching settlement, oracle, tie rule and fresh books raise no issues")
+
+    # SIMULTANEITY IS NOT FRESHNESS. Two books captured together but both long stale used to
+    # pass, because only their difference was checked.
+    stale = time.time() - 30.0
+    stale_issues = equivalence_issues(good_5, good_15, stale, stale + 0.1)
+    check(any("old" in issue for issue in stale_issues),
+          "two books that are 30s old but only 100ms APART are refused - zero skew is not "
+          "evidence of an executable opportunity")
+    check(any("timestamp unknown" in issue for issue in
+              equivalence_issues(good_5, good_15, None, fresh)),
+          "an UNKNOWN leg timestamp is refused rather than assumed fresh")
     # equivalence_issues carries its OWN settlement check, independent of find_pairs. Both
     # must refuse a near-miss: a mutation relaxing this one to "within 600s" survived every
     # other check here, and 600s is exactly the 5m/15m offset - the most likely wrong pair.
-    near_miss = equivalence_issues({**good_5, "anchor_ts": 1_300}, good_15, 1.0, 1.0)
+    near_miss = equivalence_issues({**good_5, "anchor_ts": 1_300}, good_15, fresh, fresh)
     check(any("settlement mismatch" in issue for issue in near_miss),
           "a 300s settlement difference is refused by equivalence_issues, not only by pairing")
-    off_by_600 = equivalence_issues({**good_5, "anchor_ts": 1_600}, good_15, 1.0, 1.0)
+    off_by_600 = equivalence_issues({**good_5, "anchor_ts": 1_600}, good_15, fresh, fresh)
     check(any("settlement mismatch" in issue for issue in off_by_600),
           "...and so is a 600s difference, which is exactly the 5m/15m open offset")
-    check(equivalence_issues({**good_5, "anchor_ts": 1_001}, good_15, 1.0, 1.0),
+    check(equivalence_issues({**good_5, "anchor_ts": 1_001}, good_15, fresh, fresh),
           "even a ONE SECOND difference is an issue - settlement equality is exact")
 
     check(any("oracle" in issue for issue in
-              equivalence_issues({**good_5, "oracle": "pyth"}, good_15, 1.0, 1.0)),
+              equivalence_issues({**good_5, "oracle": "pyth"}, good_15, fresh, fresh)),
           "a DIFFERENT oracle is refused - two oracles can disagree at settlement")
     check(any("oracle identity" in issue for issue in
-              equivalence_issues({**good_5, "oracle": ""}, good_15, 1.0, 1.0)),
+              equivalence_issues({**good_5, "oracle": ""}, good_15, fresh, fresh)),
           "an UNRECORDED oracle is refused too - unproven is not the same as fine")
     check(any("tie rule" in issue for issue in
-              equivalence_issues({**good_5, "tie_rule": "up"}, good_15, 1.0, 1.0)),
+              equivalence_issues({**good_5, "tie_rule": "up"}, good_15, fresh, fresh)),
           "a differing tie rule is refused; it decides the exactly-at-strike case")
     check(any("skew" in issue for issue in
-              equivalence_issues(good_5, good_15, 1.0, 5.0)),
+              equivalence_issues(good_5, good_15, fresh, fresh - 4.0)),
           "books observed 4 seconds apart are not one decision")
     check(any("status" in issue for issue in
-              equivalence_issues({**good_5, "status": "closed"}, good_15, 1.0, 1.0)),
+              equivalence_issues({**good_5, "status": "closed"}, good_15, fresh, fresh)),
           "a closed market is not tradeable evidence")
 
     # --- END TO END -------------------------------------------------------------------
-    book_5 = {"recv_ts": 1.0, "asks_up": [(0.44, 1_000.0)], "asks_down": [(0.60, 1_000.0)]}
-    book_15 = {"recv_ts": 1.1, "asks_up": [(0.62, 1_000.0)], "asks_down": [(0.44, 1_000.0)]}
+    book_5 = {"recv_ts_up": time.time(), "recv_ts_down": time.time(),
+              "asks_up": [(0.44, 1_000.0)], "asks_down": [(0.60, 1_000.0)]}
+    book_15 = {"recv_ts_up": time.time(), "recv_ts_down": time.time(),
+               "asks_up": [(0.62, 1_000.0)], "asks_down": [(0.44, 1_000.0)]}
     result = evaluate(good_5, good_15, book_5, book_15)
     check(result["admissible"] and result["best_edge_per_pair"] > 0,
           "an 88c pair across two synchronized markets is recorded as admissible")
@@ -528,8 +579,10 @@ def selftest() -> int:
           "a non-equivalent pair is never priced at all - the issue short-circuits it")
 
     expensive = evaluate(good_5, good_15,
-                         {"recv_ts": 1.0, "asks_up": [(0.52, 1_000.0)], "asks_down": []},
-                         {"recv_ts": 1.0, "asks_up": [], "asks_down": [(0.50, 1_000.0)]})
+                         {"recv_ts_up": time.time(), "recv_ts_down": time.time(),
+                          "asks_up": [(0.52, 1_000.0)], "asks_down": []},
+                         {"recv_ts_up": time.time(), "recv_ts_down": time.time(),
+                          "asks_up": [], "asks_down": [(0.50, 1_000.0)]})
     check(not expensive["admissible"] and expensive["best_edge_per_pair"] < 0,
           "a 102c pair is recorded with a NEGATIVE edge rather than dropped - the distribution "
           "of near-misses is the evidence this recorder exists to gather")
@@ -550,6 +603,38 @@ def selftest() -> int:
           "the FIRST valid observation wins - a later one cannot silently move a strike that "
           "has already been used for pairing")
     check(observe_strike(999_999) is None, "an unobserved round has no strike")
+    check(observe_strike_source(1_000) == "unknown",
+          "a strike remembers WHERE it came from, not just its value")
+
+    # A PROXY strike may not claim a floor. The app's price helper prefers Pyth and falls back
+    # to Binance, but these markets settle on Chainlink - and a wrong strike can invert the
+    # dominance ordering, which pays $0 in the middle band rather than $1.
+    proxy_5 = {**good_5, "strike_source": "pyth"}
+    proxy = evaluate(proxy_5, good_15, book_5, book_15)
+    check(not proxy["admissible"] and any("not the settlement oracle" in i
+                                          for i in proxy["issues"]),
+          "a Pyth-sourced strike is recorded as evidence but REFUSED as a guaranteed floor")
+    check(evaluate(good_5, good_15, book_5, book_15)["admissible"],
+          "...while a chainlink-sourced strike still qualifies, so the rule is selective")
+
+    # TIMESTAMP LAUNDERING. The pair buys UP on the 5m leg, so only recv_ts_up is relevant
+    # there. Make that leg 30s stale while the UNUSED down token is fresh: a max() across both
+    # tokens would report the fresh one and pass this off as an executable opportunity.
+    laundered_5 = {"recv_ts_up": time.time() - 30.0, "recv_ts_down": time.time(),
+                   "asks_up": [(0.44, 1_000.0)], "asks_down": [(0.60, 1_000.0)]}
+    launder = evaluate(good_5, good_15, laundered_5, book_15)
+    check(not launder["admissible"] and any("old" in i for i in launder["issues"]),
+          "a STALE priced leg is refused even when the unused opposite token is fresh - "
+          "freshness may not be inherited from a book that is not being bought")
+    check(evaluate(good_5, good_15, book_5, book_15)["admissible"],
+          "...and the same pair with a fresh priced leg still qualifies")
+
+    # P0-5: a token whose book failed to fetch must not abort the pass.
+    empty = evaluate(good_5, good_15,
+                     {"recv_ts_up": None, "recv_ts_down": None, "asks_up": [], "asks_down": []},
+                     book_15)
+    check(not empty["admissible"],
+          "a missing book yields a refused observation rather than an exception")
 
     # --- Parsed, not grepped. A raw text scan matches its OWN list of forbidden names, and it
     # would also flag a name that only ever appears inside a string. What matters is whether
@@ -590,7 +675,7 @@ def selftest() -> int:
 
 #: Strikes observed at round open, keyed by anchor timestamp. A round's strike is the oracle
 #: price at its OWN open, so the 15m leg of a pair needs a value captured ten minutes earlier.
-_STRIKE_CACHE: dict[int, float] = {}
+_STRIKE_CACHE: dict[int, tuple[float, str]] = {}
 _RULES_CACHE: dict[str, dict] = {}
 
 #: How far from the anchor an observation may be and still be treated as the strike. The oracle
@@ -598,7 +683,8 @@ _RULES_CACHE: dict[str, dict] = {}
 MAX_STRIKE_OBSERVATION_LAG_S = 20.0
 
 
-def record_strike_observation(anchor_ts: int, price: float, observed_ts: float) -> bool:
+def record_strike_observation(anchor_ts: int, price: float, observed_ts: float,
+                             source: str = "unknown") -> bool:
     """Remember the oracle price at a round's open. Refuses an observation taken too late.
 
     Returns True when stored. A strike guessed from a late sample would silently shift the
@@ -607,13 +693,20 @@ def record_strike_observation(anchor_ts: int, price: float, observed_ts: float) 
         return False
     if abs(float(observed_ts) - float(anchor_ts)) > MAX_STRIKE_OBSERVATION_LAG_S:
         return False
-    _STRIKE_CACHE.setdefault(int(anchor_ts), float(price))
+    _STRIKE_CACHE.setdefault(int(anchor_ts), (float(price), str(source)))
     return True
 
 
 def observe_strike(anchor_ts: int):
-    """The remembered strike for this round, or None when it was never observed."""
-    return _STRIKE_CACHE.get(int(anchor_ts))
+    """The remembered strike price, or None when this round's open was never observed."""
+    entry = _STRIKE_CACHE.get(int(anchor_ts))
+    return entry[0] if entry else None
+
+
+def observe_strike_source(anchor_ts: int):
+    """Where that strike came from. `None` when unobserved."""
+    entry = _STRIKE_CACHE.get(int(anchor_ts))
+    return entry[1] if entry else None
 
 
 def _market_rules(slug: str) -> dict:
@@ -639,42 +732,68 @@ def _market_rules(slug: str) -> dict:
 
 def collect_once(con=None, verbose: bool = True) -> list[dict]:
     """One discovery + book pass. Returns the evaluated candidates."""
-    from polymarket.live_btc_updown_recorder import discover_rounds, get_book
+    from polymarket.live_btc_updown_recorder import (discover_rounds, get_book,
+                                                     get_btc)
 
     rounds = discover_rounds()
+
+    # P0-1: OBSERVE the strikes. The first version defined record_strike_observation and never
+    # called it outside the selftest, so _STRIKE_CACHE stayed empty in production and every
+    # candidate was refused forever - a test/production parity failure that the selftest could
+    # not see because it populated the cache by hand.
+    #
+    # A round's strike is the oracle price at ITS OWN open, so this must run on every pass: the
+    # 15m leg of a pair was fixed ten minutes before the 5m leg exists.
+    price, price_source = get_btc()
+    now = time.time()
+    for r in rounds:
+        anchor = r.get("anchor_ts")
+        if anchor is not None and price is not None:
+            record_strike_observation(int(anchor), float(price), now, source=price_source)
+
     normalised = []
     for r in rounds:
-        # Rules are PARSED from the market text, never defaulted. Gamma does not publish the
-        # strike as a number - the market resolves against "the price at the beginning of that
-        # range" on the Chainlink BTC/USD stream - so the strike must be OBSERVED at the
-        # round's open and remembered. A 15m round's strike was fixed ten minutes ago, which a
-        # forward recorder has after one warm-up cycle and cannot reconstruct before that.
+        # Rules are PARSED from the market text, never defaulted. Gamma publishes no strike -
+        # the market resolves against "the price at the beginning of that range" on the
+        # Chainlink BTC/USD stream.
         rules = _market_rules(r.get("slug"))
-        strike = observe_strike(int(r["anchor_ts"])) if r.get("anchor_ts") else None
+        anchor = r.get("anchor_ts")
         normalised.append({
             "slug": r.get("slug"),
             "horizon": r.get("horizon"),
-            "anchor_ts": r.get("anchor_ts"),
-            "strike": strike,
+            "anchor_ts": anchor,
+            "strike": observe_strike(int(anchor)) if anchor is not None else None,
+            "strike_source": observe_strike_source(int(anchor)) if anchor is not None else None,
             "oracle": rules.get("oracle"),
             "tie_rule": rules.get("tie_rule"),
-            "status": r.get("status") or "open",
+            # P0-4: status comes from the FETCHED rules. Defaulting to "open" let a closed
+            # market look tradeable whenever discovery omitted the field, which it always does.
+            "status": rules.get("status") or "unknown",
             "tokens": {"up": r.get("up"), "down": r.get("down")},
         })
     pairs = find_pairs(normalised)
     if verbose:
-        print(f"  {len(normalised)} rounds -> {len(pairs)} synchronized 5m/15m pairs")
+        observed = sum(1 for r in normalised if r["strike"] is not None)
+        print(f"  {len(normalised)} rounds ({observed} with an observed strike, source="
+              f"{price_source}) -> {len(pairs)} synchronized 5m/15m pairs")
 
     results = []
     for round_5m, round_15m in pairs:
         books = {}
         for label, market in (("5m", round_5m), ("15m", round_15m)):
             tokens = market.get("tokens") or {}
-            up_book = get_book(tokens.get("up")) if tokens.get("up") else {}
-            down_book = get_book(tokens.get("down")) if tokens.get("down") else {}
+            # P0-5: get_book returns None on failure. Coercing to {} here keeps ONE
+            # unavailable token from raising AttributeError and abandoning the whole pass -
+            # "process alive" is not "evidence advancing".
+            up_book = (get_book(tokens.get("up")) or {}) if tokens.get("up") else {}
+            down_book = (get_book(tokens.get("down")) or {}) if tokens.get("down") else {}
             books[label] = {
-                "recv_ts": max(float(up_book.get("recv_ts") or 0.0),
-                               float(down_book.get("recv_ts") or 0.0)) or time.time(),
+                # P0-3: per-token timestamps, kept SEPARATE. A max() across both tokens let a
+                # stale priced leg inherit freshness from the untouched opposite one, and
+                # substituting time.time() turned missing timing into apparent freshness.
+                # Absent stays absent, and equivalence_issues refuses it.
+                "recv_ts_up": up_book.get("recv_ts"),
+                "recv_ts_down": down_book.get("recv_ts"),
                 "asks_up": up_book.get("asks") or [],
                 "asks_down": down_book.get("asks") or [],
             }

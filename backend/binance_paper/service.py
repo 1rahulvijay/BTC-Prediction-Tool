@@ -80,6 +80,10 @@ class BinancePaperService:
         self.latest_snapshot: MarketSnapshot | None = None
         self.latest_decisions: dict[str, dict[str, Any]] = {}
         self._pending: dict[str, PendingIntent] = {}
+        #: Positions whose entry economics died between decision and fill. Drained
+        #: after the commit, because the position must exist before it can be unwound.
+        self._post_fill_invalidated: list[tuple[str, str]] = []
+        self._last_post_fill_geometry: dict | None = None
         self._lock = threading.RLock()
         self._last_evaluation_ms = 0
         self._last_portfolio_update_ms = 0
@@ -498,11 +502,22 @@ class BinancePaperService:
                 if fill.filled_quantity > 0:
                     strategy = self.registry.get(intent.strategy_id)
                     if intent.operation == "ENTRY":
-                        # POST-FILL GEOMETRY. The stop and target were set as offsets from the
-                        # decision-time mark, but the entry happened at the ask (or bid) plus
-                        # slippage and latency drift. Distances measured from the real fill are
-                        # what the position actually has, and a target that no longer clears the
-                        # round trip is a trade the gate approved but that no longer exists.
+                        # POST-FILL GEOMETRY. The stop and target were set as offsets from
+                        # the decision-time mark, but the entry happened at the ask (or bid)
+                        # plus slippage and latency drift. Distances measured from the real
+                        # fill are what the position actually has.
+                        #
+                        # A FILL CANNOT BE UN-FILLED. The first version of this appended a
+                        # REJECTED_POST_FILL order event after FILLED, which is not a valid
+                        # OrderState and has no permitted transition out of FILLED - so it
+                        # raised, rolled the whole transaction back (erasing a fill that had
+                        # already happened), left the intent pending, and retried on every
+                        # book update. An infinite loop, and the paper selftest never saw it
+                        # because it only ever exercised the admissible branch.
+                        #
+                        # The position opens. If the economics are dead it is UNWOUND through
+                        # the same exit path stops and targets use, paying a second spread,
+                        # a second fee and a second latency - which is what actually happens.
                         geo = _post_fill_geometry(
                             side=intent.side.value,
                             fill_price=fill.average_fill_price,
@@ -513,27 +528,13 @@ class BinancePaperService:
                         )
                         self._last_post_fill_geometry = geo
                         if not geo.get("admissible"):
-                            # Close immediately at the same fill rather than carry a position
-                            # whose economics were invalidated between decision and arrival.
-                            self.persistence.append_order_event(
-                                order_id=intent.order_id,
-                                signal_id=intent.signal_id,
-                                strategy_id=intent.strategy_id,
-                                operation="ENTRY",
-                                side=intent.side.value,
-                                requested_quantity=intent.quantity,
-                                requested_notional_usd=intent.requested_notional_usd,
-                                status="REJECTED_POST_FILL",
-                                decision_ts_ms=intent.decision_ts_ms,
-                                simulated_send_ts_ms=intent.decision_ts_ms,
-                                simulated_arrival_ts_ms=intent.arrival_ts_ms,
-                                rejection_reason=str(geo.get("reason"))[:200],
-                                connection=connection,
-                            )
-                            _LOG.warning("[POST-FILL] entry %s rejected: %s",
-                                         intent.order_id, geo.get("reason"))
-                            del self._pending[intent.order_id]
-                            continue
+                            _LOG.warning(
+                                "[POST-FILL] %s entry economics invalidated at the fill: %s "
+                                "- opening then unwinding; the unwind cost is real and is "
+                                "charged to the strategy.",
+                                intent.order_id, geo.get("reason"))
+                            self._post_fill_invalidated.append(
+                                (intent.strategy_id, str(geo.get("reason"))[:200]))
                         self.portfolio.open(
                             intent.decision,
                             fill,
@@ -551,6 +552,24 @@ class BinancePaperService:
             del self._pending[intent.order_id]
             if fill.filled_quantity <= 0:
                 continue
+
+            # Unwind anything the post-fill check invalidated. Done AFTER the commit, so the
+            # position it exits actually exists, and through _queue_exit so the unwind is a
+            # real order with its own id, spread, fee and latency rather than a bookkeeping
+            # erasure.
+            while self._post_fill_invalidated:
+                strategy_id, reason = self._post_fill_invalidated.pop(0)
+                for position in self.persistence.open_positions(strategy_id):
+                    try:
+                        self._queue_exit(
+                            position, snapshot,
+                            signal_id=f"postfill-{position['position_id']}",
+                            exit_reason="POST_FILL_ECONOMICS_INVALID")
+                        _LOG.warning("[POST-FILL] unwinding %s: %s",
+                                     position["position_id"], reason)
+                    except Exception as exc:
+                        _LOG.error("[POST-FILL] unwind could not be queued for %s: %s",
+                                   position["position_id"], exc)
             if (
                 intent.operation == "EXIT"
                 and intent.reversal_decision is not None

@@ -616,6 +616,84 @@ def test_feed_gap_blocks_history_dependent_strategies() -> None:
     print("  PASS  a feed outage presents as missing history, and strategies refuse")
 
 
+def test_post_fill_invalidation_unwinds_instead_of_erasing() -> None:
+    """A fill that happened cannot be un-filled.
+
+    The first version of the post-fill check appended REJECTED_POST_FILL after FILLED. That is
+    not a valid OrderState, and FILLED has no permitted transition out of it, so it raised,
+    rolled back the transaction that had already recorded a real fill, left the intent pending,
+    and retried on every book update - an infinite loop. It was never caught because every
+    existing test exercised only the ADMISSIBLE branch.
+
+    This drives the rejection branch directly.
+    """
+    from .schemas import validate_order_transition
+
+    # The state machine itself must keep refusing the invalid transition.
+    for bad in ("REJECTED_POST_FILL", "CANCELLED", "REJECTED"):
+        try:
+            validate_order_transition("FILLED", bad)
+            raise AssertionError(f"FILLED->{bad} was accepted")
+        except ValueError:
+            pass
+
+    with tempfile.TemporaryDirectory() as directory:
+        client = FakeFuturesClient()
+        service = BinancePaperService(
+            client, config=config(Path(directory) / "paper.duckdb", latency_ms=0))
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+
+        snapshot = None
+        for index in range(65):
+            bid = 99_999.0 + index * 10.0
+            snapshot = feed(service, client, base + index * 1000, bid, bid + 2.0,
+                            agg_increment=30)
+
+        decision = service.registry.get("trend_following").decide(snapshot)
+        assert decision.action is Action.OPEN_LONG
+
+        # Force the economics to die at the fill: a target one tick above the mark cannot
+        # survive the spread, the slippage and two fees.
+        doomed = replace(decision, take_profit_price=snapshot.mark_price * 1.00001)
+        queue_manual(service, doomed, snapshot)
+        fill_snapshot = feed(service, client, base + 65_000, 100_649.0, 100_651.0)
+        assert fill_snapshot is not None
+
+        geometry = service._last_post_fill_geometry
+        assert geometry is not None and not geometry["admissible"], geometry
+
+        # The fill is PRESERVED, not erased, and the intent is not stuck pending.
+        fills = service.persistence._conn.execute(
+            "SELECT count(*) FROM binance_paper_fills WHERE operation = 'ENTRY'").fetchone()[0]
+        assert fills >= 1, "the entry fill was erased - a fill cannot be rolled back"
+
+        # The only thing pending is the UNWIND, not a stuck entry that would retry forever.
+        pending = list(service._pending.values())
+        assert len(pending) == 1, f"expected only the unwind pending, got {pending}"
+        assert pending[0].operation == "EXIT", pending[0].operation
+        assert pending[0].exit_reason == "POST_FILL_ECONOMICS_INVALID", pending[0].exit_reason
+
+        # Drive the unwind to completion: it is a real order and must actually fill.
+        feed(service, client, base + 66_000, 100_649.0, 100_651.0)
+        assert not service._pending, f"unwind never filled: {service._pending}"
+        assert not service.persistence.open_positions("trend_following"),             "position survived its own unwind"
+
+        exits = service.persistence._conn.execute(
+            "SELECT count(*) FROM binance_paper_fills WHERE operation = 'EXIT'").fetchone()[0]
+        assert exits >= 1, "the unwind produced no fill - it was a bookkeeping deletion"
+
+        # And the round trip cost real money: two spreads, two fees.
+        trades = service.persistence._conn.execute(
+            "SELECT net_pnl_usd FROM binance_paper_trades").fetchall()
+        assert trades, "no trade was recorded for the opened-then-unwound position"
+        assert float(trades[0][0]) < 0, (
+            f"unwinding an invalidated entry must COST money, got {trades[0][0]}")
+        service.shutdown()
+    print("  PASS  a post-fill invalidation UNWINDS the position instead of erasing the fill")
+
+
 def test_actual_strategies_end_to_end() -> None:
     with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
@@ -1117,6 +1195,7 @@ def run() -> None:
     test_opposing_signal_order()
     test_actual_strategies_end_to_end()
     test_feed_gap_blocks_history_dependent_strategies()
+    test_post_fill_invalidation_unwinds_instead_of_erasing()
     test_no_lookahead_stale_missing_and_liquidity()
     test_feed_contract_and_pending_entry_cancellation()
     test_duplicate_restart_and_database_isolation()
