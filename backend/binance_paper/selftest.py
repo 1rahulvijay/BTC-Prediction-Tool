@@ -570,6 +570,52 @@ def test_opposing_signal_order() -> None:
     print("  PASS  opposing signal closes before opening the opposite side")
 
 
+def test_feed_gap_blocks_history_dependent_strategies() -> None:
+    """A hole in the sample history must present as MISSING history, not as adjacent samples.
+
+    Strategies read `mid_history` positionally and none of them read `sample_ts_history`, so
+    before 2026-08-04 an outage looked like a run of one-second samples: EMA periods, momentum
+    lookbacks, breakout windows and volatility all silently measured the wrong span. The guard
+    lives in the availability flag, so every strategy inherits it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        client = FakeFuturesClient()
+        service = BinancePaperService(
+            client, config=config(Path(directory) / "paper.duckdb", latency_ms=0))
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+
+        snapshot = None
+        for index in range(35):
+            bid = 99_999.0 + index * 10.0
+            snapshot = feed(service, client, base + index * 1000, bid, bid + 2.0,
+                            agg_increment=30)
+        assert snapshot.mid_history_usable, "a contiguous history must remain usable"
+        assert snapshot.feature_availability["perpetual_mid_history"] is True
+
+        # A 5-minute outage, then the feed resumes.
+        for index in range(3):
+            bid = 100_400.0 + index * 10.0
+            snapshot = feed(service, client, base + 300_000 + index * 1000, bid, bid + 2.0,
+                            agg_increment=30)
+
+        assert snapshot.mid_history_max_gap_ms is not None
+        assert snapshot.mid_history_max_gap_ms > 200_000, snapshot.mid_history_max_gap_ms
+        assert snapshot.mid_history_usable is False, "the hole must make the history unusable"
+        assert snapshot.feature_availability["perpetual_mid_history"] is False
+
+        # And every history-dependent strategy must therefore refuse.
+        for strategy_id in ("trend_following", "breakout", "mean_reversion"):
+            decision = service.registry.get(strategy_id).decide(snapshot)
+            assert decision.action in (Action.NO_DATA, Action.NO_EDGE), (
+                strategy_id, decision.action)
+            assert "perpetual_mid_history" in decision.missing_inputs, (
+                strategy_id, decision.missing_inputs)
+        service.shutdown()
+    print("  PASS  a feed outage presents as missing history, and strategies refuse")
+
+
 def test_actual_strategies_end_to_end() -> None:
     with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
@@ -581,7 +627,11 @@ def test_actual_strategies_end_to_end() -> None:
         service.start_engine()
         base = int(time.time() * 1000)
         snapshot = None
-        for index in range(35):
+        # 65 one-second samples, not 35. `breakout` consumes agg_trade_count_60s, and since
+        # 2026-08-04 that field is NULL until a genuine 60 seconds has elapsed - 34 seconds of
+        # trades may not be published as a minute's worth. The fixture must supply the evidence
+        # the strategy legitimately requires instead of the guard being loosened to fit it.
+        for index in range(65):
             bid = 99_999.0 + index * 10.0
             snapshot = feed(
                 service,
@@ -605,9 +655,9 @@ def test_actual_strategies_end_to_end() -> None:
         fill_snapshot = feed(
             service,
             client,
-            base + 35_000,
-            100_349.0,
-            100_351.0,
+            base + 65_000,
+            100_649.0,
+            100_651.0,
         )
         position = service.persistence.open_positions("trend_following")[0]
         assert position["side"] == "LONG"
@@ -615,9 +665,9 @@ def test_actual_strategies_end_to_end() -> None:
         feed(
             service,
             client,
-            base + 36_000,
-            100_349.0,
-            100_351.0,
+            base + 66_000,
+            100_649.0,
+            100_651.0,
         )
         assert service.persistence.open_positions("trend_following") == []
         assert service.metrics()["sample_size"] == 1
@@ -1066,6 +1116,7 @@ def run() -> None:
     test_observed_funding_accounting()
     test_opposing_signal_order()
     test_actual_strategies_end_to_end()
+    test_feed_gap_blocks_history_dependent_strategies()
     test_no_lookahead_stale_missing_and_liquidity()
     test_feed_contract_and_pending_entry_cancellation()
     test_duplicate_restart_and_database_isolation()

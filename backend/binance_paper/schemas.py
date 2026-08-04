@@ -92,6 +92,16 @@ class MarketSnapshot:
     feature_availability: dict[str, bool] = field(default_factory=dict)
     source_identifiers: dict[str, str] = field(default_factory=dict)
     model_context: dict[str, Any] = field(default_factory=dict)
+    #: Coverage facts behind the count above and behind mid_history. Without these a consumer
+    #: cannot tell a genuine 60-second window from two samples a second apart, or a continuous
+    #: history from one with a five-minute hole in it.
+    agg_trade_coverage_seconds: float = 0.0
+    agg_trades_per_second: float | None = None
+    agg_trade_window_complete: bool = False
+    mid_history_coverage_ratio: float = 0.0
+    mid_history_max_gap_ms: int | None = None
+    mid_history_usable: bool = False
+    mid_history_unusable_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

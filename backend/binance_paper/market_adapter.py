@@ -9,6 +9,10 @@ from typing import Callable
 
 from .config import EngineConfig
 from .schemas import DataQuality, MarketSnapshot
+from .sample_window import (continuity as _continuity,
+                            contiguous_tail as _contiguous_tail,
+                            trade_count_window as _trade_count_window,
+                            window as _sample_window)
 
 
 class BinancePaperMarketAdapter:
@@ -127,11 +131,30 @@ class BinancePaperMarketAdapter:
         else:
             model_prediction = {}
         model_prediction = model_prediction if isinstance(model_prediction, dict) else {}
-        cutoff = now - 60_000
-        eligible = [sample for sample in samples if sample[0] >= cutoff]
-        trade_count_60s = None
-        if len(eligible) >= 2:
-            trade_count_60s = max(0, eligible[-1][2] - eligible[0][2])
+        # #4: `agg_trade_count_60s` used to be published whenever TWO samples fell inside the
+        # last minute, with no requirement that they SPAN it. Two samples a second apart at
+        # startup produced a "60-second" count, which mean reversion compares against an
+        # absolute 1,700 and breakout against a minimum of 20 - so warm-up read as a dead
+        # market. The count is now NULL until the window it names has actually elapsed.
+        trade_window = _trade_count_window(samples, now, 60.0)
+        trade_count_60s = trade_window["count"]
+
+        # #3: strategies read mid_history POSITIONALLY and none of them read the timestamps, so
+        # a feed outage looked like adjacent one-second samples. Rather than patching four
+        # strategies, the coverage verdict is folded into the availability flag they already
+        # gate on - a gapped history now presents as missing history, which every strategy
+        # already handles by returning NO_DATA.
+        mid_window = _sample_window(
+            [s[1] for s in samples], [s[0] for s in samples], now, 60.0)
+        # CONTINUITY, not 60s coverage. A strategy with a 30-sample lookback is well served by
+        # 35 contiguous seconds; demanding a full minute would block good decisions. What
+        # breaks them is a HOLE, and that is visible over the retained buffer even after it
+        # scrolls out of the last minute.
+        mid_continuity = _continuity([s[1] for s in samples], [s[0] for s in samples])
+        _contiguous_mids, _contiguous_ts = _contiguous_tail(
+            [s[1] for s in samples], [s[0] for s in samples])
+        history_usable = mid_continuity["continuous"]
+        history_reason = mid_continuity["reason"]
         agg_age = health.get("agg_trade_age_ms")
         agg_available = (
             agg_age is not None
@@ -157,14 +180,28 @@ class BinancePaperMarketAdapter:
             agg_trade_age_ms=agg_age,
             agg_trade_message_count=int(health["agg_trade_message_count"]),
             agg_trade_count_60s=trade_count_60s,
+            agg_trade_coverage_seconds=trade_window["coverage_seconds"],
+            agg_trades_per_second=trade_window["trades_per_second"],
+            agg_trade_window_complete=trade_window["window_complete"],
+            mid_history_coverage_ratio=mid_window["coverage_ratio"],
+            # From CONTINUITY, not from the 60s window: the trimmed window only holds
+            # post-outage samples, so it would report a 1s gap while the buffer holds a
+            # five-minute hole. Reporting a different number from the one the decision
+            # uses is how a guard becomes unfalsifiable.
+            mid_history_max_gap_ms=mid_continuity["max_gap_ms"],
+            mid_history_usable=history_usable,
+            mid_history_unusable_reason=history_reason,
             last_completed_perp_cvd_bar_ts_ms=health.get(
                 "last_completed_perp_cvd_bar_ts_ms"
             ),
-            mid_history=tuple(sample[1] for sample in samples),
-            sample_ts_history=tuple(sample[0] for sample in samples),
+            # Only the CONTIGUOUS TAIL is published. Strategies check `len(history)`, not any
+            # availability flag, so truncating here is what turns an outage into a refusal
+            # through the length check they already perform - and none of them can forget to.
+            mid_history=_contiguous_mids,
+            sample_ts_history=_contiguous_ts,
             feature_availability={
                 "perpetual_book": feed_health is DataQuality.HEALTHY,
-                "perpetual_mid_history": len(samples) >= 2,
+                "perpetual_mid_history": len(samples) >= 2 and history_usable,
                 "perpetual_trade_intensity": bool(agg_available),
                 "funding_rate": funding_rate is not None,
                 "ensemble_prediction": bool(model_prediction),
