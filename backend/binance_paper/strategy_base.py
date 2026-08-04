@@ -143,7 +143,10 @@ class StrategyBase(ABC):
             if side is PositionSide.SHORT
             else None
         )
+        # Recorded for EVERY strategy, so post-fill geometry can measure how far the
+        # actual entry drifted from the price this decision was priced against.
         return StrategyDecision(
+            decision_mark_price=snapshot.mark_price,
             signal_id=canonical_hash(identity),
             strategy_id=self.strategy_id,
             strategy_version=self.strategy_version,

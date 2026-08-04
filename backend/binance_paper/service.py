@@ -9,7 +9,12 @@ import time
 from typing import Any
 
 from .config import EngineConfig
+import logging
+
+from .post_fill_geometry import geometry as _post_fill_geometry
 from .fill_simulator import BinancePaperFillSimulator
+
+_LOG = logging.getLogger(__name__)
 from .governor import (
     CapitalPreservationGovernor,
     GovernorAccountState,
@@ -493,6 +498,42 @@ class BinancePaperService:
                 if fill.filled_quantity > 0:
                     strategy = self.registry.get(intent.strategy_id)
                     if intent.operation == "ENTRY":
+                        # POST-FILL GEOMETRY. The stop and target were set as offsets from the
+                        # decision-time mark, but the entry happened at the ask (or bid) plus
+                        # slippage and latency drift. Distances measured from the real fill are
+                        # what the position actually has, and a target that no longer clears the
+                        # round trip is a trade the gate approved but that no longer exists.
+                        geo = _post_fill_geometry(
+                            side=intent.side.value,
+                            fill_price=fill.average_fill_price,
+                            decided_entry=intent.decision.decision_mark_price,
+                            stop_price=intent.decision.stop_price,
+                            target_price=intent.decision.take_profit_price,
+                            round_trip_bps=2.0 * self.config.fee_rate_bps,
+                        )
+                        self._last_post_fill_geometry = geo
+                        if not geo.get("admissible"):
+                            # Close immediately at the same fill rather than carry a position
+                            # whose economics were invalidated between decision and arrival.
+                            self.persistence.append_order_event(
+                                order_id=intent.order_id,
+                                signal_id=intent.signal_id,
+                                strategy_id=intent.strategy_id,
+                                operation="ENTRY",
+                                side=intent.side.value,
+                                requested_quantity=intent.quantity,
+                                requested_notional_usd=intent.requested_notional_usd,
+                                status="REJECTED_POST_FILL",
+                                decision_ts_ms=intent.decision_ts_ms,
+                                simulated_send_ts_ms=intent.decision_ts_ms,
+                                simulated_arrival_ts_ms=intent.arrival_ts_ms,
+                                rejection_reason=str(geo.get("reason"))[:200],
+                                connection=connection,
+                            )
+                            _LOG.warning("[POST-FILL] entry %s rejected: %s",
+                                         intent.order_id, geo.get("reason"))
+                            del self._pending[intent.order_id]
+                            continue
                         self.portfolio.open(
                             intent.decision,
                             fill,

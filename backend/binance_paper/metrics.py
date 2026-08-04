@@ -5,6 +5,8 @@ import random
 import statistics
 from typing import Any
 
+from .independence import evidence_profile
+
 
 MIN_EVIDENCE_TRADES = 500
 MIN_EVIDENCE_DAYS = 5
@@ -80,8 +82,20 @@ def _promotion_gate(
         float(row["net_pnl_usd"]) - 0.5 * float(row["slippage_usd"])
         for row in trades
     )
+    # The old gate was named `independent_trades_500` and implemented as `len(trades) >= 500`.
+    # That proves COUNT, not independence: 5m/15m positions overlap, so consecutive trades
+    # routinely share a price path, and 500 correlated observations make a day-block bound far
+    # narrower than the evidence supports. The count is kept under an honest name; independence
+    # is now measured.
+    evidence = evidence_profile(trades)
     checks: dict[str, bool | None] = {
-        "independent_trades_500": len(trades) >= 500,
+        "trade_count_500": len(trades) >= 500,
+        "non_overlapping_episodes_250": evidence["non_overlapping_episodes"] >= 250,
+        "effective_sample_size_200": evidence["effective_sample_size"] >= 200.0,
+        "no_single_day_cluster_gt_25pct": (
+            evidence["largest_cluster_share"] is not None
+            and evidence["largest_cluster_share"] < 0.25
+        ),
         "forward_observation_56d": observation_days >= MIN_PROMOTION_OBSERVATION_DAYS,
         "observed_trading_days_30": n_days >= MIN_PROMOTION_TRADING_DAYS,
         "positive_after_cost_expectancy": bool(values)
@@ -120,6 +134,9 @@ def _promotion_gate(
             if largest_day_profit_concentration is not None
             else None
         ),
+        # Reported so a reader can see WHY an independence gate failed, rather than only that
+        # it did: 500 trades and 12 episodes is a very different sample from 500 and 480.
+        "evidence_profile": evidence,
         "fee_50pct_stress_net_usd": round(fee_stress_net, 6),
         "slippage_50pct_stress_net_usd": round(slippage_stress_net, 6),
         "real_orders_remain_impossible": True,

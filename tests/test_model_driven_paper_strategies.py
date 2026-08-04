@@ -73,7 +73,29 @@ def _snapshot(prediction=None, *, updated_at_ms=NOW, bid=None, ask=None):
     )
 
 
-def test_binance_model_consensus_requires_final_calibrated_positive_ev_trade():
+def test_binance_model_consensus_abstains_on_heuristic_uncertainty():
+    """A fixed 5pp haircut may not authorise capital.
+
+    Before 2026-08-04 this strategy opened a position whenever `probability - 0.05` produced a
+    positive EV, and that quantity was named `lower_bound_ev_bps`. It is not a lower bound - it
+    is a hand-chosen pessimism constant, and the EV it feeds assumes wins and losses have the
+    same average magnitude. This test previously asserted OPEN_LONG, so it PINNED that.
+    """
+    strategy = ModelConsensusStrategy()
+    decision = strategy.decide(_snapshot(_prediction()))
+    assert decision.action is Action.NO_EDGE
+    assert any("uncertainty_is_heuristic_not_measured" in code
+               for code in decision.reason_codes), decision.reason_codes
+    assert strategy.uncertainty_method == "fixed_haircut"
+
+
+def test_binance_model_consensus_ev_path_still_computes(monkeypatch):
+    """With the research opt-in, the ORIGINAL economics still hold end to end.
+
+    Keeps the coverage the old test provided - the EV, target and stop are still built and
+    still sane - while the abstention above owns the authority question.
+    """
+    monkeypatch.setenv("BTC_ALLOW_HEURISTIC_EV", "1")
     strategy = ModelConsensusStrategy()
     decision = strategy.decide(_snapshot(_prediction()))
     assert decision.action is Action.OPEN_LONG
@@ -81,8 +103,18 @@ def test_binance_model_consensus_requires_final_calibrated_positive_ev_trade():
     assert decision.expected_net_pnl_lower_bound_usd > 0.0
     assert decision.take_profit_price > MARK
     assert decision.stop_price < MARK
+    assert decision.decision_mark_price == MARK
     target_bps = (decision.take_profit_price - MARK) / MARK * 10_000.0
     assert target_bps >= strategy.minimum_take_profit_bps
+    # The renamed fields carry the honest names.
+    assert "heuristic_haircut_ev_bps" in decision.features
+    assert "lower_bound_ev_bps" not in decision.features
+    assert decision.features["ev_payoff_assumption"] == "symmetric_magnitude"
+
+
+def test_binance_model_consensus_rejects_bad_inputs(monkeypatch):
+    monkeypatch.setenv("BTC_ALLOW_HEURISTIC_EV", "1")
+    strategy = ModelConsensusStrategy()
 
     uncalibrated = _prediction(calibratedConfidence=None)
     assert strategy.decide(_snapshot(uncalibrated)).action is Action.NO_DATA

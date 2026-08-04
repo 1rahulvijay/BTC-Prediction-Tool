@@ -114,6 +114,12 @@ jobs:
       - name: Repository launcher layout
         run: python tests/test_repository_layout.py
 
+      - name: Evidence independence (effective sample size, not a trade count)
+        run: python -m backend.binance_paper.independence --selftest
+
+      - name: Post-fill trade geometry (economics measured from the actual fill)
+        run: python -m backend.binance_paper.post_fill_geometry --selftest
+
       - name: Decision snapshot (one immutable market view per decision)
         run: python backend/decision_snapshot.py --selftest
 
@@ -619,6 +625,8 @@ jobs:
           python backend/target_contract.py --selftest || exit /b 1
           python backend/forward_evidence_gate.py --selftest || exit /b 1
           python backend/decision_snapshot.py --selftest || exit /b 1
+          python -m backend.binance_paper.independence --selftest || exit /b 1
+          python -m backend.binance_paper.post_fill_geometry --selftest || exit /b 1
           python backend/test_target_contract_parity.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1

@@ -131,6 +131,10 @@ class StrategyDecision:
     uncertainty_status: str = "UNMEASURED"
     expected_net_pnl_usd: float | None = None
     expected_net_pnl_lower_bound_usd: float | None = None
+    #: The mark price the stop/target/EV were computed against. Needed to measure how far the
+    #: ACTUAL fill drifted from the decision, which is what determines whether the target still
+    #: clears costs. Without it, post-fill geometry cannot be checked at all.
+    decision_mark_price: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

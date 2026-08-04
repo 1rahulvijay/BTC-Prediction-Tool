@@ -15,6 +15,13 @@ from ..schemas import Action, DataQuality, MarketSnapshot, PositionSide
 from ..strategy_base import StrategyBase
 
 
+
+def _allow_heuristic_ev() -> bool:
+    """Deliberate research opt-in. Absent, a heuristic haircut may not authorise capital."""
+    import os
+    return os.environ.get("BTC_ALLOW_HEURISTIC_EV", "0").strip().lower() in ("1", "true", "yes")
+
+
 class ModelConsensusStrategy(StrategyBase):
     strategy_id = "model_consensus"
     strategy_name = "Model Consensus (calibrated, cost-aware)"
@@ -39,7 +46,12 @@ class ModelConsensusStrategy(StrategyBase):
     maximum_target_bps = 100.0
     requested_notional_usd = 500.0
     maximum_holding_seconds = 300
-    minimum_lower_bound_ev_bps = 0.0
+    minimum_heuristic_haircut_ev_bps = 0.0
+    #: A fixed 5pp haircut is NOT a confidence interval, a conformal bound, a bootstrap bound or
+    #: any empirically justified uncertainty estimate. Until a measured interval exists this
+    #: strategy may compute and report its EV but MAY NOT authorise an entry on it. Opt in
+    #: deliberately with BTC_ALLOW_HEURISTIC_EV=1 for research; it is not a default anyone gets.
+    uncertainty_method = "fixed_haircut"
     profit_lock_buffer_bps = 2.0
 
     @property
@@ -57,7 +69,8 @@ class ModelConsensusStrategy(StrategyBase):
             "maximum_target_bps": self.maximum_target_bps,
             "requested_notional_usd": self.requested_notional_usd,
             "maximum_holding_seconds": self.maximum_holding_seconds,
-            "minimum_lower_bound_ev_bps": self.minimum_lower_bound_ev_bps,
+            "minimum_heuristic_haircut_ev_bps": self.minimum_heuristic_haircut_ev_bps,
+            "uncertainty_method": self.uncertainty_method,
             "profit_lock_buffer_bps": self.profit_lock_buffer_bps,
         }
 
@@ -214,7 +227,7 @@ class ModelConsensusStrategy(StrategyBase):
                 conservative_move / snapshot.mark_price * 10_000.0 * self.target_capture_fraction,
             ),
         )
-        probability_lower = max(0.0, probability - self.conservative_probability_haircut)
+        haircut_probability = max(0.0, probability - self.conservative_probability_haircut)
         # The calibrated head predicts endpoint DIRECTION, not which TP/SL barrier is touched
         # first. Therefore EV must be computed on the direction target it was trained on; using
         # `p * target - (1-p) * stop` would silently reinterpret it as a barrier-order model.
@@ -225,30 +238,50 @@ class ModelConsensusStrategy(StrategyBase):
             (2.0 * probability - 1.0) * conservative_move_bps
             - self.assumed_round_trip_bps
         )
-        lower_ev_bps = (
-            (2.0 * probability_lower - 1.0) * conservative_move_bps
+        haircut_ev_bps = (
+            (2.0 * haircut_probability - 1.0) * conservative_move_bps
             - self.assumed_round_trip_bps
         )
         features.update(
             {
                 "calibrated_probability": probability,
-                "probability_lower": probability_lower,
+                # RENAMED. This was `probability_lower` / `lower_bound_ev_bps`, which claimed a
+                # statistical property the arithmetic does not have: it is `probability` minus a
+                # hand-chosen constant, not an interval derived from data.
+                "heuristic_haircut_probability": haircut_probability,
+                "heuristic_haircut_ev_bps": haircut_ev_bps,
+                "uncertainty_method": self.uncertainty_method,
+                # The EV above is (2p-1) * move - costs, which assumes the correct-side and
+                # wrong-side moves have the SAME average magnitude. A 60% model still loses if
+                # wins average 8 bps and losses average 25 bps. Recorded so the assumption is
+                # visible in the ledger rather than buried in a formula.
+                "ev_payoff_assumption": "symmetric_magnitude",
                 "stop_bps": stop_bps,
                 "target_bps": target_bps,
                 "conservative_horizon_move_bps": conservative_move_bps,
                 "expected_ev_bps": expected_ev_bps,
-                "lower_bound_ev_bps": lower_ev_bps,
             }
         )
-        if lower_ev_bps <= self.minimum_lower_bound_ev_bps:
-            return self._no_edge(snapshot, features, "conservative_net_ev_not_positive")
+        if haircut_ev_bps <= self.minimum_heuristic_haircut_ev_bps:
+            return self._no_edge(snapshot, features, "heuristic_haircut_ev_not_positive")
+
+        # AUTHORITY GATE. Everything above is a computation; this decides whether it may open a
+        # position. A pessimism constant is not an uncertainty estimate, and the symmetric-payoff
+        # EV compounds that. Until a measured interval and an asymmetric payoff model exist, this
+        # strategy reports and abstains.
+        if self.uncertainty_method != "empirical_interval" and not _allow_heuristic_ev():
+            return self._no_edge(
+                snapshot, features,
+                "uncertainty_is_heuristic_not_measured: a fixed "
+                f"{self.conservative_probability_haircut:.0%} haircut is not a lower bound, and "
+                "the EV assumes symmetric win/loss magnitude")
 
         sign = 1.0 if side is PositionSide.LONG else -1.0
         stop_price = snapshot.mark_price * (1.0 - sign * stop_bps / 10_000.0)
         target_price = snapshot.mark_price * (1.0 + sign * target_bps / 10_000.0)
         expected_net = self.requested_notional_usd * expected_ev_bps / 10_000.0
-        lower_net = self.requested_notional_usd * lower_ev_bps / 10_000.0
-        score = sign * min(1.0, lower_ev_bps / max(1.0, target_bps))
+        lower_net = self.requested_notional_usd * haircut_ev_bps / 10_000.0
+        score = sign * min(1.0, haircut_ev_bps / max(1.0, target_bps))
         return self._decision(
             snapshot,
             action=Action.OPEN_LONG if side is PositionSide.LONG else Action.OPEN_SHORT,
