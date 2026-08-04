@@ -182,6 +182,28 @@ class PredictionVerifier:
         self.last_record_time[h] = now_ms
 
 
+    #: P0-11. A "5 minute" prediction resolved by whatever `current_price` happened to be on the
+    #: first main-loop iteration past verify_at. The loop can be delayed by training, CPU
+    #: contention, a blocking query or a feed stall, so the graded price could be seconds or
+    #: minutes late - and near the threshold that changes the label. Beyond this bound the row is
+    #: marked INVALID_LATE rather than graded on a price from the wrong moment.
+    MAX_RESOLUTION_LATENESS_MS = 30_000
+
+    @staticmethod
+    def _as_of_price(klines, verify_at_ms: int):
+        """Close of the last CLOSED bar at or before verify_at, with its timestamp.
+
+        Resolving from `current_price` grades at loop time, not at horizon end."""
+        best = None
+        for k in (klines or []):
+            ts = int(k.get("time", 0))
+            if ts <= verify_at_ms and k.get("is_closed") is not False:
+                if best is None or ts > int(best.get("time", 0)):
+                    best = k
+        if best is None:
+            return None, None
+        return float(best["close"]), int(best["time"])
+
     #: Grading rules, keyed by the contract a prediction was trained under.
     def _grade(self, pred: dict, current_price: float, threshold: float, klines):
         """Return (direction, status). `direction` is None when the row must not be graded."""
@@ -192,8 +214,14 @@ class PredictionVerifier:
             return None, f"UNKNOWN_CONTRACT:{contract}"
 
         if contract == tc.ENDPOINT_SETTLEMENT_V1:
+            # Grade at the HORIZON END, not at whatever moment the loop got here.
+            as_of, as_of_ts = self._as_of_price(klines, int(pred.get("verify_at") or 0))
+            if as_of is None:
+                return None, "GRADE_UNAVAILABLE:no_as_of_price"
+            pred["resolution_price_source"] = "as_of_kline_close"
+            pred["resolution_event_ts"] = as_of_ts
             return tc.label_endpoint(
-                pred["predicted_price"], current_price, threshold), "GRADED_ENDPOINT"
+                pred["predicted_price"], as_of, threshold), "GRADED_ENDPOINT"
 
         # FIRST_TOUCH needs the intrabar path between entry and the horizon end.
         entry_ts = int(pred.get("predicted_at") or pred.get("created_at") or 0)
@@ -241,6 +269,17 @@ class PredictionVerifier:
                 # threshold as training) so we grade the model on its real target, not a
                 # hardcoded 0.01% that almost never classifies the outcome as NEUTRAL.
                 threshold = float(pred.get("neutral_band", 0.0008) or 0.0008)
+
+                # P0-11 LATENESS. Record how late this resolution actually is and refuse to
+                # grade beyond the declared bound instead of pretending the delay did not
+                # happen. Recorded on every row so the distribution is visible, not assumed.
+                lateness_ms = int(current_time_ms) - int(pred.get("verify_at") or 0)
+                pred["scheduled_resolution_ts"] = int(pred.get("verify_at") or 0)
+                pred["resolution_lateness_ms"] = lateness_ms
+                if lateness_ms > self.MAX_RESOLUTION_LATENESS_MS:
+                    pred["grade_status"] = f"INVALID_LATE:{lateness_ms}ms"
+                    self.invalid_late = getattr(self, "invalid_late", 0) + 1
+                    continue          # dropped: not graded, not silently mislabelled
 
                 actual_direction, grade_status = self._grade(
                     pred, current_price, threshold, klines)

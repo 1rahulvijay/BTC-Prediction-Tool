@@ -134,9 +134,65 @@ def _dependency_issues() -> list[str]:
     return issues
 
 
+def _canonical_datastore_issues() -> list[str]:
+    """P0-7: production must NAME its store, not materialise one.
+
+    `database.py` resolves BTC_DB_PATH or BTC_DATA_DIR/analytics.duckdb and `init_db()` will
+    happily create it. Three analytics.duckdb files exist with DISJOINT spans (07-02..07-04,
+    07-05..07-25), so "a correct query against the wrong archive" is not hypothetical - it
+    already happened, and it is invisible because the query succeeds.
+
+    Being writable is not the same as being correct.
+    """
+    issues: list[str] = []
+    explicit = os.environ.get("BTC_DB_PATH", "").strip()
+    if not explicit:
+        issues.append(
+            "BTC_DB_PATH must name an explicit canonical database file in production; "
+            "falling back to BTC_DATA_DIR/analytics.duckdb lets a correct query run against "
+            "the wrong evidence archive")
+        return issues
+    path = Path(explicit)
+    if not path.is_absolute():
+        issues.append(f"BTC_DB_PATH must be absolute, got {explicit!r}")
+    if not path.is_file():
+        # The whole point: a missing production store is an ERROR, never a new empty store.
+        issues.append(
+            f"BTC_DB_PATH {explicit} does not exist. Production must not create its own "
+            f"datastore - an empty store answers every query with silence.")
+        return issues
+    try:
+        from datastore_identity import resolve as _resolve
+        identity = _resolve(strict=True)
+        if getattr(identity, "warning", None):
+            issues.append(f"datastore identity warning: {identity.warning}")
+    except Exception as exc:
+        issues.append(f"datastore identity could not be resolved strictly: {exc}")
+    return issues
+
+
+def _recorder_progress_issues() -> list[str]:
+    """P0-7/P0-10: required recorders must be ADVANCING, measured from row timestamps."""
+    issues: list[str] = []
+    try:
+        from forward_evidence_gate import evidence_status
+        status = evidence_status()
+        if status["forward_evidence"] != "ADVANCING":
+            issues.append(
+                f"{status['banner']}; required recorders: "
+                f"{', '.join(status['required'])}")
+    except Exception as exc:
+        issues.append(f"recorder row-progress could not be evaluated: {exc}")
+    return issues
+
+
 def _storage_issues() -> list[str]:
     issues: list[str] = []
-    DATA.mkdir(parents=True, exist_ok=True)
+    # NOT created. A production data directory that does not exist is a deployment error, and
+    # `mkdir(exist_ok=True)` here is exactly how an empty store gets silently manufactured.
+    if not DATA.is_dir():
+        issues.append(f"data directory {DATA} does not exist; production must not create it")
+        return issues
     try:
         with tempfile.NamedTemporaryFile(dir=DATA, prefix=".prod-write-", delete=True):
             pass
@@ -262,6 +318,8 @@ def main() -> int:
     failures.extend(environment_issues(dict(os.environ), mode=args.mode))
     failures.extend(_dependency_issues())
     failures.extend(_storage_issues())
+    failures.extend(_canonical_datastore_issues())
+    failures.extend(_recorder_progress_issues())
     failures.extend(_complete_trade_issues())
     if not (ROOT / "dist" / "index.html").is_file():
         failures.append("frontend dist/index.html is missing; run npm run build")

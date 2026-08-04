@@ -122,6 +122,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 HISTORICAL_DAYS = max(1, _env_int("BTC_HISTORICAL_DAYS", 30))
+#: P0-5: the hard floor of untouched candles below which no backtest is reported.
+BACKTEST_MIN_HELD_OUT = 500
 BACKTEST_MAX_ROWS = max(0, _env_int("BTC_BACKTEST_MAX_ROWS", 12000))
 HISTORICAL_CACHE_VERSION = 1
 HISTORICAL_CACHE_REFRESH_MAX_GAP_SECONDS = max(
@@ -2377,21 +2379,41 @@ async def run_backtest(reason: str = "manual"):
         if _btb:
             _emb = max(model.horizons)
             _first = next((j for j, k in enumerate(bt_klines) if k["time"] > _btb), None)
+            # P0-5 FAIL CLOSED. Both branches below used to WARN and then score anyway, so a
+            # run with no untouched data still produced a number - and a number on a yellow
+            # log line is read as a result. "Partially in-sample" is not a weaker result, it
+            # is a different quantity, and reporting it beside honest ones corrupts the
+            # comparison. No untouched data now means NO BACKTEST.
             if _first is None:
-                logger.warning("[BACKTEST] ALL candles precede the train boundary — "
-                               "metrics would be fully IN-SAMPLE; proceeding unfiltered (flagged).")
-            else:
-                _first = min(_first + _emb, len(bt_klines) - 1)
-                _start = max(0, _first - LOOKBACK)  # keep lookback warm-up; scoring begins post-boundary
-                _held = len(bt_klines) - _first
-                if _held >= 500:
-                    if _start > 0:
-                        bt_klines = bt_klines[_start:]
-                    logger.info("[BACKTEST] Out-of-sample only: %s held-out candles scored "
-                                "(boundary ts=%s, embargo=%s candles).", _held, _btb, _emb)
-                else:
-                    logger.warning("[BACKTEST] Only %s held-out candles (<500) — keeping full "
-                                   "window; treat metrics as partially in-sample.", _held)
+                logger.error("[BACKTEST] NO UNTOUCHED DATA — every candle precedes the train "
+                             "boundary (ts=%s). BACKTEST UNAVAILABLE; refusing to report "
+                             "in-sample metrics as a backtest.", _btb)
+                backend_state["backtest_unavailable"] = {
+                    "reason": "all_candles_in_sample", "boundary_ts": _btb,
+                    "held_out": 0, "required": BACKTEST_MIN_HELD_OUT,
+                }
+                return {"available": False, "reason": "NO UNTOUCHED DATA — BACKTEST UNAVAILABLE",
+                        "held_out_candles": 0, "required": BACKTEST_MIN_HELD_OUT}
+            _first = min(_first + _emb, len(bt_klines) - 1)
+            _start = max(0, _first - LOOKBACK)  # keep lookback warm-up; scoring begins post-boundary
+            _held = len(bt_klines) - _first
+            if _held < BACKTEST_MIN_HELD_OUT:
+                logger.error("[BACKTEST] Only %s held-out candles (<%s) — BACKTEST UNAVAILABLE. "
+                             "Keeping the larger partly-fitted window would report an "
+                             "in-sample number as an out-of-sample one.",
+                             _held, BACKTEST_MIN_HELD_OUT)
+                backend_state["backtest_unavailable"] = {
+                    "reason": "insufficient_held_out", "boundary_ts": _btb,
+                    "held_out": int(_held), "required": BACKTEST_MIN_HELD_OUT,
+                }
+                return {"available": False,
+                        "reason": f"ONLY {_held} HELD-OUT CANDLES — BACKTEST UNAVAILABLE",
+                        "held_out_candles": int(_held), "required": BACKTEST_MIN_HELD_OUT}
+            if _start > 0:
+                bt_klines = bt_klines[_start:]
+            backend_state.pop("backtest_unavailable", None)
+            logger.info("[BACKTEST] Out-of-sample only: %s held-out candles scored "
+                        "(boundary ts=%s, embargo=%s candles).", _held, _btb, _emb)
 
         logger.info("[BACKTEST] Building validation feature matrix from %s candles", len(bt_klines))
         prepare_derivatives_data()
@@ -2638,6 +2660,26 @@ async def relearn_models_background(reason: str = "manual"):
             FULL_REFIT_AFTER_GATE,
             reason,
         )
+        # P0-10 FORWARD EVIDENCE GATE. Promotion needs an untouched forward sample. With the
+        # required recorders dark there is none, so a "promotion" would be scored on history the
+        # candidate was fitted against - fitting the past twice and calling it learning. The
+        # training run still proceeds; only the PROMOTION is withheld.
+        if promotion_pipeline:
+            try:
+                from forward_evidence_gate import may_adapt as _may_adapt
+                _allowed, _why = _may_adapt("promote_challenger")
+                if not _allowed:
+                    logger.error("[PROMOTION] %s", _why)
+                    backend_state["promotion_blocked"] = _why
+                    promotion_pipeline = False
+                else:
+                    backend_state.pop("promotion_blocked", None)
+            except Exception as _fe:
+                # Fail CLOSED: if the gate cannot be evaluated, do not promote.
+                logger.error("[PROMOTION] forward-evidence gate unavailable (%s) - "
+                             "refusing promotion rather than assuming evidence exists.", _fe)
+                backend_state["promotion_blocked"] = f"gate unavailable: {_fe}"
+                promotion_pipeline = False
         run_id = f"eval{HISTORICAL_DAYS}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         candidate_dir = (
             os.path.join(MODEL_CHALLENGER_DIR, run_id, "evaluation")
@@ -4706,6 +4748,17 @@ def _source_age_status(
 
 
 def _recorder_file_status(path: str, stale_after_s: float = 30.0) -> dict:
+    """FILE-MTIME health. Retained only for stores with no row-progress mapping.
+
+    P0-6: this measure is PROVEN WRONG for recorders. The 2026-08-03 audit found
+    multi_venue holding 20,085,631 rows while reporting never-run, and a store whose mtime was
+    minutes old while its newest actual data row was 24 days stale. A touched file is not a
+    healthy recorder - WAL checkpoints, compaction and unrelated opens all move mtime.
+
+    Anything with an entry in recorder_health.RECORDER_CLOCKS now goes through
+    `_recorder_row_status` instead. What is left here is stamped `method: file_mtime` so it can
+    never be read as row progress.
+    """
     candidates = [path, f"{path}.wal"]
     mtimes = [
         os.path.getmtime(candidate)
@@ -4713,13 +4766,60 @@ def _recorder_file_status(path: str, stale_after_s: float = 30.0) -> dict:
         if os.path.exists(candidate)
     ]
     if not mtimes:
-        return {"status": "MISSING", "age_s": None, "path": path}
+        return {"status": "MISSING", "age_s": None, "path": path,
+                "method": "file_mtime"}
     age_s = max(0.0, time.time() - max(mtimes))
     return {
         "status": "HEALTHY" if age_s <= stale_after_s else "STALE",
         "age_s": round(age_s, 1),
         "path": path,
+        "method": "file_mtime",
+        "caveat": "file mtime, not row progress - cannot prove rows are being written",
     }
+
+
+_ROW_HEALTH_CACHE: dict = {"generated_at_s": 0.0, "payload": {}}
+
+
+def _recorder_row_status(recorder: str, stale_after_s: float = 120.0,
+                         max_age_s: float = 20.0) -> dict:
+    """ROW-PROGRESS health: how old is the newest TIMESTAMP IN THE DATA?
+
+    The only question that cannot be faked by a file touch. Cached because each probe opens the
+    store read-only, and this endpoint is polled by the dashboard.
+    """
+    now = time.time()
+    cached = _ROW_HEALTH_CACHE["payload"].get(recorder)
+    if cached is not None and now - float(_ROW_HEALTH_CACHE["generated_at_s"]) <= max_age_s:
+        return copy.deepcopy(cached)
+    if now - float(_ROW_HEALTH_CACHE["generated_at_s"]) > max_age_s:
+        _ROW_HEALTH_CACHE["generated_at_s"] = now
+        _ROW_HEALTH_CACHE["payload"] = {}
+    try:
+        from recorder_health import probe as _probe
+        result = _probe(recorder)
+        age_ms = result.get("age_ms")
+        payload = {
+            # ADVANCING is the only healthy state. LOCKED_BY_WRITER means a writer holds the
+            # store, which is evidence of a live process, so it is reported distinctly rather
+            # than as a failure.
+            "status": result.get("status", "UNKNOWN"),
+            "age_s": round(age_ms / 1000.0, 1) if age_ms is not None else None,
+            "rows": result.get("rows", 0),
+            "newest_row_utc": result.get("newest_utc"),
+            "path": result.get("path") or result.get("store"),
+            "method": "row_progress",
+            "recorder": recorder,
+        }
+        if result.get("detail"):
+            payload["detail"] = result["detail"]
+        if payload["status"] == "ADVANCING" and payload["age_s"] is not None                 and payload["age_s"] > stale_after_s:
+            payload["status"] = "STALLED"
+    except Exception as exc:                       # never take the health endpoint down
+        payload = {"status": "PROBE_FAILED", "age_s": None, "method": "row_progress",
+                   "recorder": recorder, "detail": str(exc)[:160]}
+    _ROW_HEALTH_CACHE["payload"][recorder] = payload
+    return copy.deepcopy(payload)
 
 
 def _forward_readiness_snapshot(max_age_s: float = 15.0) -> dict:
@@ -4780,22 +4880,16 @@ def _system_health_snapshot() -> dict:
             float(pyth_ts) * 1000.0 if pyth_ts else None, 10_000.0
         ),
     }
+    # P0-6: the five recorders with a row-progress mapping are measured FROM THE DATA.
+    # The remaining three have no mapping and stay on mtime, explicitly labelled.
     recorders = {
-        "polymarket_quotes_settlements": _recorder_file_status(
-            os.path.join(DATA_DIR, "execution_layer.duckdb"), 120.0
+        "polymarket_quotes_settlements": _recorder_row_status(
+            "live_btc_updown_recorder.py", 120.0
         ),
-        "polymarket_l2": _recorder_file_status(
-            os.path.join(DATA_DIR, "polymarket_l2.duckdb"), 120.0
-        ),
-        "microstructure": _recorder_file_status(
-            os.path.join(DATA_DIR, "microstructure.duckdb"), 120.0
-        ),
-        "multi_venue": _recorder_file_status(
-            os.path.join(DATA_DIR, "multi_venue.duckdb"), 120.0
-        ),
-        "binance_l2": _recorder_file_status(
-            os.path.join(DATA_DIR, "binance_l2.duckdb"), 120.0
-        ),
+        "polymarket_l2": _recorder_row_status("l2_recorder.py", 120.0),
+        "microstructure": _recorder_row_status("microstructure_recorder.py", 120.0),
+        "multi_venue": _recorder_row_status("multi_venue_recorder.py", 120.0),
+        "binance_l2": _recorder_row_status("binance_l2_recorder.py", 120.0),
         "deribit_options_optional": _recorder_file_status(
             os.path.join(DATA_DIR, "deribit_options.duckdb"), 180.0
         ),
