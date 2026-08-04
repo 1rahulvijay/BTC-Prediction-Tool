@@ -62,13 +62,26 @@ class PrecisionEngine:
             self._last_fit = time.time() - max_age_s + 600  # retry in 10 min
             return False
 
+    #: Set by the server to the live bundle id. When present, calibration selects rows by
+    #: EXACT bundle identity and the mtime era is not used at all.
+    active_bundle_id: str = ""
+
     @staticmethod
     def _model_era_ms() -> int:
         """Timestamp (ms) of the CURRENT model bundle (architecture_version.pkl mtime).
-        Calibration must only learn from outcomes produced by the model it will correct —
-        fitting the new model's calibrator on the OLD model's outcomes is silent skew, and
-        each retrain changes the confidence distribution. Outcomes before this stamp are
-        excluded; calibration re-earns its sample after every retrain (by design)."""
+
+        P1-9. This is a FALLBACK only, for rows written before `model_version` was populated.
+        It is not a correct era boundary on its own:
+
+            challenger trained Monday        -> artifact mtime = Monday
+            incumbent keeps predicting Mon-Fri
+            challenger promoted Friday       -> mtime STILL Monday (the file was not rewritten)
+
+        Every incumbent prediction from Monday to Friday then satisfies `timestamp >= mtime`,
+        so the newly promoted challenger's calibrator is fitted on five days of a DIFFERENT
+        model's confidence distribution - which is precisely the skew the era filter exists to
+        prevent. A file's modification time is a fact about the filesystem, not about which
+        model produced a row."""
         import os
         try:
             data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -78,8 +91,17 @@ class PrecisionEngine:
         except Exception:
             return 0
 
+    def _era_clause(self) -> tuple[str, str]:
+        """(SQL predicate, mode). Exact bundle identity when we know it."""
+        bundle = (self.active_bundle_id or "").strip()
+        if bundle:
+            safe = bundle.replace("'", "''")
+            return f"model_version = '{safe}'", f"bundle:{bundle}"
+        return f"timestamp >= {int(self._model_era_ms())}", "mtime_fallback"
+
     def fit_from_db(self):
-        min_ts = self._model_era_ms()
+        era_clause, era_mode = self._era_clause()
+        self.era_mode = era_mode
         conn = database._connect()
         try:
             for h in HORIZONS:
@@ -99,7 +121,7 @@ class PrecisionEngine:
                         WHERE resolved AND raw_direction IN ('UP','DOWN')
                           AND actual_move IS NOT NULL
                           AND confidence IS NOT NULL AND confidence > 0
-                          AND timestamp >= {int(min_ts)}
+                          AND {era_clause}
                     """).fetchall()
                 except Exception:
                     continue

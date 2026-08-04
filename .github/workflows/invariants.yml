@@ -153,6 +153,12 @@ jobs:
       - name: P1-4 every directional seat respects the sample weights
         run: python backend/test_sample_weight_coverage.py
 
+      - name: P1-6 uncertainty bands come from untouched rows
+        run: python backend/test_conformal_source_honesty.py
+
+      - name: P1-9 calibration binds to the serving bundle, not a file mtime
+        run: python backend/test_calibration_bundle_identity.py
+
       - name: P1-12 a derived price is not an independent venue
         run: python backend/test_venue_independence.py
 
@@ -660,6 +666,8 @@ jobs:
           python backend/test_per_model_grading_contract.py || exit /b 1
           python backend/test_sample_weight_coverage.py || exit /b 1
           python backend/test_venue_independence.py || exit /b 1
+          python backend/test_conformal_source_honesty.py || exit /b 1
+          python backend/test_calibration_bundle_identity.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1
           python research/algodesk_17_agents_v1.py --selftest || exit /b 1

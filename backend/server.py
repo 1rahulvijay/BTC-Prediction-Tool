@@ -3776,6 +3776,14 @@ async def main_loop():
             # calibration is post-processing fitted on live outcomes, not model weights —
             # and it is the fix for the proven anti-selecting gate at 5m+.
             if tick_count % 100 == 5:
+                # P1-9. Bind calibration to the bundle that is actually SERVING, so it selects
+                # outcomes by exact model identity rather than by the artifact file's
+                # modification time. A challenger trained Monday and promoted Friday keeps
+                # Monday's mtime, so the mtime rule admitted five days of the INCUMBENT's
+                # predictions into the challenger's calibrator. Re-read every refresh: a
+                # promotion between refreshes changes which rows are eligible.
+                precision_engine.active_bundle_id = str(
+                    getattr(model, "model_bundle_id", "") or "")
                 asyncio.get_event_loop().run_in_executor(
                     None, precision_engine.refresh_if_stale)
 

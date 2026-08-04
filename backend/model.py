@@ -1335,20 +1335,47 @@ class MultiModelEnsemble:
                                                   if regime_labels[i] == reg], dtype=int)
                                         if _use_hmm and len(regime_labels) >= n_samples
                                         else np.array([], dtype=int))
-                        _conf_src = "held-out"
+                        # P1-6. NO IN-SAMPLE FALLBACK. Residuals on the model's own training
+                        # rows are not a conformal interval - they are a measure of fit, and
+                        # they are narrowest exactly where the held-out cut was too thin to
+                        # use, i.e. where overfitting is most likely. The old fallback
+                        # therefore produced its most confident bands in its least trustworthy
+                        # regimes, and recorded that only in a log line the serving path never
+                        # saw.
+                        #
+                        # The ladder is: this regime's untouched rows -> the GLOBAL untouched
+                        # rows -> no interval at all. A missing interval is a state the caller
+                        # can handle; a fabricated one is not.
+                        _conf_src = None
+                        residuals = None
                         if len(_val_idx) >= 200 and len(Ymag[h]) >= n_samples:
                             _vp = reg_mag.predict(X_flat[_val_idx])
                             residuals = np.asarray(Ymag[h])[_val_idx] - _vp
+                            _conf_src = "held-out-regime"
                         else:
-                            residuals = mag_target - reg_mag.predict(X_reg)
-                            _conf_src = "in-sample-fallback"
-                        self.conformal_residuals[reg][h] = {
-                            "q25": float(np.quantile(residuals, 0.25)),
-                            "q50": float(np.quantile(residuals, 0.50)),
-                            "q75": float(np.quantile(residuals, 0.75)),
-                        }
-                        log_component_done(
-                            h, reg, f"MoveSizeRegressorFast_conformal[{_conf_src}]", _t0)
+                            _global_idx = np.arange(split_idx, n_samples)
+                            if len(_global_idx) >= 200 and len(Ymag[h]) >= n_samples:
+                                _vp = reg_mag.predict(X_flat[_global_idx])
+                                residuals = np.asarray(Ymag[h])[_global_idx] - _vp
+                                _conf_src = "held-out-global"
+                        if residuals is None:
+                            logger.info(
+                                "[TRAIN] h=%sm reg=%s conformal interval UNAVAILABLE - no "
+                                "untouched slice of at least 200 rows. Recording none rather "
+                                "than in-sample residuals, which would be narrowest where "
+                                "they are least earned.", h, reg)
+                        else:
+                            self.conformal_residuals[reg][h] = {
+                                "q25": float(np.quantile(residuals, 0.25)),
+                                "q50": float(np.quantile(residuals, 0.50)),
+                                "q75": float(np.quantile(residuals, 0.75)),
+                                # Carried in the ARTIFACT, not just the log: a serving path
+                                # cannot honour a caveat it was never told about.
+                                "source": _conf_src,
+                                "n": int(len(residuals)),
+                            }
+                            log_component_done(
+                                h, reg, f"MoveSizeRegressorFast_conformal[{_conf_src}]", _t0)
                     except SkipComponent:
                         pass
                     except Exception as e:
@@ -2435,6 +2462,10 @@ class MultiModelEnsemble:
         # estimate so a bad regressor output can't produce absurd targets.
         reg = self._get_regime_from_state(data_state)
         move_range = None
+        # P1-6. WHERE the range came from, carried to the caller. A conformal band earned on
+        # untouched rows and an empirical regime prior are different claims, and the old code
+        # emitted both under one key with the distinction living only in a training log line.
+        move_range_source = None
         mag_reg = reg if h in self.models_by_regime[reg]["mag"] else "GLOBAL"
         if h in self.models_by_regime[mag_reg]["mag"] and last_price > 0:
             try:
@@ -2449,6 +2480,9 @@ class MultiModelEnsemble:
         if last_price > 0 and h in self.conformal_residuals.get(mag_reg, {}):
             try:
                 resids = self.conformal_residuals[mag_reg][h]
+                # Older bundles predate the source field; "unknown" is honest, "held-out" is a
+                # claim the artifact does not support.
+                move_range_source = str(resids.get("source") or "unknown")
                 pred_frac = float(self.models_by_regime[mag_reg]["mag"][h].predict(_xflat)[0])
                 
                 low_frac = pred_frac + resids["q25"]
@@ -2503,8 +2537,13 @@ class MultiModelEnsemble:
                             "median": round((0.80 * float(move_range["median"])) + (0.20 * prior_range["median"]), 2),
                             "high": round((0.80 * float(move_range["high"])) + (0.20 * prior_range["high"]), 2),
                         }
+                        move_range_source = f"{move_range_source}+regime_prior"
                     else:
+                        # No conformal band was earned for this regime/horizon. The empirical
+                        # prior is an honest STATEMENT ABOUT REALISED MOVES, not a claim about
+                        # this model's precision - so it is served, and it is labelled.
                         move_range = prior_range
+                        move_range_source = "regime_prior_only"
                     move_size_prior = {
                         "regime": stat_reg,
                         "samples": int(stat.get("n", 0)),
@@ -2553,6 +2592,7 @@ class MultiModelEnsemble:
             "targetPrice": round(target_price, 2),
             "expectedMove": round(exp_move, 2),
             "expectedMoveRange": move_range,
+            "expectedMoveRangeSource": move_range_source,
             "moveSizePrior": move_size_prior,
             "quantile_width_pct": quantile_width_pct,
             "quantile_asymmetry": quantile_asymmetry,
