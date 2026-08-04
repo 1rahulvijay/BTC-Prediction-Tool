@@ -144,6 +144,18 @@ jobs:
       - name: Target contract parity end-to-end
         run: python backend/test_target_contract_parity.py
 
+      - name: P1-1 one graded row describes one moment
+        run: python backend/test_resolution_observation_consistency.py
+
+      - name: P1-3 per-model panel grades the trained contract
+        run: python backend/test_per_model_grading_contract.py
+
+      - name: P1-4 every directional seat respects the sample weights
+        run: python backend/test_sample_weight_coverage.py
+
+      - name: P1-12 a derived price is not an independent venue
+        run: python backend/test_venue_independence.py
+
       - name: Model registry (single source of artifact identity)
         run: python backend/model_registry.py --selftest
 
@@ -644,6 +656,10 @@ jobs:
           python backend/cross_window_recorder.py --selftest || exit /b 1
           python -m backend.binance_paper.post_fill_geometry --selftest || exit /b 1
           python backend/test_target_contract_parity.py || exit /b 1
+          python backend/test_resolution_observation_consistency.py || exit /b 1
+          python backend/test_per_model_grading_contract.py || exit /b 1
+          python backend/test_sample_weight_coverage.py || exit /b 1
+          python backend/test_venue_independence.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1
           python research/algodesk_17_agents_v1.py --selftest || exit /b 1

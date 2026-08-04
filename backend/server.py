@@ -1551,7 +1551,15 @@ def handle_cross_asset_kline(kline: dict) -> None:
 
 
 def handle_coinbase_ticker(ticker: dict) -> None:
-    data_state["feed_timestamps_ms"]["coinbase_ticker"] = int(time.time() * 1000)
+    _now_ms = int(time.time() * 1000)
+    data_state["feed_timestamps_ms"]["coinbase_ticker"] = _now_ms
+    # P1-12. Keep the OBSERVED price, with the moment it was received. The premium is a
+    # derived quantity and was the only thing retained, which forced every later consumer to
+    # reconstruct a "Coinbase price" as binance + premium - a number that equals Binance
+    # exactly whenever the premium is stale or zero.
+    if ticker.get("price"):
+        data_state["coinbase_price"] = float(ticker["price"])
+        data_state["coinbase_price_recv_ms"] = _now_ms
     if data_state["klines"]:
         binance_price = data_state["klines"][-1]["close"]
         coinbase_price = ticker["price"]
@@ -1614,16 +1622,42 @@ def refresh_derivatives_from_rest() -> None:
         data_state["derivatives"]["liquidations"] = liq
 
 
+#: A Coinbase print older than this is not a live venue observation. Coinbase is geo-blocked
+#: from this box, so in practice the feed is usually absent entirely - which is precisely the
+#: condition under which the old reconstruction was most misleading.
+COINBASE_MAX_STALE_MS = 60_000
+
+
 def current_venue_prices(data_state: dict) -> dict:
-    """Latest BTC spot price per venue from whatever feeds are live."""
+    """Latest OBSERVED BTC spot price per venue. A venue with no live print is None.
+
+    P1-12. This used to synthesise Coinbase as `binance + coinbase_premium` and hand it back
+    under the key "coinbase", where build_exchanges_block folded it into the median consensus
+    and PerVenueVerifier graded it as an independent venue.
+
+    The premium defaults to 0.0 and Coinbase is geo-blocked here, so the usual value of that
+    expression is BINANCE EXACTLY. The effect was not a small bias:
+      - the median consensus counted Binance twice, pulling consensus toward it;
+      - Coinbase's deviation from consensus was identical to Binance's, i.e. perfect agreement
+        with itself, reported as cross-venue confirmation;
+      - fragmentation was understated, because a duplicated venue never disagrees;
+      - the per-venue accuracy panel described a venue that was never observed.
+
+    A derived price is never returned under a venue's name. Either there is a real, recent
+    print or the venue is absent."""
     klines = data_state.get("klines") or []
     binance = float(klines[-1]["close"]) if klines else None
-    prem = data_state.get("coinbase_premium", 0.0) or 0.0
     mx = _safe_dict(data_state.get("multi_exchange"))
     chainlink = data_state.get("chainlink_price") or None
+
+    coinbase = data_state.get("coinbase_price")
+    recv = int(data_state.get("coinbase_price_recv_ms") or 0)
+    if not coinbase or not recv or (int(time.time() * 1000) - recv) > COINBASE_MAX_STALE_MS:
+        coinbase = None                     # absent beats invented
+
     return {
         "binance": binance,
-        "coinbase": (binance + prem) if binance is not None else None,
+        "coinbase": float(coinbase) if coinbase else None,
         "bybit": mx.get("bybit"),
         "kucoin": mx.get("kucoin"),
         "chainlink": float(chainlink) if chainlink else None,

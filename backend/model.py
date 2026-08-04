@@ -1044,7 +1044,13 @@ class MultiModelEnsemble:
             # class-imbalanced). The inference-time prior division is retired with this
             # (see predict: dividing balanced outputs by DATA priors would re-bias them
             # the other way).
-            _cnt = np.bincount(y_train, minlength=3).astype(float)
+            # P1-4. Counted over the rows that actually TRAIN. Ambiguous rows carry zero
+            # weight, so including them here let outcomes the model never learns from set the
+            # class frequencies for the ones it does - and ambiguity is not uniform across
+            # classes (a bar violent enough to touch both barriers is not a NEUTRAL-looking
+            # bar), so the distortion is systematic rather than noise.
+            _counted = y_train[h_weight > 0] if h_weight.any() else y_train
+            _cnt = np.bincount(_counted, minlength=3).astype(float)
             _inv = _cnt.sum() / (3.0 * np.maximum(_cnt, 1.0))
             class_w = np.clip(_inv / _inv.mean(), 0.5, 2.0)
             logger.info("[TRAIN] h=%sm class weights (DOWN/NEUT/UP): %s",
@@ -1061,6 +1067,15 @@ class MultiModelEnsemble:
                 y_train_h = y_train[reg_idx]
                 # h_weight is 0 for AMBIGUOUS rows, so they contribute nothing to the
                 # loss while every index alignment is preserved.
+                #
+                # Precisely: nothing to the LOSS. A zero-weight row is not the same as an
+                # absent one - HistGradientBoosting computes its feature bin edges from every
+                # row it is handed regardless of weight, so the fitted probabilities differ
+                # slightly from a fit with the rows removed. Measured in
+                # test_sample_weight_coverage: identical hard decisions, ~0.004 mean
+                # probability drift, versus ~0.25 when the weights are ignored altogether.
+                # Stated because "contributes nothing" is the kind of claim that quietly
+                # becomes untrue.
                 sw = recency_w[reg_idx] * class_w[y_train_h] * h_weight[reg_idx]
 
                 if len(np.unique(y_train_h)) < 2:
@@ -1241,7 +1256,13 @@ class MultiModelEnsemble:
                         learning_rate=0.05, max_iter=100, max_depth=5,
                         random_state=44, min_samples_leaf=5
                     )
-                    base_histgb.fit(X_train_h, y_train_h)
+                    # P1-4. `sample_weight=sw` was missing here and present on every other
+                    # seat. This one estimator therefore ignored recency, ignored class
+                    # balancing, and TRAINED ON THE AMBIGUOUS ROWS the rest of the ensemble
+                    # excludes - optimising a different empirical distribution from its
+                    # neighbours while the stacker combined all of them as if they agreed on
+                    # what the training set was.
+                    base_histgb.fit(X_train_h, y_train_h, sample_weight=sw)
                     self.models_by_regime[reg]["histgb"][h] = base_histgb
                     log_component_done(h, reg, "HistGradientBoosting", _t0)
                 except Exception as e:
