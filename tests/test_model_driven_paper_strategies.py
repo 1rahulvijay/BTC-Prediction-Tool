@@ -100,7 +100,7 @@ def test_binance_model_consensus_ev_path_still_computes(monkeypatch):
     decision = strategy.decide(_snapshot(_prediction()))
     assert decision.action is Action.OPEN_LONG
     assert decision.probability_calibrated is True
-    assert decision.expected_net_pnl_lower_bound_usd > 0.0
+    assert decision.expected_net_pnl_heuristic_haircut_usd > 0.0
     assert decision.take_profit_price > MARK
     assert decision.stop_price < MARK
     assert decision.decision_mark_price == MARK

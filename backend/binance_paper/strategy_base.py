@@ -92,7 +92,7 @@ class StrategyBase(ABC):
         probability_calibrated: bool = False,
         uncertainty_status: str = "UNMEASURED",
         expected_net_pnl_usd: float | None = None,
-        expected_net_pnl_lower_bound_usd: float | None = None,
+        expected_net_pnl_heuristic_haircut_usd: float | None = None,
     ) -> StrategyDecision:
         available = tuple(
             name
@@ -180,7 +180,7 @@ class StrategyBase(ABC):
             probability_calibrated=bool(probability_calibrated),
             uncertainty_status=str(uncertainty_status or "UNMEASURED"),
             expected_net_pnl_usd=expected_net_pnl_usd,
-            expected_net_pnl_lower_bound_usd=expected_net_pnl_lower_bound_usd,
+            expected_net_pnl_heuristic_haircut_usd=expected_net_pnl_heuristic_haircut_usd,
         )
 
     def no_data(

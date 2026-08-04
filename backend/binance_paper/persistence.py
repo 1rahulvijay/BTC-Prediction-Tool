@@ -20,7 +20,7 @@ from .schemas import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 STRATEGY_IDS = ("trend_following", "breakout")
 
 
@@ -131,7 +131,7 @@ class BinancePaperPersistence:
                 probability_calibrated BOOLEAN NOT NULL DEFAULT FALSE,
                 uncertainty_status VARCHAR NOT NULL DEFAULT 'UNMEASURED',
                 expected_net_pnl_usd DOUBLE,
-                expected_net_pnl_lower_bound_usd DOUBLE,
+                expected_net_pnl_heuristic_haircut_usd DOUBLE,
                 feature_snapshot_json VARCHAR NOT NULL,
                 required_inputs_json VARCHAR NOT NULL,
                 available_inputs_json VARCHAR NOT NULL,
@@ -289,6 +289,36 @@ class BinancePaperPersistence:
                     "PRAGMA table_info('binance_paper_signals')"
                 ).fetchall()
             }
+            # SCHEMA v4: `expected_net_pnl_lower_bound_usd` never held a lower bound. It held
+            # a fixed 0.05 probability haircut, and the name asserted a statistical property
+            # the arithmetic does not have. Renamed - and the existing rows are CARRIED ACROSS
+            # rather than stranded in an orphan column, because they are real observations of
+            # what the strategy computed, just under an honest name.
+            if "expected_net_pnl_lower_bound_usd" in signal_columns:
+                if "expected_net_pnl_heuristic_haircut_usd" not in signal_columns:
+                    conn.execute(
+                        "ALTER TABLE binance_paper_signals RENAME COLUMN "
+                        "expected_net_pnl_lower_bound_usd TO "
+                        "expected_net_pnl_heuristic_haircut_usd"
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE binance_paper_signals "
+                        "SET expected_net_pnl_heuristic_haircut_usd = "
+                        "COALESCE(expected_net_pnl_heuristic_haircut_usd, "
+                        "expected_net_pnl_lower_bound_usd)"
+                    )
+                    conn.execute("ALTER TABLE binance_paper_signals "
+                                 "DROP COLUMN expected_net_pnl_lower_bound_usd")
+
+            # Re-read: the rename above changes what the additive loop must do.
+            signal_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info('binance_paper_signals')"
+                ).fetchall()
+            }
+
             signal_migrations = {
                 "valid_until_ms": "BIGINT",
                 "maximum_entry_price": "DOUBLE",
@@ -296,7 +326,7 @@ class BinancePaperPersistence:
                 "probability_calibrated": "BOOLEAN DEFAULT FALSE",
                 "uncertainty_status": "VARCHAR DEFAULT 'UNMEASURED'",
                 "expected_net_pnl_usd": "DOUBLE",
-                "expected_net_pnl_lower_bound_usd": "DOUBLE",
+                "expected_net_pnl_heuristic_haircut_usd": "DOUBLE",
             }
             for name, definition in signal_migrations.items():
                 if name not in signal_columns:
@@ -304,6 +334,7 @@ class BinancePaperPersistence:
                         f"ALTER TABLE binance_paper_signals "
                         f"ADD COLUMN {name} {definition}"
                     )
+
             versions = conn.execute(
                 "SELECT version FROM binance_paper_schema_version ORDER BY version"
             ).fetchall()
@@ -456,7 +487,7 @@ class BinancePaperPersistence:
                     requested_notional_usd, stop_price, take_profit_price,
                     maximum_holding_seconds, valid_until_ms, maximum_entry_price,
                     minimum_entry_price, probability_calibrated, uncertainty_status,
-                    expected_net_pnl_usd, expected_net_pnl_lower_bound_usd,
+                    expected_net_pnl_usd, expected_net_pnl_heuristic_haircut_usd,
                     feature_snapshot_json, required_inputs_json,
                     available_inputs_json, missing_inputs_json, data_quality_status,
                     reason_codes_json, created_at_ms
@@ -489,7 +520,7 @@ class BinancePaperPersistence:
                     decision.probability_calibrated,
                     decision.uncertainty_status,
                     decision.expected_net_pnl_usd,
-                    decision.expected_net_pnl_lower_bound_usd,
+                    decision.expected_net_pnl_heuristic_haircut_usd,
                     json.dumps(decision.features, sort_keys=True),
                     json.dumps(decision.required_inputs),
                     json.dumps(decision.available_inputs),

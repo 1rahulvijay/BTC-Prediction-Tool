@@ -295,9 +295,12 @@ class ModelConsensusStrategy(StrategyBase):
             features=features,
             reason_codes=("final_ensemble_trade", "positive_conservative_net_ev"),
             probability_calibrated=True,
-            uncertainty_status="LIVE_CALIBRATED_WITH_PROBABILITY_HAIRCUT",
+            # "LIVE_CALIBRATED" read like an empirical uncertainty method. The probability
+            # is calibrated; the UNCERTAINTY is a hand-chosen constant, and the
+            # label now says which is which.
+            uncertainty_status="CALIBRATED_PROBABILITY_UNMEASURED_UNCERTAINTY",
             expected_net_pnl_usd=expected_net,
-            expected_net_pnl_lower_bound_usd=lower_net,
+            expected_net_pnl_heuristic_haircut_usd=lower_net,
         )
 
     def position_exit_reason(

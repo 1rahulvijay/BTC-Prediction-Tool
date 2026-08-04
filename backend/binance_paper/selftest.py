@@ -19,6 +19,7 @@ from .governor import (
 from .metrics import _day_block_lower_bound, _promotion_gate
 from .risk_engine import BinancePaperRiskEngine
 from .schemas import Action, DataQuality, MarketSnapshot, PositionSide
+from .persistence import BinancePaperPersistence
 from .service import BinancePaperService
 from .strategies import TrendFollowingStrategy
 
@@ -165,9 +166,13 @@ def test_schema_v1_migration() -> None:
         version = service.persistence._conn.execute(
             "SELECT MAX(version) FROM binance_paper_schema_version"
         ).fetchone()[0]
-        assert version == 3
+        # Assert the CURRENT schema version rather than a hardcoded number, so a legitimate
+        # bump does not look like a migration failure. Bumping to 4 (the lower-bound column
+        # rename) broke this line, which is the wrong thing for it to be sensitive to.
+        from .persistence import SCHEMA_VERSION
+        assert version == SCHEMA_VERSION, (version, SCHEMA_VERSION)
         service.shutdown()
-    print("  PASS  schema v1 migrates transactionally to lifecycle-aware v3")
+    print(f"  PASS  schema v1 migrates transactionally to lifecycle-aware v{SCHEMA_VERSION}")
 
 
 def test_governor_modes_and_fail_closed_inputs() -> None:
@@ -614,6 +619,63 @@ def test_feed_gap_blocks_history_dependent_strategies() -> None:
                 strategy_id, decision.missing_inputs)
         service.shutdown()
     print("  PASS  a feed outage presents as missing history, and strategies refuse")
+
+
+def test_lower_bound_column_renamed_and_data_carried() -> None:
+    """`expected_net_pnl_lower_bound_usd` never held a lower bound.
+
+    It held `notional * ((2p' - 1) * move - costs)` where p' is the calibrated probability
+    minus a FIXED 0.05 constant. That is not a confidence interval, a conformal bound, a
+    bootstrap bound or any empirical estimate, so the column name asserted a statistical
+    property the arithmetic does not have.
+
+    Renaming alone is not enough: existing rows are real observations of what the strategy
+    computed, and stranding them in an orphan column would lose evidence. Schema v4 carries
+    them across.
+    """
+    import duckdb
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "legacy.duckdb"
+        conn = duckdb.connect(str(path))
+        conn.execute(
+            "CREATE TABLE binance_paper_schema_version (version INTEGER, applied_ms BIGINT)")
+        conn.execute("INSERT INTO binance_paper_schema_version VALUES (3, 1)")
+        conn.execute("CREATE TABLE binance_paper_signals (signal_id VARCHAR, "
+                     "expected_net_pnl_usd DOUBLE, expected_net_pnl_lower_bound_usd DOUBLE)")
+        conn.execute("INSERT INTO binance_paper_signals VALUES ('sig-1', 12.5, 3.75)")
+        conn.close()
+
+        store = BinancePaperPersistence(path)
+        try:
+            columns = {
+                row[1] for row in
+                store._conn.execute("PRAGMA table_info('binance_paper_signals')").fetchall()
+            }
+            assert "expected_net_pnl_lower_bound_usd" not in columns, (
+                "the misleading column survived the migration")
+            assert "expected_net_pnl_heuristic_haircut_usd" in columns, columns
+
+            rows = store._conn.execute(
+                "SELECT signal_id, expected_net_pnl_heuristic_haircut_usd "
+                "FROM binance_paper_signals").fetchall()
+            assert rows == [("sig-1", 3.75)], (
+                f"existing evidence was lost by the rename: {rows}")
+
+            version = store._conn.execute(
+                "SELECT max(version) FROM binance_paper_schema_version").fetchone()[0]
+            assert version >= 4, version
+        finally:
+            store.close()
+
+    # And the label must not claim an uncertainty method it does not have.
+    from .strategies.model_consensus import ModelConsensusStrategy
+    source = Path(ModelConsensusStrategy.__module__.replace(".", "/") + ".py")
+    assert "LIVE_CALIBRATED_WITH_PROBABILITY_HAIRCUT" not in (
+        Path(__file__).parent / "strategies" / "model_consensus.py"
+    ).read_text(encoding="utf-8"), "the uncertainty label still reads as an empirical method"
+    _ = source
+    print("  PASS  the lower-bound column is renamed and its rows are carried across")
 
 
 def test_post_fill_invalidation_unwinds_instead_of_erasing() -> None:
@@ -1196,6 +1258,7 @@ def run() -> None:
     test_actual_strategies_end_to_end()
     test_feed_gap_blocks_history_dependent_strategies()
     test_post_fill_invalidation_unwinds_instead_of_erasing()
+    test_lower_bound_column_renamed_and_data_carried()
     test_no_lookahead_stale_missing_and_liquidity()
     test_feed_contract_and_pending_entry_cancellation()
     test_duplicate_restart_and_database_isolation()

@@ -140,7 +140,12 @@ class StrategyDecision:
     probability_calibrated: bool = False
     uncertainty_status: str = "UNMEASURED"
     expected_net_pnl_usd: float | None = None
-    expected_net_pnl_lower_bound_usd: float | None = None
+    #: RENAMED 2026-08-04. This holds `notional * ((2p' - 1) * move - costs)` where p' is the
+    #: calibrated probability minus a FIXED 0.05 constant. That constant is not a confidence
+    #: interval, a conformal bound, a bootstrap bound or any empirical estimate, so storing it
+    #: under `..._lower_bound_usd` asserted a statistical property the arithmetic does not have.
+    #: `lower_bound` is reserved for an interval with a declared coverage method.
+    expected_net_pnl_heuristic_haircut_usd: float | None = None
     #: The mark price the stop/target/EV were computed against. Needed to measure how far the
     #: ACTUAL fill drifted from the decision, which is what determines whether the target still
     #: clears costs. Without it, post-fill geometry cannot be checked at all.
