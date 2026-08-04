@@ -310,8 +310,19 @@ class Recorder:
         latency a measurement rather than an unrecoverable distortion of the label."""
         gapped = False
         if self.last_ts is not None and ts_ms - self.last_ts > MAX_GAP_MS:
+            # WHAT A GAP MEANS: we could not have observed a crossing during this interval.
+            # That is true whatever caused it, which is why the interval is always recorded.
+            # WHY IT CAUSED IT is source-dependent, and conflating the two blames the feed for
+            # the market's silence. A REST poll is supposed to produce a sample every second,
+            # so a hole IS a stall. An event stream produces a sample only when a trade prints,
+            # so a hole during a quiet market is the market, not a fault - the aggTrade feed
+            # was measured at ~3.2 messages/sec, which puts multi-second quiet spells inside
+            # normal behaviour. Calling those `poll_stall` would send a healthy recorder to a
+            # supervisor as broken, and would make every gap statistic unusable.
+            reason = ("source_quiet" if self.ts_source == TS_SOURCE_EXCHANGE
+                      else "poll_stall")
             self.gaps.append({"gap_start_ts": self.last_ts, "gap_end_ts": ts_ms,
-                              "gap_ms": ts_ms - self.last_ts, "reason": "poll_stall"})
+                              "gap_ms": ts_ms - self.last_ts, "reason": reason})
             gapped = True
         self.last_ts = ts_ms
 
@@ -1085,6 +1096,20 @@ def selftest() -> int:
     check(crossing_id("r", 1) == crossing_id("r", 1)
           and crossing_id("r", 1) != crossing_id("r", 2),
           "crossing identity is stable and time-specific")
+    # A gap is always recorded, but WHY differs by source. A quiet event stream is not a fault.
+    quiet_src = Recorder(ts_source=TS_SOURCE_EXCHANGE)
+    quiet_src.record(base, 100.0)
+    quiet_src.record(base + 30_000, 100.0)
+    poll_src = Recorder(ts_source=TS_SOURCE_LOCAL)
+    poll_src.record(base, 100.0)
+    poll_src.record(base + 30_000, 100.0)
+    check(quiet_src.gaps[0]["reason"] == "source_quiet"
+          and poll_src.gaps[0]["reason"] == "poll_stall",
+          "a hole in an EVENT stream is the market being quiet; a hole in a POLL is our "
+          "stall - one blames the feed, and only one of them should")
+    check(quiet_src.gaps[0]["gap_ms"] == poll_src.gaps[0]["gap_ms"] == 30_000,
+          "both are still recorded with the same span - blindness is blindness either way")
+
     check(MAX_GAP_MS > POLL_MS,
           "the gap threshold exceeds one poll interval, so normal jitter is not a gap")
 
