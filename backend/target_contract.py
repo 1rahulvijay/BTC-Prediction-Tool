@@ -162,24 +162,39 @@ def kline_open_ms(kline) -> int:
     return value if value >= _MS_FLOOR else value * 1000
 
 
+def first_touch_at(entry: float, highs, lows, threshold: float):
+    """(outcome, resolving_index). The index is WHERE the outcome was decided.
+
+    P1-1. The label alone is not enough to grade a row honestly: every magnitude metric needs
+    the observation that PRODUCED the label, not some other bar in the same window. Returning
+    the index is what lets one resolution observation flow to `actual_price`, `actual_move_usd`
+    and `target_error_usd` instead of three different moments.
+
+    On a NEUTRAL timeout the resolving bar is the LAST one - the horizon expiring is the event.
+    """
+    if entry <= 0 or threshold <= 0:
+        return NEUTRAL, None
+    upper = entry * (1.0 + threshold)
+    lower = entry * (1.0 - threshold)
+    index = -1
+    for index, (high, low) in enumerate(zip(highs, lows)):
+        touched_up = high >= upper
+        touched_down = low <= lower
+        if touched_up and touched_down:
+            return AMBIGUOUS, index    # order inside the bar is unknowable from OHLC
+        if touched_up:
+            return UP, index
+        if touched_down:
+            return DOWN, index
+    # timeout: neither barrier reached. `index` is the last bar, or -1 for an empty path.
+    return NEUTRAL, (index if index >= 0 else None)
+
+
 def label_first_touch(entry: float, highs, lows, threshold: float) -> str:
     """Which barrier is touched FIRST over the path. AMBIGUOUS when a single bar touches both.
 
     `highs`/`lows` are the intrabar extremes of each bar in the horizon, in order."""
-    if entry <= 0 or threshold <= 0:
-        return NEUTRAL
-    upper = entry * (1.0 + threshold)
-    lower = entry * (1.0 - threshold)
-    for high, low in zip(highs, lows):
-        touched_up = high >= upper
-        touched_down = low <= lower
-        if touched_up and touched_down:
-            return AMBIGUOUS       # order inside the bar is unknowable from OHLC
-        if touched_up:
-            return UP
-        if touched_down:
-            return DOWN
-    return NEUTRAL                 # timeout: neither barrier reached
+    return first_touch_at(entry, highs, lows, threshold)[0]
 
 
 def label_endpoint(entry: float, final: float, threshold: float) -> str:
@@ -225,15 +240,19 @@ class GradeResult:
     main verifier graded from the horizon-end bar, so two panels described the same vote with
     two different random variables and both were labelled "accuracy"."""
 
-    __slots__ = ("direction", "status", "resolution_price", "resolution_event_ts", "contract")
+    __slots__ = ("direction", "status", "resolution_price", "resolution_event_ts", "contract",
+                 "resolution_basis")
 
     def __init__(self, direction, status, resolution_price=None, resolution_event_ts=None,
-                 contract=None):
+                 contract=None, resolution_basis=None):
         self.direction = direction
         self.status = status
         self.resolution_price = resolution_price
         self.resolution_event_ts = resolution_event_ts
         self.contract = contract
+        #: WHICH observation this is, recorded on the row. A number without its basis is how
+        #: a loop-time price came to sit beside a horizon-end direction for so long.
+        self.resolution_basis = resolution_basis
 
     @property
     def graded(self) -> bool:
@@ -275,22 +294,28 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
         if final is None:
             return GradeResult(None, "GRADE_UNAVAILABLE:no_as_of_price", contract=contract)
         return GradeResult(label_endpoint(entry, final, threshold), "GRADED_ENDPOINT",
-                           final, final_ts, contract)
+                           final, final_ts, contract, "as_of_kline_close")
 
     path = [k for k in (klines or [])
             if int(entry_ts) < kline_open_ms(k) <= int(verify_ts)
             and (k.get("is_closed") is not False if isinstance(k, dict) else True)]
     if not path:
         return GradeResult(None, "GRADE_UNAVAILABLE:no_intrabar_path", contract=contract)
-    outcome = label_first_touch(entry, [float(k["high"]) for k in path],
-                                [float(k["low"]) for k in path], threshold)
+    outcome, index = first_touch_at(entry, [float(k["high"]) for k in path],
+                                    [float(k["low"]) for k in path], threshold)
     if outcome == AMBIGUOUS:
         # A single bar touched both barriers, so the target is undefined on this row. Grading
         # it either way manufactures a hit or a miss out of an unknowable ordering.
         return GradeResult(None, "GRADE_UNAVAILABLE:ambiguous_bar", contract=contract)
-    last = path[-1]
-    return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(last["close"]),
-                       kline_open_ms(last), contract)
+    if index is None:
+        return GradeResult(None, "GRADE_UNAVAILABLE:no_intrabar_path", contract=contract)
+    # P1-1. The RESOLVING bar, not the last bar of the window. A path can touch the lower
+    # barrier in bar 1 and rally for four more bars; taking the window's final close would pair
+    # a DOWN direction with an UP move - a different moment from the one that set the label,
+    # which is the whole defect. On a NEUTRAL timeout the resolving bar IS the last one.
+    bar = path[index]
+    return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(bar["close"]),
+                       kline_open_ms(bar), contract, "first_touch_bar_close")
 
 
 def contracts_agree(entry: float, highs, lows, final: float, threshold: float) -> bool:

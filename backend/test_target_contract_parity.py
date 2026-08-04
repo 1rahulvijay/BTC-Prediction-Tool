@@ -58,7 +58,10 @@ def label_via_serving(entry, bars, threshold, contract=tc.FIRST_TOUCH_TRIPLE_BAR
     pred = {"predicted_price": entry, "predicted_at": BASE_MS,
             "verify_at": BASE_MS + len(bars) * 60_000,
             "neutral_band": threshold, "target_contract": contract}
-    return verifier._grade(pred, entry, threshold, klines)
+    # P1-1: _grade returns a GradeResult, so the resolution PRICE and TIMESTAMP travel with
+    # the direction instead of being re-derived by each caller from whatever it had to hand.
+    result = verifier._grade(pred, entry, threshold, klines)
+    return result.direction, result.status
 
 
 def main() -> int:
@@ -112,11 +115,12 @@ def main() -> int:
           "an unknown contract is refused, never defaulted to a rule")
 
     verifier = PredictionVerifier.__new__(PredictionVerifier)
-    d, s = verifier._grade(
+    _r = verifier._grade(
         {"predicted_price": entry, "predicted_at": BASE_MS,
          "verify_at": BASE_MS + 300_000, "neutral_band": threshold,
          "target_contract": tc.FIRST_TOUCH_TRIPLE_BARRIER_V1},
         98.0, threshold, None)
+    d, s = _r.direction, _r.status
     check(d is None and s == "GRADE_UNAVAILABLE:no_intrabar_path",
           "first-touch without the intrabar path is refused, not graded on the endpoint")
 
@@ -134,7 +138,8 @@ def main() -> int:
     endpoint_pred = {"predicted_price": entry, "predicted_at": BASE_MS,
                      "verify_at": BASE_MS + 300_000, "neutral_band": threshold,
                      "target_contract": tc.ENDPOINT_SETTLEMENT_V1}
-    late_dir, late_status = verifier._grade(endpoint_pred, upper + 5.0, threshold, late_klines)
+    _r = verifier._grade(endpoint_pred, upper + 5.0, threshold, late_klines)
+    late_dir, late_status = _r.direction, _r.status
     check(late_dir == tc.DOWN and late_status == "GRADED_ENDPOINT",
           "a LATE resolution grades from the bar at the horizon end, not from the price the "
           "loop happened to see - the P0-11 defect")
@@ -201,7 +206,8 @@ def main() -> int:
     prod_pred = {"predicted_price": entry_price, "predicted_at": now_ms,
                  "verify_at": now_ms + 5 * 60_000, "neutral_band": threshold,
                  "target_contract": tc.FIRST_TOUCH_TRIPLE_BARRIER_V1}
-    direction, status = verifier._grade(prod_pred, entry_price, threshold, seconds_klines)
+    _r = verifier._grade(prod_pred, entry_price, threshold, seconds_klines)
+    direction, status = _r.direction, _r.status
     check(status == "GRADED_FIRST_TOUCH",
           f"a SECONDS-valued production kline now grades first-touch (got {status}) - before "
           f"normalisation the path was always empty and every grade returned "
@@ -209,7 +215,8 @@ def main() -> int:
     check(direction == tc.UP, "and it finds the upper barrier touched first")
 
     endpoint_pred = dict(prod_pred, target_contract=tc.ENDPOINT_SETTLEMENT_V1)
-    end_dir, end_status = verifier._grade(endpoint_pred, entry_price, threshold, seconds_klines)
+    _r = verifier._grade(endpoint_pred, entry_price, threshold, seconds_klines)
+    end_dir, end_status = _r.direction, _r.status
     check(end_status == "GRADED_ENDPOINT" and end_dir == tc.DOWN,
           "endpoint grading resolves from the bar at the horizon, not the newest one")
     check(endpoint_pred["resolution_event_ts"] >= 1_577_836_800_000,

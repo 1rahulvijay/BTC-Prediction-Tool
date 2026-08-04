@@ -224,12 +224,10 @@ class PredictionVerifier:
             verify_ts=int(pred.get("verify_at") or 0),
         )
         if result.resolution_event_ts is not None:
-            pred["resolution_price_source"] = (
-                "as_of_kline_close" if result.contract == _tc.ENDPOINT_SETTLEMENT_V1
-                else "first_touch_path_close")
+            pred["resolution_price_source"] = result.resolution_basis
             pred["resolution_event_ts"] = result.resolution_event_ts
             pred["resolution_price"] = result.resolution_price
-        return result.direction, result.status
+        return result
 
     def check_and_verify(self, current_price: float, current_time_ms: int, klines=None):
         """
@@ -253,7 +251,10 @@ class PredictionVerifier:
 
         for pred in self.pending_predictions:
             if current_time_ms >= pred["verify_at"]:
-                actual_change = (current_price - pred["predicted_price"]) / pred["predicted_price"]
+                # `actual_change` is deliberately NOT computed here. It used to be derived from
+                # the loop-time price at the top of the block and then reported beside a
+                # direction graded from a different moment; it is now computed once, below,
+                # from the resolution observation. One definition, one moment.
                 # Use the prediction's own neutral band (same cost-floored adaptive
                 # threshold as training) so we grade the model on its real target, not a
                 # hardcoded 0.01% that almost never classifies the outcome as NEUTRAL.
@@ -270,8 +271,8 @@ class PredictionVerifier:
                     self.invalid_late = getattr(self, "invalid_late", 0) + 1
                     continue          # dropped: not graded, not silently mislabelled
 
-                actual_direction, grade_status = self._grade(
-                    pred, current_price, threshold, klines)
+                result = self._grade(pred, current_price, threshold, klines)
+                actual_direction, grade_status = result.direction, result.status
                 pred["grade_status"] = grade_status
                 if actual_direction is None:
                     # Cannot grade under the declared contract. Leave PENDING rather than
@@ -288,8 +289,17 @@ class PredictionVerifier:
                         or (raw_direction in ("UP", "DOWN") and raw_direction != actual_direction)
                     )
                     hit = avoid_success
-                actual_move_usd = current_price - pred["predicted_price"]
+                # P1-1. THE RESOLUTION OBSERVATION. Every field below is measured from this one
+                # price at this one timestamp - the observation that produced `actual_direction`
+                # itself. It used to be `current_price`, the main loop's price at whatever
+                # moment it reached this line, so a single row could carry a DOWN direction
+                # taken at the horizon boundary next to a POSITIVE move measured twenty seconds
+                # later. That contaminated magnitude error, target error, expectancy, lean-hit,
+                # the calibration labels and the learned regime weights simultaneously.
+                resolution_price = float(result.resolution_price)
+                actual_move_usd = resolution_price - pred["predicted_price"]
                 actual_abs_move_usd = abs(actual_move_usd)
+                actual_change = actual_move_usd / pred["predicted_price"]
                 # Pure LEAN sign-truth for the DB's lean_hit column. Unlike `hit`
                 # (dual-semantic: avoid_success on gated rows), this is always
                 # "did the raw lean match the realized direction" — the betting truth.
@@ -305,14 +315,20 @@ class PredictionVerifier:
                 expected_signed_move = pred["target_price"] - pred["predicted_price"]
                 expected_move_usd = abs(expected_signed_move)
                 move_error_usd = abs(actual_move_usd - expected_signed_move)
-                target_error_usd = current_price - pred["target_price"]
+                target_error_usd = resolution_price - pred["target_price"]
                 move_error_pct = (move_error_usd / expected_move_usd * 100) if expected_move_usd > 0 else 0.0
                 price_tolerance_usd = max(10.0, expected_move_usd * 0.20)
                 price_match = hit and move_error_usd <= price_tolerance_usd
 
                 verified = {
                     **pred,
-                    "actual_price": current_price,
+                    "actual_price": resolution_price,
+                    # Recorded ON the row: which observation every number here came from, and
+                    # when. A price without its basis is unauditable after the fact.
+                    "resolution_price": resolution_price,
+                    "resolution_event_ts": result.resolution_event_ts,
+                    "resolution_basis": result.resolution_basis,
+                    "loop_price_at_verification": current_price,
                     "actual_direction": actual_direction,
                     "avoid_success": avoid_success,
                     "actual_move_usd": round(actual_move_usd, 2),
@@ -336,7 +352,16 @@ class PredictionVerifier:
                 model_dirs = pred.get("model_dirs") or {}
                 regime = pred.get("regime", "UNKNOWN")
                 _lbl = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
-                _actual_strict = "UP" if current_price >= pred["predicted_price"] else "DOWN"
+                # P1-1 / P1-3. This was:
+                #     "UP" if current_price >= pred["predicted_price"] else "DOWN"
+                # a loop-time ENDPOINT sign, while the models are trained on first touch. The
+                # learned regime weights - which decide how much each seat is trusted per
+                # regime - were therefore fitted against the very target mismatch the verifier
+                # was rebuilt to remove, and against a price from the wrong moment on top.
+                # Now the graded outcome under the declared contract, which is also exactly
+                # what model_verifier's panel uses, so the weights and the panel cannot
+                # disagree about whether a seat was right.
+                _actual_strict = actual_direction
                 for mkey, d in model_dirs.items():
                     try:
                         pred_lbl = _lbl.get(int(d)) if d is not None else None
