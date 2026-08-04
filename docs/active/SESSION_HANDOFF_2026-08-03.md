@@ -6,6 +6,18 @@ trustworthy. Written to be sufficient on its own.
 
 Head at handoff: `a10a9be`. Local CI: **PASS**, 117 steps. Sealed protocols: **22/22 verify**.
 
+> **Superseded in part, `2026-08-05`.** The CI figure above is stale — local CI is now **134
+> checks / 160 OK**, with 2 known failures (the oracle release freeze and the Windows aggregate
+> that depends on it). More importantly, the audit that followed this handoff found the
+> **truth-measurement layer** unsound: grading, calibration, promotion and the per-model panel
+> were each measuring something other than what they reported. Eight defects are fixed and
+> documented in
+> [`TRUTH_LAYER_REMEDIATION_2026-08-05.md`](TRUTH_LAYER_REMEDIATION_2026-08-05.md) — **read that
+> before trusting any accuracy, calibration or A/B number recorded before this date.**
+>
+> The 0.6715 crossing result below still stands; it was re-verified through the label rename and
+> reproduces exactly.
+
 ---
 
 ## 1. The one-paragraph summary
