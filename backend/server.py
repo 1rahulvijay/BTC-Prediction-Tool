@@ -1495,8 +1495,27 @@ def handle_kline(kline: dict) -> None:
         # the pickle+rename runs in a worker thread.
         if signal_buffer._dirty_count >= 5:
             _sb_payload = signal_buffer.snapshot_payload()
-            asyncio.get_event_loop().run_in_executor(
+            # The future is RETAINED and its result checked. Previously it was fire-and-forget
+            # while snapshot_payload() had already cleared the dirty counter, so a failed write
+            # left the buffer believing it was saved and the failure was invisible.
+            _sb_future = asyncio.get_event_loop().run_in_executor(
                 None, signal_buffer.write_payload, _sb_payload, SIGNAL_HISTORY_PATH)
+
+            def _sb_done(fut, _buf=signal_buffer):
+                try:
+                    if fut.result():
+                        _buf.mark_saved()
+                        backend_state.pop("signal_history_write_error", None)
+                    else:
+                        backend_state["signal_history_write_error"] = (
+                            "write_payload returned False")
+                        logger.error("[SIGNAL-HISTORY] persist FAILED - coverage will not "
+                                     "survive a restart")
+                except Exception as _exc:
+                    backend_state["signal_history_write_error"] = str(_exc)[:200]
+                    logger.error("[SIGNAL-HISTORY] persist raised: %s", _exc)
+
+            _sb_future.add_done_callback(_sb_done)
         # Bound memory while preserving the configured training window.
         if len(data_state["klines"]) > MAX_KLINES:
             data_state["klines"].pop(0)

@@ -5,6 +5,7 @@ logging predictions to separate DuckDB tables for comparative analysis.
 Does NOT affect live signal output — both variants predict silently.
 """
 
+import copy
 import time
 import logging
 import numpy as np
@@ -59,6 +60,14 @@ class ModelVariant:
         }
 
 
+#: Both variants' RAW model output is compared. The incumbent's post-policy direction is NOT
+#: used, because the challenger has no way to run the same policy chain - comparing one
+#: against the other measured the policy, not the model.
+RAW_MODEL_COMPARISON = "raw_model_output"
+#: Reserved for when the decision policy becomes a callable both variants can run.
+FINAL_POLICY_COMPARISON = "final_policy_action"
+
+
 class ABTestRunner:
     """
     Runs two model variants side-by-side.
@@ -77,6 +86,8 @@ class ABTestRunner:
         # so outcomes can be attributed to the exact recorded prediction at resolve time.
         self.last_by_horizon: dict = {}
         self.pending: dict = {}
+        #: pred_id -> what was actually compared. Never assume policy parity.
+        self.comparison_basis: dict = {}
 
     def restore_from_db(self) -> int:
         """Seed in-memory variant accuracy from DuckDB so promotion survives restarts."""
@@ -103,12 +114,26 @@ class ABTestRunner:
             return {}
 
         primary_pred = self.primary.predict(h, seq, data_state, acc_cache, cascade_data)
-        self.last_by_horizon[h] = {"primary": primary_pred, "challenger": None}
+        # DEEP COPY, not the live reference. The dict returned here is handed to the server,
+        # which then mutates it IN PLACE - meta filtering, the expectancy neutraliser, the
+        # no-trade reason engine. Storing the reference meant persist() later read a
+        # POST-POLICY primary direction and compared it against a RAW challenger direction,
+        # so the "A/B test" was:
+        #     incumbent model + full production policy   vs   challenger model alone
+        # A challenger could win simply by making more raw directional calls while the
+        # incumbent was neutralised by safety gates.
+        self.last_by_horizon[h] = {
+            "primary": copy.deepcopy(primary_pred),
+            "challenger": None,
+            # Both sides are RAW model output. Policy-level comparison is not available
+            # because the server's filter chain is not a callable both variants can run.
+            "comparison_basis": RAW_MODEL_COMPARISON,
+        }
 
         if self.enabled and self.challenger and getattr(self.challenger.model, "is_trained", False):
             try:
                 challenger_pred = self.challenger.predict(h, seq, data_state, acc_cache, cascade_data)
-                self.last_by_horizon[h]["challenger"] = challenger_pred
+                self.last_by_horizon[h]["challenger"] = copy.deepcopy(challenger_pred)
                 self.comparison_log.append({
                     "horizon": h,
                     "timestamp": int(time.time() * 1000),
@@ -148,6 +173,10 @@ class ABTestRunner:
                     logger.debug(f"A/B persist failed: {e}")
         if dirs:
             self.pending[pred_id] = dirs
+            # Recorded so a promotion decision cannot silently claim a policy-level
+            # comparison it never made.
+            self.comparison_basis[pred_id] = latest.get(
+                "comparison_basis", RAW_MODEL_COMPARISON)
 
     def resolve(self, pred_id: str, actual_direction: str):
         """Resolve a recorded A/B prediction in DuckDB and in-memory variant stats."""

@@ -20,8 +20,29 @@ the features become genuinely informative.
 
 from collections import deque
 import os
-import pickle
 import numpy as np
+
+
+def _atomic_write(payload: dict, path: str) -> None:
+    """Write + fsync + rename, and publish the integrity manifest verified_load requires.
+
+    The previous writer used a plain pickle.dump to a SHARED `path + ".tmp"`, so two
+    overlapping writes raced on the same temporary file, and it never wrote the sidecar - which
+    meant strict mode would refuse the artifact even once the load path was fixed."""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _backend = str(_Path(__file__).resolve().parent)
+    if _backend not in _sys.path:
+        _sys.path.insert(0, _backend)
+    from verified_io import atomic_dump
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # atomic_dump writes to `path.tmp.<pid>` (so concurrent writers do not collide on a shared
+    # ".tmp" as the old writer did), replaces atomically, THEN writes the integrity manifest
+    # from the file on disk. A separate write_manifest call here would be redundant - verified
+    # by mutation: removing it changed nothing.
+    atomic_dump(payload, path)
 
 
 class LiveSignalHistoryBuffer:
@@ -343,8 +364,15 @@ class LiveSignalHistoryBuffer:
             "by_ts": dict(self.by_ts),
             "last_ts": self.last_ts,
         }
-        self._dirty_count = 0
+        # NOT cleared here. This only builds the payload; the write happens later, in an
+        # executor, and may fail. Clearing the counter now told the buffer a snapshot was
+        # durable when nothing had been written. `mark_saved()` is called by the writer.
         return payload
+
+
+    def mark_saved(self) -> None:
+        """Called by the WRITER after a successful write, never by the payload builder."""
+        self._dirty_count = 0
 
     @staticmethod
     def write_payload(payload: dict, path: str) -> bool:
@@ -353,11 +381,7 @@ class LiveSignalHistoryBuffer:
         EXACTLY at every 5m window boundary, freezing the price-to-beat ticker and
         capturing late/wrong reference prices."""
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, path)
+            _atomic_write(payload, path)
             return True
         except Exception:
             return False
@@ -374,10 +398,10 @@ class LiveSignalHistoryBuffer:
                 "by_ts": self.by_ts,
                 "last_ts": self.last_ts,
             }
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, path)
+            _atomic_write(payload, path)
+            # Cleared only AFTER a successful write. snapshot_payload() used to clear it while
+            # merely BUILDING the payload, so a failed asynchronous write left the buffer
+            # believing it had been saved.
             self._dirty_count = 0
             return True
         except Exception:
@@ -388,8 +412,12 @@ class LiveSignalHistoryBuffer:
         if not os.path.exists(path):
             return 0
         try:
-            with open(path, "rb") as f:
-                payload = _verified_load(f)
+            # verified_load takes a PATH: it derives the sidecar manifest from it and hashes
+            # the file before deserializing. Handing it an open file object made it build
+            # sidecar paths from "<_io.BufferedReader ...>", raise, and be swallowed by the
+            # except below - so load() silently returned 0 and EVERY restart lost all signal
+            # history. Proven empirically: save() True, load() 0.
+            payload = _verified_load(path)
             maxlen = int(payload.get("maxlen") or self.order.maxlen or 140000)
             order = payload.get("order") or []
             by_ts = payload.get("by_ts") or {}

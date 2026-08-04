@@ -11,6 +11,32 @@ try:
 except ImportError:
     HAS_GMM = False
 
+#: Epoch milliseconds for 2020-01-01. Below this magnitude a timestamp is seconds.
+_MS_FLOOR = 1_577_836_800_000
+
+
+def _jsonable(value):
+    """Deep-convert numpy containers so HMM state can live in a JSON bundle."""
+    import numpy as _np
+    if isinstance(value, _np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (_np.integer,)):
+        return int(value)
+    if isinstance(value, (_np.floating,)):
+        return float(value)
+    return value
+
+
+def _observation_ms(value) -> int:
+    """Observation ids arrive in whatever unit the caller happens to use. Normalise."""
+    ts = int(value or 0)
+    return ts if ts >= _MS_FLOOR else ts * 1000
+
+
 class MarketRegime:
     # A jump larger than this many bars breaks the sequence the transition matrix
     # describes, so the belief is reset rather than propagated across the hole.
@@ -106,6 +132,76 @@ class MarketRegime:
             else:
                 labels[k] = self.RANGE
         return labels
+
+    #: Everything fit_hmm learns. Without this the HMM lived only in the training process:
+    #: the direction experts were trained on HMM-derived TREND/RANGE/VOLATILE partitions, then
+    #: a restart came up with hmm_ready=False and routed live rows by the heuristic fallback.
+    #: The experts answered for a partition that was no longer being computed.
+    #: Read off what fit_hmm actually assigns, not guessed - a guessed name restored a
+    #: half-populated engine that raised on the first classification.
+    #: `state_labels` maps HMM state index -> regime name and is learned by fit_hmm. It has no
+    #: leading underscore, so an underscore-only key list silently dropped it - a restored HMM
+    #: then had no way to NAME its states and reported a different regime for the same bar.
+    HMM_STATE_KEYS = ("_means", "_inv_covs", "_logdets", "_transmat", "_k", "_median_volume",
+                      "state_labels")
+
+    def state_dict(self) -> dict:
+        """Serialisable HMM state, or an empty dict when nothing has been fitted."""
+        if not getattr(self, "hmm_ready", False):
+            return {}
+        out = {"hmm_ready": True, "fitted_at_ms": int(getattr(self, "_fitted_at_ms", 0) or 0)}
+        belief = getattr(self, "_belief", None)
+        out["_belief"] = _jsonable(belief)
+        out["_last_observation_id"] = getattr(self, "_last_observation_id", None)
+        out["_last_hmm_regime"] = getattr(self, "_last_hmm_regime", None)
+        out["_last_hmm_confidence"] = float(getattr(self, "_last_hmm_confidence", 0.0) or 0.0)
+        out["current_regime"] = getattr(self, "current_regime", None)
+        for key in self.HMM_STATE_KEYS:
+            # RECURSIVE. A top-level isinstance check missed arrays nested inside lists
+            # (_inv_covs is a list of per-state matrices), so the state dict was not
+            # JSON-serialisable and could not be written into a bundle at all.
+            out[key] = _jsonable(getattr(self, key, None))
+        return out
+
+    def load_state_dict(self, state: dict) -> bool:
+        """Restore a fitted HMM. Fails CLOSED: a partial or malformed state leaves the
+        engine on the heuristic path rather than half-restored."""
+        if not state or not state.get("hmm_ready"):
+            return False
+        import numpy as _np
+        try:
+            restored = {}
+            for key in self.HMM_STATE_KEYS:
+                if key not in state:
+                    return False
+                value = state[key]
+                restored[key] = (_np.asarray(value) if isinstance(value, list) else value)
+            for key, value in restored.items():
+                setattr(self, key, value)
+            self._fitted_at_ms = int(state.get("fitted_at_ms") or 0)
+            # The BELIEF is filtered state, not a fitted parameter. Restoring a uniform prior
+            # loses the sequence position and gives a different regime for the same bar;
+            # restoring it blindly would assert continuity across the downtime. So it is
+            # carried over WITH its last observation id, and the existing gap rule decides at
+            # the next observation - continue after a quick restart, reset after an outage.
+            belief = state.get("_belief")
+            self._belief = (_np.asarray(belief) if belief is not None
+                            else _np.full(len(self._means), 1.0 / len(self._means)))
+            last_obs = state.get("_last_observation_id")
+            self._last_observation_id = int(last_obs) if last_obs is not None else None
+            if state.get("_last_hmm_regime"):
+                self._last_hmm_regime = state["_last_hmm_regime"]
+                self._last_hmm_confidence = float(state.get("_last_hmm_confidence") or 0.0)
+            if state.get("current_regime"):
+                self.current_regime = state["current_regime"]
+            # JSON round-trips dict keys as strings; the classifier indexes by int.
+            labels = getattr(self, "state_labels", {}) or {}
+            self.state_labels = {int(k): v for k, v in labels.items()}
+            self.hmm_ready = True
+            return True
+        except Exception:
+            self.hmm_ready = False
+            return False
 
     def fit_hmm(self, closes: np.ndarray, volumes: np.ndarray, n_states: int = 5) -> bool:
         """
@@ -256,6 +352,12 @@ class MarketRegime:
             return self.current_regime, 0.5
 
         if observation_id is not None:
+            # NORMALISED to milliseconds. The server passes a kline `time`, which
+            # data_ingestion emits in SECONDS, while the gap threshold below is
+            # bar_interval_ms * MAX_GAP_BARS - milliseconds. A five-hour outage therefore
+            # read as 18,000 against a 180,000 threshold and never reset the belief, so the
+            # transition matrix asserted continuity across hundreds of missing bars.
+            observation_id = _observation_ms(observation_id)
             if observation_id == self._last_observation_id:
                 self.hmm_repeat_observations += 1
                 return self._last_hmm_regime, self._last_hmm_confidence
