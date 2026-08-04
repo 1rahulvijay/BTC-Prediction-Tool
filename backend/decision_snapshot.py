@@ -28,7 +28,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
+from pathlib import Path
 from types import MappingProxyType
 
 try:
@@ -42,11 +44,30 @@ SNAPSHOT_KEYS = (
     "klines", "order_flow", "derivatives", "sentiment", "regime_info",
     "regime_model_weights", "regime_calibration", "confidence_calibrators",
     "signal_policy", "feature_parity",
+    # P0-6. Read by apply_live_quality_filters, which now runs off this snapshot rather than
+    # the live global. They are listed because `.get()` on a missing key does NOT raise - it
+    # returns a default, and each of these defaults is dangerous in a specific way:
+    #   order_flow_updated_ms   missing -> staleness computed against 0 -> EVERY decision
+    #                           looks like a dead feed and gets filtered
+    #   poor_regimes            missing -> the regime-quality veto silently stops vetoing
+    #   spread_expansion_ratio  missing -> defaults to a calm book during a blow-out
+    # The absent-key discipline that protects inference only works if the key list keeps up
+    # with what the consumers actually read.
+    "order_flow_updated_ms", "poor_regimes", "spread_expansion_ratio",
 )
 
 #: Only these drive the identity hash. Calibrators and policy are model context, not market
 #: state; including them would change the id when nothing about the market moved.
-IDENTITY_KEYS = ("klines", "order_flow", "derivatives", "sentiment", "regime_info")
+#: `decision_price` IS market state and must be here: the klines in this snapshot are the
+#: model's CLOSED-bar window, so two decisions taken at different live prices inside the same
+#: forming bar would otherwise hash identically while pricing differently.
+#: `spread_expansion_ratio` is market state and belongs here. `order_flow_updated_ms` and
+#: `poor_regimes` deliberately do NOT: the first is the ARRIVAL TIME of state whose content is
+#: already hashed, and the second is model-quality context. Hashing either would give every
+#: decision a fresh id even when the market had not moved, which destroys the replay property
+#: the id exists for.
+IDENTITY_KEYS = ("klines", "order_flow", "derivatives", "sentiment", "regime_info",
+                 "decision_price", "spread_expansion_ratio")
 
 
 def _stable(value):
@@ -83,6 +104,21 @@ def build(live_state: dict, event_ts_ms: int, klines=None, copier=None) -> Mappi
         # Model context (calibrators, policy) is rebuilt on the main thread between decisions
         # and can be large; referencing it is safe. Market state is copied.
         snap[key] = copier(value) if key in IDENTITY_KEYS else value
+
+    # P0-6. The DECISION PRICE, frozen here and carried explicitly.
+    #
+    # It cannot be read back out of snap["klines"]: that list is the model window, which is
+    # CLOSED bars only, while the loop priced expectancy, the quality filters and the revision
+    # ledger from the live FORMING bar. Those are different numbers, so pointing the downstream
+    # gates at the snapshot's last close would silently reprice every decision rather than
+    # freeze it.
+    #
+    # Taken from live_state, which is the same read the loop used to do itself - the difference
+    # is that it now happens ONCE, at a known instant, instead of separately in each gate as
+    # WebSocket callbacks keep moving the price underneath them.
+    live_klines = live_state.get("klines") or []
+    snap["decision_price"] = (
+        float(live_klines[-1]["close"]) if live_klines else None)
     snap["decision_id"] = snapshot_id(snap, event_ts_ms)
     snap["event_ts_ms"] = int(event_ts_ms)
     return MappingProxyType(snap)
@@ -154,6 +190,73 @@ def selftest() -> int:
     override = build(live, 1_000, klines=[{"time": 1, "close": 100.0}])
     check(len(override["klines"]) == 1,
           "the closed-bar model window can be supplied explicitly")
+
+    # ---- P0-6: the price the POST-MODEL gates use is frozen too -------------------------
+    fresh = {
+        "klines": [{"time": 1, "close": 100.0}, {"time": 2, "close": 101.0}],
+        "order_flow": {"cvd_1m": -1.63, "spread_expansion_ratio": 1.0},
+        "derivatives": {}, "sentiment": {}, "regime_info": {"regime": "RANGE"},
+        "regime_model_weights": {}, "confidence_calibrators": {}, "signal_policy": {},
+        "regime_calibration": {}, "feature_parity": {},
+    }
+    # The model window is CLOSED bars only; the live list also carries the forming bar. This
+    # is exactly the production call, and the reason decision_price cannot be recovered from
+    # snap["klines"] afterwards.
+    closed_only = [{"time": 1, "close": 100.0}]
+    frozen = build(fresh, 1_000, klines=closed_only)
+    check(frozen["decision_price"] == 101.0,
+          "the decision price is the LIVE price at freeze time, not the last CLOSED bar")
+    check(frozen["klines"][-1]["close"] == 100.0,
+          "while the model window stays closed-bar only - the two are different numbers, "
+          "which is why the price has to be carried and not re-derived")
+
+    # THE P0-6 RACE. Everything a post-model gate reads must be unchanged by a callback that
+    # fires after the freeze - expectancy, the quality filters and the revision ledger all
+    # used to re-read these from the live global once inference had already returned.
+    fresh["klines"].append({"time": 3, "close": 5_000.0})
+    fresh["order_flow"]["cvd_1m"] = 999.0
+    fresh["order_flow"]["spread_expansion_ratio"] = 87.0
+    check(frozen["decision_price"] == 101.0,
+          "a candle arriving mid-decision does NOT reprice the gates")
+    check(frozen["order_flow"]["spread_expansion_ratio"] == 1.0,
+          "and a spread blow-out arriving mid-decision does not re-filter them")
+
+    priced = build({**fresh, "klines": [{"time": 1, "close": 100.0},
+                                        {"time": 2, "close": 101.0}],
+                    "order_flow": {"cvd_1m": -1.63, "spread_expansion_ratio": 1.0},
+                    "regime_info": {"regime": "RANGE"}}, 1_000, klines=closed_only)
+    moved_price = build({**fresh, "klines": [{"time": 1, "close": 100.0},
+                                             {"time": 2, "close": 102.0}],
+                         "order_flow": {"cvd_1m": -1.63, "spread_expansion_ratio": 1.0},
+                         "regime_info": {"regime": "RANGE"}}, 1_000, klines=closed_only)
+    check(priced["decision_id"] != moved_price["decision_id"],
+          "a different decision price is a DIFFERENT decision id, even with an identical "
+          "closed-bar window - otherwise two differently-priced decisions would collide")
+
+    empty = build({k: v for k, v in fresh.items() if k != "klines"}, 1_000)
+    check(empty["decision_price"] is None,
+          "with no price available it is None, never 0.0 - a zero would price expectancy "
+          "against a free asset")
+
+    # THE KEY LIST MUST TRACK ITS CONSUMERS. Routing the quality filters at this snapshot only
+    # helps if it carries what they read; `.get()` on a missing key returns a default instead
+    # of raising, and each of these defaults fails in a direction that looks like normal
+    # operation - a permanently stale feed, a veto that never vetoes, a calm book in a crisis.
+    server_src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    lines = server_src.splitlines()
+    first = next(i for i, ln in enumerate(lines)
+                 if ln.startswith("def apply_live_quality_filters("))
+    # Bounded by the NEXT top-level def, not by a byte count. A fixed-size window silently
+    # truncated the function and the check then passed while missing a key it reads.
+    end = next((j for j in range(first + 1, len(lines))
+                if lines[j].startswith(("def ", "async def ", "class "))), len(lines))
+    body = chr(10).join(lines[first:end])
+    check(end - first > 100,
+          f"the whole function is scanned, not a truncated window ({end - first} lines)")
+    read_keys = set(re.findall(r'state\.get\("([a-z_]+)"', body))
+    missing = sorted(read_keys - set(SNAPSHOT_KEYS))
+    check(not missing,
+          f"every key apply_live_quality_filters reads is in SNAPSHOT_KEYS (missing: {missing})")
 
     print(f"\nDECISION SNAPSHOT SELFTEST: PASS ({checks} checks)")
     return 0

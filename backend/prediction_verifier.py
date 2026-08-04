@@ -210,43 +210,26 @@ class PredictionVerifier:
 
     #: Grading rules, keyed by the contract a prediction was trained under.
     def _grade(self, pred: dict, current_price: float, threshold: float, klines):
-        """Return (direction, status). `direction` is None when the row must not be graded."""
-        import target_contract as tc
+        """Return (direction, status). `direction` is None when the row must not be graded.
 
-        contract = pred.get("target_contract") or tc.TRAINING_CONTRACT
-        if contract not in tc.KNOWN_CONTRACTS:
-            return None, f"UNKNOWN_CONTRACT:{contract}"
-
-        if contract == tc.ENDPOINT_SETTLEMENT_V1:
-            # Grade at the HORIZON END, not at whatever moment the loop got here.
-            as_of, as_of_ts = self._as_of_price(klines, int(pred.get("verify_at") or 0))
-            if as_of is None:
-                return None, "GRADE_UNAVAILABLE:no_as_of_price"
-            pred["resolution_price_source"] = "as_of_kline_close"
-            pred["resolution_event_ts"] = as_of_ts
-            return tc.label_endpoint(
-                pred["predicted_price"], as_of, threshold), "GRADED_ENDPOINT"
-
-        # FIRST_TOUCH needs the intrabar path between entry and the horizon end.
-        entry_ts = int(pred.get("predicted_at") or pred.get("created_at") or 0)
-        verify_ts = int(pred.get("verify_at") or 0)
-        # NORMALISED, for the same reason: raw seconds vs millisecond bounds made this list
-        # ALWAYS empty, so first-touch grading never graded anything in production.
-        path = [k for k in (klines or [])
-                if entry_ts < _tc.kline_open_ms(k) <= verify_ts
-                and k.get("is_closed") is not False]
-        if not path:
-            return None, "GRADE_UNAVAILABLE:no_intrabar_path"
-        outcome = tc.label_first_touch(
-            pred["predicted_price"],
-            [float(k["high"]) for k in path],
-            [float(k["low"]) for k in path],
-            threshold)
-        if outcome == tc.AMBIGUOUS:
-            # A bar touched both barriers. The model's target is undefined here, so grading it
-            # either way would manufacture a hit or a miss.
-            return None, "GRADE_UNAVAILABLE:ambiguous_bar"
-        return outcome, "GRADED_FIRST_TOUCH"
+        P1-3. The rule itself now lives in `target_contract.grade`, which the per-model panel
+        also calls. Two copies of "how a prediction is graded" is how the panels came to
+        describe the same vote with two different random variables."""
+        result = _tc.grade(
+            contract=pred.get("target_contract") or _tc.TRAINING_CONTRACT,
+            entry=pred["predicted_price"],
+            threshold=threshold,
+            klines=klines,
+            entry_ts=int(pred.get("predicted_at") or pred.get("created_at") or 0),
+            verify_ts=int(pred.get("verify_at") or 0),
+        )
+        if result.resolution_event_ts is not None:
+            pred["resolution_price_source"] = (
+                "as_of_kline_close" if result.contract == _tc.ENDPOINT_SETTLEMENT_V1
+                else "first_touch_path_close")
+            pred["resolution_event_ts"] = result.resolution_event_ts
+            pred["resolution_price"] = result.resolution_price
+        return result.direction, result.status
 
     def check_and_verify(self, current_price: float, current_time_ms: int, klines=None):
         """

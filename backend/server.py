@@ -2080,6 +2080,11 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         int(target_model.train_split_idx),
                         decision_timestamps,
                         int(backend_state.get("train_boundary_ts") or 0),
+                        # P1-7. Training already zero-weights AMBIGUOUS rows; the gate did not,
+                        # so every bar that touched both barriers entered the holdout as a real
+                        # NEUTRAL observation and moved the Brier and ECE this gate decides on.
+                        # Yvalid is built above and was simply never passed down.
+                        Yvalid,
                     ),
                 )
                 gate_report.update({
@@ -3990,8 +3995,14 @@ async def main_loop():
                     )
                     p["preServerDirection"] = p.get("direction", "NEUTRAL")
                     p["rawSignal"] = p.get("signal", "NEUTRAL")
-                    current_price = data_state["klines"][-1]["close"]
-                    order_flow_state = _safe_dict(data_state.get("order_flow"))
+                    # P0-6. Price and order flow come from the FROZEN decision view, not from
+                    # the live global. Inference runs in a worker thread while WebSocket
+                    # callbacks keep mutating data_state, so re-reading it here priced
+                    # expectancy at a different instant from the one the model saw - a single
+                    # decision assembled from state at t0, t1 and t2. Every number was real;
+                    # they simply never co-occurred, which is what made replay impossible.
+                    current_price = decision_state["decision_price"]
+                    order_flow_state = _safe_dict(decision_state.get("order_flow"))
                     spread_exp = order_flow_state.get("spread_expansion_ratio", 1.0)
                     pre_exp_calc = simulator.calculate_signal_expectancy(
                         p, current_price, order_flow_state, spread_exp
@@ -4017,7 +4028,7 @@ async def main_loop():
                     # Stage 1-3 precision instrumentation (attached BEFORE the gate so the
                     # gate can use calibrated confidence once the calibrator activates).
                     try:
-                        _of_now = _safe_dict(data_state.get("order_flow"))
+                        _of_now = _safe_dict(decision_state.get("order_flow"))
                         if "modelConfluenceScore" not in p and isinstance(p.get("confluence"), (int, float)):
                             p["modelConfluenceScore"] = p.get("confluence")
                         if "modelConfluenceDetail" not in p:
@@ -4039,11 +4050,11 @@ async def main_loop():
                             p["expectedPrecision"] = _ep
                     except Exception as _pe:
                         logger.debug(f"precision instrumentation skipped: {_pe}")
-                    p = apply_live_quality_filters(p, verifier, data_state)
+                    p = apply_live_quality_filters(p, verifier, decision_state)
 
                     # Expectancy Filter
-                    current_price = data_state["klines"][-1]["close"]
-                    order_flow_state = _safe_dict(data_state.get("order_flow"))
+                    current_price = decision_state["decision_price"]
+                    order_flow_state = _safe_dict(decision_state.get("order_flow"))
                     spread_exp = order_flow_state.get("spread_expansion_ratio", 1.0)
                     exp_calc = simulator.calculate_signal_expectancy(
                         p, current_price, order_flow_state, spread_exp
@@ -4093,9 +4104,15 @@ async def main_loop():
                                 # ensemble applies the current model-contract mask internally.
                                 feature_names=list(FEATURE_NAMES),
                                 snapshot_ts=now_ms_pred,
-                                current_price=float(data_state["klines"][-1]["close"]),
+                                # P0-6. These used to be re-read from the live global AFTER
+                                # prediction and filtering, while the row was stamped with
+                                # `snapshot_ts=now_ms_pred`. The ledger therefore recorded a
+                                # price and an order-flow state that did not exist at the
+                                # timestamp printed beside them - the one row whose entire
+                                # purpose is to say what was true when the decision was made.
+                                current_price=float(decision_state["decision_price"]),
                                 order_flow_state=copy.deepcopy(
-                                    _safe_dict(data_state.get("order_flow"))
+                                    _safe_dict(decision_state.get("order_flow"))
                                 ),
                                 prediction_ts=revision_ts,
                             ),
@@ -4378,7 +4395,11 @@ async def main_loop():
             # would silently stop, so this argument is load-bearing, not optional.
             newly_verified = verifier.check_and_verify(
                 current_price, now_ms, klines=data_state["klines"][-2000:])
-            model_verifier.check(current_price, now_ms)  # resolve per-model votes
+            # P1-3. The same intrabar window the main verifier grades from. Without it the
+            # per-model panel graded an endpoint sign at loop time while these models are
+            # trained on first touch.
+            model_verifier.check(
+                current_price, now_ms, klines=data_state["klines"][-2000:])
             exchange_verifier.check(current_venue_prices(data_state), now_ms)  # per-venue confirmation
 
             # Price-to-beat rounds are owned by the FAST 1s ticker (price_to_beat_ticker),

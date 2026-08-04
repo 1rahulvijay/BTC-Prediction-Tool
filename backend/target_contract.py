@@ -212,6 +212,87 @@ def label(contract: str, *, entry: float, threshold: float,
         f"a guessed rule is how a first-touch model came to be corrected by endpoint feedback.")
 
 
+#: How late a resolution may be before the row is refused rather than graded on a price from
+#: the wrong moment. Shared, so the per-model panel and the main verifier cannot drift apart.
+MAX_RESOLUTION_LATENESS_MS = 30_000
+
+
+class GradeResult:
+    """One resolution: the outcome AND the exact observation that produced it.
+
+    P1-1/P1-3. Every consumer must take its direction, its price and its timestamp from the
+    same object. The per-model panel used to derive direction from a loop-time scalar while the
+    main verifier graded from the horizon-end bar, so two panels described the same vote with
+    two different random variables and both were labelled "accuracy"."""
+
+    __slots__ = ("direction", "status", "resolution_price", "resolution_event_ts", "contract")
+
+    def __init__(self, direction, status, resolution_price=None, resolution_event_ts=None,
+                 contract=None):
+        self.direction = direction
+        self.status = status
+        self.resolution_price = resolution_price
+        self.resolution_event_ts = resolution_event_ts
+        self.contract = contract
+
+    @property
+    def graded(self) -> bool:
+        return self.direction is not None
+
+    def __repr__(self) -> str:
+        return (f"GradeResult(direction={self.direction!r}, status={self.status!r}, "
+                f"price={self.resolution_price!r}, ts={self.resolution_event_ts!r})")
+
+
+def as_of_close(klines, at_ms: int):
+    """(close, open_ms) of the last CLOSED bar at or before `at_ms`, else (None, None).
+
+    Grading from a live `current_price` resolves at LOOP time, not at horizon end."""
+    best = None
+    best_ms = None
+    for k in (klines or []):
+        ts = kline_open_ms(k)
+        if ts <= int(at_ms) and (k.get("is_closed") is not False
+                                 if isinstance(k, dict) else True):
+            if best_ms is None or ts > best_ms:
+                best, best_ms = k, ts
+    if best is None:
+        return None, None
+    return float(best["close"]), int(best_ms)
+
+
+def grade(*, contract: str, entry: float, threshold: float, klines,
+          entry_ts: int, verify_ts: int) -> GradeResult:
+    """THE canonical grader. Every verifier resolves through this and nothing else.
+
+    Returns a GradeResult whose `direction` is None whenever the row must not be graded -
+    refusing is always preferred to labelling by a rule the model was not trained under."""
+    if contract not in KNOWN_CONTRACTS:
+        return GradeResult(None, f"UNKNOWN_CONTRACT:{contract}", contract=contract)
+
+    if contract == ENDPOINT_SETTLEMENT_V1:
+        final, final_ts = as_of_close(klines, verify_ts)
+        if final is None:
+            return GradeResult(None, "GRADE_UNAVAILABLE:no_as_of_price", contract=contract)
+        return GradeResult(label_endpoint(entry, final, threshold), "GRADED_ENDPOINT",
+                           final, final_ts, contract)
+
+    path = [k for k in (klines or [])
+            if int(entry_ts) < kline_open_ms(k) <= int(verify_ts)
+            and (k.get("is_closed") is not False if isinstance(k, dict) else True)]
+    if not path:
+        return GradeResult(None, "GRADE_UNAVAILABLE:no_intrabar_path", contract=contract)
+    outcome = label_first_touch(entry, [float(k["high"]) for k in path],
+                                [float(k["low"]) for k in path], threshold)
+    if outcome == AMBIGUOUS:
+        # A single bar touched both barriers, so the target is undefined on this row. Grading
+        # it either way manufactures a hit or a miss out of an unknowable ordering.
+        return GradeResult(None, "GRADE_UNAVAILABLE:ambiguous_bar", contract=contract)
+    last = path[-1]
+    return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(last["close"]),
+                       kline_open_ms(last), contract)
+
+
 def contracts_agree(entry: float, highs, lows, final: float, threshold: float) -> bool:
     """Do the two contracts give the same answer on this path? Used to MEASURE the disagreement
     rate rather than assume it is small."""

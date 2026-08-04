@@ -15,6 +15,7 @@ import logging
 from collections import defaultdict, deque
 
 import database
+import target_contract as _tc
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ class PerModelVerifier:
         # history[model][horizon] -> deque of 1/0
         self.history = defaultdict(lambda: {h: deque(maxlen=500) for h in self.horizons})
         self.last_vote = defaultdict(dict)  # model -> {horizon: direction}
+        #: Counted, not hidden. A panel that silently stops grading looks identical to one
+        #: with nothing to grade, which is how the loop-time rule survived unnoticed.
+        self.invalid_late = 0
+        self.ungraded = 0
 
     def _direction(self, price: float, ref_price: float) -> str:
         if ref_price <= 0:
@@ -62,6 +67,9 @@ class PerModelVerifier:
             entry = {
                 "id": pid, "model": name, "horizon": horizon, "ref_price": ref_price,
                 "direction": direction, "verify_at": now_ms + horizon * 60_000, "ts": now_ms,
+                # The contract is stamped ON the vote, so a row recorded under one target is
+                # never graded by whatever the default happens to be when it resolves.
+                "target_contract": _tc.TRAINING_CONTRACT,
             }
             self.pending.append(entry)
             self.last_vote[name][horizon] = direction
@@ -124,7 +132,7 @@ class PerModelVerifier:
                 pending += 1
         return {"resolved": resolved, "pending": pending}
 
-    def check(self, current_price: float, now_ms: int):
+    def check(self, current_price: float, now_ms: int, klines=None):
         """Resolve any per-model votes whose horizon has elapsed.
 
         A base model's argmax is NEUTRAL on the majority of ticks (it ABSTAINS,
@@ -132,25 +140,67 @@ class PerModelVerifier:
         5–15m horizon the market almost always moves, so grading NEUTRAL votes against
         a (near-always) UP/DOWN outcome scored every abstention as a miss and dragged
         the per-model panel to a meaningless ~0–20%. FIX (2026-06-13, sign-truth): grade
-        only COMMITTED (UP/DOWN) votes, by strict close-vs-ref sign, and exclude NEUTRAL
-        from the accuracy denominator — same neutral-poisoning fix applied to calibration
-        / regime-quality / analytics. NEUTRAL rows are still resolved (hit=NULL) so they
-        don't sit pending forever; `latest_vote` still shows the raw argmax incl. NEUTRAL.
+        only COMMITTED (UP/DOWN) votes and exclude NEUTRAL from the accuracy denominator.
+        NEUTRAL rows are still resolved (hit=NULL) so they don't sit pending forever;
+        `latest_vote` still shows the raw argmax incl. NEUTRAL.
+
+        P1-3 (2026-08-05). This used to grade with:
+
+            actual_dir = "UP" if current_price >= p["ref_price"] else "DOWN"
+
+        Three separate defects in one line. `current_price` is the MAIN LOOP's price, not the
+        price at the horizon end, so a loop delayed by training or a feed stall graded against
+        a moment minutes past the horizon. The rule is an ENDPOINT sign while these models are
+        trained on `TRAINING_CONTRACT` (first touch) - the exact mismatch the main verifier was
+        fixed to remove, still live one panel over. And with no lateness bound there was no
+        moment at which a stale row was refused instead of graded.
+
+        It also had no NEUTRAL outcome and no abstention: `>=` forces every bar to UP or DOWN,
+        so a flat bar was always scored as UP, and a model voting DOWN on it always missed.
+
+        Now resolved through `target_contract.grade`, the same function the main verifier uses,
+        so the two panels cannot describe one vote with two different random variables.
+        `klines` must cover entry..verify_at; without them the vote stays pending rather than
+        being graded by a rule these models were not trained on.
         """
+        import target_contract as tc
+
         still = []
         for p in self.pending:
-            if now_ms >= p["verify_at"]:
-                actual_dir = "UP" if current_price >= p["ref_price"] else "DOWN"
-                committed = p["direction"] in ("UP", "DOWN")
-                hit = (p["direction"] == actual_dir) if committed else None
-                if committed:
-                    self.history[p["model"]][p["horizon"]].append(1 if hit else 0)
-                try:
-                    database.resolve_model_prediction(p["id"], current_price, actual_dir, hit)
-                except Exception as e:
-                    logger.debug(f"Model vote resolve failed: {e}")
-            else:
+            if now_ms < p["verify_at"]:
                 still.append(p)
+                continue
+
+            lateness = int(now_ms) - int(p["verify_at"])
+            if lateness > tc.MAX_RESOLUTION_LATENESS_MS:
+                # Dropped, not graded. Same bound as the main verifier.
+                self.invalid_late = getattr(self, "invalid_late", 0) + 1
+                continue
+
+            result = tc.grade(
+                contract=p.get("target_contract") or tc.TRAINING_CONTRACT,
+                entry=float(p["ref_price"]),
+                threshold=float(self.neutral_band),
+                klines=klines,
+                entry_ts=int(p.get("ts") or 0),
+                verify_ts=int(p["verify_at"]),
+            )
+            if not result.graded:
+                # Cannot grade under the declared contract yet. Stay pending rather than
+                # emit a label produced by a different rule.
+                self.ungraded = getattr(self, "ungraded", 0) + 1
+                still.append(p)
+                continue
+
+            committed = p["direction"] in ("UP", "DOWN")
+            hit = (p["direction"] == result.direction) if committed else None
+            if committed:
+                self.history[p["model"]][p["horizon"]].append(1 if hit else 0)
+            try:
+                database.resolve_model_prediction(
+                    p["id"], result.resolution_price, result.direction, hit)
+            except Exception as e:
+                logger.debug(f"Model vote resolve failed: {e}")
         self.pending = still
 
     def accuracy(self) -> dict:

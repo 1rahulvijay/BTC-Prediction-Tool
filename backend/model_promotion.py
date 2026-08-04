@@ -102,13 +102,26 @@ def probability_metrics(probability: np.ndarray, actual: np.ndarray, bins: int =
 
 
 def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
-                       decision_timestamps=None, incumbent_boundary_ts: int | None = None) -> dict:
+                       decision_timestamps=None, incumbent_boundary_ts: int | None = None,
+                       valid_mask: dict | None = None) -> dict:
+    """P1-7. `valid_mask` is REQUIRED for an honest gate, and its absence is recorded.
+
+    build_sequences gives an AMBIGUOUS row (one bar touched both barriers) a NEUTRAL one-hot,
+    purely so an argmax by a caller that ignores the mask stays in range - an all-zero row would
+    argmax to DOWN. Training already excludes those rows by weight. This gate did not, so every
+    undefined outcome entered the holdout as a genuine NEUTRAL observation.
+
+    That is not a small bias. It inflates NEUTRAL accuracy (a model abstaining on a chaotic bar
+    scores a hit for a label that means "undefined"), and it moves Brier and ECE, which are the
+    numbers the promotion decision is made on. The rows are unlabelled, not neutral."""
     gates = promotion_gates()
     report = {
         "created_at": time.time(),
         "gates": gates,
         "horizons": {},
         "calibration_contract": "candidate holdout + purged OOF stacker; full refit reuses conformal residuals",
+        # Recorded so a report cannot claim an ambiguity-excluded evaluation it never ran.
+        "ambiguous_rows_excluded": valid_mask is not None,
     }
     all_pass = True
     for horizon in candidate.horizons:
@@ -118,6 +131,26 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
             continue
         stop = min(len(X), len(Y[horizon]))
         holdout = np.arange(max(0, int(split_idx)), stop, dtype=np.int64)
+        excluded = 0
+        if valid_mask is not None and horizon in valid_mask:
+            vm = np.asarray(valid_mask[horizon], dtype=bool)
+            if len(vm) < stop:
+                # Refuse rather than align by guessing: a mask shorter than the labels cannot be
+                # matched to rows without assuming which end it belongs to.
+                report["horizons"][int(horizon)] = {
+                    "passed": False,
+                    "reasons": [f"valid_mask_too_short:{len(vm)}<{stop}"]}
+                all_pass = False
+                continue
+            keep = vm[holdout]
+            excluded = int((~keep).sum())
+            holdout = holdout[keep]
+        if holdout.size == 0:
+            report["horizons"][int(horizon)] = {
+                "passed": False, "reasons": ["no_valid_holdout_rows"],
+                "ambiguous_excluded": excluded}
+            all_pass = False
+            continue
         sampled = _sample_indices(holdout, gates["max_eval_samples"])
         actual = np.argmax(np.asarray(Y[horizon])[sampled], axis=1)
         candidate_probability = _predict_probabilities(candidate, np.asarray(X)[sampled], horizon)
@@ -166,6 +199,7 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
         report["horizons"][int(horizon)] = {
             "passed": passed,
             "reasons": reasons,
+            "ambiguous_excluded": excluded,
             "candidate": candidate_metrics,
             "incumbent": incumbent_metrics,
             "fair_incumbent_comparison": fair_comparison,
@@ -316,6 +350,54 @@ def selftest() -> None:
         assert not promotion_required(False, reason)
     assert promotion_gates()["min_directional_calls"] > 0
     assert promotion_gates()["min_directional_precision"] > 0
+
+    # ---- P1-7: AMBIGUOUS rows must not enter the gate as NEUTRAL observations -------------
+    class _FakeModel:
+        """Always votes UP with full confidence, so any NEUTRAL label is a miss."""
+        horizons = [5]
+        is_trained = True
+
+        def predict_base(self, _row, _horizon, _context):
+            return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    n_rows = 600
+    Xf = np.zeros((n_rows, 4), dtype=np.float32)
+    labels = np.zeros((n_rows, 3), dtype=np.float32)
+    labels[:, 2] = 1.0                                   # every REAL outcome is UP
+    ambiguous = np.zeros(n_rows, dtype=bool)
+    ambiguous[::2] = True                                # half the rows are undefined
+    labels[ambiguous] = np.array([0.0, 1.0, 0.0])        # stored NEUTRAL, meaning "undefined"
+    mask = {5: ~ambiguous}
+
+    leaky = evaluate_candidate(_FakeModel(), None, Xf, {5: labels}, 0)
+    honest = evaluate_candidate(_FakeModel(), None, Xf, {5: labels}, 0, valid_mask=mask)
+
+    leaky_precision = leaky["horizons"][5]["candidate"]["directional_precision"]
+    honest_precision = honest["horizons"][5]["candidate"]["directional_precision"]
+    # The model is ALWAYS right on every defined row. Counting undefined rows as NEUTRAL turns
+    # half of them into misses, so the two numbers must differ - if they matched, the mask
+    # would be doing nothing and this test would be decorative.
+    assert honest_precision > leaky_precision, (
+        f"ambiguity exclusion changed nothing: {honest_precision} vs {leaky_precision}")
+    assert abs(honest_precision - 1.0) < 1e-9, (
+        f"with undefined rows removed the model is right on every graded row, got {honest_precision}")
+    assert honest["horizons"][5]["ambiguous_excluded"] == int(ambiguous.sum())
+    assert leaky["ambiguous_rows_excluded"] is False
+    assert honest["ambiguous_rows_excluded"] is True
+
+    # A mask that cannot be aligned to the labels is refused, not silently ignored.
+    short = evaluate_candidate(_FakeModel(), None, Xf, {5: labels}, 0,
+                               valid_mask={5: np.ones(10, dtype=bool)})
+    assert not short["passed"]
+    assert any(r.startswith("valid_mask_too_short")
+               for r in short["horizons"][5]["reasons"]), short["horizons"][5]["reasons"]
+
+    # Every row ambiguous -> no evaluation is possible, and it must FAIL rather than pass on
+    # an empty holdout that trivially satisfies every threshold.
+    none_valid = evaluate_candidate(_FakeModel(), None, Xf, {5: labels}, 0,
+                                    valid_mask={5: np.zeros(n_rows, dtype=bool)})
+    assert not none_valid["passed"]
+    assert "no_valid_holdout_rows" in none_valid["horizons"][5]["reasons"]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         source = root / "staged"
