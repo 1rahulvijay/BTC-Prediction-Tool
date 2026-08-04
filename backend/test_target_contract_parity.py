@@ -113,6 +113,28 @@ def main() -> int:
     check(d is None and s == "GRADE_UNAVAILABLE:no_intrabar_path",
           "first-touch without the intrabar path is refused, not graded on the endpoint")
 
+    # ---- P0-11: ENDPOINT GRADES AT THE HORIZON END, NOT AT LOOP TIME ----------------
+    # The bar at verify_at closed DOWN; by the time the loop resolved it, price had run up.
+    # Grading from `current_price` would call this UP. It must follow the as-of close.
+    late_klines = [
+        {"time": 1000, "high": entry, "low": entry, "close": entry, "is_closed": True},
+        {"time": 5000, "high": entry, "low": lower - 1.0, "close": lower - 1.0,
+         "is_closed": True},                      # the horizon-end bar: clearly DOWN
+        {"time": 9000, "high": upper + 5.0, "low": entry, "close": upper + 5.0,
+         "is_closed": True},                      # AFTER verify_at - must be ignored
+    ]
+    endpoint_pred = {"predicted_price": entry, "predicted_at": 0, "verify_at": 5000,
+                     "neutral_band": threshold,
+                     "target_contract": tc.ENDPOINT_SETTLEMENT_V1}
+    late_dir, late_status = verifier._grade(endpoint_pred, upper + 5.0, threshold, late_klines)
+    check(late_dir == tc.DOWN and late_status == "GRADED_ENDPOINT",
+          "a LATE resolution grades from the bar at the horizon end, not from the price the "
+          "loop happened to see - the P0-11 defect")
+    check(endpoint_pred.get("resolution_event_ts") == 5000,
+          "and it records WHICH event it resolved against")
+    check(tc.label_endpoint(entry, upper + 5.0, threshold) == tc.UP,
+          "loop-time price would have said UP - so the two genuinely differ here")
+
     # ---- A QUIET PATH STILL AGREES --------------------------------------------------
     inside_hi = entry + (upper - entry) / 2
     inside_lo = entry - (entry - lower) / 2

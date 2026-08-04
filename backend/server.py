@@ -78,6 +78,7 @@ from institutional_feeds import (
     ExchangeFlowClient,
 )
 from ab_testing import ABTestRunner, ModelVariant
+from decision_snapshot import build as _build_decision_snapshot
 from polymarket_client import PolymarketClient
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
@@ -3930,6 +3931,17 @@ async def main_loop():
                 data_state["signal_policy"] = verifier.get_signal_policy(
                     regime.get("regime", "UNKNOWN")
                 )
+                # P0-12 IMMUTABLE DECISION VIEW. Inference runs in a worker thread while
+                # WebSocket callbacks keep mutating data_state, so passing the live global let a
+                # single prediction be assembled from a feature sequence at t0, order flow at t1
+                # and a price at t2. Nothing is corrupted - it simply did not co-occur, and that
+                # is what makes exact replay impossible.
+                #
+                # Built HERE, after the regime weights, calibrators and signal policy are in
+                # place: frozen any earlier and inference would have received None for all of
+                # them. Every horizon in the loop below shares this one view.
+                decision_state = _build_decision_snapshot(
+                    data_state, now_ms_pred, klines=model_klines)
                 for h in model.horizons:
                     # Run the (CPU-heavy, ~0.3-0.7s) ensemble inference in a worker thread.
                     # On the 30-day model this loop was ~2s of synchronous work per cycle,
@@ -3937,7 +3949,8 @@ async def main_loop():
                     # lag). Offloading + awaiting per horizon lets the price broadcaster and
                     # WebSocket handlers run in between, keeping the feed live. (price-lag fix)
                     p = await asyncio.get_event_loop().run_in_executor(
-                        None, ab_runner.predict, h, seq, data_state, acc_cache, cascade_data
+                        None, ab_runner.predict, h, seq, decision_state, acc_cache,
+                        cascade_data
                     )
                     p["regime"] = regime.get("regime", "UNKNOWN")
                     p["modelRawDirection"] = p.get(

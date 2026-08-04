@@ -114,6 +114,9 @@ jobs:
       - name: Repository launcher layout
         run: python tests/test_repository_layout.py
 
+      - name: Decision snapshot (one immutable market view per decision)
+        run: python backend/decision_snapshot.py --selftest
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -615,6 +618,7 @@ jobs:
           python backend/test_round_state_causal_contract.py || exit /b 1
           python backend/target_contract.py --selftest || exit /b 1
           python backend/forward_evidence_gate.py --selftest || exit /b 1
+          python backend/decision_snapshot.py --selftest || exit /b 1
           python backend/test_target_contract_parity.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1
