@@ -121,6 +121,62 @@ def check_selftests_are_guarded(text: str) -> list[str]:
     return problems
 
 
+def check_artifact_identity_gate(text: str) -> list[str]:
+    """Strict identity must be the default AND must be gated before launch.
+
+    P0-8. Turning the flag on is not enough: verify_artifact_identity states plainly that with
+    strict on and no manifests, "Zero heads would load; the app would serve blind while logging
+    one ERROR per artifact". Serving blind is fail-OPEN. Without a gate, enabling the flag
+    produces no models AND no refusal - strictly worse than leaving it off.
+
+    So this asserts both halves: the honest default, and the refusal that makes it mean
+    something.
+    """
+    problems: list[str] = []
+    if 'set "BTC_STRICT_ARTIFACT_IDENTITY=0"' in text:
+        problems.append("start.bat still defaults strict artifact identity OFF")
+    if 'set "BTC_STRICT_ARTIFACT_IDENTITY=1"' not in text:
+        problems.append("start.bat does not default strict artifact identity ON")
+
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines)
+                  if 'if "%BTC_STRICT_ARTIFACT_IDENTITY%"=="1"' in ln), None)
+    if start is None:
+        problems.append("no launch gate keyed on BTC_STRICT_ARTIFACT_IDENTITY")
+        return problems
+
+    # Walk to the matching close paren, then keep only lines that DO something. A first
+    # version searched a 2000-character window for substrings, and two mutations survived it:
+    # commenting out the verifier left its name in an `echo`, and deleting the refusal left an
+    # `exit /b 1` belonging to the next block. Presence in a window is not execution.
+    def is_prose(line: str) -> bool:
+        return not line or line.lower().startswith(("rem ", "echo", "::"))
+
+    depth = 0
+    body: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        body.append(stripped)
+        # Parens are counted ONLY on executable lines. The gate's own echo text contains
+        # escaped `^)` characters, and counting those closed the block early - which made the
+        # check report a missing refusal on a file that has one.
+        if not is_prose(stripped):
+            depth += stripped.count("(") - stripped.count(")")
+        if depth <= 0 and len(body) > 1:
+            break
+    executable = [ln for ln in body if not is_prose(ln)]
+    joined = " ; ".join(executable)
+
+    if "verify_artifact_identity.py" not in joined:
+        problems.append("the strict gate does not RUN verify_artifact_identity "
+                        "(mentioning it in an echo is not running it)")
+    if "errorlevel 1" not in joined:
+        problems.append("the strict gate does not check the verifier's exit code")
+    if "exit /b 1" not in joined:
+        problems.append("the strict gate does not REFUSE to launch - it would serve blind")
+    return problems
+
+
 def main() -> int:
     if not LAUNCHER.is_file():
         print(f"FAIL start.bat not found at {LAUNCHER}")
@@ -133,6 +189,8 @@ def main() -> int:
         ("no stray control bytes in any path", check_control_bytes(raw)),
         ("every goto has a matching label", check_labels(text)),
         ("every selftest invocation is errorlevel-guarded", check_selftests_are_guarded(text)),
+        ("strict artifact identity is default AND gated before launch",
+         check_artifact_identity_gate(text)),
     ):
         print(f"  {'OK  ' if not problems else 'FAIL'} {label}")
         for problem in problems:

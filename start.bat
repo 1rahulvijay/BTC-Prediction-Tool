@@ -245,6 +245,39 @@ REM   RESUME      >=1000 daily CSVs cached                  -> 80GB
 REM   FIRST_BUILD neither                                   -> 300GB
 REM   python backend\preflight_longwindow.py --days 1000     (explain the current verdict)
 REM   python backend\preflight_longwindow.py --selftest
+REM === ARTIFACT IDENTITY LAUNCH GATE (P0-8) ==============================
+REM Strict identity does NOT make the app refuse on its own. verify_artifact_identity is
+REM blunt about what actually happens: "Zero heads would load; the app would serve blind
+REM while logging one ERROR per artifact." Serving blind is the fail-OPEN behaviour this
+REM work exists to remove, so turning the flag on without a gate produced the worst of both
+REM outcomes - no models AND no refusal.
+REM
+REM This gate converts that into a refusal to launch, with the two honest ways forward.
+if "%BTC_STRICT_ARTIFACT_IDENTITY%"=="1" (
+    python backend/verify_artifact_identity.py >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ======================================================================
+        echo  REFUSING TO START: no model artifact can satisfy the identity contract.
+        echo ======================================================================
+        echo  Strict identity is ON, and zero heads would load. Starting anyway would
+        echo  serve predictions with no models behind them while logging one error per
+        echo  artifact - which looks like a running app and is not one.
+        echo.
+        echo  See exactly which artifacts and why:
+        echo      python backend/verify_artifact_identity.py
+        echo      python backend\check_feature_contract.py
+        echo.
+        echo  Two ways forward:
+        echo    1^) Retrain so a bundle writes real manifests ^(the actual fix^).
+        echo    2^) Accept blind serving DELIBERATELY for this session:
+        echo         set BTC_STRICT_ARTIFACT_IDENTITY=0
+        echo       Predictions will then come from artifacts nothing can vouch for.
+        echo ======================================================================
+        exit /b 1
+    )
+)
+
 python backend\preflight_longwindow.py --days %BTC_HISTORICAL_DAYS%
 if errorlevel 2 (
     echo [preflight] ERROR: insufficient free disk for this long run - see the mode above.
