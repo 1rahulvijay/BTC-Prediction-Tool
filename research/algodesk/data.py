@@ -221,7 +221,13 @@ def selftest() -> int:
     check(len(merged) == len(klines), "the merge never adds or drops bars")
     row = merged.iloc[10]
     check(row.ts_ms >= ts[8], "OI is taken as-of, from a bar at or BEFORE this one")
-    check(merged.open_interest.isna().sum() == 0 or True, "OI merge completes")
+    # `or True` made this unfalsifiable. The real property: every bar at or after the
+    # first OI observation carries a value, and the values are the ones supplied.
+    joined = merged[merged.ts_ms >= oi.ts_ms.min()]
+    check(joined.open_interest.notna().all(),
+          "every bar at or after the first OI print carries an OI value")
+    check(set(merged.open_interest.dropna()) <= set(oi.open_interest),
+          "joined OI values are the ones supplied - none are invented")
 
     # A bar more than the age limit past the last print must have NO funding rate.
     far = merge_symbol(

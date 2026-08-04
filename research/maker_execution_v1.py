@@ -235,8 +235,11 @@ def selftest() -> int:
     check(bool(buys["filled_VOLUME_AHEAD"].iloc[0]),
           "a trade THROUGH the level with size beyond the queue does fill")
 
-    check(hour_block_ci(np.array([1.0, 1.0]), np.array([1, 1]))[0] != 0.0 or True,
-          "hour-block CI runs")
+    # `or True` made this unfalsifiable. The real property: two blocks with a non-zero
+    # mean return a FINITE interval that brackets that mean.
+    lo2, hi2 = hour_block_ci(np.full(100, 3.0), np.repeat([1, 2], 50))
+    check(np.isfinite(lo2) and lo2 <= 3.0 <= hi2,
+          "two blocks yield a finite interval bracketing the mean")
     lo, hi = hour_block_ci(np.zeros(100), np.repeat([1, 2], 50))
     check(lo == 0.0 and hi == 0.0, "a zero series has a zero-width interval")
     check(not np.isfinite(hour_block_ci(np.ones(10), np.ones(10))[0]),
