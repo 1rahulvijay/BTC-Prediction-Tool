@@ -168,3 +168,10 @@ frozen = 2026-08-04
 bytes  = 4358
 note   = calibration of the crossing heads; gate for every EV-based action test
 ======================================================================
+
+PREREG_SIDE_SPECIFIC_VACUUM_V1.md
+sha256 = 2df7042f95bcb38d50083d695907e8e8e71743d086a7f2b5eff0f0ee6d50e4b9
+frozen = 2026-08-04
+bytes  = 7256
+note   = side-specific depth withdrawal -> SIGNED burst at the cost-clearing threshold; VACUUM_QUIET guards reverse causality
+======================================================================

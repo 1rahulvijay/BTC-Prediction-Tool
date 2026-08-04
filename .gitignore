@@ -16,3 +16,4 @@ research/sequence_results.json
 # record that belongs in git; 148 MB of pickles is not.
 releases/*/artifacts/
 data/bybit_trades/
+data/bybit_l2_grid/

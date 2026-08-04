@@ -71,6 +71,7 @@ FRONTIER = (
     "bybit_l2_maker_v2_trade_driven.py",
     "bybit_l2_depth_heads_v1.py",
     "score_liquidity_vacuum_continuation_v1.py",
+    "side_specific_vacuum_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour
@@ -85,8 +86,12 @@ FRONTIER = (
 #                             maker test. A library, not a study; its selftest runs
 #                             in CI, but running it as a "study" would report a
 #                             verdict for a module that has no population.
+#   side_specific_vacuum_v1_run - the scoring half of the vacuum study, split out so
+#                             the study module stays importable without touching
+#                             530 MB of grid. Invoked BY the study, not as one.
 NON_STUDY = {"harness.py", "run_all_sequence.py", "download_binance_l2_data.py",
-             "research_status.py", "bybit_trade_driven_fill.py"}
+             "research_status.py", "bybit_trade_driven_fill.py",
+             "side_specific_vacuum_v1_run.py"}
 
 VERDICT = re.compile(r"VERDICT:\s*(.+)")
 OOS_RETURN = re.compile(r"total return %\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)")

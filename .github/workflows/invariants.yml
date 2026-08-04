@@ -622,6 +622,8 @@ jobs:
           python backend/polymarket_crossing_recorder.py --selftest || exit /b 1
           python research/crossing_heads_v1.py --selftest || exit /b 1
           python research/crossing_calibration_v1.py --selftest || exit /b 1
+          python -m research.bybit_l2.grid --selftest || exit /b 1
+          python research/side_specific_vacuum_v1.py --selftest || exit /b 1
           python backend/crossing_recorder_hf.py --selftest || exit /b 1
           python backend/train_crossing_heads.py --selftest || exit /b 1
           python research/bybit_l2_maker_v1.py --selftest || exit /b 1
