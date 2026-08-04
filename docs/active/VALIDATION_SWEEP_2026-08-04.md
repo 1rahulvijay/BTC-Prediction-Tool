@@ -157,3 +157,69 @@ capital                real orders disabled, paper/shadow only, 0 promotable str
 The binding constraint has not moved: **cost on the research side, collection on the
 infrastructure side.** Every lane measured remains closed on cost, and every sealed forward
 protocol remains waiting on a recorder that is not running.
+
+---
+
+## 7. Crash recovery — SIGKILL, not a simulated fault
+
+Restart safety was mutation-proven at the *function* level. This exercises the property that
+actually matters: a process killed with no cleanup — no flush, no `close_run`, no `finally` —
+and a successor picking the state back up from disk.
+
+`backend/test_crossing_recorder_crash_recovery.py`: run 35s, `SIGKILL`, inspect, restart 30s.
+
+```
+after kill   6 heartbeats, 0 crossings, 2 anchors, 1 run with no clean stop
+
+PASS  the killed process had DURABLY written heartbeats before dying
+PASS  the crash is VISIBLE as a run with no clean stop, not silently forgotten
+PASS  health reports the crashed run rather than hiding it
+PASS  the successor starts cleanly on a crashed database
+PASS  the successor ADVANCES the row count - collection resumed
+PASS  no crossing recorded before the crash was lost
+PASS  no crossing was written twice - recovery is idempotent
+PASS  both runs are recorded separately
+```
+
+Durable state after the sequence:
+
+```
+run 3e2ef985  stopped=NULL(crashed)  obs=1     <- the crash is legible
+run 27b4c771  stopped=COMPLETED      obs=198   <- the successor
+anchors       2, both ANCHOR_UNAVAILABLE       <- both processes started mid-round
+duplicate anchor rows per round: 0             <- adopted, not duplicated
+```
+
+### Two of those checks passed trivially, and that is worth stating
+
+**No crossing occurred in the 35 seconds before the kill.** So *"no crossing was lost"* and
+*"no crossing was written twice"* compared 0 against 0. They did not exercise event
+preservation or idempotency — they merely did not contradict them.
+
+Those two properties **are** covered, in the durable `restore()` selftest which writes real
+events through `flush()` to a real database and recovers them, and by the five restore mutants
+(anchor, leader, index, obligations, ended-round) that are all `CAUGHT`. But they are not proven
+*under a real crash*, and this test should not be read as proving them.
+
+`recovered_obligations=0` on the successor is consistent: there was nothing to recover.
+
+Both anchors read `ANCHOR_UNAVAILABLE` because both processes started mid-round — the recorder
+correctly refusing to treat a first observed price as the round open, which is the behaviour
+`4548223` introduced.
+
+### What #4 now has, and what it still lacks
+
+```
+survives a hard kill without corrupting the store      PROVEN
+crash is visible rather than silent                    PROVEN
+successor resumes and does not duplicate               PROVEN
+recovery path is falsifiable                           PROVEN (5/5 mutants)
+event/obligation recovery across a REAL crash          not exercised (no events occurred)
+runs for weeks                                         NOT PROVEN - it is not running
+```
+
+The last line is the one that matters and it is an operator action:
+
+```bash
+python backend/crossing_recorder_hf.py --forever --supervise
+```
