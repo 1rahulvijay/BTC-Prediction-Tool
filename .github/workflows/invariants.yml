@@ -114,6 +114,9 @@ jobs:
       - name: Repository launcher layout
         run: python tests/test_repository_layout.py
 
+      - name: Cross-window dominance recorder (record-only, cannot trade)
+        run: python backend/cross_window_recorder.py --selftest
+
       - name: Sample windows (elapsed time, not observation count)
         run: python -m backend.binance_paper.sample_window --selftest
 
@@ -630,6 +633,7 @@ jobs:
           python backend/decision_snapshot.py --selftest || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
+          python backend/cross_window_recorder.py --selftest || exit /b 1
           python -m backend.binance_paper.post_fill_geometry --selftest || exit /b 1
           python backend/test_target_contract_parity.py || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1

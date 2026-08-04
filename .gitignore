@@ -17,3 +17,4 @@ research/sequence_results.json
 releases/*/artifacts/
 data/bybit_trades/
 data/bybit_l2_grid/
+data/cross_window.duckdb

@@ -1,0 +1,724 @@
+"""Record synchronized Polymarket 5m/15m pairs and measure whether a guaranteed floor is buyable.
+
+THE RELATIONSHIP
+    A 15-minute round opening at T settles at T+900. A 5-minute round opening at T+600 settles at
+    T+900 as well - the SAME instant, on the same oracle. Their strikes differ because each was
+    fixed at its own open, ten minutes apart.
+
+    When that happens, buying UP on the LOWER strike and DOWN on the HIGHER strike pays:
+
+        final <= K_low            UP=0  DOWN=1   ->  $1
+        K_low < final <= K_high   UP=1  DOWN=1   ->  $2
+        final >  K_high           UP=1  DOWN=0   ->  $1
+
+    The floor is $1 in every state. No directional forecast is involved: this is a logical
+    relationship between two contracts, not a prediction about BTC.
+
+    LEG ORDERING IS A SAFETY PROPERTY, NOT A DETAIL. Buying UP on the HIGHER strike inverts the
+    middle band and pays $0 there. `dominance_legs` refuses anything but the dominating pairing,
+    and the selftest pins the $0 case so the ordering cannot silently flip.
+
+WHAT MAKES IT REAL OR NOT
+    The floor is worth nothing unless the pair can be ACQUIRED below it. That means walked book
+    prices for the same quantity on both legs, both fees, and both books observed close enough
+    together to be one decision. Polymarket's crypto taker fee is 0.07 * p * (1-p) per share,
+    which peaks at 1.75c per share per leg - so a pair must be buyable under about 96.5c before
+    any edge exists at all.
+
+THIS RECORDS. IT DOES NOT TRADE.
+    No order-placement path is imported and none may be added here. The output is evidence for a
+    later, separately preregistered study.
+
+    python backend/cross_window_recorder.py --selftest
+    python backend/cross_window_recorder.py --once
+    python backend/cross_window_recorder.py --forever
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "backend"))
+
+from polymarket_fee import (  # noqa: E402
+    DEFAULT_CRYPTO_TAKER_FEE_RATE as FEE_RATE,
+    polymarket_taker_fee_per_share,
+)
+
+DATA_DIR = Path(os.environ.get("BTC_DATA_DIR") or REPO / "data")
+DB_PATH = Path(os.environ.get("BTC_CROSS_WINDOW_DB") or DATA_DIR / "cross_window.duckdb")
+
+#: Round durations in seconds, keyed by the horizon in the slug.
+DURATIONS = {5: 300, 15: 900}
+
+#: Both books must be observed within this window to count as ONE decision. Two books read a
+#: second apart are two different markets, and an "edge" built from them may never have existed
+#: simultaneously.
+MAX_BOOK_SKEW_MS = 1_500
+
+#: A quote older than this is not executable evidence.
+MAX_BOOK_AGE_MS = 5_000
+
+#: Capacity curve. An edge that exists only for 10 shares is a curiosity, not a strategy.
+SIZE_LADDER = (10.0, 50.0, 100.0, 500.0, 1_000.0)
+
+#: The guaranteed payout floor of a correctly ordered dominance pair.
+GUARANTEED_FLOOR = 1.0
+
+SCHEMA_VERSION = "cross-window-v1"
+
+
+class NotEquivalent(ValueError):
+    """Settlement rules could not be proven identical. No candidate may be emitted."""
+
+
+def settlement_ts(anchor_ts: int, horizon_min: int) -> int:
+    """When this round settles. The pairing key."""
+    if horizon_min not in DURATIONS:
+        raise NotEquivalent(f"unknown horizon {horizon_min}")
+    return int(anchor_ts) + DURATIONS[horizon_min]
+
+
+def find_pairs(rounds) -> list[tuple[dict, dict]]:
+    """(5m, 15m) rounds that settle at the SAME instant.
+
+    Equality is exact. A one-second difference is a different settlement observation and the
+    floor argument does not survive it."""
+    by_settlement: dict[int, dict[int, dict]] = {}
+    for r in rounds:
+        try:
+            horizon = int(r["horizon"])
+            settle = settlement_ts(int(r["anchor_ts"]), horizon)
+        except (KeyError, ValueError, NotEquivalent):
+            continue
+        by_settlement.setdefault(settle, {})[horizon] = r
+    pairs = []
+    for settle in sorted(by_settlement):
+        group = by_settlement[settle]
+        if 5 in group and 15 in group:
+            pairs.append((group[5], group[15]))
+    return pairs
+
+
+def dominance_legs(strike_5m: float, strike_15m: float):
+    """Which leg to BUY on each market, or None when no floor exists.
+
+    Returns (buy_side_5m, buy_side_15m, low_strike, high_strike). UP always goes on the LOWER
+    strike. The reversed pairing pays ZERO in the middle band, so it is not returned at all -
+    a caller cannot obtain it by accident."""
+    if strike_5m is None or strike_15m is None:
+        return None
+    if float(strike_5m) == float(strike_15m):
+        # Identical strikes make the two markets the same claim; UP+DOWN across them is a
+        # complete set, which is a different lane with a different (zero) dominance premium.
+        return None
+    if float(strike_5m) < float(strike_15m):
+        return ("UP", "DOWN", float(strike_5m), float(strike_15m))
+    return ("DOWN", "UP", float(strike_15m), float(strike_5m))
+
+
+def parse_market_rules(description: str, resolution_source: str = "") -> dict:
+    """Read the settlement rule out of the market text. NEVER default it.
+
+    The live markets say: "resolve to Up if the Bitcoin price at the end of the time range ...
+    is GREATER THAN OR EQUAL TO the price at the beginning of that range", resolved from the
+    Chainlink BTC/USD stream.
+
+    Two things this function exists to prevent, both of which I had wrong before reading the
+    real text:
+
+      TIES RESOLVE UP, not down. `>=` means a settlement exactly at the strike pays the UP
+      holder.
+
+      A DEFAULT IS WORSE THAN A REFUSAL HERE. Defaulting both markets to the same guess makes
+      the equivalence check compare two identical wrong values and pass - agreement without
+      evidence. An unparseable rule is returned as None so the caller refuses.
+    """
+    text = " ".join((description or "").split()).lower()
+    out = {"oracle": None, "tie_rule": None, "comparator": None, "raw_ok": bool(text)}
+
+    if "greater than or equal to" in text:
+        out["comparator"] = ">="
+        out["tie_rule"] = "up"          # settlement exactly at the strike resolves UP
+    elif "greater than" in text:
+        out["comparator"] = ">"
+        out["tie_rule"] = "down"
+
+    source = (resolution_source or "") + " " + text
+    if "chain.link" in source or "chainlink" in source:
+        out["oracle"] = "chainlink-btc-usd"
+    elif "pyth" in source:
+        out["oracle"] = "pyth-btc-usd"
+    elif "binance" in source:
+        out["oracle"] = "binance-btc-usdt"
+    return out
+
+
+def payout(final_price: float, low_strike: float, high_strike: float,
+           tie_is_up: bool = False) -> float:
+    """Combined payout of the correctly ordered pair at a settlement price."""
+    def resolves_up(price, strike):
+        return price > strike or (price == strike and tie_is_up)
+    up_leg = 1.0 if resolves_up(final_price, low_strike) else 0.0
+    down_leg = 0.0 if resolves_up(final_price, high_strike) else 1.0
+    return up_leg + down_leg
+
+
+def walk_book(asks, quantity: float):
+    """Average price per share to BUY `quantity`, walking the ask ladder.
+
+    Returns (average_price, filled_quantity, levels_consumed). Top-of-book pricing overstates
+    what is available; a floor bought at an unattainable price is not a floor."""
+    remaining = float(quantity)
+    cost = 0.0
+    levels = 0
+    for price, size in sorted(asks, key=lambda level: float(level[0])):
+        if remaining <= 0:
+            break
+        take = min(remaining, float(size))
+        if take <= 0:
+            continue
+        cost += take * float(price)
+        remaining -= take
+        levels += 1
+    filled = float(quantity) - remaining
+    if filled <= 0:
+        return (None, 0.0, 0)
+    return (cost / filled, filled, levels)
+
+
+def pair_cost(asks_a, asks_b, quantity: float, fee_rate: float = FEE_RATE) -> dict:
+    """Total cost per pair-share, including both fees. `None` cost when depth is insufficient."""
+    price_a, filled_a, levels_a = walk_book(asks_a, quantity)
+    price_b, filled_b, levels_b = walk_book(asks_b, quantity)
+    if price_a is None or price_b is None or filled_a < quantity or filled_b < quantity:
+        return {"quantity": quantity, "cost_per_pair": None, "filled_a": filled_a,
+                "filled_b": filled_b, "reason": "insufficient_depth"}
+    fee_a = polymarket_taker_fee_per_share(price_a, fee_rate)
+    fee_b = polymarket_taker_fee_per_share(price_b, fee_rate)
+    total = price_a + price_b + fee_a + fee_b
+    return {
+        "quantity": quantity,
+        "price_a": price_a, "price_b": price_b,
+        "fee_a": fee_a, "fee_b": fee_b,
+        "cost_per_pair": total,
+        "levels_a": levels_a, "levels_b": levels_b,
+        "filled_a": filled_a, "filled_b": filled_b,
+        # Guaranteed, not expected: this is the WORST case of the pair, not an average.
+        "guaranteed_edge_per_pair": GUARANTEED_FLOOR - total,
+        "guaranteed_edge_usd": (GUARANTEED_FLOOR - total) * quantity,
+        "reason": None,
+    }
+
+
+def equivalence_issues(round_5m: dict, round_15m: dict,
+                       book_ts_5m: float | None = None,
+                       book_ts_15m: float | None = None) -> list[str]:
+    """Everything that must hold before a floor may be claimed. Fail-closed.
+
+    The floor argument depends entirely on the two contracts resolving from the SAME observation
+    of the SAME price by the SAME rule. Anything unproven is an issue, not an assumption."""
+    issues: list[str] = []
+    try:
+        s5 = settlement_ts(int(round_5m["anchor_ts"]), 5)
+        s15 = settlement_ts(int(round_15m["anchor_ts"]), 15)
+        if s5 != s15:
+            issues.append(f"settlement mismatch: {s5} != {s15}")
+    except Exception as exc:
+        issues.append(f"settlement unresolvable: {exc}")
+
+    oracle_5 = (round_5m.get("oracle") or "").strip().lower()
+    oracle_15 = (round_15m.get("oracle") or "").strip().lower()
+    if not oracle_5 or not oracle_15:
+        issues.append("oracle identity not recorded for both markets")
+    elif oracle_5 != oracle_15:
+        issues.append(f"oracle mismatch: {oracle_5!r} != {oracle_15!r}")
+
+    tie_5 = round_5m.get("tie_rule")
+    tie_15 = round_15m.get("tie_rule")
+    if tie_5 is None or tie_15 is None:
+        issues.append("tie rule not recorded for both markets")
+    elif tie_5 != tie_15:
+        issues.append(f"tie rule mismatch: {tie_5!r} != {tie_15!r}")
+
+    for label, market in (("5m", round_5m), ("15m", round_15m)):
+        if market.get("strike") is None:
+            issues.append(f"{label} strike missing")
+        if str(market.get("status", "")).lower() in ("closed", "resolved", "paused"):
+            issues.append(f"{label} market status {market.get('status')!r} is not tradeable")
+
+    if book_ts_5m is not None and book_ts_15m is not None:
+        skew_ms = abs(float(book_ts_5m) - float(book_ts_15m)) * 1000.0
+        if skew_ms > MAX_BOOK_SKEW_MS:
+            issues.append(f"book skew {skew_ms:.0f}ms > {MAX_BOOK_SKEW_MS}ms - the two books "
+                          f"were not one decision")
+    return issues
+
+
+def evaluate(round_5m: dict, round_15m: dict, book_5m: dict, book_15m: dict,
+             sizes=SIZE_LADDER, fee_rate: float = FEE_RATE) -> dict:
+    """Full candidate assessment. `admissible` is False unless EVERY condition holds."""
+    issues = equivalence_issues(round_5m, round_15m,
+                                book_5m.get("recv_ts"), book_15m.get("recv_ts"))
+    legs = dominance_legs(round_5m.get("strike"), round_15m.get("strike"))
+    if legs is None:
+        issues.append("no dominance ordering (equal or missing strikes)")
+
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "observed_ts": time.time(),
+        "slug_5m": round_5m.get("slug"), "slug_15m": round_15m.get("slug"),
+        "strike_5m": round_5m.get("strike"), "strike_15m": round_15m.get("strike"),
+        "settlement_ts": None,
+        "buy_side_5m": legs[0] if legs else None,
+        "buy_side_15m": legs[1] if legs else None,
+        "low_strike": legs[2] if legs else None,
+        "high_strike": legs[3] if legs else None,
+        "issues": issues,
+        "admissible": False,
+        "ladder": [],
+        "best_edge_per_pair": None,
+        "best_size": None,
+    }
+    try:
+        result["settlement_ts"] = settlement_ts(int(round_5m["anchor_ts"]), 5)
+    except Exception:
+        pass
+    if issues or legs is None:
+        return result
+
+    asks_5m = book_5m.get("asks_up" if legs[0] == "UP" else "asks_down") or []
+    asks_15m = book_15m.get("asks_up" if legs[1] == "UP" else "asks_down") or []
+    ladder = [pair_cost(asks_5m, asks_15m, size, fee_rate) for size in sizes]
+    result["ladder"] = ladder
+    priced = [row for row in ladder if row["cost_per_pair"] is not None]
+    if not priced:
+        result["issues"] = ["no size could be filled from displayed depth"]
+        return result
+    best = max(priced, key=lambda row: row["guaranteed_edge_per_pair"])
+    result["best_edge_per_pair"] = best["guaranteed_edge_per_pair"]
+    result["best_size"] = best["quantity"]
+    # Admissible means "an executable pair with a positive guaranteed floor existed", NOT that
+    # it should be traded. Trading needs one-leg risk, which this recorder does not model.
+    result["admissible"] = best["guaranteed_edge_per_pair"] > 0
+    return result
+
+
+# --------------------------------------------------------------------------------------------
+# Storage
+
+
+DDL = """
+CREATE TABLE IF NOT EXISTS cross_window_observations (
+    observed_ts      DOUBLE,
+    schema_version   VARCHAR,
+    settlement_ts    BIGINT,
+    slug_5m          VARCHAR,
+    slug_15m         VARCHAR,
+    strike_5m        DOUBLE,
+    strike_15m       DOUBLE,
+    buy_side_5m      VARCHAR,
+    buy_side_15m     VARCHAR,
+    low_strike       DOUBLE,
+    high_strike      DOUBLE,
+    admissible       BOOLEAN,
+    best_size        DOUBLE,
+    best_edge_per_pair DOUBLE,
+    issues           VARCHAR,
+    ladder_json      VARCHAR
+);
+"""
+
+
+def connect(path: Path = DB_PATH):
+    import duckdb
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(path))
+    con.execute(DDL)
+    return con
+
+
+def persist(con, result: dict) -> None:
+    con.execute(
+        "INSERT INTO cross_window_observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [result["observed_ts"], result["schema_version"], result["settlement_ts"],
+         result["slug_5m"], result["slug_15m"], result["strike_5m"], result["strike_15m"],
+         result["buy_side_5m"], result["buy_side_15m"], result["low_strike"],
+         result["high_strike"], result["admissible"], result["best_size"],
+         result["best_edge_per_pair"], json.dumps(result["issues"]),
+         json.dumps(result["ladder"])])
+
+
+# --------------------------------------------------------------------------------------------
+# Selftest
+
+
+def selftest() -> int:
+    checks = 0
+
+    def check(cond, text):
+        nonlocal checks
+        assert cond, text
+        checks += 1
+        print(f"  PASS  {text}")
+
+    # --- THE PAIRING RULE ------------------------------------------------------------
+    check(settlement_ts(1_000, 5) == 1_300 and settlement_ts(400, 15) == 1_300,
+          "a 5m opening at T+600 and a 15m opening at T settle at the SAME instant")
+    rounds = [
+        {"slug": "btc-updown-15m-400", "horizon": 15, "anchor_ts": 400},
+        {"slug": "btc-updown-5m-1000", "horizon": 5, "anchor_ts": 1_000},
+        {"slug": "btc-updown-5m-1300", "horizon": 5, "anchor_ts": 1_300},   # settles later
+    ]
+    pairs = find_pairs(rounds)
+    check(len(pairs) == 1 and pairs[0][0]["anchor_ts"] == 1_000,
+          "only the rounds that settle together are paired")
+    check(find_pairs([rounds[0]]) == [], "a 15m with no matching 5m yields no pair")
+    off_by_one = find_pairs([{"slug": "a", "horizon": 15, "anchor_ts": 400},
+                             {"slug": "b", "horizon": 5, "anchor_ts": 1_001}])
+    check(off_by_one == [],
+          "a ONE SECOND settlement difference is not a pair - the floor argument does not "
+          "survive two different settlement observations")
+
+    # --- LEG ORDERING IS THE SAFETY PROPERTY -----------------------------------------
+    legs = dominance_legs(100_000.0, 100_100.0)
+    check(legs == ("UP", "DOWN", 100_000.0, 100_100.0),
+          "with the 5m strike LOWER, buy UP on the 5m and DOWN on the 15m")
+    legs_rev = dominance_legs(100_100.0, 100_000.0)
+    check(legs_rev == ("DOWN", "UP", 100_000.0, 100_100.0),
+          "with the 5m strike HIGHER the sides swap - UP always sits on the lower strike")
+    check(dominance_legs(100_000.0, 100_000.0) is None,
+          "EQUAL strikes give no dominance premium and are refused")
+    check(dominance_legs(None, 100_000.0) is None, "a missing strike is refused")
+
+    # --- THE PAYOFF FLOOR, EXHAUSTIVELY ----------------------------------------------
+    low, high = 100_000.0, 100_100.0
+    for price in (99_000, 100_000, 100_000.01, 100_050, 100_100, 100_100.01, 101_000):
+        assert payout(price, low, high) >= GUARANTEED_FLOOR, price
+    checks += 1
+    print("  PASS  the correctly ordered pair pays at least $1 at every settlement price")
+    check(payout(100_050, low, high) == 2.0,
+          "and $2 inside the band between the two strikes")
+
+    # THE REAL TIE RULE IS ">=", so verify the floor holds under it too - not only under the
+    # ">" convention I assumed before reading the market text.
+    for price in (99_000, 100_000, 100_050, 100_100, 101_000):
+        assert payout(price, low, high, tie_is_up=True) >= GUARANTEED_FLOOR, price
+    checks += 1
+    print("  PASS  the floor also holds under the REAL '>=' tie rule, where ties resolve UP")
+
+    live_text = ('This market will resolve to "Up" if the Bitcoin price at the end of the time '
+                 'range specified in the title is greater than or equal to the price at the '
+                 'beginning of that range. Otherwise, it will resolve to "Down". The resolution '
+                 'source for this market is information from Chainlink, specifically the BTC/USD '
+                 'data stream available at https://data.chain.link/streams/btc-usd.')
+    rules = parse_market_rules(live_text, "https://data.chain.link/streams/btc-usd")
+    check(rules["tie_rule"] == "up" and rules["comparator"] == ">=",
+          "the LIVE market text parses to a tie rule of UP - I had defaulted it to DOWN, and "
+          "because both markets got the same wrong default the equivalence check passed")
+    check(rules["oracle"] == "chainlink-btc-usd",
+          "and the oracle is read from the resolution source, not assumed")
+    strict = parse_market_rules("resolves Up if the price is greater than the starting price")
+    check(strict["tie_rule"] == "down" and strict["comparator"] == ">",
+          "a strictly-greater-than market parses to a tie rule of DOWN - the two are "
+          "distinguished, not collapsed")
+    unknown = parse_market_rules("some market with no comparator language at all")
+    check(unknown["tie_rule"] is None and unknown["oracle"] is None,
+          "an unparseable rule returns None so the caller REFUSES - a default here would make "
+          "two markets agree without evidence")
+
+    # The INVERTED pair, which is what makes ordering load-bearing.
+    def inverted(price):
+        up_leg = 1.0 if price > high else 0.0
+        down_leg = 0.0 if price > low else 1.0
+        return up_leg + down_leg
+    check(inverted(100_050) == 0.0,
+          "buying UP on the HIGHER strike pays ZERO in the middle band - which is why "
+          "dominance_legs never returns that ordering")
+
+    # --- BOOK WALKING ----------------------------------------------------------------
+    asks = [(0.40, 100.0), (0.42, 200.0), (0.45, 500.0)]
+    price, filled, levels = walk_book(asks, 100.0)
+    check(price == 0.40 and filled == 100.0 and levels == 1,
+          "a size inside the top level fills at the top price")
+    price, filled, levels = walk_book(asks, 250.0)
+    check(abs(price - (100 * 0.40 + 150 * 0.42) / 250) < 1e-9 and levels == 2,
+          "a larger size WALKS the ladder and pays a worse average")
+    check(walk_book(asks, 100.0)[0] < walk_book(asks, 700.0)[0],
+          "so cost rises with size - top-of-book pricing would have hidden that")
+    check(walk_book([], 10.0) == (None, 0.0, 0), "an empty book fills nothing")
+    check(walk_book(asks, 5_000.0)[1] == 800.0,
+          "insufficient depth reports the PARTIAL fill rather than pretending")
+
+    # --- PAIR COST AND FEES ----------------------------------------------------------
+    cheap_a = [(0.45, 1_000.0)]
+    cheap_b = [(0.45, 1_000.0)]
+    row = pair_cost(cheap_a, cheap_b, 100.0)
+    expected_fee = polymarket_taker_fee_per_share(0.45)
+    check(abs(row["cost_per_pair"] - (0.90 + 2 * expected_fee)) < 1e-9,
+          "pair cost includes BOTH legs and BOTH fees")
+    check(row["guaranteed_edge_per_pair"] > 0,
+          "a pair bought at 90c plus fees still clears the $1 floor")
+    dear = pair_cost([(0.50, 1_000.0)], [(0.49, 1_000.0)], 100.0)
+    check(dear["guaranteed_edge_per_pair"] < 0,
+          "a pair at 99c does NOT clear once ~3.5c of fees are added - the fee is what makes "
+          "most of these unprofitable")
+    thin = pair_cost([(0.40, 10.0)], [(0.40, 10.0)], 100.0)
+    check(thin["cost_per_pair"] is None and thin["reason"] == "insufficient_depth",
+          "insufficient depth yields NO cost rather than a price for shares that do not exist")
+
+    # --- EQUIVALENCE IS FAIL-CLOSED ---------------------------------------------------
+    good_5 = {"anchor_ts": 1_000, "strike": 100_000.0, "oracle": "chainlink-btc-usd",
+              "tie_rule": "down", "status": "open", "slug": "btc-updown-5m-1000"}
+    good_15 = {"anchor_ts": 400, "strike": 100_100.0, "oracle": "chainlink-btc-usd",
+               "tie_rule": "down", "status": "open", "slug": "btc-updown-15m-400"}
+    check(equivalence_issues(good_5, good_15, 1.0, 1.2) == [],
+          "matching settlement, oracle, tie rule and fresh books raise no issues")
+    # equivalence_issues carries its OWN settlement check, independent of find_pairs. Both
+    # must refuse a near-miss: a mutation relaxing this one to "within 600s" survived every
+    # other check here, and 600s is exactly the 5m/15m offset - the most likely wrong pair.
+    near_miss = equivalence_issues({**good_5, "anchor_ts": 1_300}, good_15, 1.0, 1.0)
+    check(any("settlement mismatch" in issue for issue in near_miss),
+          "a 300s settlement difference is refused by equivalence_issues, not only by pairing")
+    off_by_600 = equivalence_issues({**good_5, "anchor_ts": 1_600}, good_15, 1.0, 1.0)
+    check(any("settlement mismatch" in issue for issue in off_by_600),
+          "...and so is a 600s difference, which is exactly the 5m/15m open offset")
+    check(equivalence_issues({**good_5, "anchor_ts": 1_001}, good_15, 1.0, 1.0),
+          "even a ONE SECOND difference is an issue - settlement equality is exact")
+
+    check(any("oracle" in issue for issue in
+              equivalence_issues({**good_5, "oracle": "pyth"}, good_15, 1.0, 1.0)),
+          "a DIFFERENT oracle is refused - two oracles can disagree at settlement")
+    check(any("oracle identity" in issue for issue in
+              equivalence_issues({**good_5, "oracle": ""}, good_15, 1.0, 1.0)),
+          "an UNRECORDED oracle is refused too - unproven is not the same as fine")
+    check(any("tie rule" in issue for issue in
+              equivalence_issues({**good_5, "tie_rule": "up"}, good_15, 1.0, 1.0)),
+          "a differing tie rule is refused; it decides the exactly-at-strike case")
+    check(any("skew" in issue for issue in
+              equivalence_issues(good_5, good_15, 1.0, 5.0)),
+          "books observed 4 seconds apart are not one decision")
+    check(any("status" in issue for issue in
+              equivalence_issues({**good_5, "status": "closed"}, good_15, 1.0, 1.0)),
+          "a closed market is not tradeable evidence")
+
+    # --- END TO END -------------------------------------------------------------------
+    book_5 = {"recv_ts": 1.0, "asks_up": [(0.44, 1_000.0)], "asks_down": [(0.60, 1_000.0)]}
+    book_15 = {"recv_ts": 1.1, "asks_up": [(0.62, 1_000.0)], "asks_down": [(0.44, 1_000.0)]}
+    result = evaluate(good_5, good_15, book_5, book_15)
+    check(result["admissible"] and result["best_edge_per_pair"] > 0,
+          "an 88c pair across two synchronized markets is recorded as admissible")
+    check(result["buy_side_5m"] == "UP" and result["buy_side_15m"] == "DOWN",
+          "and it bought the dominating ordering")
+    check(len(result["ladder"]) == len(SIZE_LADDER),
+          "the full capacity ladder is recorded, not just one size")
+
+    bad = evaluate({**good_5, "oracle": "pyth"}, good_15, book_5, book_15)
+    check(not bad["admissible"] and bad["ladder"] == [],
+          "a non-equivalent pair is never priced at all - the issue short-circuits it")
+
+    expensive = evaluate(good_5, good_15,
+                         {"recv_ts": 1.0, "asks_up": [(0.52, 1_000.0)], "asks_down": []},
+                         {"recv_ts": 1.0, "asks_up": [], "asks_down": [(0.50, 1_000.0)]})
+    check(not expensive["admissible"] and expensive["best_edge_per_pair"] < 0,
+          "a 102c pair is recorded with a NEGATIVE edge rather than dropped - the distribution "
+          "of near-misses is the evidence this recorder exists to gather")
+
+    # --- IT MUST NOT BE ABLE TO TRADE -------------------------------------------------
+    # --- STRIKE OBSERVATION -----------------------------------------------------------
+    _STRIKE_CACHE.clear()
+    check(record_strike_observation(1_000, 100_000.0, 1_002.0),
+          "a price sampled 2s after the round opens is accepted as the strike")
+    check(observe_strike(1_000) == 100_000.0, "and it is remembered for later pairing")
+    check(not record_strike_observation(2_000, 100_000.0, 2_060.0),
+          "a sample taken 60s after the open is REFUSED - the oracle fixed at the anchor, and "
+          "a late price is a different number that would shift the dominance ordering")
+    check(observe_strike(2_000) is None,
+          "so that round has no strike, and evaluate() will refuse it rather than guess")
+    record_strike_observation(1_000, 99_999.0, 1_001.0)
+    check(observe_strike(1_000) == 100_000.0,
+          "the FIRST valid observation wins - a later one cannot silently move a strike that "
+          "has already been used for pairing")
+    check(observe_strike(999_999) is None, "an unobserved round has no strike")
+
+    # --- Parsed, not grepped. A raw text scan matches its OWN list of forbidden names, and it
+    # would also flag a name that only ever appears inside a string. What matters is whether
+    # this module can CALL or IMPORT an order-placement surface.
+    import ast
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    identifiers: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+        elif isinstance(node, ast.alias):
+            identifiers.add((node.asname or node.name).split(".")[-1])
+    banned = {"post_order", "place_order", "create_order", "submit_order", "cancel_order",
+              "ClobClient", "private_key", "sign_order"}
+    leaked = identifiers & banned
+    assert not leaked, f"order-placement surface reachable: {sorted(leaked)}"
+    checks += 1
+    print("  PASS  no order-placement name is called or imported anywhere in this module")
+
+    # And the guard must be able to FAIL, or it proves nothing.
+    probe = ast.parse("import py_clob_client as c; c.ClobClient().post_order(order)")
+    probe_ids = {n.id for n in ast.walk(probe) if isinstance(n, ast.Name)}
+    probe_ids |= {n.attr for n in ast.walk(probe) if isinstance(n, ast.Attribute)}
+    probe_ids |= {(n.asname or n.name).split(".")[-1]
+                  for n in ast.walk(probe) if isinstance(n, ast.alias)}
+    check(bool(probe_ids & banned),
+          "...and the same scan DOES flag a module that imports and calls a CLOB client")
+
+    print(f"\nCROSS-WINDOW RECORDER SELFTEST: PASS ({checks} checks)")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# Live collection
+
+
+#: Strikes observed at round open, keyed by anchor timestamp. A round's strike is the oracle
+#: price at its OWN open, so the 15m leg of a pair needs a value captured ten minutes earlier.
+_STRIKE_CACHE: dict[int, float] = {}
+_RULES_CACHE: dict[str, dict] = {}
+
+#: How far from the anchor an observation may be and still be treated as the strike. The oracle
+#: fixes at the anchor instant; a price sampled a minute later is a different number.
+MAX_STRIKE_OBSERVATION_LAG_S = 20.0
+
+
+def record_strike_observation(anchor_ts: int, price: float, observed_ts: float) -> bool:
+    """Remember the oracle price at a round's open. Refuses an observation taken too late.
+
+    Returns True when stored. A strike guessed from a late sample would silently shift the
+    dominance ordering, which is the one thing this recorder must get right."""
+    if price is None or anchor_ts is None:
+        return False
+    if abs(float(observed_ts) - float(anchor_ts)) > MAX_STRIKE_OBSERVATION_LAG_S:
+        return False
+    _STRIKE_CACHE.setdefault(int(anchor_ts), float(price))
+    return True
+
+
+def observe_strike(anchor_ts: int):
+    """The remembered strike for this round, or None when it was never observed."""
+    return _STRIKE_CACHE.get(int(anchor_ts))
+
+
+def _market_rules(slug: str) -> dict:
+    """Parsed settlement rules for a slug, fetched once."""
+    if not slug:
+        return {"oracle": None, "tie_rule": None}
+    if slug in _RULES_CACHE:
+        return _RULES_CACHE[slug]
+    rules = {"oracle": None, "tie_rule": None}
+    try:
+        import requests
+        payload = requests.get(
+            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=8).json()
+        market = payload[0] if isinstance(payload, list) and payload else payload
+        rules = parse_market_rules(market.get("description", ""),
+                                   market.get("resolutionSource", ""))
+        rules["status"] = "closed" if market.get("closed") else "open"
+    except Exception:
+        pass
+    _RULES_CACHE[slug] = rules
+    return rules
+
+
+def collect_once(con=None, verbose: bool = True) -> list[dict]:
+    """One discovery + book pass. Returns the evaluated candidates."""
+    from polymarket.live_btc_updown_recorder import discover_rounds, get_book
+
+    rounds = discover_rounds()
+    normalised = []
+    for r in rounds:
+        # Rules are PARSED from the market text, never defaulted. Gamma does not publish the
+        # strike as a number - the market resolves against "the price at the beginning of that
+        # range" on the Chainlink BTC/USD stream - so the strike must be OBSERVED at the
+        # round's open and remembered. A 15m round's strike was fixed ten minutes ago, which a
+        # forward recorder has after one warm-up cycle and cannot reconstruct before that.
+        rules = _market_rules(r.get("slug"))
+        strike = observe_strike(int(r["anchor_ts"])) if r.get("anchor_ts") else None
+        normalised.append({
+            "slug": r.get("slug"),
+            "horizon": r.get("horizon"),
+            "anchor_ts": r.get("anchor_ts"),
+            "strike": strike,
+            "oracle": rules.get("oracle"),
+            "tie_rule": rules.get("tie_rule"),
+            "status": r.get("status") or "open",
+            "tokens": {"up": r.get("up"), "down": r.get("down")},
+        })
+    pairs = find_pairs(normalised)
+    if verbose:
+        print(f"  {len(normalised)} rounds -> {len(pairs)} synchronized 5m/15m pairs")
+
+    results = []
+    for round_5m, round_15m in pairs:
+        books = {}
+        for label, market in (("5m", round_5m), ("15m", round_15m)):
+            tokens = market.get("tokens") or {}
+            up_book = get_book(tokens.get("up")) if tokens.get("up") else {}
+            down_book = get_book(tokens.get("down")) if tokens.get("down") else {}
+            books[label] = {
+                "recv_ts": max(float(up_book.get("recv_ts") or 0.0),
+                               float(down_book.get("recv_ts") or 0.0)) or time.time(),
+                "asks_up": up_book.get("asks") or [],
+                "asks_down": down_book.get("asks") or [],
+            }
+        result = evaluate(round_5m, round_15m, books["5m"], books["15m"])
+        results.append(result)
+        if con is not None:
+            persist(con, result)
+        if verbose:
+            edge = result["best_edge_per_pair"]
+            print(f"    {result['slug_5m']} + {result['slug_15m']}  "
+                  f"admissible={result['admissible']}  "
+                  f"edge={f'{edge:+.4f}' if edge is not None else 'n/a'}  "
+                  f"{('issues: ' + '; '.join(result['issues'])) if result['issues'] else ''}")
+    return results
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--forever", action="store_true")
+    parser.add_argument("--interval", type=float, default=5.0)
+    args = parser.parse_args()
+    if args.selftest:
+        return selftest()
+    if not (args.once or args.forever):
+        parser.error("pass --selftest, --once or --forever")
+
+    con = connect()
+    print(f"cross-window recorder -> {DB_PATH}")
+    print("RECORD ONLY. This module cannot place an order.")
+    try:
+        while True:
+            try:
+                collect_once(con)
+            except Exception as exc:                     # never let one bad pass end collection
+                print(f"  pass failed: {type(exc).__name__}: {str(exc)[:160]}")
+            if args.once:
+                break
+            time.sleep(max(1.0, args.interval))
+    finally:
+        con.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
