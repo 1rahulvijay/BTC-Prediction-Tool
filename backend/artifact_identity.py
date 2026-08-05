@@ -151,6 +151,52 @@ def model_runtime_versions() -> dict[str, str]:
     return versions
 
 
+def _current_semantics_versions() -> dict[str, Any]:
+    """The versions the checker compares against. Imported lazily to avoid an import cycle.
+
+    Absent means ABSENT - never a placeholder. A fabricated version would let a stale artifact
+    certify itself as current, which is the exact failure this provenance exists to prevent.
+    """
+    feature = training = None
+    try:
+        from features import FEATURE_SEMANTICS_VERSION as _f
+        feature = _f
+    except Exception:
+        pass
+    try:
+        from model import TRAINING_SEMANTICS_VERSION as _t
+        training = _t
+    except Exception:
+        pass
+    return {"feature": feature, "training": training}
+
+
+def _source_commit_state() -> tuple[str | None, bool | None]:
+    """(commit, dirty). None on either side means unprovable, and the checker refuses that.
+
+    `code_dirty` is not decoration: an artifact trained from a modified working tree cannot be
+    reproduced from its commit, so the checker treats anything other than a definite False as
+    unverifiable.
+    """
+    import subprocess
+
+    root = str(Path(__file__).resolve().parents[1])
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
+                                text=True, timeout=15).stdout.strip() or None
+    except Exception:
+        return None, None
+    try:
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                                capture_output=True, text=True, timeout=15)
+        if status.returncode != 0:
+            return commit, None
+        dirty = bool(status.stdout.strip())
+    except Exception:
+        return commit, None
+    return commit, dirty
+
+
 def current_training_identity(
     *,
     requested_days: int | None = None,
@@ -180,8 +226,40 @@ def current_training_identity(
     )
     code_files = list(code_paths or [])
     runtime_versions = model_runtime_versions()
+
+    # ---- THE SERVING CONTRACT -------------------------------------------------------------
+    # check_feature_contract.verdict_for is what serving consults, and it fails CLOSED on any
+    # key it cannot read. It demanded nine keys; this function emitted NONE of them under those
+    # names, and four did not exist in any form:
+    #
+    #   feature_semantics_version   never written  <- the entire point of the check
+    #   training_semantics_version  never written
+    #   training_cutoff             never written  <- places the artifact in time
+    #   code_dirty                  never written  <- was it trained from a dirty tree
+    #   artifact_sha256             written as artifact_hash
+    #   feature_schema_sha256       written as feature_schema_hash
+    #   training_dataset_sha256     written as training_data_hash
+    #   code_commit                 written as code_hash (a DIFFERENT thing: content vs commit)
+    #
+    # So a retrain wrote a manifest that the checker still rejected as UNKNOWN, and the gate
+    # could never go green no matter how many times the model was rebuilt. That is why the
+    # right repair is to make the two sides agree on one contract - not to relax the checker,
+    # which is the one component correctly refusing to certify what it cannot read.
+    #
+    # The legacy names are kept alongside so existing readers (artifact_compatibility, the
+    # oracle freeze) continue to work.
+    semantics = _current_semantics_versions()
+    commit, dirty = _source_commit_state()
     return {
         "manifest_version": 1,
+        "feature_semantics_version": semantics["feature"],
+        "training_semantics_version": semantics["training"],
+        "training_cutoff": (split_timestamps or {}).get("train_end_ts_ms")
+                           or summary.get("max_ts_ms"),
+        "code_commit": commit,
+        "code_dirty": dirty,
+        "feature_schema_sha256": schema_hash,
+        "training_dataset_sha256": matrix_hash,
         "requested_days": int(
             requested_days
             if requested_days is not None
@@ -276,6 +354,9 @@ def write_artifact_manifest(
         **identity,
         "artifact_type": artifact_type,
         "artifact_hash": artifact_hash,
+        # The serving checker reads `artifact_sha256`; existing readers read `artifact_hash`.
+        # Both are the same value, written under both names so neither side has to guess.
+        "artifact_sha256": artifact_hash,
         **extra_values,
     }
     path = artifact_manifest_path(artifact)
