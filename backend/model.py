@@ -1525,11 +1525,43 @@ class MultiModelEnsemble:
                                         except Exception:
                                             pass
 
-                                        # P1-5. WEIGHTS. The production seat carries recency,
-                                        # class balancing and ambiguity exclusion in `sw`; an
-                                        # unweighted fold optimises a different objective and
-                                        # trains on the ambiguous rows every other seat excludes.
-                                        sw_tr = np.asarray(sw_stack, dtype=np.float64)[tr_idx]
+                                        # P1-5. WEIGHTS, RECOMPUTED FOLD-LOCALLY.
+                                        #
+                                        # Slicing the global `sw` into a fold is the obvious
+                                        # repair and it is wrong. The global weights reference
+                                        # the END of the whole training slice:
+                                        #
+                                        #   recency_w    = 0.5 ** ((split_idx - 1 - i) / hl)
+                                        #   similarity_w = f(X, ..., split_idx)
+                                        #
+                                        # For an early OOF fold, split_idx lies in that fold's
+                                        # FUTURE, so sliced weights would rank its rows by
+                                        # distance from a point it must not know about. The
+                                        # unweighted fit was one mismatch; a future-referenced
+                                        # weight would have been a second, subtler one.
+                                        #
+                                        # Recency and class balance are therefore rebuilt
+                                        # against this fold's own last training row. Ambiguity
+                                        # exclusion is row-local (a bar either touched both
+                                        # barriers or it did not), so it is carried across as
+                                        # a mask.
+                                        _sw_global = np.asarray(sw_stack, dtype=np.float64)
+                                        _keep = (_sw_global[tr_idx] > 0).astype(np.float64)
+                                        _pos = np.asarray(tr_idx, dtype=np.float64)
+                                        _fold_end = _pos.max() if len(_pos) else 0.0
+                                        _half_life = max(1.0, len(tr_idx) / 4.0)
+                                        _rec = 0.5 ** ((_fold_end - _pos) / _half_life)
+                                        _cnt = np.bincount(
+                                            y_tr_local[_keep > 0].astype(int),
+                                            minlength=len(fit_classes)).astype(np.float64)
+                                        _inv = _cnt.sum() / (len(fit_classes)
+                                                             * np.maximum(_cnt, 1.0))
+                                        _cls = np.clip(_inv / max(_inv.mean(), 1e-9), 0.5, 2.0)
+                                        sw_tr = _rec * _cls[y_tr_local.astype(int)] * _keep
+                                        if not np.any(sw_tr > 0):
+                                            raise ValueError(
+                                                f"fold for seat '{name}' has no positively "
+                                                f"weighted rows after ambiguity exclusion")
 
                                         # P1-5. CALIBRATION. Match the served wrapper, or drop
                                         # the seat. `cv=2` inside an already-purged outer fold

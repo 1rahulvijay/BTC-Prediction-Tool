@@ -162,6 +162,9 @@ jobs:
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
+      - name: Conditional offset v2 (reconstruction guard, init_score, noise floor)
+        run: python research/conditional_offset_v2.py --selftest
+
       - name: Conditional path head (geometry only, no authority)
         run: python backend/conditional_path_head.py --selftest
 
@@ -690,6 +693,7 @@ jobs:
           python backend/test_hmm_bundle_binding.py || exit /b 1
           python backend/test_backtest_ohlc_honesty.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
+          python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/conditional_path_head.py --selftest || exit /b 1
           python backend/test_conditional_path_wiring.py || exit /b 1
           python backend/test_conformal_source_honesty.py || exit /b 1
