@@ -623,10 +623,12 @@ def run_experiment(lattice: pd.DataFrame) -> dict:
     p_full_test = clf_full.predict_proba(Xte)[:, 1]
     p_full_test = np.clip(p_full_test, 0.01, 0.99)
 
-    # ── 3. ML residual model ─────────────────────────────────────────────
-    # Train on: does the actual outcome differ from the baseline prediction?
-    # This is: P(anchor_up) - P_base should be positive when base underestimates
-    # We train a classifier on anchor_up with P_base as an additional feature
+    # ── 3. Baseline + ML as an EXTRA FEATURE (not a residual) ────────────
+    # Kept and renamed. This arm appends p_base as one more column, which leaves the model
+    # entirely free to ignore or override the baseline - it is a variant of the full model,
+    # not a correction to geometry. It previously carried the name "ML residual", which is why
+    # it reported numbers identical to the full model and why the residual architecture looked
+    # tested when it had not been.
     Xtr_res = np.column_stack([Xtr, p_base_train])
     Xte_res = np.column_stack([Xte, p_base_test])
     clf_residual = HistGradientBoostingClassifier(**params)
@@ -634,11 +636,50 @@ def run_experiment(lattice: pd.DataFrame) -> dict:
     p_residual_test = clf_residual.predict_proba(Xte_res)[:, 1]
     p_residual_test = np.clip(p_residual_test, 0.01, 0.99)
 
+    # ── 4. TRUE log-odds OFFSET model ────────────────────────────────────
+    #     logit(p_final) = logit(p_base) + f(features)
+    #
+    # This is the architecture the concept actually specifies, and it had never been run. The
+    # baseline enters as a fixed per-row init_score, so boosting starts FROM geometry and can
+    # only learn a correction on top of it. It cannot relearn - or destroy - the structural
+    # relationship the way an unconstrained model can, which is the entire point of the design.
+    #
+    # HistGradientBoosting has no offset parameter; LightGBM's init_score does exactly this.
+    p_offset_test = None
+    offset_gain = None
+    try:
+        import lightgbm as lgb
+
+        pb_tr = np.clip(p_base_train, 1e-6, 1 - 1e-6)
+        pb_te = np.clip(p_base_test, 1e-6, 1 - 1e-6)
+        init_tr = np.log(pb_tr / (1.0 - pb_tr))
+        init_te = np.log(pb_te / (1.0 - pb_te))
+
+        booster = lgb.train(
+            {"objective": "binary", "learning_rate": 0.03, "num_leaves": 31,
+             "min_data_in_leaf": 200, "lambda_l2": 5.0, "feature_fraction": 0.8,
+             "bagging_fraction": 0.8, "bagging_freq": 1, "verbose": -1, "seed": 42},
+            lgb.Dataset(Xtr, label=ytr, init_score=init_tr, feature_name=list(feature_cols)),
+            num_boost_round=400,
+        )
+        # raw_score gives f(features); the offset is added back explicitly so the arithmetic
+        # is visible rather than hidden inside the library.
+        correction = booster.predict(Xte, raw_score=True)
+        p_offset_test = 1.0 / (1.0 + np.exp(-(init_te + correction)))
+        p_offset_test = np.clip(p_offset_test, 0.01, 0.99)
+        offset_gain = float(np.mean(np.abs(correction)))
+        print(f"  offset model: mean |log-odds correction| = {offset_gain:.4f} "
+              f"({'geometry is being adjusted' if offset_gain > 0.02 else 'correction is ~zero'})")
+    except Exception as exc:                       # noqa: BLE001
+        print(f"  offset model unavailable ({exc}); reporting the other three arms only")
+
     # Store predictions
     test = test.copy()
     test["p_base"] = p_base_test
     test["p_full"] = p_full_test
     test["p_residual"] = p_residual_test
+    if p_offset_test is not None:
+        test["p_offset"] = p_offset_test
 
     results = {
         "test": test,
@@ -662,8 +703,11 @@ def print_results(results: dict) -> str:
     models = {
         "Structural baseline": test["p_base"].to_numpy(),
         "Full ML":             test["p_full"].to_numpy(),
-        "ML + baseline":       test["p_residual"].to_numpy(),
+        "ML + base feature":   test["p_residual"].to_numpy(),
     }
+    if "p_offset" in test.columns:
+        # The architecture the concept specifies: logit(base) + f(features).
+        models["Log-odds OFFSET"] = test["p_offset"].to_numpy()
 
     print(f"\n  {'Model':<24}{'Brier':>10}{'AUC':>10}{'n':>10}")
     print("  " + "-" * 52)
@@ -787,10 +831,10 @@ def print_results(results: dict) -> str:
     # ── Verdict ───────────────────────────────────────────────────────────
     base_brier = scores["Structural baseline"]["brier"]
     ml_brier = scores["Full ML"]["brier"]
-    res_brier = scores["ML + baseline"]["brier"]
+    res_brier = scores["ML + base feature"]["brier"]
     base_auc = scores["Structural baseline"]["auc"]
     ml_auc = scores["Full ML"]["auc"]
-    res_auc = scores["ML + baseline"]["auc"]
+    res_auc = scores["ML + base feature"]["auc"]
 
     brier_improvement = (base_brier - ml_brier) / base_brier * 100 if base_brier > 0 else 0
     res_improvement = (base_brier - res_brier) / base_brier * 100 if base_brier > 0 else 0
