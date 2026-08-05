@@ -654,6 +654,61 @@ simulator = TradingSimulator()
 regime_engine = MarketRegime()
 
 
+def _conditional_path_block(ptb_latest: dict) -> dict:
+    """Structural anchor-geometry probabilities for every open round. DISPLAY ONLY.
+
+    Crash-safe by construction: the price-to-beat tick must never fail because a diagnostic
+    could not be computed, so every branch either returns a payload or a stated reason.
+
+    The sigma is taken from CLOSED bars only. `data_state["klines"]` carries the forming bar
+    last, and including it would let a partially-formed minute set the denominator of every
+    probability on the card.
+    """
+    import conditional_path_head as _cph
+
+    out = {"authority": _cph.AUTHORITY, "contract": _cph.CONTRACT, "rounds": {}}
+    try:
+        kl = data_state.get("klines") or []
+        closed = [k for k in kl if k.get("is_closed") is not False]
+        # Drop the newest bar as well when the feed does not mark closure - a forming bar is
+        # indistinguishable from a closed one without the flag, and guessing favours us.
+        if closed and closed is kl:
+            closed = kl[:-1]
+        sigma = _cph.realized_sigma_per_min([k["close"] for k in closed])
+        out["sigma_per_min"] = sigma
+        if sigma is None:
+            out["unavailable_reason"] = "insufficient closed-bar history for a causal sigma"
+            return out
+        # The round view carries `price_to_beat` and `window_end` (MILLISECONDS); it carries
+        # neither seconds_left nor a price, so both are derived here. Field names were read
+        # off the round-state construction rather than assumed - the head's own selftest
+        # exercises the pure function and would not have caught a wrong key.
+        now_ms = int(time.time() * 1000)
+        price_now = float(closed[-1]["close"]) if closed else None
+        out["price_now"] = price_now
+        for horizon, view in (ptb_latest or {}).items():
+            if not isinstance(view, dict):
+                continue
+            anchor = view.get("price_to_beat")
+            window_end = view.get("window_end")
+            if anchor is None or price_now is None or window_end is None:
+                out["rounds"][str(horizon)] = {
+                    "unavailable_reason": "round view lacks price_to_beat or window_end"}
+                continue
+            seconds_left = (int(window_end) - now_ms) / 1000.0
+            if seconds_left <= 0:
+                out["rounds"][str(horizon)] = {
+                    "unavailable_reason": "round already closed"}
+                continue
+            out["rounds"][str(horizon)] = _cph.path(
+                price_now=price_now, anchor=anchor, sigma_per_min=sigma,
+                seconds_left=seconds_left, round_minutes=int(horizon))
+    except Exception as exc:                       # never take the tick down
+        out["unavailable_reason"] = f"{type(exc).__name__}: {exc}"
+        logger.debug("conditional path block skipped: %s", exc)
+    return out
+
+
 def _install_hmm_state(bundle, reason: str) -> bool:
     """Install a BUNDLE's regime parameters into the live engine. The only way they get there.
 
@@ -1059,10 +1114,16 @@ async def price_to_beat_ticker():
         # main payload. Lightweight: just the live latest rounds for both trackers (no accuracy/
         # recent — those change slowly and ride the main payload). Crash-safe.
         try:
+            _ptb_latest = price_to_beat_tracker.latest()
             await broadcast({
                 "type": "ptb_tick",
-                "pyth": price_to_beat_tracker.latest(),
+                "pyth": _ptb_latest,
                 "binance": price_to_beat_binance_tracker.latest(),
+                # Structural anchor geometry, DISPLAY ONLY. Measured at ~17-21% Brier skill
+                # against a constant 0.50, and measured to BEAT every ML arm tried against it -
+                # but never once compared with the Polymarket ask, which is the only test that
+                # decides tradeability. It gates nothing and sizes nothing.
+                "conditional_path": _conditional_path_block(_ptb_latest),
             })
         except Exception as exc:
             logger.debug("Price-to-beat tick broadcast skipped: %s", exc)
