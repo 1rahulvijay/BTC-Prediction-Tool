@@ -664,15 +664,24 @@ def _conditional_path_block(ptb_latest: dict) -> dict:
     last, and including it would let a partially-formed minute set the denominator of every
     probability on the card.
     """
-    import conditional_path_head as _cph
+    import geometry_endpoint_head as _cph
 
     out = {"authority": _cph.AUTHORITY, "contract": _cph.CONTRACT, "rounds": {}}
     try:
         kl = data_state.get("klines") or []
-        closed = [k for k in kl if k.get("is_closed") is not False]
-        # Drop the newest bar as well when the feed does not mark closure - a forming bar is
-        # indistinguishable from a closed one without the flag, and guessing favours us.
-        if closed and closed is kl:
+        # CAUSALITY. Only bars that have DEMONSTRABLY closed may enter sigma.
+        #
+        # The previous guard was `if closed and closed is kl: closed = kl[:-1]`, which is dead
+        # code - a list comprehension always allocates a new list, so `closed is kl` is always
+        # False. When the feed omitted `is_closed` entirely, the forming bar therefore entered
+        # the volatility estimate, and a partially-formed minute's move leaked into every
+        # probability on the card.
+        #
+        # The rule is now positive: a bar counts only if it SAYS it is closed, or if a later
+        # bar exists (which proves it closed). The newest bar is dropped unless explicitly
+        # flagged, because "unmarked" and "closed" must not be treated as the same thing.
+        closed = [k for k in kl if k.get("is_closed") is True]
+        if not closed and len(kl) > 1:
             closed = kl[:-1]
         sigma = _cph.realized_sigma_per_min([k["close"] for k in closed])
         out["sigma_per_min"] = sigma
@@ -702,7 +711,7 @@ def _conditional_path_block(ptb_latest: dict) -> dict:
                 continue
             out["rounds"][str(horizon)] = _cph.path(
                 price_now=price_now, anchor=anchor, sigma_per_min=sigma,
-                seconds_left=seconds_left, round_minutes=int(horizon))
+                seconds_left=seconds_left, round_minutes=int(horizon), now_ms=now_ms)
     except Exception as exc:                       # never take the tick down
         out["unavailable_reason"] = f"{type(exc).__name__}: {exc}"
         logger.debug("conditional path block skipped: %s", exc)
@@ -1123,7 +1132,7 @@ async def price_to_beat_ticker():
                 # against a constant 0.50, and measured to BEAT every ML arm tried against it -
                 # but never once compared with the Polymarket ask, which is the only test that
                 # decides tradeability. It gates nothing and sizes nothing.
-                "conditional_path": _conditional_path_block(_ptb_latest),
+                "geometry_endpoint": _conditional_path_block(_ptb_latest),
             })
         except Exception as exc:
             logger.debug("Price-to-beat tick broadcast skipped: %s", exc)

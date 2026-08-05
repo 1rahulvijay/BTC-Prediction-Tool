@@ -1,9 +1,9 @@
 """The conditional path head is wired to the REAL round fields, and has no authority.
 
-    python backend/test_conditional_path_wiring.py
+    python backend/test_geometry_endpoint_wiring.py
 
 WHY THIS EXISTS SEPARATELY FROM THE HEAD'S OWN SELFTEST
-    conditional_path_head.py is pure, so its selftest proves the arithmetic and nothing about
+    geometry_endpoint_head.py is pure, so its selftest proves the arithmetic and nothing about
     the wiring. The first version of this wiring read `seconds_left` and `current_price` off the
     round view. Neither exists: the round state carries `price_to_beat`, `window_start` and
     `window_end`, and the price comes from the kline feed. Every round would have returned
@@ -25,7 +25,7 @@ try:
 except Exception:
     pass
 
-import conditional_path_head as cph                 # noqa: E402
+import geometry_endpoint_head as cph                 # noqa: E402
 import server                                       # noqa: E402
 
 _OK = True
@@ -111,10 +111,73 @@ def main() -> int:
     for banned in ("signal", "direction =", "should_trade", "size", "order"):
         chk(banned not in body.replace("conditional path", ""),
             f"the builder contains no '{banned}' - it informs, it does not decide")
-    chk("conditional_path" in src and "DISPLAY ONLY" in src,
+    chk("geometry_endpoint" in src and "DISPLAY ONLY" in src,
         "and the broadcast site marks it display-only")
 
-    print("\nCONDITIONAL PATH WIRING:", "PASS" if _OK else "FAIL")
+    print("the target contract is unmistakable")
+    chk(cph.TARGET_CONTRACT == "ENDPOINT_ABOVE_ANCHOR",
+        "the head declares an ENDPOINT target, not a path one - the old name "
+        "'conditional_path_head' invited exactly the first-touch/endpoint confusion this "
+        "repository keeps paying for")
+    chk(cph.MODEL_ASSUMPTION and cph.FORMULA_FAMILY,
+        "the stochastic assumption and formula family are pinned, not implied")
+
+    print("sigma units agree with the time units they multiply")
+    chk(cph.SIGMA_UNITS == "PER_MINUTE_LOG_RETURN_STDDEV" and cph.TIME_UNITS == "MINUTES",
+        "sigma is per-MINUTE and time is in MINUTES")
+    # The pairing, checked numerically. A per-minute sigma multiplied by sqrt(SECONDS) would
+    # be a silent sqrt(60) error making every probability ~7.7x too confident.
+    z_min = cph.anchor_z(100.10, 100.0, 0.001, 4.0)          # 4 minutes
+    z_sec = cph.anchor_z(100.10, 100.0, 0.001, 240.0)        # 240 "minutes" == the sec bug
+    chk(abs(z_min / z_sec - math.sqrt(60.0)) < 0.01,
+        f"feeding seconds where minutes are expected changes z by exactly sqrt(60) "
+        f"({z_min / z_sec:.3f}) - which is why the units are declared and asserted")
+
+    print("checkpoints carry ABSOLUTE timestamps")
+    cell = five["checkpoints"][0]
+    chk(cell.get("checkpoint_at_ms") and cell["checkpoint_at_ms"] > now,
+        "each cell states WHEN it resolves, in epoch ms")
+    chk(cell.get("seconds_until_checkpoint") is not None,
+        "and how far away that is - '4m' alone is ambiguous between minute four of the "
+        "round, four minutes remaining, and four minutes from now")
+
+    print("the forming bar cannot enter sigma")
+    # The old guard was `if closed and closed is kl` - dead code, because a comprehension
+    # always allocates. With a feed that omits is_closed, the forming bar leaked into sigma.
+    marked = [{"close": p, "is_closed": True} for p in px]
+    unmarked = [{"close": p} for p in px[:-1]] + [{"close": 9_999_999.0}]
+    server.data_state["klines"] = marked
+    sig_marked = server._conditional_path_block(ptb)["sigma_per_min"]
+    server.data_state["klines"] = unmarked
+    sig_unmarked = server._conditional_path_block(ptb)["sigma_per_min"]
+    chk(sig_unmarked is None or abs(sig_unmarked - sig_marked) < sig_marked,
+        "an unmarked final bar with an absurd close does not blow up sigma")
+    chk(sig_unmarked is None or sig_unmarked < sig_marked * 5,
+        f"the forming bar is excluded: sigma {sig_unmarked} vs {sig_marked} - including a "
+        f"9,999,999 close would have multiplied it")
+
+    print("no trading module imports the head")
+    import ast as _ast
+    here = Path(__file__).resolve().parent
+    offenders = []
+    for name in ("decision_champion.py", "decision_gate.py", "trading_simulator.py",
+                 "order_lifecycle.py", "ab_testing.py", "model_promotion.py"):
+        f = here / name
+        if not f.exists():
+            continue
+        for node in _ast.walk(_ast.parse(f.read_text(encoding="utf-8"))):
+            mods = []
+            if isinstance(node, _ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, _ast.ImportFrom):
+                mods = [node.module or ""]
+            if any("geometry_endpoint_head" in (m or "") for m in mods):
+                offenders.append(name)
+    chk(not offenders,
+        f"no decision, sizing or order module imports the geometry head (offenders: "
+        f"{offenders}) - checked by AST, not by keyword")
+
+    print("\nGEOMETRY ENDPOINT WIRING:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 
 

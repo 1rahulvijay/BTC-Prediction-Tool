@@ -1,6 +1,6 @@
-"""CONDITIONAL_PATH_HEAD - structural probability that price sits above the round anchor.
+"""GEOMETRY_ENDPOINT_HEAD - P(settlement price above the round anchor).
 
-    python backend/conditional_path_head.py --selftest
+    python backend/geometry_endpoint_head.py --selftest
 
 WHAT THIS IS
     P(price above the round anchor at checkpoint k), for a driftless random walk:
@@ -20,8 +20,17 @@ WHY IT IS THE HEAD, AND THE ML IS NOT
         feat 0.2111   0.7170          feat 0.1998   0.7477
         offs 0.2096   0.7208          offs 0.1994   0.7494
 
-    including a true log-odds offset model that structurally CANNOT damage the baseline. It
-    applied a real correction (mean |log-odds| 0.25) and that correction was net harmful.
+    including a true log-odds offset. CORRECTION to an earlier claim of mine: that offset does
+    not "structurally cannot damage the baseline". logit(p_base) + f(X) cannot OMIT geometry,
+    but a large enough f(X) overturns it completely - and the measured Brier deterioration is
+    evidence that it did. It retained geometry as an input and learned out-of-sample
+    corrections that were net harmful.
+
+    Nor was the correction magnitude evidence of work: with labels drawn exactly from p_base,
+    where the true correction is zero, the same configuration still emits mean |correction|
+    ~0.175. See docs/active/CONDITIONAL_OFFSET_V2_RESULT_2026-08-05.md for the paired
+    day-block intervals, which show a conclusive Brier loss and an INCONCLUSIVE log-loss
+    result - so 'not promotable', not 'closed'.
 
     Against a constant 0.50 (Brier 0.25) the formula is ~17% Brier skill at 15m and ~21% at
     12m. So this head is a good state-based probability estimator, and adding a model to it is
@@ -49,6 +58,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from dataclasses import asdict, dataclass
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -59,12 +69,69 @@ except Exception:
 AUTHORITY = "NONE"
 CONTRACT = "structural_anchor_geometry_v1"
 
+#: THE TARGET, stated so it cannot be confused with the other four.
+#:
+#: This estimates P(settlement price > anchor) - an ENDPOINT question. It does NOT estimate
+#: first-touch order, crossing probability, maximum excursion, or any joint path property.
+#: Emitting several checkpoint probabilities does not make it a path forecast: each cell is an
+#: independent endpoint-at-that-checkpoint estimate, and the cells are not jointly consistent
+#: as a trajectory. The module was originally named `conditional_path_head`, which in a
+#: repository whose central defect class is first-touch-vs-endpoint confusion was a name
+#: waiting to cause exactly that.
+TARGET_CONTRACT = "ENDPOINT_ABOVE_ANCHOR"
+FORMULA_FAMILY = "DIFFUSION_GEOMETRY"
+
+#: THE STOCHASTIC ASSUMPTION, pinned rather than implied.
+#:
+#:     z = (S_t - K) / (sigma_per_min * sqrt(minutes_remaining) * K)
+#:
+#: This is a zero-drift diffusion in the RELATIVE price change, using an arithmetic
+#: normalisation (distance divided by K) rather than log(S/K). Over 1-15 minute horizons with
+#: |S/K - 1| < 1%, log(S/K) ~= (S-K)/K to better than 1e-4 relative, so the two agree here -
+#: but the contract must say which one is implemented, because they diverge at larger moves and
+#: a reader cannot tell from the formula alone.
+MODEL_ASSUMPTION = "ZERO_DRIFT_RELATIVE_PRICE_DIFFUSION"
+
+#: SIGMA UNITS. The single most dangerous implicit contract in this module: a per-minute sigma
+#: multiplied by sqrt(seconds) is a silent sqrt(60) error that would make every probability
+#: roughly 7.7x too confident. Both the sigma estimator and the z formula are per-MINUTE, and
+#: the selftest asserts the pairing rather than trusting it.
+SIGMA_UNITS = "PER_MINUTE_LOG_RETURN_STDDEV"
+TIME_UNITS = "MINUTES"
+
 #: Checkpoints offered per round length, in minutes from the round OPEN.
 CHECKPOINTS = {
     5: (1, 2, 3, 4, 5),
     12: (3, 5, 7, 9, 12),
     15: (3, 5, 7, 10, 15),
 }
+
+
+@dataclass(frozen=True)
+class GeometryEndpointEstimate:
+    """One endpoint probability, with everything needed to audit it.
+
+    Frozen: a consumer cannot quietly attach a size, a side or an eligibility flag to it. The
+    string grep that previously guarded this boundary was a tripwire, not a type - authority
+    can enter through `score`, `edge`, `rank`, `eligible` or `candidate` just as easily as
+    through `signal`.
+    """
+    probability_yes: float
+    checkpoint_at_ms: int
+    seconds_until_checkpoint: float
+    anchor_price: float
+    current_price: float
+    sigma_per_min: float
+    z: float
+    target_contract: str = TARGET_CONTRACT
+    formula_family: str = FORMULA_FAMILY
+    model_assumption: str = MODEL_ASSUMPTION
+    sigma_units: str = SIGMA_UNITS
+    time_units: str = TIME_UNITS
+    authority: str = AUTHORITY
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 def normal_cdf(x: float) -> float:
@@ -131,7 +198,8 @@ def realized_sigma_per_min(closes, lookback: int = 30):
     return sigma if sigma > 0 else None
 
 
-def path(price_now, anchor, sigma_per_min, seconds_left, round_minutes: int) -> dict:
+def path(price_now, anchor, sigma_per_min, seconds_left, round_minutes: int,
+         now_ms: int | None = None) -> dict:
     """The full remaining checkpoint path for one open round.
 
     Every cell is independent geometry - this does not simulate a trajectory, and it does not
@@ -143,6 +211,11 @@ def path(price_now, anchor, sigma_per_min, seconds_left, round_minutes: int) -> 
         if round_minutes else None
     out = {
         "contract": CONTRACT,
+        "target_contract": TARGET_CONTRACT,
+        "formula_family": FORMULA_FAMILY,
+        "model_assumption": MODEL_ASSUMPTION,
+        "sigma_units": SIGMA_UNITS,
+        "time_units": TIME_UNITS,
         "authority": AUTHORITY,
         "round_minutes": round_minutes,
         "anchor": anchor,
@@ -165,14 +238,18 @@ def path(price_now, anchor, sigma_per_min, seconds_left, round_minutes: int) -> 
         if remaining <= 0:
             continue                       # already passed; not a forecast
         p = probability_above(price_now, anchor, sigma_per_min, remaining)
+        z = anchor_z(price_now, anchor, sigma_per_min, remaining)
+        # ABSOLUTE timestamps. "the 4m checkpoint" is ambiguous between minute four of the
+        # round, four minutes remaining, and four minutes from now.
         cell = {
             "checkpoint_min": k,
+            "checkpoint_at_ms": (None if now_ms is None
+                                 else int(now_ms + remaining * 60_000)),
+            "seconds_until_checkpoint": round(remaining * 60.0, 1),
             "minutes_remaining": round(remaining, 2),
             "p_above_anchor": None if p is None else round(p, 4),
-            "z": None,
+            "z": None if z is None else round(z, 4),
         }
-        z = anchor_z(price_now, anchor, sigma_per_min, remaining)
-        cell["z"] = None if z is None else round(z, 4)
         out["checkpoints"].append(cell)
 
     if not out["checkpoints"]:
@@ -273,7 +350,7 @@ def selftest() -> int:
         chk(CHECKPOINTS[minutes][-1] == minutes,
             f"the {minutes}m grid's last checkpoint IS its settlement minute")
 
-    print(f"\nCONDITIONAL PATH HEAD SELFTEST: {'PASS' if ok else 'FAIL'}")
+    print(f"\nGEOMETRY ENDPOINT HEAD SELFTEST: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 
 
