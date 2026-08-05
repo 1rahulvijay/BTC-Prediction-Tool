@@ -1,7 +1,8 @@
 # Research Ledger — every idea: tested, retracted, untested, or blocked
 
-`2026-08-02`. The canonical answer to "what do we actually know?" Machine-readable status lives
-in `research/research_status.py`; this is the reader's version.
+`2026-08-02`, last extended `2026-08-05` (§13). The canonical answer to "what do we actually
+know?" Machine-readable status lives in `research/research_status.py`; this is the reader's
+version.
 
 **Current evidence position:**
 
@@ -99,6 +100,9 @@ They **refuse to run** without `--run-retracted-study`, and print why.
 | direction AUC **below 0.5** at 60m and 120m; conditioning on high opportunity does not lift it | valid — §4.10 |
 | **0 of 25 artifacts are loadable by serving** | valid — §4.1 |
 | Polymarket quote trajectories exist at 144–447 snapshots/round | valid — §4.2 |
+| **`Φ(z)` is a strong late-round settlement probability** — AUC 0.877 (15m) / 0.914 (12m) at the last observation, ECE 0.0115, calibration slope 1.003, no parameters | valid — §13.1 |
+| **ML does not beat that geometry** at either round length, as a feature or as a log-odds offset | valid — §13.1, §13.2 |
+| the offset's correction is 3.7–4.7x its permuted control — real structure that does not generalise | valid — §13.2 |
 
 `causal_decision_join.py` is classified **CAUSAL_BEST_EFFORT_HISTORICAL**, not gold standard:
 `rule_paper_trades` has one generic `ts` and cannot prove it is exactly when the stored ask was
@@ -1185,6 +1189,171 @@ The five-arm gate used `abs(coalesce(p.pair_skew_ms, 0)) <= 2000`, scoring an *u
 as a perfect zero — fail-open on the exact axis the check exists to enforce, while its
 neighbouring conditions fail closed. Now `IS NOT NULL` and compared directly, in both places.
 
+## 13. External audit of `a68c6fb`, conditional-path studies, and the geometry head - `2026-08-05`
+
+A third external scan raised 19 defects and proposed a rebuild. Every claim was checked against
+source before anything was changed; **one was false** (it asserted the remote carried newer
+commits requiring a rebase — `origin/master` was exactly the last push, 2 ahead / 0 behind, and
+acting on it would have been destructive). Two more were correct observations with the wrong
+diagnosis, recorded below.
+
+The engineering half is documented in
+[`docs/active/TRUTH_LAYER_REMEDIATION_2026-08-05.md`](active/TRUTH_LAYER_REMEDIATION_2026-08-05.md)
+(grading/decision layer) and
+[`docs/active/TRAINING_PIPELINE_REPAIRS_2026-08-05.md`](active/TRAINING_PIPELINE_REPAIRS_2026-08-05.md)
+(training, execution, provenance). This section records only what it means for the **evidence**.
+
+### 13.1 Conditional path forecast V1 — the lattice adds nothing to geometry
+
+`research/conditional_path_forecast_v1.py`. 200,000 1m bars, **13,317** 15m rounds and **16,646**
+12m rounds, temporal 70/30 split with a one-round purge.
+Detail: [`CONDITIONAL_PATH_FORECAST_V1_RESULT_2026-08-05.md`](active/CONDITIONAL_PATH_FORECAST_V1_RESULT_2026-08-05.md).
+
+The structural baseline is a driftless random walk, no training and no features:
+
+```text
+z = (price_now - anchor) / (sigma_1m * sqrt(minutes_remaining))     P_base = Phi(z)
+```
+
+| 15m settlement target | obs=0 | obs=1 | obs=3 | obs=5 | obs=7 | obs=10 |
+|---|---:|---:|---:|---:|---:|---:|
+| structural | 0.500 | 0.613 | 0.683 | 0.736 | 0.797 | **0.877** |
+| Full ML | 0.500 | 0.592 | 0.674 | 0.723 | 0.789 | 0.873 |
+| **ML − structural** | +0.000 | **−0.020** | −0.010 | −0.014 | −0.009 | −0.004 |
+
+Overall: 15m AUC **−0.0071** and Brier **−1.37%** versus the baseline; 12m **−0.0060** and
+**−1.03%**. Both negative at every checkpoint that matters.
+
+**The finding is the near-miss.** Read alone, "Full ML reaches 0.873 AUC on BTC direction" is a
+spectacular result. Printed beside the baseline it is arithmetic: being far above the anchor
+with one minute left means you settle up. **Every point of the rise belongs to the baseline**,
+and the revision table originally printed only the ML row. The baseline row and the
+`ML − structural` gap were added precisely because the rise is real and worthless at once.
+
+The model is ahead only at `obs=0`, where the baseline is exactly 0.500 by construction
+(`z = 0`). Best cell **0.527** — consistent with the established 0.50–0.535 ceiling across 13
+model families, and it decays to nothing by the settlement checkpoint, the only one a round pays
+out on.
+
+**A defect in the study itself, found by re-reading it.** The arm labelled "ML residual" was not
+a residual — `np.column_stack([Xtr, p_base_train])` makes the baseline a *feature column*, which
+is why both arms printed identical numbers. That is what motivated §13.2.
+
+### 13.2 Conditional offset V2 — a true log-odds offset. **FAILS its Brier gate**
+
+`research/conditional_offset_v2.py`. Four arms — baseline, offset, offset_permuted,
+zero_correction — 42 day-blocks per round length, paired on identical rows.
+Detail: [`CONDITIONAL_OFFSET_V2_RESULT_2026-08-05.md`](active/CONDITIONAL_OFFSET_V2_RESULT_2026-08-05.md).
+
+```text
+                          15m                              12m
+d_brier     +0.00125  [+0.00030, +0.00217]  WORSE   +0.00131  [+0.00051, +0.00214]  WORSE
+d_log_loss  +0.00137  [-0.00085, +0.00344]  incon.  +0.00179  [-0.00016, +0.00372]  incon.
+d_auc       -0.00298  [-0.00636, +0.00065]  incon.  -0.00409  [-0.00689, -0.00123]  WORSE
+```
+
+**Verdict: not promotable — and deliberately not "closed".** It fails on Brier at both lengths
+and is *inconclusive* on log loss, which is the metric a log-odds additive model is fitted
+through. An earlier draft of this write-up called it a clean loss from point estimates alone;
+with intervals that overstates the evidence.
+
+**The sharper finding is the permuted control.** Mean |correction| against the same model on
+shuffled features:
+
+```text
+15m  real 0.2545   permuted 0.0685   ratio 3.7x
+12m  real 0.2596   permuted 0.0547   ratio 4.7x
+```
+
+The correction is **not noise** — it responds to genuine structure — **and acting on that
+structure makes the forecast worse.** "The features contain structure that does not generalise"
+is a different and more useful statement than "the model learned nothing". Note also that even
+the *permuted* arm is significantly worse on 15m Brier, which is a statement about how little
+miscalibration `Φ(z)` leaves to correct: ECE 0.0115, calibration slope 1.003.
+
+**Three of my own claims were wrong and are corrected here rather than quietly dropped:**
+
+| claim | why it was wrong |
+|---|---|
+| "the offset structurally cannot damage the baseline" | it cannot *omit* the geometry; a large `f(X)` overturns it, and does |
+| "mean \|correction\| 0.25 shows the model doing real work" | with labels drawn **from `p_base`**, where the true correction is identically zero, this config still emits ≈0.175. Magnitude measures flexibility, not signal |
+| a guard asserting `num_iteration=0` | in LightGBM that means **all** iterations, not none — the guard could never fire. Replaced with an arithmetic reconstruction assertion |
+
+**The `init_score` trap, guarded by construction.** `predict_proba` has no per-row init for new
+rows, so the offset must be re-added by hand or each test row's geometry is silently dropped.
+The `zero_correction` arm reproduces the baseline **to the last digit** at both round lengths,
+which proves the reconstruction rather than asserting it.
+
+**Not tested, and it is the comparison that decides tradeability:** nothing here is measured
+against the **Polymarket price**, which can compute this same `z`. Beating geometry is necessary
+and not sufficient.
+
+### 13.3 The geometry endpoint head — wired with `AUTHORITY = "NONE"`
+
+Geometry won, so geometry is what was wired. `backend/geometry_endpoint_head.py`, surfaced in
+the app as display and record only.
+
+Renamed from `conditional_path_head` before wiring: it estimates `P(settlement > anchor)`, an
+**endpoint** question, in a repository whose central defect class is first-touch-versus-endpoint
+confusion. Emitting several checkpoint probabilities does not make it a path forecast, and the
+old name invited exactly the misreading that retracted five studies.
+
+Pinned in the module and asserted in tests: `TARGET_CONTRACT = ENDPOINT_ABOVE_ANCHOR`,
+`MODEL_ASSUMPTION = ZERO_DRIFT_RELATIVE_PRICE_DIFFUSION`, `SIGMA_UNITS =
+PER_MINUTE_LOG_RETURN_STDDEV`, `TIME_UNITS = MINUTES`. Units are checked numerically, not just
+declared — feeding seconds where minutes are expected shifts `z` by exactly `7.746` (`√60`).
+Every invalid input returns `None`; there is no `0.5` fallback, because a fabricated coin flip
+is indistinguishable in the output from a computed one.
+
+**Authority is enforced by an AST import test**, not a keyword grep: no decision, sizing or order
+module may import it. A grep would have missed `score`, `edge`, `rank` and `eligible`.
+
+**A causality bug the audit surfaced.** The forming-bar guard was `if closed and closed is kl:`
+— dead code, since a list comprehension always allocates a new object. On a feed that omits
+`is_closed`, the forming bar entered the sigma estimate.
+
+### 13.4 The pre-retrain gate
+
+[`docs/active/PRE_RETRAIN_GATE_2026-08-05.md`](active/PRE_RETRAIN_GATE_2026-08-05.md), completed
+and documented **before** any challenger bundle was created.
+
+| # | gate | opened | now | closed by |
+|---|---|---|---|---|
+| 4.1 | OOF / serving parity | FAIL | **PASS** | `e9a394f`, `376ba87` |
+| 4.2 | historical snapshot broadcasting | FAIL | **PASS** | `6b0bb1a` |
+| 4.3 | VWAP / feature contract | FAIL | **PASS (clearable)** | `154cccf` |
+| 4.4 | settlement head exists and is trained | FAIL | **FAIL** | — |
+
+**4.3 is the instructive one.** The failure was never "the models are stale":
+`check_feature_contract` reported *0 STALE, 12 UNKNOWN* because the two halves of the provenance
+contract had never been introduced — the reader demanded nine keys the writer had never written,
+four of which did not exist in any form. **A retrain could not have fixed it.** Every prior
+instruction to "retrain to clear the VWAP failure", including one in an earlier draft of the
+gate document itself, was unachievable as written.
+
+The retrain must run **from a committed clean tree**, or `code_dirty` makes the resulting bundle
+refuse itself.
+
+**4.4 is the remaining hard stop.** No settlement head exists, so no challenger bundle may be
+created.
+
+### 13.5 What this changes, and what it does not
+
+| question | answer |
+|---|---|
+| what was tested | ML lattice vs structural geometry (15m, 12m); a true log-odds offset with permuted and zero controls |
+| what passed | the structural baseline `Φ(z)` — well calibrated, no parameters, hard to beat |
+| what failed | the lattice (both lengths), the offset on Brier (both lengths), the offset AUC at 12m |
+| what remains unknown | **`Φ(z)` versus the Polymarket ask.** Untested — needs recorded book snapshots, not a new model |
+| any economic candidate? | **no** |
+| any real-money authority? | **NONE.** The one wired head declares `AUTHORITY = "NONE"` and an import test enforces it |
+
+**The binding constraint is unchanged.** Everything in §13 is measured on historical bars and is
+elimination-grade by construction; `FORWARD_UNTOUCHED` still contains **0 rows**. §6.3 item 3
+already named the market-prior residual as the only supported modelling direction — §13.2 is the
+*outcome-relative* version of that experiment, and it fails before the market-relative version
+was ever reached.
+
 ## 5. Governance added because of the retraction
 
 | gate | what it prevents |
@@ -1208,6 +1377,11 @@ neighbouring conditions fail closed. Now `IS NOT NULL` and compared directly, in
 | `backend/test_round_state_causal_contract.py` | a training join that reads the bar containing its own decision |
 | `round_state_panel.version_is_compatible` | a retrain producing artifacts serving silently refuses |
 | `backend/datastore_identity.py --strict` | a correct query answered by the wrong database |
+| `backend/test_backtest_ohlc_honesty.py` | a hit rate graded against a neutral band derived from fabricated highs and lows |
+| `backend/test_no_snapshot_backcast.py` | today's order-flow value painted across every historical training row |
+| `backend/test_artifact_manifest_contract.py` | a writer and a reader that both pass their own tests and cannot read each other |
+| `backend/test_geometry_endpoint_wiring.py` | a zero-authority head acquiring authority through an import, checked by AST rather than grep |
+| `backend/test_oof_serving_parity.py` | the stacker being trained on seats that differ from the ones it is served |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
 

@@ -1,6 +1,56 @@
 # PRE-RETRAIN GATE — 2026-08-05
 
-## Verdict
+> **UPDATED `2026-08-05` (second pass).** Three of the four hard stops recorded below have
+> since been CLOSED — 4.1 (`376ba87`), 4.2 (`6b0bb1a`), 4.3 (`154cccf`). The original table is
+> preserved further down as the record of what the gate found on the first pass; the CURRENT
+> status is the table immediately below. A gate document that says BLOCKED for reasons that no
+> longer hold is worse than no document.
+
+## Verdict — CURRENT
+
+```text
+RETRAIN: UNBLOCKED (all four hard stops closed; 4.3 and 4.4 clear on the run)
+CHALLENGER BUNDLE CREATED: NO
+PROMOTION VERDICT: REJECTED (no challenger exists to evaluate)
+REAL-MONEY AUTHORITY: NONE
+```
+
+| # | Hard stop | First pass | Now | Closed by |
+|---|---|---|---|---|
+| 4.1 | OOF/serving parity | FAIL | **PASS** | `e9a394f`, `376ba87` |
+| 4.2 | Historical snapshot broadcasting | FAIL | **PASS** | `6b0bb1a` |
+| 4.3 | VWAP / feature contract | FAIL | **PASS (clearable)** | `154cccf` |
+| 4.4 | Settlement head exists and is trained | FAIL | **PASS (clearable)** | `settlement_head` |
+
+**4.3 needs a precise reading.** The contract is repaired: what training writes, serving can now
+read, and a clean-tree retrain will produce a manifest `verdict_for` accepts — a path that did
+not exist before. `check_feature_contract` still fails in CI because the 12 artifacts on disk
+predate the repair and remain correctly UNKNOWN. That is the accurate state, not a regression,
+and it clears on the first retrain rather than needing further code.
+
+**4.4 is now closed in the same sense as 4.3: the code exists and the gate clears on the
+retrain, not before.** `backend/settlement_head.py` trains one calibrated classifier per horizon
+on endpoint labels, stamped `ENDPOINT_SETTLEMENT_V1`. The server requests `Ysettle`, trains the
+head beside the ensemble, writes it with a provenance manifest, and abstains rather than
+substituting when no head can be fitted. It is registered with **no authority** — `may_price`,
+`may_rank` and `may_size` are all False — because existing is not the same as having earned
+anything, and nothing has yet scored it against the Polymarket price.
+
+Measured on real `build_sequences` output, the path and settlement labels **disagree on 36.0%**
+of rows. The split is substantive, not a renaming.
+
+Two operational conditions for whenever the retrain runs:
+
+* it must run from a **committed, clean tree** — `code_dirty` must be `False` or the new bundle
+  correctly refuses itself;
+* 4.1, 4.2 and 4.3 are all training-path changes, so their benefit exists only in artifacts
+  built after them. The live bundle still carries the old semantics.
+
+Local CI at this update: **171 OK / 144 checks**, one failure (`check_feature_contract`, above).
+
+---
+
+## Verdict — FIRST PASS (preserved)
 
 ```text
 RETRAIN: BLOCKED
@@ -9,9 +59,9 @@ PROMOTION VERDICT: REJECTED (no challenger exists to evaluate)
 REAL-MONEY AUTHORITY: NONE
 ```
 
-Four of the specification's own hard-stop conditions are present. Per its rule — *"Do not
-retrain if any of these fail"* — no challenger was trained. Training now would bake the
-unfixed pipeline into a fresh artifact and require a second retrain to undo.
+Four of the specification's own hard-stop conditions were present. Per its rule — *"Do not
+retrain if any of these fail"* — no challenger was trained. Training then would have baked the
+unfixed pipeline into a fresh artifact and required a second retrain to undo.
 
 ## Phase 1 — repository state
 

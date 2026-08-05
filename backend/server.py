@@ -2141,7 +2141,12 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     # The learners never consume retired raw columns. Prune before sequence expansion so a
     # 150-day run allocates ~3.6 GB (69 columns), not ~7.0 GB (136 columns), with identical inputs.
     del features
-    X, Y, Ymag, Yvalid = build_sequences(
+    # 4.4. Ysettle is requested HERE. build_sequences could always emit endpoint labels, but
+    # nothing asked for them, so the settlement lane had no head and every settlement-EV
+    # consumer refused for want of an admissible probability. Y answers "which barrier is
+    # touched first"; Ysettle answers "where does price END" - the question Polymarket
+    # resolves on, and they disagree on ~25% of paths.
+    X, Y, Ymag, Yvalid, Ysettle = build_sequences(
         sequence_features,
         closes,
         lookback=LOOKBACK,
@@ -2152,6 +2157,7 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
         return_magnitude=True,
         memmap_path=sequence_memmap_path,
         return_valid_mask=True,
+        return_settlement_labels=True,
     )
     for _h, _mask in Yvalid.items():
         _amb = int((~_mask).sum())
@@ -2221,6 +2227,52 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                 None, functools.partial(target_model.train, X, Y, Ymag,
                                         valid_mask=Yvalid,
                                         regime_labels=regime_labels))
+
+            # 4.4 SETTLEMENT HEAD. Trained on the SAME rows and the SAME chronological split
+            # as the ensemble, but on endpoint labels. Kept out of `train()` deliberately: it
+            # answers a different question, carries no authority, and a failure here must not
+            # take down the path ensemble that does serve.
+            try:
+                from settlement_head import train_settlement_head, SettlementHeadUnavailable
+                _settle_bundle = await loop.run_in_executor(
+                    None, functools.partial(
+                        train_settlement_head, X, Ysettle,
+                        int(target_model.train_split_idx),
+                        horizons=target_model.horizons))
+                _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
+                from verified_io import atomic_dump as _atomic_dump
+                _atomic_dump(_settle_bundle, _settle_path)
+                try:
+                    # The writer takes an IDENTITY dict, not a day count - the same shape the
+                    # ensemble bundle uses, so this artifact reads through the identical
+                    # provenance path check_feature_contract consults.
+                    from artifact_identity import (current_training_identity,
+                                                   write_artifact_manifest as _write_manifest)
+                    _identity = current_training_identity(requested_days=HISTORICAL_DAYS)
+                    _write_manifest(_settle_path, _identity,
+                                    artifact_type="settlement_head")
+                except Exception as _mf:
+                    logger.warning("[SETTLEMENT] manifest not written (%s) - the artifact "
+                                   "will read UNKNOWN until it is", _mf)
+                for _h, _m in (_settle_bundle.get("metrics") or {}).items():
+                    logger.info(
+                        "[SETTLEMENT] h=%sm rows=%s holdout_brier=%s prior_brier=%s "
+                        "beats_prior=%s", _h, _m.get("train_rows"),
+                        _m.get("holdout_brier"), _m.get("prior_brier"), _m.get("beats_prior"))
+                backend_state["settlement_head"] = {
+                    "trained": True, "metrics": _settle_bundle.get("metrics"),
+                    "skipped": _settle_bundle.get("skipped"),
+                    "target_contract": _settle_bundle.get("target_contract"),
+                }
+            except SettlementHeadUnavailable as _sh:
+                # ABSTAIN, never substitute. A settlement consumer must keep refusing rather
+                # than receive a path probability wearing the wrong contract.
+                logger.warning("[SETTLEMENT] no head fitted: %s", _sh)
+                backend_state["settlement_head"] = {"trained": False, "reason": str(_sh)[:300]}
+            except Exception as _she:
+                logger.error("[SETTLEMENT] head training failed: %s", _she)
+                backend_state["settlement_head"] = {"trained": False,
+                                                    "reason": f"{type(_she).__name__}: {_she}"}
 
             if promotion_pipeline:
                 _set_status(

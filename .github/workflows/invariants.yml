@@ -138,6 +138,12 @@ jobs:
       - name: Feature semantics v5 (LVN, funding phase, lead-lag, regime alignment)
         run: python backend/test_feature_semantics_v5.py
 
+      - name: Settlement head (the endpoint contract has a trained consumer)
+        run: python backend/settlement_head.py --selftest
+
+      - name: Settlement head wiring (reachable from the real train path)
+        run: python backend/test_settlement_head_wiring.py
+
       - name: Target contract (train and serve label identically)
         run: python backend/target_contract.py --selftest
 
@@ -683,6 +689,8 @@ jobs:
           python research/research_status.py --selftest || exit /b 1
           python backend/test_round_state_causal_contract.py || exit /b 1
           python backend/target_contract.py --selftest || exit /b 1
+          python backend/settlement_head.py --selftest || exit /b 1
+          python backend/test_settlement_head_wiring.py || exit /b 1
           python backend/test_feature_semantics_v5.py || exit /b 1
           python backend/test_p0_3_4_5_contracts.py || exit /b 1
           python backend/forward_evidence_gate.py --selftest || exit /b 1
