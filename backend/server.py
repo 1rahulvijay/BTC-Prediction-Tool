@@ -5,6 +5,7 @@ streams real-time predictions, indicators, and verification data to frontend.
 """
 
 import asyncio
+import collections.abc as _abc
 import copy
 import functools
 import requests  # used only by the lightweight Pyth price-to-beat anchor poller
@@ -1092,11 +1093,16 @@ def _sanitize_nonfinite(obj):
 
 
 def _safe_dict(value) -> dict:
-    return value if isinstance(value, dict) else {}
+    # Mapping, not dict. The frozen decision snapshot hands out MappingProxyType, which is NOT
+    # a dict subclass - `isinstance(proxy, dict)` is False, so this used to return {} for every
+    # frozen order-flow read. Silently: no exception, no log, just an empty book and every gate
+    # that reads it defaulting open. A stricter type must not quietly become a missing value.
+    return value if isinstance(value, _abc.Mapping) else {}
 
 
 def _safe_list(value) -> list:
-    return value if isinstance(value, list) else []
+    # Same reason: the snapshot freezes lists into tuples, and a tuple is not a list.
+    return value if isinstance(value, (list, tuple)) else []
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -3282,7 +3288,13 @@ def apply_live_quality_filters(
     # the last order_flow update, which actually grows during a disconnect (never-updated = dead).
     order_flow_state = _safe_dict(state.get("order_flow"))
     _upd = state.get("order_flow_updated_ms", 0)
-    stale_ms = (int(time.time() * 1000) - _upd) if _upd else 10_000_000
+    # P0-6. Measured against the SNAPSHOT's own instant when it has one, not the wall clock.
+    # Using time.time() here meant replaying an identical snapshot minutes later produced a
+    # different staleness and therefore a different decision - the gate was a function of when
+    # you asked, not of what was captured. Falls back to the wall clock only for the live
+    # `data_state` path, which carries no event timestamp.
+    _now_ms = int(state.get("event_ts_ms") or 0) or int(time.time() * 1000)
+    stale_ms = (_now_ms - _upd) if _upd else 10_000_000
     if stale_ms > 5000:
         if prediction.get("direction") != "NEUTRAL":
             _neutralize_prediction(
@@ -4153,7 +4165,12 @@ async def main_loop():
                                 # timestamp printed beside them - the one row whose entire
                                 # purpose is to say what was true when the decision was made.
                                 current_price=float(decision_state["decision_price"]),
-                                order_flow_state=copy.deepcopy(
+                                # dict(), not deepcopy(): the snapshot is now deep-frozen, so
+                                # there is nothing left to defend against by copying - and
+                                # copy.deepcopy raises TypeError on a mappingproxy, which
+                                # inside this try/except would have silently stopped the
+                                # ledger writing anything at all.
+                                order_flow_state=dict(
                                     _safe_dict(decision_state.get("order_flow"))
                                 ),
                                 prediction_ts=revision_ts,

@@ -241,10 +241,12 @@ class GradeResult:
     two different random variables and both were labelled "accuracy"."""
 
     __slots__ = ("direction", "status", "resolution_price", "resolution_event_ts", "contract",
-                 "resolution_basis")
+                 "resolution_basis", "interval_start_ms", "interval_end_ms",
+                 "endpoint_price", "endpoint_ts")
 
     def __init__(self, direction, status, resolution_price=None, resolution_event_ts=None,
-                 contract=None, resolution_basis=None):
+                 contract=None, resolution_basis=None, interval_start_ms=None,
+                 interval_end_ms=None, endpoint_price=None, endpoint_ts=None):
         self.direction = direction
         self.status = status
         self.resolution_price = resolution_price
@@ -253,6 +255,16 @@ class GradeResult:
         #: WHICH observation this is, recorded on the row. A number without its basis is how
         #: a loop-time price came to sit beside a horizon-end direction for so long.
         self.resolution_basis = resolution_basis
+        #: The bar the touch happened INSIDE. OHLC cannot say when within it, so the honest
+        #: object is an interval, not an instant. `resolution_event_ts` is its start, kept for
+        #: ordering, and must never be described as the exact moment of the crossing.
+        self.interval_start_ms = interval_start_ms
+        self.interval_end_ms = interval_end_ms
+        #: The horizon-end observation, ALWAYS carried. First-touch economics use the barrier;
+        #: anything that genuinely wants endpoint economics must take it from here rather than
+        #: re-deriving it from a price that answers a different question.
+        self.endpoint_price = endpoint_price
+        self.endpoint_ts = endpoint_ts
 
     @property
     def graded(self) -> bool:
@@ -289,12 +301,16 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
     if contract not in KNOWN_CONTRACTS:
         return GradeResult(None, f"UNKNOWN_CONTRACT:{contract}", contract=contract)
 
+    endpoint_price, endpoint_ts = as_of_close(klines, verify_ts)
+
     if contract == ENDPOINT_SETTLEMENT_V1:
-        final, final_ts = as_of_close(klines, verify_ts)
-        if final is None:
+        if endpoint_price is None:
             return GradeResult(None, "GRADE_UNAVAILABLE:no_as_of_price", contract=contract)
-        return GradeResult(label_endpoint(entry, final, threshold), "GRADED_ENDPOINT",
-                           final, final_ts, contract, "as_of_kline_close")
+        # Here the close IS the resolving event, so price/interval/endpoint all coincide.
+        return GradeResult(label_endpoint(entry, endpoint_price, threshold), "GRADED_ENDPOINT",
+                           endpoint_price, endpoint_ts, contract, "as_of_kline_close",
+                           interval_start_ms=endpoint_ts, interval_end_ms=endpoint_ts,
+                           endpoint_price=endpoint_price, endpoint_ts=endpoint_ts)
 
     path = [k for k in (klines or [])
             if int(entry_ts) < kline_open_ms(k) <= int(verify_ts)
@@ -309,13 +325,45 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
         return GradeResult(None, "GRADE_UNAVAILABLE:ambiguous_bar", contract=contract)
     if index is None:
         return GradeResult(None, "GRADE_UNAVAILABLE:no_intrabar_path", contract=contract)
-    # P1-1. The RESOLVING bar, not the last bar of the window. A path can touch the lower
-    # barrier in bar 1 and rally for four more bars; taking the window's final close would pair
-    # a DOWN direction with an UP move - a different moment from the one that set the label,
-    # which is the whole defect. On a NEUTRAL timeout the resolving bar IS the last one.
+
     bar = path[index]
-    return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(bar["close"]),
-                       kline_open_ms(bar), contract, "first_touch_bar_close")
+    start_ms = kline_open_ms(bar)
+    # The bar is an INTERVAL. OHLC cannot say when inside it the barrier was crossed, so the
+    # end is the next bar's open where one exists, else the horizon end.
+    end_ms = kline_open_ms(path[index + 1]) if index + 1 < len(path) else int(verify_ts)
+
+    if outcome == NEUTRAL:
+        # Timeout: no barrier was reached and the horizon expiring IS the event, so the
+        # last bar's close is the correct resolving observation.
+        last = path[-1]
+        return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(last["close"]),
+                           kline_open_ms(last), contract, "first_touch_timeout_close",
+                           interval_start_ms=kline_open_ms(last), interval_end_ms=int(verify_ts),
+                           endpoint_price=endpoint_price, endpoint_ts=endpoint_ts)
+
+    # P0-2. THE BARRIER, not the resolving bar's CLOSE.
+    #
+    # The close was wrong for the same reason loop-time price was wrong. A bar can pierce the
+    # lower barrier and still close above entry:
+    #
+    #     entry 100, lower 99 | bar low 98.0, bar close 100.5
+    #     -> direction DOWN, close-derived move +0.50
+    #
+    # which is precisely the contradictory row the resolution work claimed to have removed. The
+    # earlier fixture never caught it because its touching bars closed on the same side they
+    # touched, so direction and close agreed by construction.
+    #
+    # The barrier price is the observation that DEFINED the outcome, it is exactly known, and
+    # its sign can never disagree with the direction. The consequence is worth stating plainly:
+    # under first touch, |move| is always the barrier distance, so magnitude error on these
+    # rows measures the barrier, not a magnitude forecast. That is a true statement about the
+    # contract rather than a limitation of this function - endpoint economics must come from
+    # `endpoint_price`, which is carried for exactly that purpose.
+    barrier = entry * (1.0 + threshold) if outcome == UP else entry * (1.0 - threshold)
+    return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(barrier), start_ms, contract,
+                       "first_touch_barrier", interval_start_ms=start_ms,
+                       interval_end_ms=end_ms, endpoint_price=endpoint_price,
+                       endpoint_ts=endpoint_ts)
 
 
 def contracts_agree(entry: float, highs, lows, final: float, threshold: float) -> bool:

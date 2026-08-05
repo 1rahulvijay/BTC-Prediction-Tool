@@ -81,6 +81,34 @@ def _stable(value):
     return repr(value)
 
 
+def deep_freeze(value):
+    """Recursively make a copied structure read-only.
+
+    P0-6. Wrapping only the OUTER dict in MappingProxyType blocked `snap["klines"] = []` and
+    nothing else. These both succeeded:
+
+        snap["order_flow"]["cvd_1m"] = 999.0
+        snap["klines"].append(...)
+
+    so the "immutable decision view" was one assignment deep. It matters most in A/B, where the
+    primary and the challenger are handed the SAME nested objects: a stray write by one silently
+    changes what the other was scored on, and the two variants are then not comparable.
+
+    Applied to the deep COPIES, so this is real immutability rather than a read-only view over
+    something still reachable and writable elsewhere. Non-container values (calibrators, policy
+    objects) pass through untouched - freezing them is neither possible nor wanted.
+    """
+    if isinstance(value, MappingProxyType):
+        return value
+    if isinstance(value, dict):
+        return MappingProxyType({k: deep_freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(deep_freeze(v) for v in value)
+    if isinstance(value, tuple):
+        return tuple(deep_freeze(v) for v in value)
+    return value
+
+
 def snapshot_id(state: dict, event_ts_ms: int) -> str:
     payload = {"event_ts_ms": int(event_ts_ms),
                **{k: _stable(state.get(k)) for k in IDENTITY_KEYS}}
@@ -98,12 +126,15 @@ def build(live_state: dict, event_ts_ms: int, klines=None, copier=None) -> Mappi
     snap: dict = {}
     for key in SNAPSHOT_KEYS:
         if key == "klines" and klines is not None:
-            snap[key] = list(klines)
+            # The override path was a SHALLOW list() copy: the list was new, every bar dict
+            # inside it was the same object the feed keeps mutating.
+            snap[key] = deep_freeze(copier(list(klines)))
             continue
         value = live_state.get(key)
         # Model context (calibrators, policy) is rebuilt on the main thread between decisions
-        # and can be large; referencing it is safe. Market state is copied.
-        snap[key] = copier(value) if key in IDENTITY_KEYS else value
+        # and can be large; referencing it is safe. Market state is copied, then DEEP-frozen -
+        # a copy that anyone downstream can still write into is not a frozen decision view.
+        snap[key] = deep_freeze(copier(value)) if key in IDENTITY_KEYS else value
 
     # P0-6. The DECISION PRICE, frozen here and carried explicitly.
     #
@@ -165,6 +196,28 @@ def selftest() -> int:
     except TypeError:
         checks += 1
         print("  PASS  the snapshot REFUSES assignment - an accidental write fails loudly")
+
+    # P0-6. NESTED mutation. The outer proxy blocked exactly one thing; everything inside it
+    # stayed writable, and in A/B both variants are handed the SAME nested objects - so a stray
+    # write by the primary silently changed what the challenger was scored on.
+    for label, attempt in (
+        ("a nested dict", lambda: snap["order_flow"].__setitem__("cvd_1m", 999.0)),
+        ("a nested list", lambda: snap["klines"].append({"time": 9, "close": 5_000.0})),
+        ("a dict INSIDE a nested list", lambda: snap["klines"][0].__setitem__("close", 5_000.0)),
+        ("a nested pop", lambda: snap["order_flow"].pop("cvd_1m", None)),
+    ):
+        try:
+            attempt()
+            raise AssertionError(f"{label} was still mutable - the freeze is one level deep")
+        except (TypeError, AttributeError):
+            checks += 1
+            print(f"  PASS  {label} cannot be mutated either")
+    check(snap["order_flow"]["cvd_1m"] == -1.63 and len(snap["klines"]) == 2,
+          "and the values survived every attempt unchanged")
+
+    # Reading must still work exactly as before, or the freeze has broken its consumers.
+    check(snap["klines"][-1]["close"] == 101.0 and len(snap["klines"][-2:]) == 2,
+          "indexing, slicing and nested reads are unaffected")
 
     # Determinism: the same market view yields the same id; a changed one does not.
     again = build({**live, "order_flow": {"cvd_1m": -1.63},
@@ -253,10 +306,29 @@ def selftest() -> int:
     body = chr(10).join(lines[first:end])
     check(end - first > 100,
           f"the whole function is scanned, not a truncated window ({end - first} lines)")
+    # A FROZEN structure must not silently read as EMPTY. mappingproxy is not a dict subclass
+    # and tuple is not a list, so the server's type guards rejected every frozen value and
+    # returned {} / [] - no exception, no log, just an empty book and every gate that reads it
+    # defaulting open. Pinned here because deep-freezing is what created the hazard.
+    import server as _srv
+
+    check(_srv._safe_dict(snap["order_flow"]).get("cvd_1m") == -1.63,
+          "_safe_dict reads a FROZEN mapping rather than silently returning {}")
+    check(len(_srv._safe_list(snap["klines"])) == 2,
+          "_safe_list reads a FROZEN sequence rather than silently returning []")
+    check(_srv._safe_dict({"a": 1}) == {"a": 1} and _srv._safe_dict(None) == {},
+          "while a plain dict still passes and a non-mapping still degrades to {}")
+
     read_keys = set(re.findall(r'state\.get\("([a-z_]+)"', body))
-    missing = sorted(read_keys - set(SNAPSHOT_KEYS))
+    # Checked against the BUILT snapshot, not against SNAPSHOT_KEYS. Some keys (event_ts_ms,
+    # decision_price, decision_id) are attached by build() directly rather than copied from
+    # live state, and testing the key LIST would have failed on those while the actual property
+    # - "the filter can read everything it asks for" - held.
+    provided = set(frozen.keys())
+    missing = sorted(read_keys - provided)
     check(not missing,
-          f"every key apply_live_quality_filters reads is in SNAPSHOT_KEYS (missing: {missing})")
+          f"every key apply_live_quality_filters reads is present on the snapshot "
+          f"(missing: {missing})")
 
     print(f"\nDECISION SNAPSHOT SELFTEST: PASS ({checks} checks)")
     return 0

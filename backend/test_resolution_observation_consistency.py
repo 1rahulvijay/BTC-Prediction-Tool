@@ -84,12 +84,12 @@ def main() -> int:
                       klines=klines, entry_ts=BASE_MS, verify_ts=verify_at)
     chk(result.direction == tc.DOWN and result.status == "GRADED_FIRST_TOUCH",
         "direction is DOWN under the trained contract")
-    chk(result.resolution_price == 98.50,
-        f"resolution price is the TOUCHING bar's close (got {result.resolution_price}), not "
-        f"the window's last close 111.5")
+    chk(result.resolution_price == 99.0,
+        f"resolution price is the touched BARRIER 99.0 (got {result.resolution_price}) - not "
+        f"the window's last close 111.5, and not the touching bar's close either")
     chk(result.resolution_event_ts == BASE_MS + 60_000,
         "and the resolution timestamp is that same bar")
-    chk(result.resolution_basis == "first_touch_bar_close",
+    chk(result.resolution_basis == "first_touch_barrier",
         "the row records WHICH observation this is")
 
     print("the resolving bar is located, not assumed to be the first or the last")
@@ -108,15 +108,54 @@ def main() -> int:
     mid_result = tc.grade(contract=tc.TRAINING_CONTRACT, entry=ENTRY, threshold=BAND,
                           klines=mid, entry_ts=BASE_MS, verify_ts=verify_at)
     chk(mid_result.direction == tc.DOWN, "a mid-window touch still grades DOWN")
-    chk(mid_result.resolution_price == 98.90,
-        f"and resolves at BAR 2's close 98.90 (got {mid_result.resolution_price}) - not bar 0, "
-        f"not the last bar")
-    chk(mid_result.resolution_event_ts == BASE_MS + 3 * 60_000,
-        "with bar 2's timestamp, so an off-by-one in the index cannot hide")
+    chk(mid_result.resolution_price == 99.0,
+        f"the price is the barrier (got {mid_result.resolution_price}) regardless of WHICH bar "
+        f"touched it - so the price can no longer identify the resolving bar")
+    chk(mid_result.resolution_event_ts == BASE_MS + 3 * 60_000
+        and mid_result.interval_start_ms == BASE_MS + 3 * 60_000,
+        "the INTERVAL identifies bar 2 instead, so an off-by-one in the index still cannot "
+        "hide - it just has to be caught by the timestamp rather than by the price")
+    chk(mid_result.interval_end_ms == BASE_MS + 4 * 60_000,
+        "and the interval ends at the NEXT bar's open, bounding when the touch could have "
+        "occurred")
     outcome, idx = tc.first_touch_at(ENTRY, [b["high"] for b in mid],
                                      [b["low"] for b in mid], BAND)
     chk(outcome == tc.DOWN and idx == 2,
         f"first_touch_at reports the resolving index directly (got {idx}, expected 2)")
+
+    print("THE TOUCHING BAR'S CLOSE IS NOT THE RESOLVING OBSERVATION")
+    # The defect this catches was shipped by the FIX for P1-1, and survived because both
+    # fixtures above have touching bars that close on the SAME side they touched - so direction
+    # and close agreed by construction and could not disagree. A bar can pierce the lower
+    # barrier and still close ABOVE entry; using its close then re-creates the exact
+    # contradictory row (DOWN direction, positive move) the whole effort was meant to remove.
+    cross = [
+        {"time": (BASE_MS + 60_000) // 1000, "high": 100.90, "low": 98.00, "close": 100.50,
+         "is_closed": True},                       # touches 99.0, CLOSES ABOVE entry
+        {"time": (BASE_MS + 120_000) // 1000, "high": 101.50, "low": 100.00, "close": 101.20,
+         "is_closed": True},
+    ]
+    cr = tc.grade(contract=tc.TRAINING_CONTRACT, entry=ENTRY, threshold=BAND,
+                  klines=cross, entry_ts=BASE_MS, verify_ts=verify_at)
+    chk(cross[0]["close"] > ENTRY and cr.direction == tc.DOWN,
+        "the fixture is adversarial: the bar touches DOWN while closing ABOVE entry")
+    chk(cr.resolution_price == 99.0,
+        f"resolution price is the BARRIER 99.0 (got {cr.resolution_price}), not the bar's "
+        f"close {cross[0]['close']}")
+    chk((cr.resolution_price - ENTRY) < 0,
+        "so the implied move is NEGATIVE and agrees with the DOWN direction - the bar's close "
+        "would have reported +0.50 against a DOWN call")
+    chk(cr.resolution_basis == "first_touch_barrier",
+        "and the row says which observation that is")
+    chk(cr.endpoint_price == 101.20,
+        "the endpoint price is still carried, so endpoint economics remain available without "
+        "conflating them with the barrier that decided the label")
+
+    print("the resolving TIMESTAMP is an interval, not an instant")
+    chk(cr.interval_start_ms == BASE_MS + 60_000 and cr.interval_end_ms == BASE_MS + 120_000,
+        "OHLC cannot say when inside the bar the barrier was crossed, so both edges are "
+        "recorded rather than presenting the bar open as the exact crossing moment")
+    chk(cr.interval_end_ms > cr.interval_start_ms, "and the interval is non-degenerate")
 
     print("a NEUTRAL timeout resolves at the horizon end, because expiry IS the event")
     flat = [{"time": (BASE_MS + (i + 1) * 60_000) // 1000,
@@ -143,20 +182,20 @@ def main() -> int:
     row = done[0]
 
     chk(row["actual_direction"] == tc.DOWN, "direction DOWN")
-    chk(row["actual_price"] == 98.50,
+    chk(row["actual_price"] == 99.0,
         f"actual_price is the resolution observation (got {row['actual_price']}), not the "
         f"loop price {loop_price}")
     chk(row["actual_move_usd"] < 0,
         f"actual_move_usd is NEGATIVE ({row['actual_move_usd']}) and so AGREES with the DOWN "
         f"direction - the defect produced +11.50 here")
-    chk(abs(row["actual_move_usd"] - (98.50 - ENTRY)) < 1e-6,
+    chk(abs(row["actual_move_usd"] - (99.0 - ENTRY)) < 1e-6,
         "and it is measured from that same price")
-    chk(abs(row["target_error_usd"] - (98.50 - 102.0)) < 1e-6,
+    chk(abs(row["target_error_usd"] - (99.0 - 102.0)) < 1e-6,
         "target error uses the same observation too")
     chk(row["lean_hit"] is True,
         "lean_hit agrees: a DOWN lean on a DOWN resolution is a hit - under the loop price it "
         "was scored a MISS")
-    chk(row["resolution_basis"] == "first_touch_bar_close"
+    chk(row["resolution_basis"] == "first_touch_barrier"
         and row["resolution_event_ts"] == BASE_MS + 60_000,
         "the basis and event timestamp are stored on the row")
     chk(row["loop_price_at_verification"] == loop_price,
