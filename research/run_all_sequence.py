@@ -40,6 +40,14 @@ AUTHORITATIVE_AUXILIARY = (
 # they are classified separately rather than listed as "(no out-of-sample verdict)" beside
 # scripts that could have reported one. They still run, and a non-zero exit still fails.
 FRONTIER = (
+    # Conditional path forecasting. Both are studies with frozen written results:
+    #   docs/active/CONDITIONAL_PATH_FORECAST_V1_RESULT_2026-08-05.md
+    #   docs/active/CONDITIONAL_OFFSET_V2_RESULT_2026-08-05.md
+    # v1 tests the lattice against anchor geometry; v2 adds paired day-block intervals, a
+    # permuted-feature control and the init_score reconstruction guard. Both concluded the
+    # model does not beat the geometry, so neither is wired to a decision.
+    "conditional_path_forecast_v1.py",
+    "conditional_offset_v2.py",
     "path_information_test.py",
     "breakout_bracket_test.py",
     "complete_set_arbitrage_test.py",
