@@ -172,6 +172,66 @@ def main() -> int:
     chk("0.15 if HAS_TORCH and not _dl_in_stacker" in code,
         "the 0.15 weight is retained for that case, not deleted outright")
 
+    print("5. the deep seat is not quietly downgraded")
+    chk("epochs=max(6, int(model.epochs * 0.5))" not in code,
+        "the OOF TCN no longer trains at HALF the production epoch budget")
+    chk("epochs=model.epochs," in code,
+        "it uses the same budget, so the stacker learns how much to trust the model it is "
+        "actually served rather than a weaker one")
+
+    print("6. dynamic weights use SKILL, not raw accuracy")
+    chk("_acc_map[_canon] = float(max(0.0, _skill))" in code,
+        "the weight is log-loss skill against the class prior")
+    chk("_raw_acc_map[_canon]" in code,
+        "raw accuracy is kept separately for the panels, under its own name")
+    chk("_prior_ll = float(" in code,
+        "and the prior baseline is computed from the fold's own label distribution")
+
+    # The property, demonstrated: on an imbalanced bucket a pure-abstainer beats a genuine
+    # forecaster on accuracy, and loses on skill. That inversion is the whole reason for the
+    # change.
+    rng = np.random.default_rng(3)
+    n = 6000
+    y = np.where(rng.uniform(size=n) < 0.70, 1, np.where(rng.uniform(size=n) < 0.5, 0, 2))
+    prior = np.maximum(np.bincount(y, minlength=3) / n, 1e-6)
+    abstain = np.tile(prior, (n, 1))                        # always predicts the base rates
+    # A MODEST nudge toward the truth, not an oracle. argmax still lands on NEUTRAL almost
+    # always, so accuracy cannot separate this seat from the abstainer - which is exactly the
+    # blind spot. The first version of this fixture put 0.76 on the true class and scored
+    # 1.000 accuracy, proving nothing about the metric being replaced.
+    informed = np.tile(prior, (n, 1)).astype(np.float64)
+    informed[np.arange(n), y] += 0.10
+    informed /= informed.sum(axis=1, keepdims=True)
+
+    def acc(p):
+        return float(np.mean(np.argmax(p, axis=1) == y))
+
+    def skill(p):
+        p = np.clip(p, 1e-6, 1.0)
+        p = p / p.sum(axis=1, keepdims=True)
+        ll = float(-np.mean(np.log(p[np.arange(n), y])))
+        pll = float(-np.mean(np.log(prior[y])))
+        return 1.0 - ll / pll
+
+    chk(abs(acc(abstain) - acc(informed)) < 0.02,
+        f"on a 70% NEUTRAL bucket ACCURACY cannot tell the pure abstainer from a genuinely "
+        f"informative seat ({acc(abstain):.3f} vs {acc(informed):.3f}) - both just answer "
+        f"NEUTRAL, so the old weight ranked them the same")
+    chk(skill(abstain) < 1e-6 < skill(informed),
+        f"while on SKILL the abstainer scores ~0 and the informed seat scores "
+        f"{skill(informed):.3f} - the weight now goes to the seat with information")
+
+    print("7. class-set mismatch is recorded, not hidden")
+    # The INCREMENT, not the variable name. A mutation that deleted the counting while leaving
+    # the getattr line intact walked straight past a name-only check.
+    chk("_mismatch[_key] = _mismatch.get(_key, 0) + 1" in code,
+        "a fold that saw fewer classes than production is actually COUNTED, not merely named")
+    chk("if len(fit_classes) < 3:" in code,
+        "and the condition that detects it is the class count the fold actually fitted")
+    chk("TRAINING_SEMANTICS" in SRC_PATH.read_text(encoding="utf-8"),
+        "and the deliberate exclusion of synthetic class-presence rows remains a declared "
+        "training-semantics decision rather than an accident")
+
     print("\nOOF / SERVING PARITY:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

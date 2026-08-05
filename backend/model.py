@@ -1484,9 +1484,19 @@ class MultiModelEnsemble:
                                             # The PyTorch wrapper isn't sklearn-clonable —
                                             # build a fresh fold instance (half budget: the
                                             # fold sets are small and refit 3x per bucket).
+                                            # P1-5. THE SAME EPOCH BUDGET AS PRODUCTION.
+                                            #
+                                            # This was epochs*0.5 "because the fold sets are
+                                            # small and it refits 3x per bucket" - a speed
+                                            # decision with a correctness cost. A half-trained
+                                            # TCN is a DIFFERENT model: the stacker learned how
+                                            # much to trust the weaker one and is then served
+                                            # the fully trained one. Every other seat is cloned
+                                            # with its production hyperparameters; the deep
+                                            # seat was the only one quietly downgraded.
                                             fold_model = type(model)(
                                                 model.input_dim, model.lookback,
-                                                epochs=max(6, int(model.epochs * 0.5)),
+                                                epochs=model.epochs,
                                                 batch_size=model.batch_size)
                                         else:
                                             fold_model = clone(base_est)
@@ -1592,6 +1602,41 @@ class MultiModelEnsemble:
                                                 "seat's OOF probabilities do NOT match its "
                                                 "served fitting pipeline", h, reg, name)
                                             fold_model.fit(X_tr, y_tr_local)
+                                        # P1-5. CLASS-SET PARITY, RECORDED.
+                                        #
+                                        # Production tops every class up to >=3 rows with
+                                        # tiny-noise synthetic samples so multiclass estimators
+                                        # accept a non-contiguous label set. OOF deliberately
+                                        # does NOT (TRAINING_SEMANTICS v3), and that exclusion
+                                        # is right: injecting synthetic rows into the
+                                        # probabilities the stacker learns from would be worse
+                                        # than the mismatch it avoids.
+                                        #
+                                        # But it has a consequence worth naming. On a thin
+                                        # bucket the fold fits 2 classes while production fits
+                                        # 3, so the padding below writes EXACTLY 0.0 into the
+                                        # absent column while production emits a small positive
+                                        # there. The stacker then learns from a column that is
+                                        # structurally zero.
+                                        #
+                                        # Judged not worth dropping the seat over - production's
+                                        # own NEUTRAL mass on such a bucket comes from three
+                                        # synthetic rows and is near-zero too - so the honest
+                                        # action is to COUNT it rather than either paper over it
+                                        # or delete a seat the bucket needs.
+                                        if len(fit_classes) < 3:
+                                            _mismatch = getattr(self, "_oof_class_set_mismatch", None)
+                                            if _mismatch is None:
+                                                _mismatch = {}
+                                                self._oof_class_set_mismatch = _mismatch
+                                            _key = f"{reg}|h{h}|{name}"
+                                            _mismatch[_key] = _mismatch.get(_key, 0) + 1
+                                            logger.info(
+                                                "[OOF] h=%sm reg=%s seat=%s fold saw %s of 3 "
+                                                "classes; the absent column is padded to a hard "
+                                                "0.0 while production (augmented) emits a small "
+                                                "positive there",
+                                                h, reg, name, len(fit_classes))
                                         fold_probs = fold_model.predict_proba(X_stack[val_idx])
                                         padded = []
                                         local_classes = getattr(
@@ -1637,11 +1682,54 @@ class MultiModelEnsemble:
                             try:
                                 _oof_name_map = {"xgb": "xgboost", "lgb": "lightgbm", "cat": "catboost"}
                                 _y_true_oof = y_stack[valid_oof]
+                                # P1-5. SKILL, NOT RAW ACCURACY.
+                                #
+                                # These numbers become the dynamic ensemble weights. Raw
+                                # multiclass accuracy pays a seat for predicting the dominant
+                                # class: on a bucket that is 70% NEUTRAL, a model that answers
+                                # NEUTRAL every time scores 0.70 and outranks one that makes
+                                # real directional calls at 0.55 - so the blend was tilted
+                                # toward the most abstaining seat, which is the opposite of
+                                # what the weights are meant to express.
+                                #
+                                # Multiclass log-loss SKILL against the class-prior baseline
+                                # instead: 0 means "no better than predicting the base rates",
+                                # positive means genuine information, and a seat that only
+                                # repeats the prior can no longer win. Accuracy is retained
+                                # alongside for the panels, under its own name, so nothing
+                                # reads a skill score as an accuracy.
+                                _prior = np.bincount(
+                                    _y_true_oof.astype(int),
+                                    minlength=3).astype(np.float64)
+                                _prior = np.maximum(_prior / max(_prior.sum(), 1.0), 1e-6)
+                                _prior_ll = float(
+                                    -np.mean(np.log(_prior[_y_true_oof.astype(int)])))
+
+                                def _log_loss(_p, _y):
+                                    _p = np.clip(np.asarray(_p, dtype=np.float64), 1e-6, 1.0)
+                                    _p = _p / np.maximum(_p.sum(axis=1, keepdims=True), 1e-9)
+                                    return float(-np.mean(
+                                        np.log(_p[np.arange(len(_y)), _y.astype(int)])))
+
                                 _acc_map = {}
+                                _raw_acc_map = {}
                                 for _sname, _spreds in zip(feature_names, oof_features):
-                                    _pred_cls = np.argmax(_spreds[valid_oof], axis=1)
+                                    _sel = _spreds[valid_oof]
+                                    _pred_cls = np.argmax(_sel, axis=1)
                                     _canon = _oof_name_map.get(_sname, _sname)
-                                    _acc_map[_canon] = float(np.mean(_pred_cls == _y_true_oof))
+                                    _raw_acc_map[_canon] = float(
+                                        np.mean(_pred_cls == _y_true_oof))
+                                    _skill = (1.0 - _log_loss(_sel, _y_true_oof) / _prior_ll
+                                              if _prior_ll > 1e-9 else 0.0)
+                                    # Clipped at 0: a seat WORSE than the prior contributes
+                                    # nothing to the blend rather than a negative weight.
+                                    _acc_map[_canon] = float(max(0.0, _skill))
+                                logger.info(
+                                    "[OOF] h=%sm reg=%s log-loss skill vs prior: %s "
+                                    "(raw accuracy, for the panels only: %s)",
+                                    h, reg,
+                                    {k: round(v, 4) for k, v in _acc_map.items()},
+                                    {k: round(v, 4) for k, v in _raw_acc_map.items()})
                                 if _acc_map:
                                     self.model_accuracies.setdefault(reg, {})[h] = dict(_acc_map)
                                     if reg == "GLOBAL":
