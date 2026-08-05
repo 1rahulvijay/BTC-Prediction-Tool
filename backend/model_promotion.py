@@ -56,11 +56,25 @@ def _sample_indices(indices: np.ndarray, maximum: int) -> np.ndarray:
     return indices[positions]
 
 
-def _predict_probabilities(model, values: np.ndarray, horizon: int) -> np.ndarray:
+def _predict_probabilities(model, values: np.ndarray, horizon: int, regimes=None) -> np.ndarray:
+    """P0-8. Each row is scored through the regime it was ACTUALLY in.
+
+    This passed `None` as data_state for every row. `_get_regime_from_state(None)` reads
+    `{}.get("regime", "RANGE")`, so the entire holdout was evaluated through the RANGE expert
+    path - not the TREND or VOLATILE experts, not the regime-confidence blend, none of the
+    routing that decides which seats actually speak in production.
+
+    The gate was therefore measuring a model configuration that never serves, and a candidate
+    could pass or fail on an expert mix it would never be run with. `regimes` is the per-row
+    historical regime label; without it, this now says so rather than silently defaulting.
+    """
     rows = []
-    for row in values:
+    for index, row in enumerate(values):
+        state = None
+        if regimes is not None and index < len(regimes) and regimes[index]:
+            state = {"regime_info": {"regime": str(regimes[index])}}
         probability = np.asarray(
-            model.predict_base(np.expand_dims(row, axis=0), int(horizon), None),
+            model.predict_base(np.expand_dims(row, axis=0), int(horizon), state),
             dtype=np.float64,
         )
         probability = np.nan_to_num(probability, nan=0.0, posinf=0.0, neginf=0.0)
@@ -103,7 +117,7 @@ def probability_metrics(probability: np.ndarray, actual: np.ndarray, bins: int =
 
 def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
                        decision_timestamps=None, incumbent_boundary_ts: int | None = None,
-                       valid_mask: dict | None = None) -> dict:
+                       valid_mask: dict | None = None, regime_labels=None) -> dict:
     """P1-7. `valid_mask` is REQUIRED for an honest gate, and its absence is recorded.
 
     build_sequences gives an AMBIGUOUS row (one bar touched both barriers) a NEUTRAL one-hot,
@@ -122,6 +136,10 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
         "calibration_contract": "candidate holdout + purged OOF stacker; full refit reuses conformal residuals",
         # Recorded so a report cannot claim an ambiguity-excluded evaluation it never ran.
         "ambiguous_rows_excluded": valid_mask is not None,
+        # P0-8. Whether the holdout was scored through real regime routing or through the
+        # RANGE default. A gate that silently evaluated one expert path must not be readable
+        # as though it evaluated the served one.
+        "regime_routing": "historical_labels" if regime_labels is not None else "RANGE_DEFAULT",
     }
     all_pass = True
     for horizon in candidate.horizons:
@@ -153,12 +171,21 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
             continue
         sampled = _sample_indices(holdout, gates["max_eval_samples"])
         actual = np.argmax(np.asarray(Y[horizon])[sampled], axis=1)
-        candidate_probability = _predict_probabilities(candidate, np.asarray(X)[sampled], horizon)
+        # The regime each sampled row was ACTUALLY in, so both variants are scored through the
+        # routing production would have used rather than through the RANGE default.
+        sampled_regimes = None
+        if regime_labels is not None:
+            _labels = list(regime_labels)
+            if len(_labels) >= stop:
+                sampled_regimes = [_labels[i] for i in sampled]
+        candidate_probability = _predict_probabilities(
+            candidate, np.asarray(X)[sampled], horizon, sampled_regimes)
         candidate_metrics = probability_metrics(candidate_probability, actual)
         incumbent_metrics = None
         fair_comparison = False
         if incumbent is not None and getattr(incumbent, "is_trained", False):
-            incumbent_probability = _predict_probabilities(incumbent, np.asarray(X)[sampled], horizon)
+            incumbent_probability = _predict_probabilities(
+                incumbent, np.asarray(X)[sampled], horizon, sampled_regimes)
             incumbent_metrics = probability_metrics(incumbent_probability, actual)
 
             if decision_timestamps is not None and incumbent_boundary_ts:
@@ -384,6 +411,43 @@ def selftest() -> None:
     assert honest["horizons"][5]["ambiguous_excluded"] == int(ambiguous.sum())
     assert leaky["ambiguous_rows_excluded"] is False
     assert honest["ambiguous_rows_excluded"] is True
+
+    # ---- P0-8: the holdout is scored through REAL regime routing ---------------------------
+    class _RegimeAwareModel:
+        """Votes UP in TREND and DOWN everywhere else, so the routing is observable."""
+        horizons = [5]
+        is_trained = True
+
+        def predict_base(self, _row, _horizon, data_state):
+            regime = ((data_state or {}).get("regime_info") or {}).get("regime", "RANGE")
+            return (np.array([0.0, 0.0, 1.0]) if str(regime).startswith("TREND")
+                    else np.array([1.0, 0.0, 0.0]))
+
+    r_rows = 400
+    Xr = np.zeros((r_rows, 4), dtype=np.float32)
+    up = np.zeros((r_rows, 3), dtype=np.float32); up[:, 2] = 1.0     # every outcome is UP
+    trend_labels = ["TRENDING_UP"] * r_rows
+    vmask = {5: np.ones(r_rows, dtype=bool)}
+
+    blind = evaluate_candidate(_RegimeAwareModel(), None, Xr, {5: up}, 0, valid_mask=vmask)
+    routed = evaluate_candidate(_RegimeAwareModel(), None, Xr, {5: up}, 0, valid_mask=vmask,
+                                regime_labels=trend_labels)
+
+    blind_p = blind["horizons"][5]["candidate"]["directional_precision"]
+    routed_p = routed["horizons"][5]["candidate"]["directional_precision"]
+    # With no labels every row resolves to RANGE and the model votes DOWN against an UP
+    # outcome. With the real labels it routes TREND and votes UP. If the gate ignored routing
+    # these two would be identical - which is exactly what it used to do.
+    assert blind_p == 0.0, f"RANGE-default path should miss every row, got {blind_p}"
+    assert routed_p == 1.0, f"regime-routed path should hit every row, got {routed_p}"
+    assert blind["regime_routing"] == "RANGE_DEFAULT"
+    assert routed["regime_routing"] == "historical_labels"
+
+    # A label list too short to align is refused rather than partially applied.
+    short_labels = evaluate_candidate(_RegimeAwareModel(), None, Xr, {5: up}, 0,
+                                      valid_mask=vmask, regime_labels=["TRENDING_UP"] * 10)
+    assert short_labels["horizons"][5]["candidate"]["directional_precision"] == 0.0, (
+        "a mis-sized label list must not be applied to arbitrary rows")
 
     # A mask that cannot be aligned to the labels is refused, not silently ignored.
     short = evaluate_candidate(_FakeModel(), None, Xf, {5: labels}, 0,

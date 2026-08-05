@@ -668,6 +668,9 @@ class MultiModelEnsemble:
         
         self.stackers_by_regime = {reg: {} for reg in self.regimes}
         self.conformal_residuals = {reg: {} for reg in self.regimes}
+        #: P0-1. The regime HMM this bundle's experts were partitioned by, carried with the
+        #: bundle so a restart or a promotion routes rows the same way training did.
+        self.hmm_state = None
         self.class_priors = {}  # per-horizon [DOWN, NEUTRAL, UP] training base rates
         self.is_trained = False
         self.training_history = {}
@@ -2961,6 +2964,11 @@ class MultiModelEnsemble:
 
             save_bundle_value(self.model_accuracies, "accuracies.pkl")
             save_bundle_value(self.conformal_residuals, "conformal_residuals.pkl")
+            # P0-1. The HMM travels WITH the bundle. The experts were trained on HMM-derived
+            # TREND/RANGE/VOLATILE partitions, so a bundle whose regime parameters are missing
+            # is served by the heuristic fallback - a train/serve partition mismatch that shows
+            # up as nothing at all, because the fallback answers every call happily.
+            save_bundle_value(getattr(self, "hmm_state", None), "hmm_state.pkl")
             save_bundle_value(self.feature_reference, "feature_reference.pkl")
             save_bundle_value(self.feature_reference_names, "feature_reference_names.pkl")
             _atomic_joblib_dump(
@@ -3104,6 +3112,18 @@ class MultiModelEnsemble:
                     self.conformal_residuals = _verified_joblib_load(res_path)
                 except Exception:
                     self.conformal_residuals = {reg: {} for reg in self.regimes}
+
+            # P0-1. Restored onto the bundle; the SERVER installs it into the live regime
+            # engine after load_models(). Absent (an older bundle) stays None rather than
+            # becoming an empty dict, so "this bundle carries no HMM" is distinguishable from
+            # "this bundle carries an HMM that failed to fit".
+            hmm_path = os.path.join(model_dir, "hmm_state.pkl")
+            self.hmm_state = None
+            if os.path.exists(hmm_path):
+                try:
+                    self.hmm_state = _verified_joblib_load(hmm_path)
+                except Exception:
+                    self.hmm_state = None
 
             ref_path = os.path.join(model_dir, "feature_reference.pkl")
             if os.path.exists(ref_path):

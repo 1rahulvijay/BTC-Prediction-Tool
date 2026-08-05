@@ -153,6 +153,9 @@ jobs:
       - name: P1-4 every directional seat respects the sample weights
         run: python backend/test_sample_weight_coverage.py
 
+      - name: P0-1 regime routing follows the bundle, not the training run
+        run: python backend/test_hmm_bundle_binding.py
+
       - name: P1-6 uncertainty bands come from untouched rows
         run: python backend/test_conformal_source_honesty.py
 
@@ -672,6 +675,7 @@ jobs:
           python backend/test_per_model_grading_contract.py || exit /b 1
           python backend/test_sample_weight_coverage.py || exit /b 1
           python backend/test_venue_independence.py || exit /b 1
+          python backend/test_hmm_bundle_binding.py || exit /b 1
           python backend/test_conformal_source_honesty.py || exit /b 1
           python backend/test_calibration_bundle_identity.py || exit /b 1
           python backend/research/executable_fill_engine.py --selftest || exit /b 1

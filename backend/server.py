@@ -652,6 +652,41 @@ exchange_verifier = PerVenueVerifier(horizons=(5, 15))   # pruned 2026-06-21: dr
 multi_exchange_client = MultiExchangePriceClient()
 simulator = TradingSimulator()
 regime_engine = MarketRegime()
+
+
+def _install_hmm_state(bundle, reason: str) -> bool:
+    """Install a BUNDLE's regime parameters into the live engine. The only way they get there.
+
+    P0-1. `MarketRegime.state_dict()`/`load_state_dict()` existed and were tested, but nothing
+    in production called them - the helper worked while the application never used it. Two
+    consequences, both silent:
+
+      * after a restart the live engine was fresh (hmm_ready=False), so experts trained on
+        HMM-derived partitions were routed by the heuristic fallback;
+      * training fitted the LIVE engine directly, so a challenger repartitioned the incumbent
+        before it had been gated, and a rejected challenger left its parameters behind.
+
+    Routing is now only ever changed by installing a bundle, never as a side effect of fitting
+    one. Returns whether the live engine ended up HMM-ready.
+    """
+    state = getattr(bundle, "hmm_state", None)
+    if not state:
+        logger.warning(
+            "[REGIME] %s: bundle carries no HMM state - live routing stays on the heuristic "
+            "fallback. Experts trained on HMM partitions are being served by a different "
+            "partition; retrain to bind them.", reason)
+        return False
+    try:
+        ok = regime_engine.load_state_dict(state)
+    except Exception as exc:                       # never take the serving loop down
+        logger.warning("[REGIME] %s: HMM state refused (%s); heuristic fallback stays live.",
+                       reason, exc)
+        return False
+    logger.info("[REGIME] %s: HMM state installed (ready=%s, fitted_at_ms=%s).",
+                reason, regime_engine.hmm_ready, state.get("fitted_at_ms"))
+    return bool(ok and regime_engine.hmm_ready)
+
+
 signal_buffer = LiveSignalHistoryBuffer(
     maxlen=MAX_KLINES
 )  # per-candle live-signal history for training
@@ -1981,12 +2016,24 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     _hmm_split = float(os.getenv("BTC_TRAIN_SPLIT_FRAC", "0.8"))
     _hmm_cut = max(200, int(len(closes) * min(max(_hmm_split, 0.5), 0.98)))
     _hmm_cut = min(_hmm_cut, len(closes))
+    # P0-1. Fitted on a CANDIDATE engine, never on the live one.
+    #
+    # This used to call regime_engine.fit_hmm(...) - the module-global that the serving loop
+    # reads at line ~3990 for every prediction. So the moment a retrain began, the INCUMBENT's
+    # live regime routing changed to parameters belonging to a candidate that had not been
+    # trained yet, let alone gated, shadowed or promoted. A challenger that was ultimately
+    # REJECTED still permanently repartitioned the model that kept serving.
+    #
+    # The candidate's parameters ride with its bundle (model.hmm_state) and reach the live
+    # engine only through _install_hmm_state, on load or on promotion.
+    candidate_regime = MarketRegime()
     try:
         logger.info("[TRAIN] Fitting market regime engine on the training slice "
                     "(%s of %s bars; validation and test are filtered with FROZEN parameters)...",
                     _hmm_cut, len(closes))
-        regime_engine.fit_hmm(closes[:_hmm_cut], volumes[:_hmm_cut])
-        regime_engine.hmm_fit_rows = _hmm_cut
+        candidate_regime.fit_hmm(closes[:_hmm_cut], volumes[:_hmm_cut])
+        candidate_regime.hmm_fit_rows = _hmm_cut
+        target_model.hmm_state = candidate_regime.state_dict()
     except Exception as e:
         logger.warning(f"HMM regime fit skipped: {e}")
 
@@ -2052,7 +2099,11 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     regime_labels = None
     try:
         _max_h = max(target_model.horizons)
-        _reg_by_close = regime_engine.classify_series(closes, volumes)
+        # The CANDIDATE's partition, so the experts are trained on the same regime definition
+        # their bundle will be served with. Using the live engine here meant the labels came
+        # from whatever was serving, which after the fit above was the candidate anyway - by
+        # side effect rather than by intent.
+        _reg_by_close = candidate_regime.classify_series(closes, volumes)
         regime_labels = [
             _reg_by_close[i] if i < len(_reg_by_close) else "RANGE"
             for i in range(LOOKBACK, feature_row_count - _max_h)
@@ -2125,6 +2176,11 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         # NEUTRAL observation and moved the Brier and ECE this gate decides on.
                         # Yvalid is built above and was simply never passed down.
                         Yvalid,
+                        # P0-8. The per-row historical regime. Without it the gate passed
+                        # data_state=None for every row, which resolves to RANGE, so the whole
+                        # holdout was scored through the RANGE experts - an expert mix that
+                        # never serves. Same list the trainer partitioned on, aligned 1:1 with X.
+                        regime_labels,
                     ),
                 )
                 gate_report.update({
@@ -2813,6 +2869,9 @@ async def relearn_models_background(reason: str = "manual"):
                 candidate.model_dir = MODEL_DIR
                 model = candidate
                 model.cascade_monitor = cascade_monitor
+                # P0-1. Routing follows the BUNDLE, and changes only here - at promotion -
+                # never as a side effect of fitting a candidate that might be rejected.
+                _install_hmm_state(model, "bootstrap-promotion")
                 boundary_path = os.path.join(candidate_dir, "train_boundary.json")
                 boundary_ts = None
                 try:
@@ -2861,6 +2920,7 @@ async def relearn_models_background(reason: str = "manual"):
         )
         model = candidate
         model.cascade_monitor = cascade_monitor
+        _install_hmm_state(model, "retrain-swap")
         ab_runner.primary = ModelVariant(f"baseline_{int(time.time())}", model)
         _write_retrain_completion_marker(model)
         _set_status(
@@ -3569,6 +3629,14 @@ async def main_loop():
     # training as before.
     loaded = model.load_models()
     if loaded:
+        # P0-1. Install the bundle's OWN regime parameters into the live engine.
+        #
+        # Without this, `MarketRegime()` came up fresh with hmm_ready=False after every
+        # restart, so the experts - trained on HMM-derived TREND/RANGE/VOLATILE partitions -
+        # were routed by the heuristic fallback instead. Nothing raised: the fallback answers
+        # every call, so the mismatch was invisible in logs and in the UI.
+        _install_hmm_state(model, "boot")
+
         # Restore the saved model's out-of-sample boundary so backtests stay honest
         # across restarts (models loaded from disk, no retrain → boundary from json).
         try:
@@ -4536,6 +4604,7 @@ async def main_loop():
                             promoted_variant.model.model_dir = MODEL_DIR
                             model = promoted_variant.model
                             model.cascade_monitor = cascade_monitor
+                            _install_hmm_state(model, "challenger-promotion")
                             previous_manifest = {}
                             try:
                                 with open(FULL_REFIT_SHADOW_MANIFEST, "r", encoding="utf-8") as handle:
