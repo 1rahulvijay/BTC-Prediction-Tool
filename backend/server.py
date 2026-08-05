@@ -2370,12 +2370,19 @@ async def run_backtest_legacy_unused():
         logger.info("[BACKTEST] Running main backtest for horizons=%s", model.horizons)
         bt_res = await loop.run_in_executor(
             None,
-            backtester.run,
-            features,
-            closes,
-            model.horizons,
-            model.predict_base,
-            LOOKBACK,
+            functools.partial(
+                backtester.run,
+                features,
+                closes,
+                model.horizons,
+                model.predict_base,
+                LOOKBACK,
+                # The REAL intrabar extremes. Without these the backtester fabricates a
+                # constant 0.2% range, and its ATR-derived neutral band - which decides
+                # which outcomes count as UP/DOWN/NEUTRAL - stops tracking volatility.
+                highs=np.array([k["high"] for k in kl_snapshot]),
+                lows=np.array([k["low"] for k in kl_snapshot]),
+            ),
         )
 
         # Honest out-of-sample check: strict temporal walk-forward on every horizon.
@@ -2617,6 +2624,8 @@ async def run_backtest(reason: str = "manual"):
                 model.predict_base,
                 LOOKBACK,
                 progress_cb=main_progress,
+                highs=np.array([k["high"] for k in bt_klines]),
+                lows=np.array([k["low"] for k in bt_klines]),
             ),
         )
 

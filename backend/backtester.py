@@ -165,11 +165,15 @@ class Backtester:
         self.results = {}
         self._trade_returns_by_horizon = {}
 
-    def run(self, features: np.ndarray, closes: np.ndarray, horizons: list[int], predict_fn, lookback: int = 60, progress_cb=None) -> dict:
+    def run(self, features: np.ndarray, closes: np.ndarray, horizons: list[int], predict_fn,
+            lookback: int = 60, progress_cb=None, highs=None, lows=None) -> dict:
         """
         Run backtest over the historical dataset.
         features: [timesteps, NUM_FEATURES]
         closes: raw prices
+        highs/lows: the REAL intrabar extremes, aligned with `closes`. Omitting them forces a
+            synthetic constant-range fallback whose adaptive threshold is meaningless; the
+            result is then tagged ohlc_source=FABRICATED and valid_for_promotion=False.
         """
         n_samples = len(features)
         
@@ -182,10 +186,39 @@ class Backtester:
         if n_samples < lookback + max(horizons) + 10:
             return self._empty_results(horizons)
 
-        # Compute adaptive threshold from ATR
+        # Compute adaptive threshold from ATR.
+        #
+        # THE DEFECT THIS REMOVES
+        #     highs = closes * 1.001
+        #     lows  = closes * 0.999
+        #
+        # Every bar was given an identical 0.2% range, so ATR became a constant multiple of
+        # price and `compute_adaptive_threshold_series` - which is ATR-derived - produced a
+        # neutral band with no volatility variation at all. That band decides which outcomes
+        # count as UP, DOWN or NEUTRAL, so every hit rate in this backtest was graded against a
+        # barrier that did not correspond to any real market condition. Quiet periods got a
+        # band far too wide and violent ones far too narrow.
+        #
+        # The real extremes were always available: the callers build `closes` from kline dicts
+        # that carry `high` and `low`. They were simply never passed.
         from features import atr, compute_adaptive_threshold_series
-        highs = closes * 1.001  # Approximate — real highs not available here
-        lows = closes * 0.999
+        ohlc_source = "REAL"
+        if highs is None or lows is None:
+            ohlc_source = "FABRICATED"
+            logger.error(
+                "[BACKTEST] real highs/lows were NOT supplied - falling back to a synthetic "
+                "0.2%% range. The adaptive threshold is meaningless under this fallback and "
+                "the results are tagged ohlc_source=FABRICATED / valid_for_promotion=False.")
+            highs = closes * 1.001
+            lows = closes * 0.999
+        else:
+            highs = np.asarray(highs, dtype=np.float64)
+            lows = np.asarray(lows, dtype=np.float64)
+            if len(highs) != len(closes) or len(lows) != len(closes):
+                raise ValueError(
+                    f"highs/lows must align with closes "
+                    f"({len(highs)}/{len(lows)} vs {len(closes)})")
+        self.ohlc_source = ohlc_source
         atr_arr = atr(highs, lows, closes)
         threshold_series = compute_adaptive_threshold_series(closes, atr_arr)
         logger.info(
@@ -276,6 +309,10 @@ class Backtester:
         self.results["sharpe"] = self._compute_sharpe(horizons)
         self.results["benchmarks"] = self._compute_benchmarks(closes[test_start:], horizons)
 
+        # Tagged ON the result, not just logged. A backtest graded against a fabricated
+        # volatility band must not be readable as one graded against the real market.
+        self.results["ohlc_source"] = ohlc_source
+        self.results["valid_for_promotion"] = (ohlc_source == "REAL")
         return self.results
 
     def _compute_metrics(self, preds, actuals, returns, horizon: int = None) -> dict:
