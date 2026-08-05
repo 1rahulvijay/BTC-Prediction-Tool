@@ -9,7 +9,7 @@
 ## Verdict — CURRENT
 
 ```text
-RETRAIN: UNBLOCKED (all four hard stops closed; 4.3 and 4.4 clear on the run)
+RETRAIN: UNBLOCKED FOR PROVENANCE, one PARITY residual open (4.1)
 CHALLENGER BUNDLE CREATED: NO
 PROMOTION VERDICT: REJECTED (no challenger exists to evaluate)
 REAL-MONEY AUTHORITY: NONE
@@ -17,7 +17,7 @@ REAL-MONEY AUTHORITY: NONE
 
 | # | Hard stop | First pass | Now | Closed by |
 |---|---|---|---|---|
-| 4.1 | OOF/serving parity | FAIL | **PASS** | `e9a394f`, `376ba87` |
+| 4.1 | OOF/serving parity | FAIL | **PARTIAL** | `e9a394f`, `376ba87`, `+cal/fail-open` |
 | 4.2 | Historical snapshot broadcasting | FAIL | **PASS** | `6b0bb1a` |
 | 4.3 | VWAP / feature contract | FAIL | **PASS (clearable)** | `154cccf` |
 | 4.4 | Settlement head exists and is trained | FAIL | **PASS (clearable)** | `settlement_head` |
@@ -27,6 +27,35 @@ read, and a clean-tree retrain will produce a manifest `verdict_for` accepts —
 not exist before. `check_feature_contract` still fails in CI because the 12 artifacts on disk
 predate the repair and remain correctly UNKNOWN. That is the accurate state, not a regression,
 and it clears on the first retrain rather than needing further code.
+
+**4.1 was marked PASS prematurely, and that was my call.** An external audit named three
+residuals; all three were verified in source and two are now fixed:
+
+* **Fail-open sample weights — FIXED.** A seat whose wrapper rejected `sample_weight` was
+  logged and then *fitted anyway*. The log even said "this seat's OOF probabilities do NOT
+  match its served fitting pipeline" before proceeding. A warning is not a safety boundary; the
+  seat is now DROPPED.
+* **Calibration protocol — FIXED.** The fold wrapped seats in `CalibratedClassifierCV(cv=2)`.
+  An integer `cv` proves neither chronology, purge, embargo nor absence of label overlap, so
+  OOF probabilities came from a different calibration protocol than production. It now uses the
+  same `_purged_calibration_splits` the served wrapper uses, and drops the seat when a fold
+  cannot support it.
+* **Fold-local regime similarity — STILL OPEN.** Production weights are
+  `recency x similarity x class x ambiguity` under the default `recency_similarity` mode. The
+  fold rebuilds recency, class and ambiguity but *not* similarity, so seats are still fitted
+  under a slightly different objective than they are served.
+
+  It is not a one-line fix and I did not attempt it here. `_regime_similarity_weights` needs the
+  named model-feature rows, and `recent_classification_slice` discards the stack-to-global index
+  mapping. Slicing the global weights is *not* the repair — they reference the global
+  `split_idx`, which lies in an early fold's future. Closing this needs that mapping threaded
+  through, which is a delicate change inside a 1,500-line function that a parallel session is
+  also editing.
+
+**Consequence:** the retrain is unblocked on provenance and contracts, and a bundle trained now
+will carry honest manifests. The stacker's seat weighting still differs from serving by the
+similarity term, so **stacker-derived numbers should be read with that caveat** until 4.1 is
+fully closed.
 
 **4.4 is now closed in the same sense as 4.3: the code exists and the gate clears on the
 retrain, not before.** `backend/settlement_head.py` trains one calibrated classifier per horizon

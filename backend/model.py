@@ -1585,23 +1585,44 @@ class MultiModelEnsemble:
                                                     f"fold too small to calibrate seat '{name}' "
                                                     f"({_per_class} rows in its thinnest class); "
                                                     f"refusing an uncalibrated substitute")
+                                            # The SERVED wrapper calibrates on purged
+                                            # chronological folds with a label-overlap gap.
+                                            # An integer `cv=2` shuffles that away: it proves
+                                            # neither chronology, purge, embargo nor absence of
+                                            # label overlap, so the OOF probabilities came from
+                                            # a different calibration protocol than production.
+                                            # Use the SAME splitter, and drop the seat when the
+                                            # fold cannot support it rather than substituting a
+                                            # weaker one.
+                                            _fold_splits = _purged_calibration_splits(
+                                                y_tr_local, h)
+                                            if not _fold_splits:
+                                                raise ValueError(
+                                                    f"fold cannot support the production purged "
+                                                    f"calibration protocol for seat '{name}' "
+                                                    f"({len(y_tr_local)} rows); refusing a "
+                                                    f"cv=2 substitute that proves no purge")
                                             fold_model = CalibratedClassifierCV(
                                                 estimator=fold_model,
                                                 method=_cal_method,
-                                                cv=2,
+                                                cv=_fold_splits,
                                             )
 
                                         try:
                                             fold_model.fit(X_tr, y_tr_local, sample_weight=sw_tr)
-                                        except TypeError:
-                                            # A wrapper that cannot take weights must SAY so;
-                                            # silently dropping them is the defect being fixed.
-                                            logger.warning(
-                                                "[OOF] h=%sm reg=%s seat=%s does not accept "
-                                                "sample_weight - fitting unweighted, so this "
-                                                "seat's OOF probabilities do NOT match its "
-                                                "served fitting pipeline", h, reg, name)
-                                            fold_model.fit(X_tr, y_tr_local)
+                                        except TypeError as _wexc:
+                                            # DROP THE SEAT. The previous version logged that
+                                            # "this seat's OOF probabilities do NOT match its
+                                            # served fitting pipeline" and then fitted it
+                                            # anyway - a warning is not a safety boundary, and
+                                            # the mismatched probabilities still reached the
+                                            # stacker. A seat that cannot satisfy the training
+                                            # contract does not belong in the meta-model.
+                                            raise ValueError(
+                                                f"seat '{name}' does not accept sample_weight "
+                                                f"({_wexc}); dropping it rather than training "
+                                                f"the stacker on probabilities from a "
+                                                f"different objective") from _wexc
                                         # P1-5. CLASS-SET PARITY, RECORDED.
                                         #
                                         # Production tops every class up to >=3 rows with
