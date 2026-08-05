@@ -58,6 +58,22 @@ REFIT = [
     ("round-state shadow heads", "train_round_state_heads.py", [], False),
 ]
 
+#: The artifacts this nightly job REWRITES, declared here because this job owns them.
+#:
+#: The release freeze imports this list rather than keeping its own copy. Without that, the
+#: freeze pinned all five as immutable and reported them DRIFTED after every single nightly
+#: run - a check that failed by design, every day, for doing exactly what it was built to do.
+#: A check that always fails teaches people to ignore it, which is worse than not having it.
+#:
+#: Anything added to REFIT above must be added here, or the freeze will call it drift.
+REFIT_ARTIFACTS = (
+    "signed_quantile_model.pkl",
+    "persistence_model.pkl",
+    "path_forecaster.pkl",
+    "fade_model.pkl",
+    "round_state_heads.pkl",
+)
+
 
 def _run(label, script, extra, supports_days, days, timeout=3600):
     path = os.path.join(BACKEND, script)

@@ -58,6 +58,35 @@ MODEL_DIR = Path(os.environ.get("BTC_DATA_DIR") or REPO / "data") / "saved_model
 AS_DEPLOYED = "AS_DEPLOYED"
 CHANGED = "CHANGED_SINCE_DEPLOYMENT"
 
+#: Artifacts the NIGHTLY refit owns. Imported from the job itself so the two cannot disagree.
+#:
+#: WHY THIS CLASS HAD TO EXIST
+#:     `auto_finetune.py` runs nightly at 04:00 and rewrites exactly these five heads. The
+#:     freeze pinned them as immutable, so `--verify` reported five DRIFTED artifacts every
+#:     morning and had been failing continuously. That is not drift being detected - it is a
+#:     scheduled job doing its job while a check that cannot tell the two apart cries wolf. A
+#:     check that always fails is one people learn to skip, and then it catches nothing.
+#:
+#:     Byte-immutability is the wrong contract for an artifact that is DESIGNED to be refit.
+#:     The thing the freeze actually needs to guarantee - "which bytes served this prediction"
+#:     - is served for these by a version HISTORY, and for everything else by immutability.
+try:                                              # pragma: no cover - import shape only
+    from auto_finetune import REFIT_ARTIFACTS as _REFIT_ARTIFACTS
+except Exception:                                 # the freeze must still verify without it
+    _REFIT_ARTIFACTS = ()
+SCHEDULED_REFIT_ARTIFACTS = frozenset(_REFIT_ARTIFACTS)
+
+PINNED = "PINNED"
+SCHEDULED_REFIT = "SCHEDULED_REFIT"
+
+#: Every observed refit is appended here. Muting a check without recording what it would have
+#: reported is just deleting the check.
+REFIT_HISTORY = RELEASE_DIR / "refit_history.jsonl"
+
+
+def freeze_class(name: str) -> str:
+    return SCHEDULED_REFIT if name in SCHEDULED_REFIT_ARTIFACTS else PINNED
+
 # Names only. The value of any of these never enters a file this script writes.
 ENV_KEYS_OF_RECORD = (
     "BTC_DATA_DIR", "BTC_FREEZE_MODEL", "BTC_STRICT_ARTIFACT_IDENTITY",
@@ -258,30 +287,84 @@ def verify() -> int:
     frozen = {row["name"]: row for row in json.loads(stored.read_text(encoding="utf-8"))["artifacts"]}
     current = {row["name"]: row for row in artifact_inventory()}
 
-    drifted, vanished, appeared = [], [], []
+    drifted, vanished, appeared, refit = [], [], [], []
     for name, row in frozen.items():
         if name not in current:
             vanished.append(name)
         elif current[name]["sha256"] != row["sha256"]:
-            drifted.append(name)
+            # A PINNED artifact that changed is drift. A SCHEDULED_REFIT artifact that changed
+            # is the nightly job having run - expected, and recorded rather than ignored.
+            (refit if freeze_class(name) == SCHEDULED_REFIT else drifted).append(name)
     for name in current:
         if name not in frozen:
             appeared.append(name)
 
-    print(f"  frozen {len(frozen)} | drifted {len(drifted)} | vanished {len(vanished)} | "
+    print(f"  pinned {sum(1 for n in frozen if freeze_class(n) == PINNED)} | "
+          f"scheduled-refit {sum(1 for n in frozen if freeze_class(n) == SCHEDULED_REFIT)} | "
+          f"drifted {len(drifted)} | refit {len(refit)} | vanished {len(vanished)} | "
           f"new {len(appeared)}")
     for label, names in (("DRIFTED", drifted), ("VANISHED", vanished)):
         for name in names:
             print(f"    {label}: {name}")
+    for name in sorted(refit):
+        print(f"    REFIT (nightly, expected): {name}  {current[name]['sha256'][:12]}")
     if appeared:
         print(f"    new since the freeze (not an error): {', '.join(sorted(appeared))}")
+
+    if refit:
+        _record_refits(refit, frozen, current)
+
     if drifted or vanished:
-        print("\n  FAIL - a frozen artifact changed. If this was a deliberate retrain, the "
+        print("\n  FAIL - a PINNED artifact changed. If this was a deliberate retrain, the "
               "champion identity has moved and a NEW release id is required; overwriting the "
               "freeze in place would erase the only record of what produced the live sample.")
         return 1
+    if refit:
+        print(f"\n  PASS - every PINNED artifact still hashes to its recorded value. "
+              f"{len(refit)} scheduled-refit head(s) changed as designed; each new hash is "
+              f"appended to {REFIT_HISTORY.name}, so which bytes served a given prediction "
+              f"stays answerable by TIME rather than by immutability.")
+        return 0
     print("\n  PASS - every frozen artifact still hashes to its recorded value.")
     return 0
+
+
+def _record_refits(names, frozen: dict, current: dict) -> None:
+    """Append each newly observed refit hash, once.
+
+    This is what separates 'we understand why this changed' from 'we stopped looking'. Without
+    it, exempting the nightly heads would delete the only record of which bytes were live when.
+    """
+    seen = set()
+    if REFIT_HISTORY.is_file():
+        for line in REFIT_HISTORY.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            seen.add((row.get("name"), row.get("sha256")))
+    new_rows = []
+    for name in sorted(names):
+        sha = current[name]["sha256"]
+        if (name, sha) in seen:
+            continue                                  # already recorded; do not duplicate
+        new_rows.append({
+            "name": name,
+            "sha256": sha,
+            "size_bytes": current[name].get("size_bytes"),
+            "mtime_utc": current[name].get("mtime_utc"),
+            "observed_utc": datetime.now(timezone.utc).isoformat(),
+            "froze_as": frozen[name]["sha256"],
+            "owner": "auto_finetune.py nightly REFIT",
+        })
+    if not new_rows:
+        return
+    REFIT_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with REFIT_HISTORY.open("a", encoding="utf-8") as handle:
+        for row in new_rows:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    print(f"    recorded {len(new_rows)} new refit hash(es) -> "
+          f"{REFIT_HISTORY.relative_to(REPO).as_posix()}")
 
 
 def selftest() -> int:
@@ -302,8 +385,33 @@ def selftest() -> int:
     assert states == {AS_DEPLOYED, CHANGED}, (
         f"expected both states present, got {states} - if every artifact reads AS_DEPLOYED the "
         "cutoff is wrong and the freeze would hide real drift")
+    # The refit exemption must be NARROW. Exempting the nightly heads is only defensible if a
+    # PINNED artifact changing is still a hard failure - otherwise this stopped being a freeze.
+    assert SCHEDULED_REFIT_ARTIFACTS, (
+        "the scheduled-refit set is empty - auto_finetune.REFIT_ARTIFACTS did not import, so "
+        "every nightly head would be reported as drift again")
+    names = {row["name"] for row in inventory}
+    unknown = SCHEDULED_REFIT_ARTIFACTS - names
+    assert not unknown, (
+        f"scheduled-refit names not present in the inventory: {sorted(unknown)} - a stale "
+        "exemption silently un-pins nothing, or worse, hides a renamed artifact")
+    pinned = [n for n in names if freeze_class(n) == PINNED]
+    assert pinned, "every artifact was exempted - that is not a freeze"
+    assert len(pinned) > len(SCHEDULED_REFIT_ARTIFACTS), (
+        f"more artifacts are exempt ({len(SCHEDULED_REFIT_ARTIFACTS)}) than pinned "
+        f"({len(pinned)}); the exemption has outgrown the rule")
+    for name in SCHEDULED_REFIT_ARTIFACTS:
+        assert freeze_class(name) == SCHEDULED_REFIT, name
+    for name in pinned:
+        assert freeze_class(name) == PINNED, name
+    # The exemption is by NAME, so a pinned artifact can never be silently reclassified by
+    # changing its bytes.
+    assert freeze_class("architecture_version.pkl") == PINNED, (
+        "the direction bundle must never be exempt")
+
     print(f"  SELFTEST PASS - drift detectable; {len(inventory)} artifacts classified into "
-          f"{sorted(states)}")
+          f"{sorted(states)}; {len(pinned)} PINNED / "
+          f"{len(SCHEDULED_REFIT_ARTIFACTS)} SCHEDULED_REFIT")
     return 0
 
 
