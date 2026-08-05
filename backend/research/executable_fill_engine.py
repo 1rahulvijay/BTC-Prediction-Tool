@@ -34,6 +34,43 @@ from executable_surface_config import taker_fee, FEE_RATE  # noqa: E402
 
 NS_PER_S = 1_000_000_000
 
+#: Every eligibility gate this engine applies. A caller must supply all of them.
+ELIGIBILITY_KEYS = ("min_ask", "max_ask", "max_spread", "min_top_ask_size",
+                    "max_book_staleness_s")
+
+
+class EligibilityIncomplete(ValueError):
+    """A gate was not configured. Refusing is the only safe response."""
+
+
+def require_eligibility(elig: dict) -> dict:
+    """Fail closed on a missing gate.
+
+    THE DEFECT THIS REMOVES
+        Every gate was read with a permissive default:
+
+            max_book_staleness_s -> 1e9      (~31 years of staleness allowed)
+            min_ask / max_ask    -> 0.0/1.0  (the entire probability range)
+            max_spread           -> 1.0      (any spread whatsoever)
+            min_top_ask_size     -> 0.0      (any size, including none)
+
+        So a missing or misspelled key did not raise - it silently DELETED that gate, and the
+        run then reported more fills at better prices. Every default failed in the direction
+        that flatters the result, which is the one direction a backtest must never fail in.
+
+        Note the distinction this preserves: `build_complete_trade_dataset` sets max_spread to
+        1.0 on purpose, because it is building a dataset rather than filtering one. An explicit
+        1.0 is a decision; an absent key that becomes 1.0 is an accident, and in the output the
+        two were indistinguishable. Now only the first is possible.
+    """
+    missing = [k for k in ELIGIBILITY_KEYS if k not in elig]
+    if missing:
+        raise EligibilityIncomplete(
+            "eligibility config is missing " + ", ".join(missing)
+            + ". Every gate must be stated explicitly - a defaulted gate is a disabled gate, "
+            "and a disabled gate produces more fills at better prices without saying so.")
+    return elig
+
 
 # ---------------------------------------------------------------------------------------------
 # Book state
@@ -129,7 +166,7 @@ def simulate_trade(books, decision_ts_ns: int, latency_ms: int, qty: float,
     `settle_value`: 1.0 if this asset wins the round, else 0.0 (hold-to-settlement payoff).
     TP/SL are NET per-share thresholds in cents, evaluated on the executable bid.
     """
-    elig = eligibility or {}
+    elig = require_eligibility(eligibility or {})
     res = TradeResult(eligible=False, requested_qty=float(qty))
 
     entry_idx = first_book_at_or_after(books, int(decision_ts_ns) + int(latency_ms) * 1_000_000)
@@ -140,19 +177,19 @@ def simulate_trade(books, decision_ts_ns: int, latency_ms: int, qty: float,
 
     # staleness: the entry book must itself be fresh relative to the decision instant
     stale_s = (b.recv_ts_ns - decision_ts_ns) / NS_PER_S
-    if stale_s > float(elig.get("max_book_staleness_s", 1e9)):
+    if stale_s > float(elig["max_book_staleness_s"]):
         res.reason = "entry_book_stale"
         return res
     if b.best_ask is None or b.best_bid is None:
         res.reason = "no_two_sided_book"
         return res
-    if not (elig.get("min_ask", 0.0) <= b.best_ask <= elig.get("max_ask", 1.0)):
+    if not (elig["min_ask"] <= b.best_ask <= elig["max_ask"]):
         res.reason = "ask_out_of_band"
         return res
-    if b.spread is not None and b.spread > elig.get("max_spread", 1.0):
+    if b.spread is not None and b.spread > elig["max_spread"]:
         res.reason = "spread_too_wide"
         return res
-    if b.best_ask_size < elig.get("min_top_ask_size", 0.0):
+    if b.best_ask_size < elig["min_top_ask_size"]:
         res.reason = "insufficient_top_ask_size"
         return res
 
@@ -241,7 +278,7 @@ class EntryPath:
 def net_path(books, decision_ts_ns: int, latency_ms: int, qty: float, settle_value: float,
              fee_rate: float = FEE_RATE, eligibility: dict = None) -> EntryPath:
     """Entry + the full forward net-P/L path. Same rules as simulate_trade, no stopping rule."""
-    elig = eligibility or {}
+    elig = require_eligibility(eligibility or {})
     p = EntryPath(eligible=False, requested_qty=float(qty))
 
     idx = first_book_at_or_after(books, int(decision_ts_ns) + int(latency_ms) * 1_000_000)
@@ -249,19 +286,19 @@ def net_path(books, decision_ts_ns: int, latency_ms: int, qty: float, settle_val
         p.reason = "no_book_after_latency"
         return p
     b = books[idx]
-    if (b.recv_ts_ns - decision_ts_ns) / NS_PER_S > float(elig.get("max_book_staleness_s", 1e9)):
+    if (b.recv_ts_ns - decision_ts_ns) / NS_PER_S > float(elig["max_book_staleness_s"]):
         p.reason = "entry_book_stale"
         return p
     if b.best_ask is None or b.best_bid is None:
         p.reason = "no_two_sided_book"
         return p
-    if not (elig.get("min_ask", 0.0) <= b.best_ask <= elig.get("max_ask", 1.0)):
+    if not (elig["min_ask"] <= b.best_ask <= elig["max_ask"]):
         p.reason = "ask_out_of_band"
         return p
-    if b.spread is not None and b.spread > elig.get("max_spread", 1.0):
+    if b.spread is not None and b.spread > elig["max_spread"]:
         p.reason = "spread_too_wide"
         return p
-    if b.best_ask_size < elig.get("min_top_ask_size", 0.0):
+    if b.best_ask_size < elig["min_top_ask_size"]:
         p.reason = "insufficient_top_ask_size"
         return p
 
@@ -337,6 +374,13 @@ def selftest() -> int:
 
     print("executable_fill_engine selftest")
 
+    # Every gate stated EXPLICITLY. The checks below exercise fill MECHANICS, so the gates are
+    # opened deliberately - which is now the only way they can be opened. Previously these calls
+    # passed no eligibility at all, so the suite validated the engine in a gates-disabled mode
+    # that production never runs.
+    OPEN = {"min_ask": 0.0, "max_ask": 1.0, "max_spread": 1.0, "min_top_ask_size": 0.0,
+            "max_book_staleness_s": 1e9}
+
     # 1. ladder VWAP walks levels and reports partial fills honestly
     v, f = ladder_vwap([(0.54, 20), (0.55, 40), (0.56, 100)], 50)
     check("ladder VWAP walks multiple levels", abs(v - ((20*0.54 + 30*0.55) / 50)) < 1e-12,
@@ -349,7 +393,7 @@ def selftest() -> int:
              _mk(2, 100.4, [(0.50, 100)], [(0.90, 100)]),   # +400ms: ask jumped
              _mk(3, 101.0, [(0.95, 100)], [(0.96, 100)])]
     r = simulate_trade(books, decision_ts_ns=int(100.0 * NS_PER_S), latency_ms=500, qty=1,
-                       tp_cents=5, sl_cents=5, settle_value=1.0)
+                       tp_cents=5, sl_cents=5, settle_value=1.0, eligibility=OPEN)
     check("entry uses first book AFTER latency (not the decision book)",
           r.eligible and r.entry_seq == 3, f"entry_seq={r.entry_seq}")
 
@@ -367,13 +411,13 @@ def selftest() -> int:
              _mk(2, 1.0, [(0.56, 100)], [(0.57, 100)]),     # clears a 2c NET tp
              _mk(3, 2.0, [(0.99, 100)], [(0.99, 100)])]     # far better later: must NOT be used
     r = simulate_trade(books, decision_ts_ns=0, latency_ms=0, qty=1,
-                       tp_cents=2, sl_cents=50, settle_value=1.0)
+                       tp_cents=2, sl_cents=50, settle_value=1.0, eligibility=OPEN)
     check("exit takes FIRST barrier touch, no hindsight best",
           r.exit_kind == "TP" and r.exit_seq == 2, f"kind={r.exit_kind} seq={r.exit_seq}")
 
     # 3b. a 3c TP is NOT reachable at that same book -> engine must keep holding
     r3 = simulate_trade(books, decision_ts_ns=0, latency_ms=0, qty=1,
-                        tp_cents=3, sl_cents=50, settle_value=1.0)
+                        tp_cents=3, sl_cents=50, settle_value=1.0, eligibility=OPEN)
     check("net-based barrier: 3c TP skips the 6c-gross book", r3.exit_seq == 3,
           f"exit_seq={r3.exit_seq}")
 
@@ -386,7 +430,7 @@ def selftest() -> int:
     books = [_mk(1, 0.0, [(0.49, 100)], [(0.50, 100)]),
              _mk(2, 1.0, [(0.49, 100)], [(0.50, 100)])]
     r = simulate_trade(books, decision_ts_ns=0, latency_ms=0, qty=1,
-                       tp_cents=50, sl_cents=50, settle_value=0.0)
+                       tp_cents=50, sl_cents=50, settle_value=0.0, eligibility=OPEN)
     check("hold-to-settle loser = -(entry + entry fee)",
           r.exit_kind == "SETTLE" and abs(r.net_per_share - (0.0 - 0.50 - taker_fee(0.50))) < 1e-9,
           f"net={r.net_per_share:.6f}")
@@ -394,17 +438,55 @@ def selftest() -> int:
     # 6. first-profitable-exit censoring when profit never appears
     check("censored when never profitable", r.first_profitable_s is None)
 
-    # 7. eligibility vetoes fail closed
+    # 7. eligibility vetoes fail closed.
+    #    NOTE the {**OPEN, ...} form. This check used to pass eligibility={"max_ask": 0.97}
+    #    alone, so while it asserted ONE veto it was silently relying on the other four gates
+    #    defaulting open - testing the veto in a configuration production never runs.
     books = [_mk(1, 0.0, [(0.10, 100)], [(0.99, 0.2)])]
     r = simulate_trade(books, decision_ts_ns=0, latency_ms=0, qty=1, tp_cents=5, sl_cents=5,
-                       settle_value=1.0, eligibility={"max_ask": 0.97})
+                       settle_value=1.0, eligibility={**OPEN, "max_ask": 0.97})
     check("ask band veto fails closed", (not r.eligible) and r.reason == "ask_out_of_band",
           r.reason)
 
+    # 7b. EVERY gate vetoes, and each one is reachable. A gate nobody exercises is a gate that
+    #     can be silently deleted.
+    wide = [_mk(1, 0.0, [(0.10, 100)], [(0.60, 100)])]      # spread 0.50
+    r = simulate_trade(wide, decision_ts_ns=0, latency_ms=0, qty=1, tp_cents=5, sl_cents=5,
+                      settle_value=1.0, eligibility={**OPEN, "max_spread": 0.05})
+    check("spread veto fails closed", (not r.eligible) and r.reason == "spread_too_wide",
+          r.reason)
+
+    thin = [_mk(1, 0.0, [(0.49, 100)], [(0.50, 1.0)])]
+    r = simulate_trade(thin, decision_ts_ns=0, latency_ms=0, qty=1, tp_cents=5, sl_cents=5,
+                      settle_value=1.0, eligibility={**OPEN, "min_top_ask_size": 25.0})
+    check("top-size veto fails closed",
+          (not r.eligible) and r.reason == "insufficient_top_ask_size", r.reason)
+
+    late = [_mk(1, 30.0, [(0.49, 100)], [(0.50, 100)])]     # book 30s after the decision
+    r = simulate_trade(late, decision_ts_ns=0, latency_ms=0, qty=1, tp_cents=5, sl_cents=5,
+                      settle_value=1.0, eligibility={**OPEN, "max_book_staleness_s": 2.0})
+    check("staleness veto fails closed", (not r.eligible) and r.reason == "entry_book_stale",
+          r.reason)
+
+    # 7c. A MISSING gate is refused outright. Every default was permissive, so an absent or
+    #     misspelled key used to delete that gate and report more fills at better prices.
+    for omit in ELIGIBILITY_KEYS:
+        partial = {k: v for k, v in OPEN.items() if k != omit}
+        try:
+            simulate_trade(books, 0, 0, 1, 5, 5, 1.0, eligibility=partial)
+            check(f"missing '{omit}' is refused", False, "it was silently defaulted")
+        except EligibilityIncomplete as exc:
+            check(f"missing '{omit}' is refused", omit in str(exc))
+    try:
+        net_path(books, 0, 0, 1, 1.0, eligibility={"min_ask": 0.0})
+        check("net_path enforces the same contract", False)
+    except EligibilityIncomplete:
+        check("net_path enforces the same contract", True)
+
     # 8. determinism
     books = [_mk(i, i * 0.5, [(0.50 + i * 0.01, 50)], [(0.51 + i * 0.01, 50)]) for i in range(20)]
-    a = simulate_trade(books, 0, 100, 5, 3, 3, 1.0).as_dict()
-    b = simulate_trade(books, 0, 100, 5, 3, 3, 1.0).as_dict()
+    a = simulate_trade(books, 0, 100, 5, 3, 3, 1.0, eligibility=OPEN).as_dict()
+    b = simulate_trade(books, 0, 100, 5, 3, 3, 1.0, eligibility=OPEN).as_dict()
     check("deterministic (identical inputs -> identical output)", a == b)
 
     # 9. the fast path form must AGREE with the reference implementation on every barrier pair.
@@ -422,10 +504,10 @@ def selftest() -> int:
         sv = float(rng.choice([0.0, 1.0]))
         q = rng.choice([1, 5, 10])
         lat = rng.choice([0, 100, 500])
-        pth = net_path(bk, 0, lat, q, sv)
+        pth = net_path(bk, 0, lat, q, sv, eligibility=OPEN)
         for tp in (1, 3, 5, 10):
             for sl in (1, 3, 5, 10):
-                ref = simulate_trade(bk, 0, lat, q, tp, sl, sv)
+                ref = simulate_trade(bk, 0, lat, q, tp, sl, sv, eligibility=OPEN)
                 if not pth.eligible:
                     if not ref.eligible:
                         agree += 1
