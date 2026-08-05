@@ -165,6 +165,9 @@ jobs:
       - name: Conditional offset v2 (reconstruction guard, init_score, noise floor)
         run: python research/conditional_offset_v2.py --selftest
 
+      - name: No snapshot backcast (today's state never enters a historical row)
+        run: python backend/test_no_snapshot_backcast.py
+
       - name: Geometry endpoint head (ENDPOINT_ABOVE_ANCHOR, no authority)
         run: python backend/geometry_endpoint_head.py --selftest
 
@@ -694,6 +697,7 @@ jobs:
           python backend/test_backtest_ohlc_honesty.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
+          python backend/test_no_snapshot_backcast.py || exit /b 1
           python backend/geometry_endpoint_head.py --selftest || exit /b 1
           python backend/test_geometry_endpoint_wiring.py || exit /b 1
           python backend/test_conformal_source_honesty.py || exit /b 1

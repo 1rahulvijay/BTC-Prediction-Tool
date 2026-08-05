@@ -7,7 +7,11 @@ deep microstructure, regime/vol forecasting and institutional alpha feeds.
 """
 
 import os
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from typing import Optional
 
 
@@ -775,6 +779,7 @@ def build_features_from_klines(
     derivatives_data: Optional[dict] = None,
     sentiment_data: Optional[dict] = None,
     signal_history: Optional[dict] = None,
+    availability_out: Optional[dict] = None,
 ) -> np.ndarray:
     """
     Build a 2D feature matrix [timesteps, NUM_FEATURES] from kline history
@@ -786,8 +791,16 @@ def build_features_from_klines(
     length == len(klines)) produced by LiveSignalHistoryBuffer.get_aligned_series().
     When provided, the live-signal columns (order flow, liquidations, derivatives,
     walls, cross-exchange, chainlink) vary per-bar so the models can learn from
-    them. When absent, those columns fall back to broadcasting the current snapshot
-    to every row (legacy behaviour — inert during training but correct at inference).
+    them. When ABSENT, those columns are UNOBSERVED for every historical row and are encoded
+    as 0.0, with only the final row ("now") receiving the snapshot value. They are never
+    broadcast backwards - painting today's state across history is the defect this contract
+    exists to prevent, and the claim that it was "inert during training" was never true: a
+    constant column still forms interactions and still carries end-of-sample information into
+    the start of the sample.
+
+    `availability_out`: optional dict. When supplied it receives
+    {"degraded_live_signal_keys": [...], "degraded": bool} so a caller can record which
+    live-signal columns had no per-candle history on this call.
     """
     if len(klines) < 30:
         return np.empty((0, NUM_FEATURES))
@@ -914,11 +927,52 @@ def build_features_from_klines(
 
     safe = np.where(closes > 0, closes, 1.0)
 
+    #: Keys whose per-candle history was missing or mis-sized on this call. Recorded rather
+    #: than silently absorbed, and surfaced to the caller through `availability_out`.
+    _degraded_keys: list = []
+
     def series(key, snapshot_val):
+        """Per-candle history for a live-signal column. NEVER a backward broadcast.
+
+        THE DEFECT THIS REMOVES
+            return np.full(n, float(snapshot_val or 0.0))
+
+            When the per-candle history was absent, TODAY'S value was painted across EVERY
+            historical row. The model was trained on a time series and handed a constant, and
+            worse, that constant was information from the end of the sample appearing at its
+            start. It is the same defect class as a future-referenced weight: nothing raises,
+            the column looks populated, and every row silently carries the last row's state.
+
+            The serving path already worked around it (P0-3) by overlaying only the final row -
+            but when it could not, it POPPED the key, which sent control straight back here and
+            produced the broadcast it was trying to avoid. The variable that tracked those keys
+            was even called `_broadcast`. Fixing the caller could not fix this; the fallback had
+            to stop existing.
+
+        WHAT REPLACES IT
+            History present and correctly sized -> use it, unchanged. This is the good path and
+            the only one that carries real per-bar information.
+
+            History absent -> the feature is UNOBSERVED for every historical row, and is encoded
+            as 0.0 with the key recorded as degraded. Only the FINAL row - which is "now", the
+            one instant the snapshot genuinely describes - receives the snapshot value. That is
+            the current-row overlay generalised into the single place both training and serving
+            flow through, rather than reimplemented in one caller.
+
+        WHY 0.0 AND NOT NaN
+            NaN is the more honest encoding and the tree seats would take it, but the logistic
+            and TCN seats would not, so a NaN here would silently drop those seats instead of
+            the feature. 0.0 is this column family's existing cold-buffer encoding, and the
+            degradation is reported explicitly instead of being inferred from the value.
+        """
         arr = sh.get(key)
         if arr is not None and len(arr) == n:
             return np.asarray(arr, dtype=np.float64)
-        return np.full(n, float(snapshot_val or 0.0), dtype=np.float64)
+        _degraded_keys.append(key)
+        out = np.zeros(n, dtype=np.float64)
+        if n:
+            out[-1] = float(snapshot_val or 0.0)
+        return out
 
     # Snapshot fallbacks (used when no history array is present for a key)
     snap_funding = 0.0
@@ -1436,6 +1490,16 @@ def build_features_from_klines(
     # already normalized around 0, so 0.0 is the correct neutral fill.
     features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
+    if availability_out is not None:
+        # Reported, not inferred. A caller cannot tell a genuinely-zero order-flow bar from a
+        # column that had no history, and the two must not look alike.
+        availability_out["degraded_live_signal_keys"] = sorted(set(_degraded_keys))
+        availability_out["degraded"] = bool(_degraded_keys)
+    if _degraded_keys:
+        logger.warning(
+            "[FEATURES] %s live-signal column(s) had NO per-candle history and are zero for "
+            "every historical row (final row carries the snapshot): %s",
+            len(set(_degraded_keys)), sorted(set(_degraded_keys))[:12])
     return features
 
 
