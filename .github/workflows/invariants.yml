@@ -159,6 +159,9 @@ jobs:
       - name: Backtest neutral band comes from REAL intrabar range
         run: python backend/test_backtest_ohlc_honesty.py
 
+      - name: P1-5 OOF stacker is trained on the seats it is served
+        run: python backend/test_oof_serving_parity.py
+
       - name: P1-6 uncertainty bands come from untouched rows
         run: python backend/test_conformal_source_honesty.py
 
@@ -680,6 +683,7 @@ jobs:
           python backend/test_venue_independence.py || exit /b 1
           python backend/test_hmm_bundle_binding.py || exit /b 1
           python backend/test_backtest_ohlc_honesty.py || exit /b 1
+          python backend/test_oof_serving_parity.py || exit /b 1
           python backend/test_conformal_source_honesty.py || exit /b 1
           python backend/test_calibration_bundle_identity.py || exit /b 1
           python backend/research/executable_fill_engine.py --selftest || exit /b 1

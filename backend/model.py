@@ -1388,17 +1388,31 @@ class MultiModelEnsemble:
 
                 # 6. Train Logistic Stacker using Out-of-Fold (OOF) predictions
                 try:
-                    X_stack, y_stack, _ = recent_classification_slice(
+                    # P1-5. The weights were already returned here and thrown away. The
+                    # production seats are fitted with recency, class balancing and ambiguity
+                    # exclusion baked into `sw`; the OOF folds were fitted unweighted, so the
+                    # stacker learned to combine probabilities drawn from a different empirical
+                    # distribution than the one it is served.
+                    X_stack, y_stack, sw_stack = recent_classification_slice(
                         X_calibration,
                         y_calibration,
                         sw_calibration,
                         STACKER_MAX_SAMPLES,
                     )
                     _t0 = log_component_start(h, reg, "OOFStacker", len(X_stack))
-                    purge_gap = min(
-                        max(LOOKBACK + int(h), 1),
-                        max(1, len(X_stack) // 8),
-                    )
+                    # P1-5. The purge gap is a LEAKAGE requirement, not a preference. It used
+                    # to be min(required, len//8), so a thin bucket silently shrank the gap
+                    # below the label overlap and the "purged" folds stopped being purged -
+                    # exactly where sample size makes leakage hardest to notice.
+                    required_gap = max(LOOKBACK + int(h), 1)
+                    max_supportable = max(1, len(X_stack) // 8)
+                    if required_gap > max_supportable:
+                        raise ValueError(
+                            f"OOF stacker needs a purge gap of {required_gap} rows "
+                            f"(LOOKBACK+{h}) but only {len(X_stack)} rows are available, which "
+                            f"supports {max_supportable}. Refusing to shrink the gap - an "
+                            f"under-purged fold leaks the label overlap into the stacker.")
+                    purge_gap = required_gap
                     tscv = TimeSeriesSplit(n_splits=3, gap=purge_gap)
                     logger.info(
                         "[OOF] h=%sm reg=%s purged_gap=%s rows",
@@ -1429,7 +1443,26 @@ class MultiModelEnsemble:
                         oof_features = []
                         feature_names = []
                         for name, model in valid_models.items():
+                            # P1-5 CALIBRATION PARITY.
+                            #
+                            # `.estimator` on a CalibratedClassifierCV is the UNCALIBRATED inner
+                            # model. Extracting it meant the OOF folds produced raw probabilities
+                            # while serving produces isotonic-calibrated ones - so the stacker was
+                            # trained on one probability distribution and served another. Not
+                            # leakage, but a substantial covariate shift in the single component
+                            # whose whole job is combining the others.
+                            #
+                            # A calibrated seat now yields calibrated folds. Where a fold is too
+                            # small to calibrate honestly the seat is DROPPED from the stacker for
+                            # this bucket rather than silently substituting a raw one - the
+                            # mismatch is the defect, and a quiet fallback would reinstate it.
                             base_est = getattr(model, "estimator", getattr(model, "base_estimator", model))
+                            seat_is_calibrated = isinstance(model, CalibratedClassifierCV)
+                            if seat_is_calibrated:
+                                _cal_method = getattr(model, "method", "isotonic")
+                                logger.info(
+                                    "[OOF] h=%sm reg=%s seat=%s is calibrated (%s) - folds will "
+                                    "be calibrated to match serving", h, reg, name, _cal_method)
                             if hasattr(base_est, "predict_proba"):
                                 try:
                                     preds = np.full((len(X_stack), 3), np.nan)
@@ -1492,7 +1525,41 @@ class MultiModelEnsemble:
                                         except Exception:
                                             pass
 
-                                        fold_model.fit(X_tr, y_tr_local)
+                                        # P1-5. WEIGHTS. The production seat carries recency,
+                                        # class balancing and ambiguity exclusion in `sw`; an
+                                        # unweighted fold optimises a different objective and
+                                        # trains on the ambiguous rows every other seat excludes.
+                                        sw_tr = np.asarray(sw_stack, dtype=np.float64)[tr_idx]
+
+                                        # P1-5. CALIBRATION. Match the served wrapper, or drop
+                                        # the seat. `cv=2` inside an already-purged outer fold
+                                        # keeps the nesting affordable; below the floor there is
+                                        # not enough signal to calibrate honestly.
+                                        if seat_is_calibrated:
+                                            _per_class = np.bincount(
+                                                y_tr_local, minlength=len(fit_classes)).min()
+                                            if _per_class < 10:
+                                                raise ValueError(
+                                                    f"fold too small to calibrate seat '{name}' "
+                                                    f"({_per_class} rows in its thinnest class); "
+                                                    f"refusing an uncalibrated substitute")
+                                            fold_model = CalibratedClassifierCV(
+                                                estimator=fold_model,
+                                                method=_cal_method,
+                                                cv=2,
+                                            )
+
+                                        try:
+                                            fold_model.fit(X_tr, y_tr_local, sample_weight=sw_tr)
+                                        except TypeError:
+                                            # A wrapper that cannot take weights must SAY so;
+                                            # silently dropping them is the defect being fixed.
+                                            logger.warning(
+                                                "[OOF] h=%sm reg=%s seat=%s does not accept "
+                                                "sample_weight - fitting unweighted, so this "
+                                                "seat's OOF probabilities do NOT match its "
+                                                "served fitting pipeline", h, reg, name)
+                                            fold_model.fit(X_tr, y_tr_local)
                                         fold_probs = fold_model.predict_proba(X_stack[val_idx])
                                         padded = []
                                         local_classes = getattr(
@@ -1910,9 +1977,24 @@ class MultiModelEnsemble:
                                 mapped[global_c] = float(probs[col_idx])
                     probs = mapped if mapped.sum() > 0 else np.array([0.0, 1.0, 0.0])
                 
-                # Soft-cap DL contribution by blending the stacker output with PyTorch
-                # PyTorch max influence is ~15%
-                dl_weight = 0.15 if HAS_TORCH and horizon in store["dl"] else 0.0
+                # Soft-cap DL contribution by blending the stacker output with PyTorch.
+                #
+                # P1-5 DOUBLE COUNT. This blend predates v6, when the TCN was trained but NOT
+                # stacked - capping it afterwards was the only way to bound its influence. v6
+                # promoted the TCN to a full stacker seat, so the meta-model now learns how
+                # much to trust it from purged OOF data, and this 15% blend was overriding part
+                # of that learned decision with a hardcoded constant. The seat was being
+                # counted twice.
+                #
+                # Applied only when the TCN is NOT already a stacker feature, which keeps the
+                # cap correct for a bundle whose stacker never received it.
+                _dl_in_stacker = "dl" in (stacker_info.get("features") or ())
+                dl_weight = (0.15 if HAS_TORCH and not _dl_in_stacker
+                             and horizon in (store.get("dl") or {}) else 0.0)
+                if _dl_in_stacker:
+                    logger.debug(
+                        "[PREDICT] h=%s dl is a stacker seat; skipping the 0.15 post-hoc blend "
+                        "that would count it twice", horizon)
                 if dl_weight > 0:
                     try:
                         dl_probs = store["dl"][horizon].predict_proba(X_flat)[0]
