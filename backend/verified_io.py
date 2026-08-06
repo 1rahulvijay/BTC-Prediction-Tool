@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 import sys
 from pathlib import Path
 from typing import Any
@@ -91,7 +92,9 @@ def write_manifest(path: str | Path) -> dict[str, Any]:
         "integrity_only": True,      # NOT a provenance bundle; see model_artifacts for that
     }
     target = manifest_path(path)
-    tmp = Path(f"{target}.tmp.{os.getpid()}")
+    # UUID, not PID: two writers in the SAME process share a pid, so a pid-suffixed
+    # temp path lets concurrent writes to one target clobber each other mid-flight.
+    tmp = Path(f"{target}.tmp.{os.getpid()}.{uuid.uuid4().hex[:12]}")
     tmp.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     os.replace(tmp, target)
     return record
@@ -105,7 +108,7 @@ def atomic_dump(value: Any, path: str | Path) -> None:
     import joblib
 
     path = str(path)
-    tmp = f"{path}.tmp.{os.getpid()}"
+    tmp = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex[:12]}"
     try:
         joblib.dump(value, tmp)
         os.replace(tmp, path)

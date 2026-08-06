@@ -153,6 +153,12 @@ jobs:
       - name: Target declaration consistency (docstring == code == registry == artifact)
         run: python backend/test_target_declaration_consistency.py
 
+      - name: Promotion/activation boundary (a refusal may not activate)
+        run: python backend/test_promotion_activation_boundary.py
+
+      - name: Health vocabulary + atomic temp paths
+        run: python backend/test_health_vocabulary_and_atomic_temp.py
+
       - name: Current state doc is machine-generated and not stale
         run: python backend/audit/current_state.py --selftest
 
@@ -709,6 +715,8 @@ jobs:
           python backend/test_auto_finetune_candidate_only.py || exit /b 1
           python backend/test_oof_fold_weights_execute.py || exit /b 1
           python backend/test_target_declaration_consistency.py || exit /b 1
+          python backend/test_promotion_activation_boundary.py || exit /b 1
+          python backend/test_health_vocabulary_and_atomic_temp.py || exit /b 1
           python backend/audit/current_state.py --selftest || exit /b 1
           python backend/audit/current_state.py --check || exit /b 1
           python backend/test_feature_semantics_v5.py || exit /b 1

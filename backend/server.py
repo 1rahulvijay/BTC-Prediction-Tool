@@ -2943,10 +2943,20 @@ async def relearn_models_background(reason: str = "manual"):
                 backend_state["promotion_blocked"] = f"gate unavailable: {_fe}"
                 promotion_pipeline = False
         run_id = f"eval{HISTORICAL_DAYS}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        candidate_dir = (
-            os.path.join(MODEL_CHALLENGER_DIR, run_id, "evaluation")
-            if promotion_pipeline else None
-        )
+        # P0-2. EVERY training run stages into its own directory. NEVER None.
+        #
+        # `None` made MultiModelEnsemble fall back to MODEL_DIR - the ACTIVE serving
+        # directory - so a run whose promotion had just been refused wrote its artifacts
+        # over the live ones before any promotion transaction existed. A rejected candidate
+        # could therefore have already replaced serving state on disk, and a restart would
+        # load a model that was never promoted.
+        candidate_dir = os.path.join(
+            MODEL_CHALLENGER_DIR, run_id,
+            "evaluation" if promotion_pipeline else "train_only")
+        if os.path.abspath(candidate_dir) == os.path.abspath(MODEL_DIR):
+            raise RuntimeError(
+                "UnsafeTrainingDestination: a training run resolved to the active serving "
+                "directory. Only the promotion transaction may write there.")
         candidate_config = dict(getattr(model, "config", {}) or {})
         candidate_config["model_bundle_id"] = run_id
         candidate = MultiModelEnsemble(
@@ -3051,13 +3061,47 @@ async def relearn_models_background(reason: str = "manual"):
             )
             return
 
+        # P0-1. ACTIVATION IS NOT A FALLBACK FOR A REFUSED PROMOTION.
+        #
+        # This swap was UNGUARDED. When the forward-evidence gate denied promotion the code
+        # set `promotion_pipeline = False` and then reached here anyway, so "promotion
+        # refused" became "activate through the ordinary retrain route" - a promotion under
+        # another name, with no forward evidence and no gate report. The comment at the gate
+        # said only the promotion was withheld; the control flow said otherwise.
+        #
+        # Exactly two paths may activate a model:
+        #   * BOOTSTRAP - there is no trained incumbent, so serving nothing is the only
+        #     alternative and the candidate has already passed the offline smoke checks;
+        #   * PROMOTION - which returns earlier in this function, above.
+        _bootstrap = not had_trained_incumbent
+        if not _bootstrap:
+            _why = backend_state.get("promotion_blocked") or (
+                "promotion was not requested for this run")
+            logger.error(
+                "[RELEARN] TRAINED_ONLY: candidate staged at %s and NOT activated. %s",
+                candidate_dir, _why)
+            backend_state["last_candidate_dir"] = candidate_dir
+            backend_state["last_candidate_activated"] = False
+            _set_status(
+                "relearn_status",
+                running=False,
+                phase="trained-only",
+                message=("Candidate trained and staged. NOT active: promotion was refused, "
+                         f"and activation is not a fallback for a refused promotion. {_why}"),
+                progress=1.0,
+                completed_at=time.time(),
+                error=None,
+            )
+            return
+
         _set_status(
             "relearn_status",
             running=True,
             phase="swap",
-            message="Candidate trained. Swapping active model...",
+            message="Bootstrap: no trained incumbent exists. Activating first model...",
             progress=0.90,
         )
+        backend_state["last_candidate_activated"] = True
         model = candidate
         model.cascade_monitor = cascade_monitor
         _install_hmm_state(model, "retrain-swap")
@@ -5195,6 +5239,24 @@ def _evidence_health_snapshot(max_age_s: float = 60.0) -> dict:
     return copy.deepcopy(payload)
 
 
+#: A component is healthy when it SAYS so, not when its status string happens to read
+#: "HEALTHY". `crossing_recorder_hf.row_progress_status()` returns "ADVANCING" for a recorder
+#: that is writing rows - the strongest possible evidence of health - and readiness blocked on
+#: `status != "HEALTHY"`, so a genuinely advancing recorder was a production blocker.
+#:
+#: Comparing unrelated status vocabularies is the defect. Prefer an explicit `healthy` flag;
+#: fall back to a NAMED set of good states so a producer that has not been updated is still
+#: read correctly, and an UNKNOWN state is treated as unhealthy rather than assumed fine.
+_HEALTHY_STATES = frozenset({"HEALTHY", "ADVANCING", "OK", "ACTIVE", "RUNNING"})
+
+
+def _is_healthy(item) -> bool:
+    if isinstance(item, dict) and isinstance(item.get("healthy"), bool):
+        return item["healthy"]
+    state = (item or {}).get("status") if isinstance(item, dict) else item
+    return str(state or "").upper() in _HEALTHY_STATES
+
+
 def _system_health_snapshot() -> dict:
     timestamps = _safe_dict(data_state.get("feed_timestamps_ms"))
     pyth_ts = data_state.get("pyth_price_ts")
@@ -5257,17 +5319,17 @@ def _system_health_snapshot() -> dict:
     disk_hash = _backend_code_hash()
     required_feed_names = ("binance_trade", "binance_depth", "pyth_price")
     blockers = [
-        f"feed:{name}:{feeds[name]['status'].lower()}"
+        f"feed:{name}:{str(feeds[name].get('status')).lower()}"
         for name in required_feed_names
-        if feeds[name]["status"] != "HEALTHY"
+        if not _is_healthy(feeds[name])
     ]
     if disk_hash != BACKEND_BOOT_CODE_HASH:
         blockers.append("backend_code_changed_after_boot")
     if os.getenv("BTC_EVIDENCE_MODE", "0") == "1":
         blockers.extend(
-            f"recorder:{name}:{item['status'].lower()}"
+            f"recorder:{name}:{str(item.get('status')).lower()}"
             for name, item in recorders.items()
-            if item.get("required") and item.get("status") != "HEALTHY"
+            if item.get("required") and not _is_healthy(item)
         )
         if not forward_readiness.get("available"):
             blockers.append("forward_readiness_unavailable")
