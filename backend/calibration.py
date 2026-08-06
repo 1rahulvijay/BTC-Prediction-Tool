@@ -42,6 +42,46 @@ def _conv_bin(c: float) -> str:
 
 
 class PrecisionEngine:
+
+    def bind_release(self, bundle_id: str, target_contract: str = "") -> dict:
+        """Point the calibrator at a release, CLEARING every map first.
+
+        Switching `active_bundle_id` alone left the previous release's maps serving: the
+        refresh timer could wait hours, and a release with no rows yet left the old map in
+        place entirely. A calibrator fitted on one model's behaviour is not a prior for a
+        different model - it is a stale opinion wearing the new model's name.
+
+        Clearing makes the calibrator UNAVAILABLE until it has been refitted on rows from the
+        new release, which is the honest state. Callers must handle unavailability; the
+        previous behaviour handled it by quietly answering with the old map.
+        """
+        cleared = {
+            "global_rate": len(getattr(self, "global_rate", {}) or {}),
+            "bins": len(getattr(self, "bins", {}) or {}),
+            "isotonic": len(getattr(self, "isotonic", {}) or {}),
+        }
+        for attr in ("global_rate", "bins", "isotonic", "regime_rate", "conviction_rate"):
+            current = getattr(self, attr, None)
+            if isinstance(current, dict):
+                current.clear()
+        self.active_bundle_id = (bundle_id or "").strip()
+        if target_contract:
+            self.fitted_under_contract = target_contract
+        self.last_fit_ts = 0.0
+        return {"bundle_id": self.active_bundle_id, "cleared": cleared,
+                "available": False,
+                "reason": "cleared on release change; unavailable until refitted"}
+
+    def is_admissible_for(self, target_contract: str) -> bool:
+        """False when this map was not fitted under the contract being asked about.
+
+        Returns False while provenance is UNRECORDED, because "we do not know" must not read
+        as "yes". That is the whole lesson of the contract layer applied to calibration.
+        """
+        if self.contract_provenance != "RECORDED":
+            return False
+        return self.fitted_under_contract == target_contract
+
     def __init__(self):
         self.calibrators: dict = {}     # h -> IsotonicRegression
         self.calib_n: dict = {}         # h -> sample count used
@@ -65,6 +105,23 @@ class PrecisionEngine:
     #: Set by the server to the live bundle id. When present, calibration selects rows by
     #: EXACT bundle identity and the mtime era is not used at all.
     active_bundle_id: str = ""
+
+    #: P0-14. WHICH CONTRACT THIS MAP WAS FITTED UNDER.
+    #:
+    #: The fit below defines correct as `raw_direction=UP AND actual_move > 0` - ENDPOINT
+    #: sign - while the ensemble trains on FIRST_TOUCH_TRIPLE_BARRIER_V1. So first-touch
+    #: confidence is calibrated by a different rule than the model was trained on.
+    #:
+    #: It cannot simply be filtered by contract: `predictions_{h}m` has NO target_contract
+    #: column. The provenance was never recorded, so no query can separate the rows. Adding
+    #: that column and backfilling it is the real fix (see OPEN_DEFECTS P0-14).
+    #:
+    #: Until then the map DECLARES what it is rather than implying it answers the training
+    #: contract. A consumer that needs contract-correct calibration must check this and
+    #: abstain - an unlabelled calibration map is the same defect as an unlabelled
+    #: probability, which target_contract.assert_admissible exists to refuse.
+    fitted_under_contract: str = "endpoint_move_sign"
+    contract_provenance: str = "UNRECORDED"
 
     @staticmethod
     def _model_era_ms() -> int:

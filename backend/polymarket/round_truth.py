@@ -75,6 +75,37 @@ class RoundTruthError(ValueError):
     """Refuse to emit a label rather than emit one whose provenance is unclear."""
 
 
+def round_start_from_slug(slug: str) -> int:
+    """Round start in ms, from the SLUG - not from Gamma's `startDate`.
+
+    `btc-updown-15m-1778437800` carries the interval start as a unix timestamp. Gamma's
+    `startDate` is when the market was LISTED, which for these recurring markets can be a day
+    earlier. Using it as the anchor boundary would place the anchor outside the round entirely
+    and silently mis-anchor every reconstructed row.
+    """
+    tail = slug.rsplit("-", 1)[-1]
+    if not tail.isdigit():
+        raise RoundTruthError(
+            f"slug {slug!r} carries no interval timestamp; refusing to guess the round "
+            f"boundary from listing metadata")
+    seconds = int(tail)
+    if not 1_400_000_000 < seconds < 4_000_000_000:
+        raise RoundTruthError(f"slug {slug!r} timestamp {seconds} is not a plausible epoch")
+    return seconds * 1000
+
+
+#: WHICH oracle report is "the" boundary value is an EMPIRICAL question, not a preference.
+#: Chainlink Data Streams reports carry both `validFromTimestamp` and `observationsTimestamp`,
+#: and a report five seconds after a boundary may contain observations unavailable at it.
+#: Candidate policies must be tested against the venue's own displayed Price to Beat and
+#: resolved outcomes before one is frozen. Recorded per row so a wrong choice is diagnosable
+#: rather than baked in.
+BOUNDARY_POLICIES = (
+    "LATEST_OBSERVATION_AT_OR_BEFORE",
+    "FIRST_VALID_AT_OR_AFTER",
+    "VALID_INTERVAL_CONTAINS",
+)
+
 @dataclasses.dataclass(frozen=True)
 class RoundSettlementTruth:
     """One immutable row per resolved market. The canonical label lives here."""

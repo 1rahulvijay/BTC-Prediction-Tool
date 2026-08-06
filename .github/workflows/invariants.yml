@@ -168,6 +168,9 @@ jobs:
       - name: Backtest grades the contract the model trained on
         run: python backend/test_backtest_target_contract.py
 
+      - name: Calibration clears on release change; unlabelled maps refuse
+        run: python backend/test_calibration_release_binding.py
+
       - name: Current state doc is machine-generated and not stale
         run: python backend/audit/current_state.py --selftest
 
@@ -729,6 +732,7 @@ jobs:
           python backend/test_preflight_and_feed_keepalive.py || exit /b 1
           python backend/polymarket/round_truth.py --selftest || exit /b 1
           python backend/test_backtest_target_contract.py || exit /b 1
+          python backend/test_calibration_release_binding.py || exit /b 1
           python backend/audit/current_state.py --selftest || exit /b 1
           python backend/audit/current_state.py --check || exit /b 1
           python backend/test_feature_semantics_v5.py || exit /b 1

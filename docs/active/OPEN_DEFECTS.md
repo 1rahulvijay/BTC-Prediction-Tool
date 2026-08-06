@@ -48,9 +48,33 @@ history starts months ago.
 **VERIFIED 2026-08-06.** `gamma-api.polymarket.com/markets?closed=true` returns resolved
 markets carrying `conditionId`, `startDate`, `endDate`, `closed`, `umaResolutionStatus`,
 `outcomes` and `outcomePrices` — official outcome and round boundaries are recoverable for
-PAST rounds. The Chainlink half (`getRoundData` against an archive node or provider) is
-standard but has not been queried directly. Usable settlement history therefore starts months
-ago, not the day a recorder runs. Live capture is necessary, not schedule-critical. `round_truth.py` is already source-agnostic: it does not
+PAST rounds. **CORRECTION on the Chainlink half.** An earlier note here said `getRoundData` against an
+archive node. That is the classic push-based Aggregator product. BTC Up/Down resolves from the
+Chainlink **Data Streams** feed (`data.chain.link/streams/btc-usd`) — pull-based, with
+authenticated historical REST (`getReportByTimestamp`, `getReportsPage`, `getReportsBulk`).
+Free unrestricted access is NOT established; credentials are required.
+
+    Historical backfill                  LIKELY POSSIBLE
+    via archive-node getRoundData        WRONG PRODUCT
+    via authenticated Data Streams REST  SUPPORTED, access unproven
+
+**Do not use Gamma `startDate` as the round anchor.** For recurring 5m/15m markets the interval
+start is encoded in the slug (`btc-updown-15m-1778437800`); `startDate` is when the market was
+LISTED and can be a day earlier. Three distinct timestamps are needed: `market_created_at`,
+`round_start_ts` (from the slug), `round_end_ts` (= start + duration).
+`round_truth.round_start_from_slug()` does this and refuses rather than guessing.
+
+**The boundary-report selection rule is an empirical contract question**, not a preference.
+Data Streams reports carry `validFromTimestamp` and `observationsTimestamp`; a report 5s after
+a boundary may contain observations unavailable at it. The current
+`abs(source_ts - boundary) <= 5000` tolerance is too naive to be the final rule. Candidate
+policies are listed in `BOUNDARY_POLICIES` and must be tested against the venue's displayed
+Price to Beat and resolved outcomes, then frozen.
+
+**Acceptance gate before training on backfilled rows:** reconstruct 500–1,000 resolved markets
+and require **>= 99.9%** derived-vs-official agreement, reported by month and by policy. Any
+systematic disagreement means the boundary or source policy is still wrong — do not absorb it
+as label noise. `round_truth.py` is already source-agnostic: it does not
 care whether values arrive live or from an archive, and the reconciler quarantines anything
 that does not tie out against the official outcome.
 
@@ -74,7 +98,7 @@ that does not tie out against the official outcome.
 
 ### VERIFIED OPEN — highest priority
 
-**P0-8 — FIXED 2026-08-06** (was: the backtest validates a different target).
+**P0-8A — FIXED 2026-08-06** — wrong target evaluator.
 `backend/backtester.py` contained **zero** references to `target_contract`, and walk-forward
 fits a `RandomForestClassifier` surrogate — no stacker, no HMM routing, no policy. A backtest
 result therefore describes a different model answering a different question. A good number
@@ -86,15 +110,30 @@ fallback invents a 0.2% range, and inventing barriers is as wrong as ignoring th
 requiring the two contracts to give DIFFERENT confusion matrices on the same data; a
 refusal-only test let a "grade by endpoint sign regardless of contract" mutant survive.
 `run()` had always accepted highs/lows — the path was passed and ignored.
-*Still open:* walk-forward fits a `RandomForestClassifier` surrogate, not the real ensemble.
+**P0-8B — OPEN — wrong model under evaluation.** A contract-correct RandomForest backtest is
+still a backtest of a RandomForest, not of the seven seats + OOF stacker + regime routing +
+bundle-bound HMM + calibrators + conformal objects + decision policy. Needs a `BacktestSpec`
+declaring `model_kind` (PRODUCTION_BUNDLE_REPLAY / PRODUCTION_PIPELINE_WALK_FORWARD /
+SURROGATE_RESEARCH_ONLY), with surrogate results printing
+`THIS DOES NOT EVALUATE THE SERVED ENSEMBLE`.
 
-**P0-14 — two calibration systems disagree.**
+**P0-8C — OPEN — execution-policy parity.** Neither path replays the decision policy.
+
+**P0-14 — PARTIALLY FIXED 2026-08-06 — two calibration systems disagree.**
 `PrecisionEngine` defines correct as `sign(actual_move)` regardless of the prediction's
 declared contract, so first-touch confidence is calibrated by endpoint sign. Old calibrators
 are not cleared on bundle change, refresh can wait six hours, and zero rows for a new release
 leaves the old map active.
-*Fix:* one calibrator keyed by (release_id, target_contract, horizon); `bind_release()` clears
-immediately and stays unavailable until enough new-release rows exist.
+*Fixed:* `bind_release()` clears every map on release change, resets the fit timestamp and
+reports unavailable until refitted. `is_admissible_for()` refuses while provenance is
+UNRECORDED — "we do not know" must not read as "yes".
+
+**Still OPEN, and the blocker is deeper than the audit stated:** `predictions_{h}m` has NO
+`target_contract` column. The provenance was never recorded, so no query can separate
+first-touch rows from endpoint rows and the contract filter cannot be written. Adding that
+column, backfilling it, and writing it on every new prediction is the real fix. Until then the
+map declares `contract_provenance=UNRECORDED` and is inadmissible for contract-sensitive
+consumers rather than silently answering.
 
 **P0-27 — unauthenticated reads.**
 Read routes expose database paths, positions, orders, fills, equity, model and evidence state.
