@@ -108,16 +108,22 @@ Two fixes **removed capability on purpose**. Both are logged and counted rather 
 
 ---
 
-## UNVERIFIED — do not quote as findings
+## UNVERIFIED — none remain
 
-Scan 2 claims 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 30
-(30 is partially pinned) and scan 3 claims 6, 7, 8, 9, 10.
+**Closed `2026-08-06`.** Every claim listed here has since been read against source; the verdicts
+are in [`OPEN_CLAIMS_INVESTIGATION_2026-08-06.md`](OPEN_CLAIMS_INVESTIGATION_2026-08-06.md).
 
-They may well be real — the ones checked so far mostly were. They have not been read against
-source, and this repository's standard is that an unchecked claim is neither "probably fine" nor
-"probably as described".
+```text
+investigated        56 of 56
+CONFIRMED           40
+CONFIRMED-ADJUSTED   3
+SHAPE-CONFIRMED      4
+NOT ESTABLISHED      1   (2.16 revision-ledger timestamps - needs a runtime trace)
+```
 
----
+That investigation also revised the fix order: 2.23 (GPU fits at import) turns out to precede
+every safety check, and 2.4 (no canonical kline schema) is the shared root of 2.3, 2.5 and P0-4,
+which were being tracked as three separate defects.
 
 ## Status
 
