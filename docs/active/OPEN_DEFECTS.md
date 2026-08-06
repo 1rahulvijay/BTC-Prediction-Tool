@@ -191,7 +191,32 @@ those fixtures encode the incorrect semantics or the change has a real regressio
 not resolvable with the context remaining, so it was REVERTED rather than shipped or papered
 over by editing the tests to match.
 
-**Next session: reconcile the fixtures first, decide which semantics is right, then reapply.**
+**RECONCILED 2026-08-06. The fixtures are not the problem, and P0-4 is not fixable inside
+`as_of_close()`.** Two attempts, both reverted, and each taught something:
+
+*Attempt 1 — change SELECTION to require `open_ms + interval <= at_ms`.* Broke the P0-11
+fixture, and that fixture is RIGHT: it sets `verify_at` equal to the horizon bar's OPEN and
+expects that bar to settle the round. Callers use `at_ms` to NAME the horizon-end bar, not to
+mark a wall-clock instant. Under that convention settlement legitimately occurs at the named
+bar's close and no future data is admitted. Changing selection would silently redefine every
+horizon by one bar. **The audit's framing of P0-4 as "future data admitted" is wrong under the
+convention actually in use.**
+
+*Attempt 2 — keep selection, correct only the returned event timestamp from the bar's OPEN to
+its CLOSE.* Unambiguously right in principle: a bar's close does not occur at its open, so
+every consumer recording `resolution_event_ts` has been stamping the observation one interval
+early. But it requires the bar interval, and inferring it from the kline list is unsafe: the
+P0-11 fixture's bars are irregular (+60s/+300s/+540s), so `min(diffs)` yields 240s, which is
+not the real cadence. On any filtered or sparse list the corrected timestamp would be wrong in
+a new way.
+
+**The real fix is a data-shape change, exactly as the audit's own remedy section says:** klines
+must carry `close_ts_ms` (and `is_closed`, `source_event_ts_ms`) rather than having the grader
+guess a duration. Then `as_of_close` returns a recorded close time and nothing is inferred.
+That is a change to the ingestion path and every kline producer, not a patch to this function.
+
+**Scope when picked up:** add `close_ts_ms` at ingestion → have `as_of_close` return it →
+update the P0-11 assertion to expect the recorded close → leave selection semantics alone.
 The P0-11 assertion ("a LATE resolution grades from the bar at the horizon end") is the one to
 reason about — it may be asserting the same boundary from the other side.
 
