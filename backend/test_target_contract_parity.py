@@ -166,17 +166,27 @@ def main() -> int:
         lookback=5, horizons=[horizon], atr_arr=np.full(n, 1.0),
         highs=np.asarray(highs, dtype=np.float64), lows=np.asarray(lows, dtype=np.float64),
         return_valid_mask=True, return_settlement_labels=True)
+    Ybanded = Ysettle[tc.ENDPOINT_SETTLEMENT_V1]
+    Ybinary = Ysettle[tc.POLYMARKET_BINARY_SETTLEMENT_V1]
     path_label = NAMES[int(np.argmax(Ypath[horizon][0]))]
-    settle_label = NAMES[int(np.argmax(Ysettle[horizon][0]))]
+    settle_label = NAMES[int(np.argmax(Ybanded[horizon][0]))]
+    binary_label = tc.BINARY_CLASS_ORDER[int(np.argmax(Ybinary[horizon][0]))]
     check(path_label == tc.UP and settle_label == tc.DOWN,
           f"one row, two heads: PATH says {path_label} and SETTLEMENT says {settle_label} - "
           f"the split produces genuinely different training targets")
-    check(Ysettle[horizon].shape == Ypath[horizon].shape,
-          "the settlement labels are shaped like the path labels, so a trainer can consume "
-          "either without reshaping")
-    check(bool(np.all(Ysettle[horizon].sum(axis=1) == 1.0)),
-          "every settlement row is one-hot - endpoint direction has no ambiguous case, unlike "
-          "first-touch where one bar can touch both barriers")
+    check(binary_label == tc.DOWN,
+          "and the BINARY settlement label agrees with the banded one on this row, so the "
+          "third contract is not simply inverting the second")
+    check(Ybanded[horizon].shape == Ypath[horizon].shape,
+          "the banded settlement labels are shaped like the path labels, so a trainer can "
+          "consume either without reshaping")
+    check(Ybinary[horizon].shape == (len(Ypath[horizon]), 2),
+          "while the binary labels have TWO columns - the class count is the contract, and a "
+          "third column would be a NEUTRAL outcome the venue never pays")
+    check(bool(np.all(Ybanded[horizon].sum(axis=1) == 1.0))
+          and bool(np.all(Ybinary[horizon].sum(axis=1) == 1.0)),
+          "every settlement row is one-hot under BOTH contracts - endpoint direction has no "
+          "ambiguous case, unlike first-touch where one bar can touch both barriers")
     check(tc.assert_admissible(tc.STOP_TARGET_PLANNING, tc.TRAINING_CONTRACT)
           == tc.TRAINING_CONTRACT,
           "the head that DOES exist is admissible for the path questions it answers")

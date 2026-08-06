@@ -42,20 +42,42 @@ where a single bar can touch both barriers.
 
 ```python
 PATH_CONTRACTS        = {FIRST_TOUCH_TRIPLE_BARRIER_V1}
-SETTLEMENT_CONTRACTS  = {ENDPOINT_SETTLEMENT_V1}
+SETTLEMENT_CONTRACTS        = {ENDPOINT_SETTLEMENT_V1}
+BINARY_SETTLEMENT_CONTRACTS = {POLYMARKET_BINARY_SETTLEMENT_V1}
 ```
 
-Disjoint, and asserted to be.
+Pairwise disjoint, and asserted to be.
+
+**Update 2026-08-05.** A third contract was added. `ENDPOINT_SETTLEMENT_V1` answers "where does
+price end" using an *adaptive volatility band*, and that band does not exist on the venue -
+Polymarket resolves on a strict comparison with two outcomes. Measured on real `build_sequences`
+rows the two settlement contracts disagree on **65.2%** of endpoints; every one of those is a
+real payout the banded contract calls NEUTRAL. The banded contract is kept for the Binance perp
+lane, where the band is the region a trade does not clear its costs.
+
+The venue's tie rule is named once, as `TIE_RESOLVES_TO = DOWN` ("Up" requires strictly greater),
+and pinned by a selftest so changing it is deliberate rather than a refactor of a bare `>`.
 
 ### 3. Consumers declare their purpose and are refused on mismatch
 
 ```python
-POLYMARKET_SETTLEMENT_EV  -> SETTLEMENT_CONTRACTS
+POLYMARKET_SETTLEMENT_EV  -> BINARY_SETTLEMENT_CONTRACTS
+POLYMARKET_HOLD_EXIT_EV   -> BINARY_SETTLEMENT_CONTRACTS
 BINANCE_DIRECTIONAL_EV    -> SETTLEMENT_CONTRACTS
 STOP_TARGET_PLANNING      -> PATH_CONTRACTS
-HOLD_EXIT_DECISION        -> PATH_CONTRACTS
+PATH_STOP_MANAGEMENT      -> PATH_CONTRACTS
 PATH_EXCURSION_FORECAST   -> PATH_CONTRACTS
 ```
+
+`HOLD_EXIT_DECISION` is **gone**. One name covered two different questions - "will my stop be
+hit before my target" (path) and "is holding to settlement worth more than selling at the
+current bid" (settlement, and on Polymarket a binary one) - so it had to require one contract
+for both, and answering the second with a first-touch probability was the very substitution
+this layer exists to refuse. It was happening *inside a purpose name broad enough to hide it*.
+Splitting the name is what lets the guard see it.
+
+The live table is generated from the source in `docs/active/CURRENT_STATE.md`; this section is
+narrative and can drift, that one cannot.
 
 `assert_admissible(purpose, contract)` **raises** `ContractMisuse` rather than returning a
 boolean, so it cannot be ignored by a caller that only checks a truthy value.

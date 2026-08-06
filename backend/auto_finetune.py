@@ -2,8 +2,17 @@
 auto_finetune.py - nightly REFIT + RECALIBRATE of the cheap heads (no GPU, no feed freeze).
 =============================================================================================
 Keeps the conformal band + P(Hold) + selectivity calibrated to the RECENT regime as new data flows
-in. Reruns only the cheap head trainers (seconds–minutes each, single-thread, no GPU). The live app
-HOT-RELOADS the refreshed .pkls within ~30s (mtime reload in price_to_beat) - **no restart needed**.
+in. Reruns only the cheap head trainers (seconds-minutes each, single-thread, no GPU).
+
+OUTPUT IS A CANDIDATE, NOT A DEPLOY (2026-08-05):
+  Every trainer is redirected to data/saved_models/candidates/<UTC-stamp>/ and the serving
+  artifacts are left untouched. Until this change the job REWROTE the five serving .pkls in
+  place and the live app hot-reloaded them within ~30s with no challenger gate - so a position
+  could open under one artifact and be managed under another, both recorded under a single
+  logical name, with nothing in the record showing a swap had occurred.
+
+  The redirect is verified, not trusted: serving artifacts are hashed before the run and
+  restored from backup if anything changed. Promotion is a separate, gated, recorded act.
 
 What it does NOT do (by design):
   • NOT the 6h direction-ensemble retrain (that's a deliberate FREEZE=0 job; direction is at the
@@ -19,12 +28,20 @@ Usage:
   python backend/auto_finetune.py --dry-run          # show the plan, run nothing
 """
 import argparse
+import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 
 BACKEND = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(BACKEND)
+DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
+SERVING_DIR = os.path.join(DATA_DIR, "saved_models")
+#: Where a nightly run puts its OUTPUT. Never the serving directory.
+CANDIDATE_ROOT = os.path.join(SERVING_DIR, "candidates")
 PY = sys.executable
 
 # The matrix + cheap heads recalibrate on the SAME window as the main retrain, so every head stays
@@ -75,6 +92,67 @@ REFIT_ARTIFACTS = (
 )
 
 
+def _digest(path):
+    if not os.path.exists(path):
+        return None
+    h = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def snapshot_serving():
+    """Hash and back up every artifact this job may touch, BEFORE it runs."""
+    backup = os.path.join(CANDIDATE_ROOT, ".serving_backup")
+    os.makedirs(backup, exist_ok=True)
+    digests = {}
+    for name in REFIT_ARTIFACTS:
+        live = os.path.join(SERVING_DIR, name)
+        digests[name] = _digest(live)
+        if digests[name] is not None:
+            shutil.copy2(live, os.path.join(backup, name))
+    return {"backup_dir": backup, "digests": digests}
+
+
+def protect_serving(before, candidate_dir):
+    """Restore any serving artifact a trainer overwrote, keeping its output as a CANDIDATE.
+
+    All five trainers now honour BTC_MODEL_OUTPUT_DIR, but the redirect is VERIFIED rather
+    than trusted: `train_fade_model.py` hardcoded the serving path until this change, and a
+    future trainer added to REFIT could do the same. The failure mode is silent - the artifact
+    is replaced under its serving name and the live app hot-reloads it within ~30s - so the
+    guard checks the bytes instead of assuming cooperation.
+
+    That silence is the whole reason for this change. A position could open under one artifact
+    and be managed under another, both recorded under one logical name, with no challenger gate
+    and nothing in the record showing a swap had happened.
+    """
+    os.makedirs(candidate_dir, exist_ok=True)
+    report = {"restored": [], "captured": [], "unchanged": []}
+    for name in REFIT_ARTIFACTS:
+        live = os.path.join(SERVING_DIR, name)
+        now, was = _digest(live), before["digests"].get(name)
+        if now == was:
+            report["unchanged"].append(name)
+            continue
+        # The trainer ignored the redirect. Keep its work as a candidate, then put the
+        # serving artifact back exactly as it was.
+        if now is not None:
+            shutil.copy2(live, os.path.join(candidate_dir, name))
+            report["captured"].append(name)
+        backup = os.path.join(before["backup_dir"], name)
+        if os.path.exists(backup):
+            shutil.copy2(backup, live)
+            report["restored"].append(name)
+        elif os.path.exists(live):
+            # Nothing was serving under this name before. Leaving the new file would be a
+            # silent promotion, so it is removed once captured.
+            os.remove(live)
+            report["restored"].append(name + " (removed; none existed before)")
+    return report
+
+
 def _run(label, script, extra, supports_days, days, timeout=3600):
     path = os.path.join(BACKEND, script)
     if not os.path.exists(path):
@@ -112,21 +190,60 @@ def main():
     a = ap.parse_args()
     print(f"AUTO-FINETUNE {time.strftime('%Y-%m-%d %H:%M:%S')} - cheap-head refit (recalibration payload)")
     print(f"  recalibration window = {FULL_DAYS}d (matrix + cheap heads match the main retrain).")
-    print("  direction ensemble NOT touched (6h FREEZE=0 job; at the ceiling). Live app hot-reloads pkls <=30s.")
+    print("  direction ensemble NOT touched (6h FREEZE=0 job; at the ceiling).")
     steps = (BACKFILL if a.with_backfill else []) + REFIT
     if a.dry_run:
         for label, script, extra, sd in steps:
             d = f" --days {a.days}" if (sd and a.with_backfill) else ""
             print(f"  would run: {label}  ->  {script} {' '.join(extra)}{d}")
         return 0
+    # CANDIDATE-ONLY. This job builds an immutable candidate bundle; it does not promote.
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    candidate_dir = os.path.join(CANDIDATE_ROOT, stamp)
+    os.makedirs(candidate_dir, exist_ok=True)
+    before = snapshot_serving()
+    os.environ["BTC_MODEL_OUTPUT_DIR"] = candidate_dir
+    print(f"  output -> {candidate_dir}")
+    print("  serving artifacts are NOT modified; promotion is a separate, gated act.")
+
     ok = run = 0
-    for label, script, extra, sd in steps:
-        res = _run(label, script, extra, sd, a.days)
-        if res is not None:
-            run += 1
-            ok += int(bool(res))
-    print(f"\nDONE: {ok}/{run} steps succeeded. Heads refreshed -> live app hot-reloads within 30s "
-          "(no restart). Recalibration keeps the band/P(Hold) honest; accuracy is unchanged by design.")
+    try:
+        for label, script, extra, sd in steps:
+            res = _run(label, script, extra, sd, a.days)
+            if res is not None:
+                run += 1
+                ok += int(bool(res))
+    finally:
+        # Runs on failure and on interrupt too: a half-finished job must never leave a
+        # partially-rewritten serving directory behind.
+        guard = protect_serving(before, candidate_dir)
+
+    if guard["captured"]:
+        print(f"  !! {len(guard['captured'])} artifact(s) ignored BTC_MODEL_OUTPUT_DIR and wrote to "
+              f"serving: {', '.join(guard['captured'])}")
+        print(f"     output captured as a candidate; serving RESTORED: {', '.join(guard['restored'])}")
+    manifest = {
+        "created_utc": stamp,
+        "candidate_dir": candidate_dir,
+        "steps_ok": ok,
+        "steps_run": run,
+        "serving_digests_before": before["digests"],
+        "serving_digests_after": {n: _digest(os.path.join(SERVING_DIR, n))
+                                  for n in REFIT_ARTIFACTS},
+        "candidate_digests": {n: _digest(os.path.join(candidate_dir, n))
+                              for n in REFIT_ARTIFACTS},
+        "guard": guard,
+        "promoted": False,
+        "promotion_note": ("A candidate is not a champion. Promotion requires the forward "
+                           "evidence gate and an explicit, recorded decision."),
+    }
+    with open(os.path.join(candidate_dir, "candidate_manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=True)
+
+    print(f"\nDONE: {ok}/{run} steps succeeded. CANDIDATE written to {candidate_dir}.")
+    print("  The live app is UNCHANGED. It previously hot-reloaded these five artifacts within")
+    print("  ~30s with no challenger gate, so a position could open under one artifact and be")
+    print("  managed under another, both recorded under a single logical name.")
     return 0 if run > 0 and ok == run else 1
 
 

@@ -88,6 +88,27 @@ def _representative_training_indices(indices: np.ndarray, max_samples: int) -> n
     return np.unique(np.concatenate([older[positions], recent]))
 
 
+#: PREREGISTERED. The largest share of a seat's OOF folds that may fit FEWER than the three
+#: production classes before that seat is dropped from the stacker for the bucket.
+#:
+#: Declared here, before any run, because a tolerance chosen after seeing the counts is not a
+#: gate - it is a description. With the five-fold split in use, 0.20 states the rule plainly:
+#: at most ONE fold in five.
+#:
+#: WHY A RATE AND NOT A COUNT
+#:     The mismatch was already being counted, and the count was written to
+#:     `_oof_class_set_mismatch` and never read by anything. A number nobody compares to a
+#:     threshold cannot fail, so it recorded the defect without ever acting on it.
+#:
+#: WHAT THE DEFECT IS
+#:     A fold that never saw a class pads that column to a hard 0.0, while production - whose
+#:     labels are augmented - emits a small positive there. The stacker then learns a column
+#:     that is structurally zero at train time and non-zero at serve time. That is train/serve
+#:     skew in the stacker's own input, and past a modest share of folds it is not a rounding
+#:     difference, it is a different variable.
+OOF_CLASS_SET_TOLERANCE = 0.20
+
+
 def _purged_calibration_splits(
     labels: np.ndarray,
     horizon: int,
@@ -1466,6 +1487,10 @@ class MultiModelEnsemble:
                             if hasattr(base_est, "predict_proba"):
                                 try:
                                     preds = np.full((len(X_stack), 3), np.nan)
+                                    # Counted PER SEAT so a rate can be formed. The previous
+                                    # counter had no denominator, so "3 mismatches" could not
+                                    # be compared to anything.
+                                    _cs_short = _cs_total = 0
                                     for fold_idx, (tr_idx, val_idx) in enumerate(tscv.split(X_stack), start=1):
                                         X_tr, y_tr_global = X_stack[tr_idx], y_stack[tr_idx]
                                         fit_classes = np.array(sorted(int(c) for c in np.unique(y_tr_global)))
@@ -1567,7 +1592,51 @@ class MultiModelEnsemble:
                                         _inv = _cnt.sum() / (len(fit_classes)
                                                              * np.maximum(_cnt, 1.0))
                                         _cls = np.clip(_inv / max(_inv.mean(), 1e-9), 0.5, 2.0)
-                                        sw_tr = _rec * _cls[y_tr_local.astype(int)] * _keep
+                                        # P0. THE REGIME-SIMILARITY TERM, REBUILT FOLD-LOCALLY.
+                                        #
+                                        # SAMPLE_WEIGHT_MODE defaults to `recency_similarity`,
+                                        # so production fits every seat under
+                                        # recency * similarity * class * ambiguity. The fold
+                                        # rebuilt recency and class and DROPPED similarity, so
+                                        # the stacker learned to combine probabilities from
+                                        # seats fitted under a different objective than the one
+                                        # they serve under. The comment above named
+                                        # `similarity_w` and explained why SLICING it is wrong,
+                                        # which read as though the term had been dealt with.
+                                        #
+                                        # Rebuilt the same way recency is: referenced to THIS
+                                        # fold's last training row, never to the global
+                                        # split_idx that lies in an early fold's future.
+                                        #
+                                        # X_stack is a tail slice of the regime-filtered
+                                        # X_calibration, so a stack row maps back to its model
+                                        # row through reg_idx. X_calibration is bound BEFORE the
+                                        # synthetic class-presence rows are appended, so that
+                                        # mapping stays 1:1.
+                                        _sim = np.ones(len(tr_idx), dtype=np.float64)
+                                        if SAMPLE_WEIGHT_MODE in {"similarity",
+                                                                  "recency_similarity"}:
+                                            _off = len(X_calibration) - len(X_stack)
+                                            _reg = np.asarray(reg_idx, dtype=np.int64)
+                                            _want = _off + np.asarray(tr_idx, dtype=np.int64)
+                                            if _off < 0 or _want.max(initial=-1) >= len(_reg):
+                                                raise ValueError(
+                                                    f"seat '{name}': cannot map stack rows back "
+                                                    f"to model rows (offset={_off}, "
+                                                    f"reg_idx={len(_reg)}); refusing to fit it "
+                                                    f"under a different objective than serving")
+                                            _rows = _reg[_want]
+                                            _sim_full = _regime_similarity_weights(
+                                                X_model, self.model_feature_names,
+                                                int(_rows.max()) + 1)
+                                            _sim = np.asarray(
+                                                _sim_full, dtype=np.float64)[_rows]
+                                        # Production normalises the recency*similarity product
+                                        # before indexing it; matched here so the fold weights
+                                        # differ from serving only by their fold-local anchor.
+                                        _rs = _rec * _sim
+                                        _rs = _rs / max(float(np.mean(_rs)), 1e-9)
+                                        sw_tr = _rs * _cls[y_tr_local.astype(int)] * _keep
                                         if not np.any(sw_tr > 0):
                                             raise ValueError(
                                                 f"fold for seat '{name}' has no positively "
@@ -1645,7 +1714,9 @@ class MultiModelEnsemble:
                                         # synthetic rows and is near-zero too - so the honest
                                         # action is to COUNT it rather than either paper over it
                                         # or delete a seat the bucket needs.
+                                        _cs_total += 1
                                         if len(fit_classes) < 3:
+                                            _cs_short += 1
                                             _mismatch = getattr(self, "_oof_class_set_mismatch", None)
                                             if _mismatch is None:
                                                 _mismatch = {}
@@ -1681,6 +1752,35 @@ class MultiModelEnsemble:
                                                 out /= out.sum()
                                             padded.append(out)
                                         preds[val_idx] = np.array(padded)
+
+                                    # THE GATE. Measured against the preregistered tolerance,
+                                    # not merely recorded. A seat whose folds mostly lacked a
+                                    # class contributes a column that is structurally zero in
+                                    # training and positive in production; dropping it is the
+                                    # same remedy already used when a fold cannot be calibrated.
+                                    _cs_rate = (_cs_short / _cs_total) if _cs_total else 0.0
+                                    _cs_key = f"{reg}|h{h}|{name}"
+                                    _rates = getattr(self, "_oof_class_set_rate", None)
+                                    if _rates is None:
+                                        _rates = {}
+                                        self._oof_class_set_rate = _rates
+                                    _rates[_cs_key] = {
+                                        "short_folds": int(_cs_short),
+                                        "total_folds": int(_cs_total),
+                                        "rate": float(_cs_rate),
+                                        "tolerance": float(OOF_CLASS_SET_TOLERANCE),
+                                        "within_tolerance": bool(
+                                            _cs_rate <= OOF_CLASS_SET_TOLERANCE),
+                                    }
+                                    if _cs_rate > OOF_CLASS_SET_TOLERANCE:
+                                        logger.warning(
+                                            "[OOF] h=%sm reg=%s seat=%s DROPPED: %s/%s folds "
+                                            "fitted fewer than 3 classes (rate %.2f > "
+                                            "tolerance %.2f). Its stacker column would be "
+                                            "structurally zero where production is positive.",
+                                            h, reg, name, _cs_short, _cs_total, _cs_rate,
+                                            OOF_CLASS_SET_TOLERANCE)
+                                        continue
                                     oof_features.append(preds)
                                     feature_names.append(name)
                                 except Exception as e:

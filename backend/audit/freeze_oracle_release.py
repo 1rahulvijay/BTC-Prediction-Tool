@@ -70,11 +70,30 @@ CHANGED = "CHANGED_SINCE_DEPLOYMENT"
 #:     Byte-immutability is the wrong contract for an artifact that is DESIGNED to be refit.
 #:     The thing the freeze actually needs to guarantee - "which bytes served this prediction"
 #:     - is served for these by a version HISTORY, and for everything else by immutability.
+#: WHY THE EXEMPTION IS NOW EMPTY (2026-08-05)
+#:     The premise above was that a scheduled job overwrites serving artifacts nightly. That
+#:     is no longer true: `auto_finetune.py` writes to data/saved_models/candidates/<stamp>/
+#:     and verifies afterwards that every serving digest is unchanged. Nothing scheduled
+#:     rewrites serving any more, so the exemption has no remaining justification and these
+#:     five are PINNED again.
+#:
+#:     The only writer left is `train_heads.py` at boot, on a VERSION CHANGE - a deliberate
+#:     deploy. A freeze reporting CHANGED after a deliberate deploy is the freeze working;
+#:     you re-freeze. That is not the daily false alarm this exemption was created to stop.
+#:
+#:     The import is KEPT so a broken import is still detectable, and so this file still
+#:     cannot disagree with the job about which artifacts the nightly produces.
 try:                                              # pragma: no cover - import shape only
     from auto_finetune import REFIT_ARTIFACTS as _REFIT_ARTIFACTS
+    _REFIT_IMPORT_OK = True
 except Exception:                                 # the freeze must still verify without it
     _REFIT_ARTIFACTS = ()
-SCHEDULED_REFIT_ARTIFACTS = frozenset(_REFIT_ARTIFACTS)
+    _REFIT_IMPORT_OK = False
+
+#: Set False when a scheduled job overwrites serving artifacts again. It does not today.
+NIGHTLY_OVERWRITES_SERVING = False
+SCHEDULED_REFIT_ARTIFACTS = (
+    frozenset(_REFIT_ARTIFACTS) if NIGHTLY_OVERWRITES_SERVING else frozenset())
 
 PINNED = "PINNED"
 SCHEDULED_REFIT = "SCHEDULED_REFIT"
@@ -86,6 +105,34 @@ REFIT_HISTORY = RELEASE_DIR / "refit_history.jsonl"
 
 def freeze_class(name: str) -> str:
     return SCHEDULED_REFIT if name in SCHEDULED_REFIT_ARTIFACTS else PINNED
+
+
+def nightly_overwrites_serving_in_source() -> bool:
+    """Read auto_finetune.py and decide whether it still overwrites serving artifacts.
+
+    Parsed, not grepped, and not taken on trust from a constant: the exemption below removes
+    five serving artifacts from the release freeze, and a one-word edit to a flag should not
+    be able to do that. The job is considered safe only if main() both redirects output away
+    from serving AND verifies afterwards that serving is untouched.
+    """
+    import ast
+    source = Path(__file__).resolve().parent.parent / "auto_finetune.py"
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+    except Exception:
+        return True                       # unreadable: assume the unsafe case, stay pinned
+    main_fn = next((n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    if main_fn is None:
+        return True
+    redirects = any(
+        isinstance(n, ast.Subscript) and isinstance(n.value, ast.Attribute)
+        and n.value.attr == "environ"
+        and isinstance(n.slice, ast.Constant) and n.slice.value == "BTC_MODEL_OUTPUT_DIR"
+        for n in ast.walk(main_fn))
+    guards = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "protect_serving" for n in ast.walk(main_fn))
+    return not (redirects and guards)
 
 # Names only. The value of any of these never enters a file this script writes.
 ENV_KEYS_OF_RECORD = (
@@ -287,25 +334,34 @@ def verify() -> int:
     frozen = {row["name"]: row for row in json.loads(stored.read_text(encoding="utf-8"))["artifacts"]}
     current = {row["name"]: row for row in artifact_inventory()}
 
-    drifted, vanished, appeared, refit = [], [], [], []
+    recorded = recorded_refit_hashes()
+    drifted, vanished, appeared, refit, legacy = [], [], [], [], []
     for name, row in frozen.items():
         if name not in current:
             vanished.append(name)
         elif current[name]["sha256"] != row["sha256"]:
             # A PINNED artifact that changed is drift. A SCHEDULED_REFIT artifact that changed
             # is the nightly job having run - expected, and recorded rather than ignored.
-            (refit if freeze_class(name) == SCHEDULED_REFIT else drifted).append(name)
+            if freeze_class(name) == SCHEDULED_REFIT:
+                refit.append(name)
+            elif current[name]["sha256"] in recorded.get(name, ()):
+                legacy.append(name)
+            else:
+                drifted.append(name)
     for name in current:
         if name not in frozen:
             appeared.append(name)
 
     print(f"  pinned {sum(1 for n in frozen if freeze_class(n) == PINNED)} | "
           f"scheduled-refit {sum(1 for n in frozen if freeze_class(n) == SCHEDULED_REFIT)} | "
-          f"drifted {len(drifted)} | refit {len(refit)} | vanished {len(vanished)} | "
-          f"new {len(appeared)}")
+          f"drifted {len(drifted)} | legacy {len(legacy)} | refit {len(refit)} | "
+          f"vanished {len(vanished)} | new {len(appeared)}")
     for label, names in (("DRIFTED", drifted), ("VANISHED", vanished)):
         for name in names:
             print(f"    {label}: {name}")
+    for name in sorted(legacy):
+        print(f"    LEGACY (moved under the retired nightly regime, hash on record): "
+              f"{name}  {current[name]['sha256'][:12]}")
     for name in sorted(refit):
         print(f"    REFIT (nightly, expected): {name}  {current[name]['sha256'][:12]}")
     if appeared:
@@ -325,8 +381,43 @@ def verify() -> int:
               f"appended to {REFIT_HISTORY.name}, so which bytes served a given prediction "
               f"stays answerable by TIME rather than by immutability.")
         return 0
+    if legacy:
+        print(f"\n  PASS - no NEW drift. {len(legacy)} artifact(s) still carry bytes they moved "
+              f"to under the retired nightly regime; each hash is on record in "
+              f"{REFIT_HISTORY.name}. They are PINNED again, so the next change to any of them "
+              f"is a hard failure.")
+        print("  OPEN ITEM: the serving bytes do not match ORACLE_2026_07_04. Closing that is "
+              "an operator act - issue a new release id, or restore the frozen bytes.")
+        return 0
     print("\n  PASS - every frozen artifact still hashes to its recorded value.")
     return 0
+
+
+def recorded_refit_hashes() -> dict:
+    """{artifact -> {sha256, ...}} already written to refit_history.jsonl.
+
+    This set is CLOSED. `_record_refits` only ever appends for SCHEDULED_REFIT artifacts, and
+    that class is now empty, so nothing can add to it - an artifact cannot explain its own
+    future drift by drifting.
+
+    It exists because un-exempting the five nightly heads surfaced a real, pre-existing fact:
+    their bytes had already moved away from the freeze under the retired nightly regime, and
+    the exemption was using this very record to mute the failure. Reporting that history as
+    fresh drift forever would make the check fail every run for something that already
+    happened, which is how a check becomes something people skip.
+    """
+    out: dict = {}
+    if not REFIT_HISTORY.is_file():
+        return out
+    for line in REFIT_HISTORY.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        name, sha = row.get("name"), row.get("sha256")
+        if name and sha:
+            out.setdefault(name, set()).add(sha)
+    return out
 
 
 def _record_refits(names, frozen: dict, current: dict) -> None:
@@ -387,10 +478,27 @@ def selftest() -> int:
         "cutoff is wrong and the freeze would hide real drift")
     # The refit exemption must be NARROW. Exempting the nightly heads is only defensible if a
     # PINNED artifact changing is still a hard failure - otherwise this stopped being a freeze.
-    assert SCHEDULED_REFIT_ARTIFACTS, (
-        "the scheduled-refit set is empty - auto_finetune.REFIT_ARTIFACTS did not import, so "
-        "every nightly head would be reported as drift again")
+    # The set being empty is now the CORRECT state, so emptiness can no longer stand in for
+    # "the import broke". Those two are asserted separately.
+    assert _REFIT_IMPORT_OK, (
+        "auto_finetune.REFIT_ARTIFACTS did not import, so this file can no longer be checked "
+        "against the job that owns those artifacts")
+    # NIGHTLY_OVERWRITES_SERVING must not be a claim anyone can just edit. Flipping it back to
+    # True silently re-exempted all five artifacts from the freeze and every other assertion
+    # here still passed, so the flag is checked against what the JOB ACTUALLY DOES.
+    assert nightly_overwrites_serving_in_source() == NIGHTLY_OVERWRITES_SERVING, (
+        f"NIGHTLY_OVERWRITES_SERVING={NIGHTLY_OVERWRITES_SERVING} disagrees with "
+        f"auto_finetune.py's source. The exemption must be justified by the job's behaviour, "
+        "not by a flag - setting it by hand is how five serving artifacts get quietly unfrozen")
     names = {row["name"] for row in inventory}
+    if not NIGHTLY_OVERWRITES_SERVING:
+        assert not SCHEDULED_REFIT_ARTIFACTS, (
+            "nothing scheduled overwrites serving, so nothing may be exempt from the freeze")
+        for name in _REFIT_ARTIFACTS:
+            if name in names:
+                assert freeze_class(name) == PINNED, (
+                    f"{name} is still exempt, but the nightly no longer overwrites serving - "
+                    "a stale exemption leaves a serving artifact permanently unfrozen")
     unknown = SCHEDULED_REFIT_ARTIFACTS - names
     assert not unknown, (
         f"scheduled-refit names not present in the inventory: {sorted(unknown)} - a stale "
@@ -408,6 +516,22 @@ def selftest() -> int:
     # changing its bytes.
     assert freeze_class("architecture_version.pkl") == PINNED, (
         "the direction bundle must never be exempt")
+
+    # LEGACY must not become the exemption by another name. It tolerates ONE specific hash per
+    # artifact - the one already on record - so the very next change is a hard failure.
+    recorded = recorded_refit_hashes()
+    assert recorded, (
+        "refit_history.jsonl is empty, so the LEGACY class can never match and the freeze "
+        "would report already-recorded history as fresh drift on every run")
+    for name, hashes in recorded.items():
+        assert all(len(h) == 64 for h in hashes), name
+        assert "0" * 64 not in hashes, (
+            f"{name}: any hash outside the recorded set must read as DRIFT - LEGACY tolerates "
+            "the bytes already on record, not arbitrary new bytes")
+    # And the record cannot grow: appends happen only for SCHEDULED_REFIT, which is empty.
+    assert not SCHEDULED_REFIT_ARTIFACTS, (
+        "a non-empty scheduled-refit set would let an artifact append its own new hash and so "
+        "explain its own drift")
 
     print(f"  SELFTEST PASS - drift detectable; {len(inventory)} artifacts classified into "
           f"{sorted(states)}; {len(pinned)} PINNED / "

@@ -99,11 +99,15 @@ REGISTRY: tuple[ModelRegistryEntry, ...] = (
     # nothing requested them, so every settlement-EV consumer refused for want of an
     # admissible probability. Authority is NONE - it exists to be MEASURED against the
     # Polymarket price by a separately preregistered study, not to price anything yet.
-    ModelRegistryEntry("settlement", "settlement_head.pkl", "endpoint_settlement_v1",
+    # The contract is the BINARY one: Polymarket resolves on a strict comparison with no
+    # neutral band. Under the three-class endpoint contract ~68% of real payouts were labelled
+    # NEUTRAL, so the head was scored on a question the venue never asks.
+    ModelRegistryEntry("settlement", "settlement_head.pkl", "polymarket_binary_settlement_v1",
                        "settlement_head.train_settlement_head",
                        may_price=False, may_rank=False, may_size=False,
-                       notes="Endpoint settlement probability. Untested against the market; "
-                             "carries no authority until a frozen protocol scores it."),
+                       notes="Binary settlement probability (strict comparison, venue tie "
+                             "rule). Untested against the market; carries no authority until "
+                             "a frozen protocol scores it."),
     ModelRegistryEntry("selectivity", "selectivity_models.pkl", "selectivity",
                        "decision.train_selectivity_models", may_rank=True),
     ModelRegistryEntry("champion_meta", "champion_meta_model.pkl", "champion_decision",

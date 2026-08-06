@@ -1608,8 +1608,11 @@ def _ob_os_status(val, ob_thresh, os_thresh):
 
 from target_contract import (  # noqa: E402
     AMBIGUOUS as _AMBIGUOUS, DOWN as _DOWN, UP as _UP,
+    ENDPOINT_SETTLEMENT_V1 as _ENDPOINT_V1,
+    POLYMARKET_BINARY_SETTLEMENT_V1 as _BINARY_V1,
     label_endpoint as _label_endpoint,
-    label_first_touch as _label_first_touch)
+    label_first_touch as _label_first_touch,
+    label_polymarket_binary as _label_binary)
 
 
 def build_sequences(
@@ -1667,9 +1670,24 @@ def build_sequences(
     # True where the row carries a USABLE directional label. False only for AMBIGUOUS
     # rows - a single bar touched both barriers, so first-touch order is unknowable.
     Yvalid = {h: np.ones(n_samples, dtype=bool) for h in horizons}
-    #: SETTLEMENT labels: where price ENDS, the question Polymarket resolves on.
-    #: Every settlement row is usable - endpoint direction has no ambiguous case.
-    Ysettle = {h: np.zeros((n_samples, 3), dtype=np.float32) for h in horizons}
+    #: SETTLEMENT labels, keyed BY CONTRACT. They answer the same English sentence - "where
+    #: does price end" - with different rules, and they disagree on most rows, so a consumer
+    #: has to name which one it means. Keying by contract also makes the old positional access
+    #: `Ysettle[horizon]` raise a KeyError instead of quietly handing back the wrong label set.
+    #:
+    #:   ENDPOINT_SETTLEMENT_V1          three classes with an adaptive volatility band. The
+    #:                                   band is the region a Binance perp trade does not
+    #:                                   clear its costs.
+    #:   POLYMARKET_BINARY_SETTLEMENT_V1 two classes, strict comparison, no band. This is how
+    #:                                   the venue actually pays. At a realistic band the two
+    #:                                   disagree on ~68% of endpoints - each one a real
+    #:                                   payout the banded contract calls NEUTRAL.
+    #:
+    #: Every settlement row is usable under both - endpoint direction has no ambiguous case.
+    Ysettle = {
+        _ENDPOINT_V1: {h: np.zeros((n_samples, 3), dtype=np.float32) for h in horizons},
+        _BINARY_V1: {h: np.zeros((n_samples, 2), dtype=np.float32) for h in horizons},
+    }
 
     for row, i in enumerate(range(lookback, len(features) - max_h)):
         X[row] = features[i - lookback: i]
@@ -1706,13 +1724,18 @@ def build_sequences(
             # the first is what left the product with no settlement head to train.
             outcome = _label_first_touch(current_price, path_high, path_low, threshold)
             settle_idx = min(i + h, len(closes) - 1)
-            settlement = _label_endpoint(current_price, closes[settle_idx], threshold)
+            settle_price = closes[settle_idx]
+            settlement = _label_endpoint(current_price, settle_price, threshold)
             if settlement == _UP:
-                Ysettle[h][row, 2] = 1.0
+                Ysettle[_ENDPOINT_V1][h][row, 2] = 1.0
             elif settlement == _DOWN:
-                Ysettle[h][row, 0] = 1.0
+                Ysettle[_ENDPOINT_V1][h][row, 0] = 1.0
             else:
-                Ysettle[h][row, 1] = 1.0
+                Ysettle[_ENDPOINT_V1][h][row, 1] = 1.0
+            # Binary: strict comparison, columns [DOWN, UP], no band and no tie column. A tie
+            # resolves DOWN by the venue's rule, which label_polymarket_binary owns.
+            Ysettle[_BINARY_V1][h][row, 1 if _label_binary(current_price, settle_price) == _UP
+                                   else 0] = 1.0
 
             if outcome == _UP:
                 Y[h][row, 2] = 1.0

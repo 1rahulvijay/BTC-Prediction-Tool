@@ -45,7 +45,18 @@ UP, DOWN, NEUTRAL, AMBIGUOUS = "UP", "DOWN", "NEUTRAL", "AMBIGUOUS"
 #: A model trained under one of these may only be graded under the same one.
 FIRST_TOUCH_TRIPLE_BARRIER_V1 = "first_touch_triple_barrier_v1"
 ENDPOINT_SETTLEMENT_V1 = "endpoint_settlement_v1"
-KNOWN_CONTRACTS = (FIRST_TOUCH_TRIPLE_BARRIER_V1, ENDPOINT_SETTLEMENT_V1)
+#: How the Polymarket BTC up/down market ACTUALLY resolves: a strict comparison of the final
+#: price against the strike, two outcomes, no neutral band.
+#:
+#: ENDPOINT_SETTLEMENT_V1 answers "where does price end, allowing for a flat zone" using an
+#: ADAPTIVE volatility threshold. That flat zone does not exist on the venue. Every row inside
+#: the band is a real UP or DOWN resolution that the three-class contract calls NEUTRAL, so a
+#: probability trained under it is systematically not the probability the market pays out on -
+#: and the gap is widest in exactly the quiet regimes where the band is widest relative to the
+#: move.
+POLYMARKET_BINARY_SETTLEMENT_V1 = "polymarket_binary_settlement_v1"
+KNOWN_CONTRACTS = (FIRST_TOUCH_TRIPLE_BARRIER_V1, ENDPOINT_SETTLEMENT_V1,
+                   POLYMARKET_BINARY_SETTLEMENT_V1)
 
 #: What `build_sequences` produces today. Stamped onto artifacts and predictions so the grader
 #: can pick the matching rule instead of assuming one.
@@ -60,6 +71,23 @@ CLASS_ORDER = (DOWN, NEUTRAL, UP)
 #: answers "where does price END". They disagree on ~25% of random-walk paths.
 PATH_CONTRACTS = frozenset({FIRST_TOUCH_TRIPLE_BARRIER_V1})
 SETTLEMENT_CONTRACTS = frozenset({ENDPOINT_SETTLEMENT_V1})
+#: Kept SEPARATE from SETTLEMENT_CONTRACTS. Both answer "where does price end", but only this
+#: one answers it the way the venue pays. Folding it into the three-class set would let a
+#: banded probability price a binary market again, which is the defect this contract exists
+#: to close.
+BINARY_SETTLEMENT_CONTRACTS = frozenset({POLYMARKET_BINARY_SETTLEMENT_V1})
+
+#: The venue's tie rule, named once. "Up" requires the final price to be STRICTLY greater than
+#: the strike; an exact tie resolves DOWN.
+#:
+#: This is declared as a constant, and pinned by the selftest, so it is a stated rule rather
+#: than an inline `>` somebody can flip while refactoring. It must match the market's own
+#: resolution text - if the venue's rule differs, change it HERE and the label, grader and
+#: every trained head move together.
+TIE_RESOLVES_TO = DOWN
+
+#: Binary settlement has two outcomes, not three. NEUTRAL is not reachable.
+BINARY_CLASS_ORDER = (DOWN, UP)
 
 #: What each CONSUMER needs. The point of naming purposes is that a consumer declares the
 #: question it is asking, and a probability answering a different question is refused rather
@@ -67,19 +95,35 @@ SETTLEMENT_CONTRACTS = frozenset({ENDPOINT_SETTLEMENT_V1})
 POLYMARKET_SETTLEMENT_EV = "polymarket_settlement_ev"
 BINANCE_DIRECTIONAL_EV = "binance_directional_ev"
 STOP_TARGET_PLANNING = "stop_target_planning"
-HOLD_EXIT_DECISION = "hold_exit_decision"
 PATH_EXCURSION_FORECAST = "path_excursion_forecast"
 
+#: HOLD_EXIT_DECISION was ONE purpose covering two different questions, and so required one
+#: contract for both:
+#:
+#:   "will my stop be hit before my target"    - a PATH question, first-touch is correct
+#:   "is holding to settlement worth more than
+#:    selling this position at the current bid" - a SETTLEMENT question, and on Polymarket a
+#:                                                BINARY one
+#:
+#: Answering the second with a first-touch probability is the same substitution the contract
+#: layer exists to refuse - it was simply happening inside a purpose name broad enough to
+#: cover it. Splitting the name is what makes the guard able to see it.
+PATH_STOP_MANAGEMENT = "path_stop_management"
+POLYMARKET_HOLD_EXIT_EV = "polymarket_hold_exit_ev"
+
 PURPOSE_REQUIREMENTS: dict[str, frozenset] = {
-    # Polymarket resolves on where price ENDS relative to the strike. A first-touch
-    # probability is a different random variable and may not price it.
-    POLYMARKET_SETTLEMENT_EV: SETTLEMENT_CONTRACTS,
+    # Polymarket resolves on a STRICT comparison with no neutral band. The three-class
+    # endpoint contract is refused here too, not just the path one: its band is an artefact
+    # of our labelling, not of the market.
+    POLYMARKET_SETTLEMENT_EV: BINARY_SETTLEMENT_CONTRACTS,
+    POLYMARKET_HOLD_EXIT_EV: BINARY_SETTLEMENT_CONTRACTS,
     # The Binance EV is (2p-1) * expected_move - costs, which treats p as the probability
-    # that the ENDPOINT lands on the predicted side.
+    # that the ENDPOINT lands on the predicted side. A neutral band is meaningful there: it
+    # is the region where the perp trade is not worth its costs.
     BINANCE_DIRECTIONAL_EV: SETTLEMENT_CONTRACTS,
     # These are genuinely path questions, and the first-touch head is the right input.
     STOP_TARGET_PLANNING: PATH_CONTRACTS,
-    HOLD_EXIT_DECISION: PATH_CONTRACTS,
+    PATH_STOP_MANAGEMENT: PATH_CONTRACTS,
     PATH_EXCURSION_FORECAST: PATH_CONTRACTS,
 }
 
@@ -209,9 +253,36 @@ def label_endpoint(entry: float, final: float, threshold: float) -> str:
     return NEUTRAL
 
 
-def label(contract: str, *, entry: float, threshold: float,
+def label_polymarket_binary(entry: float, final: float) -> str:
+    """How the venue resolves: strictly greater than the strike is UP, everything else DOWN.
+
+    Takes NO threshold, by signature. The three-class endpoint label needs one and uses an
+    adaptive volatility band; passing one here would silently reintroduce a flat zone that the
+    market does not have, so the parameter simply does not exist to be passed.
+    """
+    if final > entry:
+        return UP
+    if final < entry:
+        return DOWN
+    return TIE_RESOLVES_TO
+
+
+def label(contract: str, *, entry: float, threshold: float | None = None,
           highs=None, lows=None, final: float | None = None) -> str:
     """Dispatch on the DECLARED contract. An unknown contract raises."""
+    if contract == POLYMARKET_BINARY_SETTLEMENT_V1:
+        if final is None:
+            raise UnknownTargetContract(f"{contract} requires the final price")
+        if threshold:
+            raise UnknownTargetContract(
+                f"{contract} resolves on a STRICT comparison and takes no threshold; got "
+                f"{threshold!r}. A threshold here would carve a neutral band into a market "
+                f"that pays out on two outcomes.")
+        return label_polymarket_binary(entry, final)
+    if threshold is None:
+        raise UnknownTargetContract(
+            f"{contract} requires a threshold; grading it without one would collapse its "
+            f"neutral band and silently turn it into a binary contract")
     if contract == FIRST_TOUCH_TRIPLE_BARRIER_V1:
         if highs is None or lows is None:
             raise UnknownTargetContract(
@@ -451,12 +522,17 @@ def selftest() -> int:
     check(not (PATH_CONTRACTS & SETTLEMENT_CONTRACTS),
           "the two families are disjoint - no contract may satisfy both questions")
 
-    check(assert_admissible(POLYMARKET_SETTLEMENT_EV, ENDPOINT_SETTLEMENT_V1)
-          == ENDPOINT_SETTLEMENT_V1, "settlement EV accepts a settlement probability")
+    check(assert_admissible(POLYMARKET_SETTLEMENT_EV, POLYMARKET_BINARY_SETTLEMENT_V1)
+          == POLYMARKET_BINARY_SETTLEMENT_V1,
+          "settlement EV accepts the BINARY settlement probability - the one the venue pays on")
+    check(assert_admissible(BINANCE_DIRECTIONAL_EV, ENDPOINT_SETTLEMENT_V1)
+          == ENDPOINT_SETTLEMENT_V1,
+          "and the perp lane still accepts the banded endpoint probability, where the band is "
+          "the region the trade does not clear its costs")
     check(assert_admissible(STOP_TARGET_PLANNING, FIRST_TOUCH_TRIPLE_BARRIER_V1)
           == FIRST_TOUCH_TRIPLE_BARRIER_V1, "stop/target planning accepts a PATH probability")
 
-    for purpose in (POLYMARKET_SETTLEMENT_EV, BINANCE_DIRECTIONAL_EV):
+    for purpose in (POLYMARKET_SETTLEMENT_EV, POLYMARKET_HOLD_EXIT_EV, BINANCE_DIRECTIONAL_EV):
         try:
             assert_admissible(purpose, FIRST_TOUCH_TRIPLE_BARRIER_V1)
             raise AssertionError(f"{purpose} accepted a path probability")
@@ -466,15 +542,75 @@ def selftest() -> int:
     print("  PASS  no EV purpose accepts a PATH probability - the substitution that made a "
           "first-touch model price an endpoint question")
 
-    for purpose in (STOP_TARGET_PLANNING, HOLD_EXIT_DECISION, PATH_EXCURSION_FORECAST):
+    # The band is OUR artefact, not the venue's. A Polymarket purpose must refuse it.
+    for purpose in (POLYMARKET_SETTLEMENT_EV, POLYMARKET_HOLD_EXIT_EV):
         try:
             assert_admissible(purpose, ENDPOINT_SETTLEMENT_V1)
-            raise AssertionError(f"{purpose} accepted a settlement probability")
+            raise AssertionError(f"{purpose} accepted a BANDED settlement probability")
         except ContractMisuse:
             pass
     checks += 1
+    print("  PASS  and every Polymarket purpose refuses the three-class endpoint probability - "
+          "its NEUTRAL band is a labelling artefact, and the market has no flat outcome to pay")
+
+    for purpose in (STOP_TARGET_PLANNING, PATH_STOP_MANAGEMENT, PATH_EXCURSION_FORECAST):
+        for offered in (ENDPOINT_SETTLEMENT_V1, POLYMARKET_BINARY_SETTLEMENT_V1):
+            try:
+                assert_admissible(purpose, offered)
+                raise AssertionError(f"{purpose} accepted {offered}")
+            except ContractMisuse:
+                pass
+    checks += 1
     print("  PASS  and no PATH purpose accepts a settlement probability - the guard runs "
           "both ways, so it is not simply refusing everything")
+
+    # The split is the point: one name that covered both questions could not refuse either.
+    check(PURPOSE_REQUIREMENTS[PATH_STOP_MANAGEMENT] is PATH_CONTRACTS
+          and PURPOSE_REQUIREMENTS[POLYMARKET_HOLD_EXIT_EV] is BINARY_SETTLEMENT_CONTRACTS,
+          "the two halves of the old hold/exit purpose now require DIFFERENT contract "
+          "families, which a single purpose name could not express")
+    check("hold_exit_decision" not in PURPOSE_REQUIREMENTS,
+          "and the merged purpose is gone, so no caller can keep asking the ambiguous question")
+
+    # ---- the binary contract ---------------------------------------------------------
+    check(label_polymarket_binary(100.0, 100.01) == UP
+          and label_polymarket_binary(100.0, 99.99) == DOWN,
+          "binary settlement resolves on a STRICT comparison, with no neutral band")
+    check(label_polymarket_binary(100.0, 100.0) == TIE_RESOLVES_TO == DOWN,
+          "an exact tie resolves DOWN - 'Up' requires strictly greater, stated once as "
+          "TIE_RESOLVES_TO rather than as a bare '>' somewhere in the grader")
+    check(set(BINARY_CLASS_ORDER) == {UP, DOWN} and NEUTRAL not in BINARY_CLASS_ORDER,
+          "NEUTRAL is not reachable under the binary contract")
+    check(not (BINARY_SETTLEMENT_CONTRACTS & SETTLEMENT_CONTRACTS)
+          and not (BINARY_SETTLEMENT_CONTRACTS & PATH_CONTRACTS),
+          "and the binary family is disjoint from both others - it is a third question, not "
+          "a relabelling of the second")
+    try:
+        label(POLYMARKET_BINARY_SETTLEMENT_V1, entry=100.0, final=101.0, threshold=0.001)
+        raise AssertionError("the binary contract accepted a threshold")
+    except UnknownTargetContract:
+        checks += 1
+        print("  PASS  passing a threshold to the binary contract RAISES - that is how the "
+              "band would come back, so the parameter is refused rather than ignored")
+    try:
+        label(ENDPOINT_SETTLEMENT_V1, entry=100.0, final=101.0)
+        raise AssertionError("the banded contract graded without a threshold")
+    except UnknownTargetContract:
+        checks += 1
+        print("  PASS  and omitting the threshold on a BANDED contract raises rather than "
+              "defaulting to zero, which would silently make it binary")
+
+    # The two settlement contracts must actually disagree, or the split is a naming exercise.
+    _rng = np.random.default_rng(11)
+    _entry, _band = 100.0, 0.0008
+    _finals = _entry * (1.0 + _rng.normal(0, _band, 4000))
+    _disagree = float(np.mean([
+        label_endpoint(_entry, f, _band) != label_polymarket_binary(_entry, f)
+        for f in _finals]))
+    check(_disagree > 0.2,
+          f"the banded and binary settlement labels disagree on {_disagree:.1%} of endpoints "
+          f"at a realistic band - every one of those is a real payout the banded contract "
+          f"calls NEUTRAL")
 
     for bad in (None, "", "made_up_contract"):
         try:

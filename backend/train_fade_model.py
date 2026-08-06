@@ -56,7 +56,13 @@ from verified_io import write_manifest as write_integrity_manifest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 MATRIX = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
-OUT = os.path.join(DATA_DIR, "saved_models", "fade_model.pkl")
+# BTC_MODEL_OUTPUT_DIR is honoured here for the same reason as the other four cheap-head
+# trainers: auto_finetune.py points it at a candidate directory so a nightly run cannot
+# overwrite a serving artifact. This was the ONLY trainer of the five that hardcoded the
+# serving path, so a redirected run still replaced fade_model.pkl under the live app.
+OUT = os.path.join(
+    os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
+    "fade_model.pkl")
 KEEPERS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio", "shock_magnitude"]
 TOUCH_CTX = ["overshoot_bps", "pre_opp_bps", "pre_range_bps"]
 FEATURES = KEEPERS + ["touch_frac", "side_up"] + TOUCH_CTX

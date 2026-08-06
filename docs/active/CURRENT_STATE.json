@@ -1,0 +1,203 @@
+{
+  "ci_steps_by_job": {
+    "invariants": {
+      "python_invocations": 149,
+      "run_steps": 150
+    },
+    "startbat": {
+      "python_invocations": 132,
+      "run_steps": 3
+    }
+  },
+  "feature_semantics_version": 5,
+  "generated_by": "backend/audit/current_state.py",
+  "model_registry": [
+    {
+      "artifact": "activity_keeper_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "activity_keeper",
+      "required_for_serving": false,
+      "target_contract": "activity"
+    },
+    {
+      "artifact": "bigdrop_keeper_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "bigdrop_keeper",
+      "required_for_serving": false,
+      "target_contract": "big_drop"
+    },
+    {
+      "artifact": "bigmove_keeper_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "bigmove_keeper",
+      "required_for_serving": false,
+      "target_contract": "big_move"
+    },
+    {
+      "artifact": "champion_meta_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "champion_meta",
+      "required_for_serving": false,
+      "target_contract": "champion_decision"
+    },
+    {
+      "artifact": "crossing_heads.pkl",
+      "may_price": false,
+      "may_rank": false,
+      "may_size": false,
+      "name": "crossing_heads",
+      "required_for_serving": false,
+      "target_contract": "crossing_probabilities"
+    },
+    {
+      "artifact": "directional_keeper_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "directional_keeper",
+      "required_for_serving": false,
+      "target_contract": "direction"
+    },
+    {
+      "artifact": "fade_model.pkl",
+      "may_price": false,
+      "may_rank": false,
+      "may_size": false,
+      "name": "fade",
+      "required_for_serving": false,
+      "target_contract": "fade_roundtrip"
+    },
+    {
+      "artifact": "magnitude_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "magnitude",
+      "required_for_serving": false,
+      "target_contract": "move_magnitude"
+    },
+    {
+      "artifact": "path_forecaster.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "path_forecaster",
+      "required_for_serving": false,
+      "target_contract": "path_quantiles"
+    },
+    {
+      "artifact": "persistence_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "persistence",
+      "required_for_serving": true,
+      "target_contract": "p_hold"
+    },
+    {
+      "artifact": "round_state_heads.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "round_state",
+      "required_for_serving": false,
+      "target_contract": "round_state"
+    },
+    {
+      "artifact": "selectivity_models.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "selectivity",
+      "required_for_serving": false,
+      "target_contract": "selectivity"
+    },
+    {
+      "artifact": "settlement_head.pkl",
+      "may_price": false,
+      "may_rank": false,
+      "may_size": false,
+      "name": "settlement",
+      "required_for_serving": false,
+      "target_contract": "polymarket_binary_settlement_v1"
+    },
+    {
+      "artifact": "signed_quantile_model.pkl",
+      "may_price": false,
+      "may_rank": true,
+      "may_size": false,
+      "name": "signed_quantile",
+      "required_for_serving": false,
+      "target_contract": "signed_move_quantiles"
+    }
+  ],
+  "nightly_refit": {
+    "artifacts": [
+      "signed_quantile_model.pkl",
+      "persistence_model.pkl",
+      "path_forecaster.pkl",
+      "fade_model.pkl",
+      "round_state_heads.pkl"
+    ],
+    "candidate_only": true,
+    "writes_serving_directory": false
+  },
+  "note": "Machine-generated from source. Do not hand-edit: CI regenerates this and fails if it differs. Artifact/drift state is NOT here - see freeze_oracle_release.py --verify.",
+  "oof_class_set_tolerance": 0.2,
+  "purpose_requirements": {
+    "binance_directional_ev": [
+      "endpoint_settlement_v1"
+    ],
+    "path_excursion_forecast": [
+      "first_touch_triple_barrier_v1"
+    ],
+    "path_stop_management": [
+      "first_touch_triple_barrier_v1"
+    ],
+    "polymarket_hold_exit_ev": [
+      "polymarket_binary_settlement_v1"
+    ],
+    "polymarket_settlement_ev": [
+      "polymarket_binary_settlement_v1"
+    ],
+    "stop_target_planning": [
+      "first_touch_triple_barrier_v1"
+    ]
+  },
+  "source_digests": {
+    ".github/workflows/invariants.yml": "03ff0c07945c9ee54a72a036de57c6c187c8c4a080c168723af14ac386d60573",
+    "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
+    "backend/auto_finetune.py": "8322233e1e5f5ca458ef821cf8a0f80fee009fa3744184f4be9727605c68c113",
+    "backend/features.py": "bd3ee4886c45d8e9b70c6a3a55767ad8d54aa84666b21de9a9a4dc841882ec72",
+    "backend/model.py": "0860ee7f33e72b40ae6a3b498c7fcba2986b3501d0a12af20e657196f2a5ee08",
+    "backend/model_registry.py": "e7892662e78c4c71b1d0b3add7c18a7c12ef0b435c62e62a49f95b8441ca3a81",
+    "backend/settlement_head.py": "de2d1f3eb60fa3ed48ad57e3854c4eba1758d0127d5d82ce6af5080d05e3df5f",
+    "backend/target_contract.py": "f9e7dd77074bd991d0c7cf04cc6f68630e2c19af625028589ba40f744036fa07"
+  },
+  "target_contracts": {
+    "binary_tie_resolves_to": "DOWN",
+    "known": [
+      "endpoint_settlement_v1",
+      "first_touch_triple_barrier_v1",
+      "polymarket_binary_settlement_v1"
+    ],
+    "path": [
+      "first_touch_triple_barrier_v1"
+    ],
+    "settlement_banded": [
+      "endpoint_settlement_v1"
+    ],
+    "settlement_binary": [
+      "polymarket_binary_settlement_v1"
+    ],
+    "training_contract": "first_touch_triple_barrier_v1"
+  }
+}

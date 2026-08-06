@@ -126,25 +126,77 @@ def main() -> int:
         features, closes, lookback=pad, horizons=[horizon], atr_arr=np.full(n, 1.0),
         highs=highs, lows=lows, return_valid_mask=True, return_settlement_labels=True)
 
-    path_labels = np.argmax(Ypath[horizon], axis=1)
-    settle_labels = np.argmax(Ysettle[horizon], axis=1)
-    disagree = float(np.mean(path_labels != settle_labels))
+    # Labels are keyed BY CONTRACT. Reading them positionally now raises, which is the point:
+    # the two settlement label sets disagree on most rows, so a caller has to say which it
+    # means rather than receive whichever one happened to be first.
+    check(set(Ysettle) == {tc.ENDPOINT_SETTLEMENT_V1, tc.POLYMARKET_BINARY_SETTLEMENT_V1},
+          "build_sequences emits BOTH settlement label sets, keyed by the contract they "
+          "answer, so neither lane has to reinterpret the other's labels")
+    Ybinary = Ysettle[tc.POLYMARKET_BINARY_SETTLEMENT_V1]
+    Ybanded = Ysettle[tc.ENDPOINT_SETTLEMENT_V1]
+
+    # Compare by NAME, not by column index: the two layouts have different widths, so equal
+    # argmax integers would not mean equal outcomes.
+    path_names = [tc.CLASS_ORDER[i] for i in np.argmax(Ypath[horizon], axis=1)]
+    binary_names = [tc.BINARY_CLASS_ORDER[i] for i in np.argmax(Ybinary[horizon], axis=1)]
+    banded_names = [tc.CLASS_ORDER[i] for i in np.argmax(Ybanded[horizon], axis=1)]
+    disagree = float(np.mean([a != b for a, b in zip(path_names, binary_names)]))
     check(disagree > 0.05,
-          f"path and settlement labels disagree on {disagree:.1%} of real build_sequences "
-          f"rows - if they agreed everywhere the split would be a naming exercise")
-    check(len(Ysettle[horizon]) == len(X),
-          "settlement labels are aligned 1:1 with the feature rows")
+          f"path and BINARY settlement labels disagree on {disagree:.1%} of real "
+          f"build_sequences rows - if they agreed everywhere the split would be a naming "
+          f"exercise")
+    band_gap = float(np.mean([a != b for a, b in zip(banded_names, binary_names)]))
+    check(band_gap > 0.05,
+          f"and the two SETTLEMENT contracts disagree on {band_gap:.1%} of the same rows - "
+          f"every one is a real payout the banded contract calls NEUTRAL")
+    check(tc.NEUTRAL not in set(binary_names),
+          "no row is labelled NEUTRAL under the binary contract - the venue has no flat "
+          "outcome to pay out on")
+    check(len(Ybinary[horizon]) == len(X) and Ybinary[horizon].shape[1] == 2,
+          "binary settlement labels are aligned 1:1 with the feature rows, in two columns")
+
+    # THE LABELS MUST BE THE CONTRACT, recomputed independently from the prices.
+    #
+    # Every check above passes if the binary labels are derived from the BANDED ones
+    # (NEUTRAL folded into DOWN): the disagreement rates stay high and no row reads NEUTRAL.
+    # A mutation doing exactly that survived. The only assertion that catches it is comparing
+    # against `label_polymarket_binary` applied to the same entry/settle prices, so the label
+    # is pinned to the strict comparison rather than to a plausible-looking distribution.
+    #
+    # Entry is closes[i] and settlement is closes[min(i + h, len - 1)], matching
+    # build_sequences: row r corresponds to i = lookback + r.
+    expected = []
+    for r in range(len(X)):
+        i = pad + r
+        entry_px = closes[i]
+        final_px = closes[min(i + horizon, len(closes) - 1)]
+        expected.append(tc.label_polymarket_binary(entry_px, final_px))
+    emitted = [tc.BINARY_CLASS_ORDER[j] for j in np.argmax(Ybinary[horizon], axis=1)]
+    check(emitted == expected,
+          "every emitted binary label equals label_polymarket_binary() recomputed from the "
+          "entry and settlement prices - the labels ARE the contract, not a relabelling of "
+          "the banded ones that happens to have the right shape")
+
+    # And they are genuinely NOT the banded labels with NEUTRAL folded into DOWN, which is
+    # the specific wrong answer that would otherwise pass every distributional check.
+    folded = [tc.UP if name == tc.UP else tc.DOWN for name in banded_names]
+    check(emitted != folded,
+          "and they differ from the banded labels with NEUTRAL folded into DOWN - the exact "
+          "substitution that satisfies every rate-based check while being wrong")
 
     split = int(len(X) * 0.8)
-    bundle = train_settlement_head(X, Ysettle, split, horizons=[horizon])
-    check(bundle["target_contract"] == tc.ENDPOINT_SETTLEMENT_V1,
-          "the head fitted from REAL build_sequences output carries the endpoint contract")
+    bundle = train_settlement_head(X, Ybinary, split, horizons=[horizon])
+    check(bundle["target_contract"] == tc.POLYMARKET_BINARY_SETTLEMENT_V1,
+          "the head fitted from REAL build_sequences output carries the BINARY contract")
 
     probability = settlement_probability(bundle, X[split].reshape(-1), horizon)
     check(0.0 <= probability["p_up"] <= 1.0, "and yields a probability in [0, 1]")
     check(tc.assert_admissible(tc.POLYMARKET_SETTLEMENT_EV,
-                               probability["target_contract"]) == tc.ENDPOINT_SETTLEMENT_V1,
+                               probability["target_contract"])
+          == tc.POLYMARKET_BINARY_SETTLEMENT_V1,
           "which a settlement-EV consumer ACCEPTS - the refusal that had no remedy now has one")
+    check("p_neutral" not in probability,
+          "and it carries no p_neutral, because the market it prices has no flat outcome")
 
     # The path head must still be refused for the same purpose.
     try:
@@ -168,7 +220,7 @@ def main() -> int:
     check(MIN_TRAIN_ROWS >= 500,
           "a floor on training rows, so a thin fit produces no artifact at all")
     try:
-        train_settlement_head(X[:100], {horizon: Ysettle[horizon][:100]}, 80,
+        train_settlement_head(X[:100], {horizon: Ybinary[horizon][:100]}, 80,
                               horizons=[horizon])
         raise AssertionError("a thin fit produced a head")
     except SettlementHeadUnavailable:

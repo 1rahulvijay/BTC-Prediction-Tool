@@ -2146,6 +2146,11 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     # consumer refused for want of an admissible probability. Y answers "which barrier is
     # touched first"; Ysettle answers "where does price END" - the question Polymarket
     # resolves on, and they disagree on ~25% of paths.
+    #
+    # Ysettle is keyed BY CONTRACT and the head is trained on the BINARY one. Polymarket
+    # resolves on a strict comparison with no neutral band; under the three-class endpoint
+    # labels ~68% of real payouts were called NEUTRAL, so the head was being scored on a
+    # question the venue never asks.
     X, Y, Ymag, Yvalid, Ysettle = build_sequences(
         sequence_features,
         closes,
@@ -2233,12 +2238,16 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
             # answers a different question, carries no authority, and a failure here must not
             # take down the path ensemble that does serve.
             try:
-                from settlement_head import train_settlement_head, SettlementHeadUnavailable
+                from settlement_head import (train_settlement_head,
+                                             SettlementHeadUnavailable,
+                                             TARGET_CONTRACT as _SETTLEMENT_CONTRACT)
                 _settle_bundle = await loop.run_in_executor(
                     None, functools.partial(
-                        train_settlement_head, X, Ysettle,
+                        train_settlement_head, X,
+                        Ysettle[_SETTLEMENT_CONTRACT],
                         int(target_model.train_split_idx),
-                        horizons=target_model.horizons))
+                        horizons=target_model.horizons,
+                        contract=_SETTLEMENT_CONTRACT))
                 _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
                 from verified_io import atomic_dump as _atomic_dump
                 _atomic_dump(_settle_bundle, _settle_path)

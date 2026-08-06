@@ -232,6 +232,138 @@ def main() -> int:
         "and the deliberate exclusion of synthetic class-presence rows remains a declared "
         "training-semantics decision rather than an accident")
 
+    print("7a. the fold rebuilds the REGIME-SIMILARITY term, not just recency and class")
+    # Production's default mode multiplies recency BY regime similarity. The fold rebuilt
+    # recency and class and dropped similarity, so every seat feeding the stacker was fitted
+    # under a different objective than the one it serves under - while the comment above the
+    # code named `similarity_w` and explained why slicing it is wrong, which read as though
+    # the term had been handled.
+    import ast as _ast2
+    _src = SRC_PATH.read_text(encoding="utf-8")
+    _tree2 = _ast2.parse(_src)
+    _sim_calls = [n for n in _ast2.walk(_tree2)
+                  if isinstance(n, _ast2.Call) and isinstance(n.func, _ast2.Name)
+                  and n.func.id == "_regime_similarity_weights"]
+    chk(len(_sim_calls) >= 2,
+        f"_regime_similarity_weights is called in MORE than one place ({len(_sim_calls)}) - "
+        f"production alone is the state where the fold silently omitted it")
+
+    # The fold's call must NOT be anchored to the global split_idx: for an early fold that
+    # index lies in its own future, so the weights would rank rows by distance from a point
+    # the fold must not know about.
+    _fold_calls = [c for c in _sim_calls
+                   if not (len(c.args) >= 3 and isinstance(c.args[2], _ast2.Name)
+                           and c.args[2].id == "split_idx")]
+    chk(_fold_calls,
+        "at least one call anchors similarity to something OTHER than the global split_idx - "
+        "a fold-local weight referenced to the global split would be a subtler leak than the "
+        "missing term it replaced")
+
+    # And it must be given the MODEL feature names. The `feature_names` in scope at the fold
+    # is the list of stacker SEAT names; passing it would select no similarity features at all
+    # and quietly return all-ones, which looks exactly like a working fix.
+    for _c in _fold_calls:
+        _second = _c.args[1] if len(_c.args) >= 2 else None
+        chk(isinstance(_second, _ast2.Attribute) and _second.attr == "model_feature_names",
+            "the fold passes self.model_feature_names, not the stacker's seat-name list - "
+            "the wrong list matches no similarity features and returns all ones, which is "
+            "indistinguishable from the bug")
+
+    # The weight actually consumed must include the similarity factor.
+    _sw = [n for n in _ast2.walk(_tree2)
+           if isinstance(n, _ast2.Assign)
+           and any(isinstance(tg, _ast2.Name) and tg.id == "sw_tr" for tg in n.targets)]
+    chk(_sw, "the fold assigns sw_tr")
+    # Follow the chain sw_tr <- _rs <- _sim. Accepting the intermediate name alone is not
+    # enough: a mutant that computed _sim and then wrote `_rs = _rec * 1.0` kept the name in
+    # the sw_tr expression and survived. The term must be traceable to the similarity call.
+    def _names(node):
+        return {d.id for d in _ast2.walk(node) if isinstance(d, _ast2.Name)}
+
+    _sw_names = set().union(*(_names(a.value) for a in _sw)) if _sw else set()
+    _reaches = "_sim" in _sw_names
+    if not _reaches:
+        for _mid in _sw_names:
+            _defs = [n for n in _ast2.walk(_tree2)
+                     if isinstance(n, _ast2.Assign)
+                     and any(isinstance(tg, _ast2.Name) and tg.id == _mid
+                             for tg in n.targets)]
+            if any("_sim" in _names(d.value) for d in _defs):
+                _reaches = True
+                break
+    chk(_reaches,
+        "and sw_tr traces back to the similarity array through its intermediates, so the "
+        "term reaches the fit rather than being computed and thrown away")
+
+    # PARSED for an actual Raise in the guard's own body. Searching for the message text
+    # passed even when `raise ValueError` was swapped for `logger.warning` - the string
+    # survives the mutation that removes the safety boundary, which is exactly the kind of
+    # check that certifies nothing.
+    _guard_raises = False
+    for _node in _ast2.walk(_tree2):
+        if not isinstance(_node, _ast2.If):
+            continue
+        _body_src = " ".join(_ast2.dump(s) for s in _node.body)
+        if "cannot map stack rows" in _body_src:
+            _guard_raises = any(isinstance(s, _ast2.Raise) for s in _ast2.walk(_node))
+    chk(_guard_raises,
+        "an unmappable stack row RAISES from inside its own guard rather than falling back "
+        "to unweighted - a warning is not a safety boundary")
+
+    # Production normalises the recency*similarity product before indexing it. A uniform
+    # rescale is a no-op for the tree seats, so dropping it is nearly an equivalent mutation -
+    # but not for a regularised seat, where scaling sample_weight changes the effective
+    # penalty. It is asserted because the code claims the fold differs from serving ONLY by
+    # its fold-local anchor, and that claim should fail if it stops being true.
+    _norm = [n for n in _ast2.walk(_tree2)
+             if isinstance(n, _ast2.Assign)
+             and any(isinstance(tg, _ast2.Name) and tg.id == "_rs" for tg in n.targets)
+             and "np.mean" in _ast2.unparse(n.value)]
+    chk(_norm,
+        "the fold normalises the recency*similarity product the way production does, so the "
+        "two differ only by the fold-local anchor the comment claims")
+
+    print("7b. and the count is MEASURED against a preregistered tolerance")
+    # Counting was the whole remedy, and nothing ever read the counter. A number no one
+    # compares to a threshold cannot fail; it records a defect while permitting it.
+    import model as _model
+    chk(isinstance(getattr(_model, "OOF_CLASS_SET_TOLERANCE", None), float),
+        "a tolerance is DECLARED as a module constant, so it is fixed before a run rather "
+        "than chosen once the counts are visible")
+    tol = _model.OOF_CLASS_SET_TOLERANCE
+    chk(0.0 <= tol < 0.5,
+        f"and it is a real bound ({tol}) - a tolerance at or above half the folds would "
+        f"admit a seat whose column is structurally zero more often than not")
+    chk("_cs_total += 1" in code and "_cs_short += 1" in code,
+        "both a numerator and a DENOMINATOR are counted, so a rate exists to compare")
+    chk("if _cs_rate > OOF_CLASS_SET_TOLERANCE:" in code,
+        "the rate is compared to the tolerance - the comparison itself, not just the name")
+
+    # The remedy must be to DROP the seat. A comparison whose only effect is a log line is
+    # the same non-gate as the bare counter it replaced.
+    _gate = code[code.index("if _cs_rate > OOF_CLASS_SET_TOLERANCE:"):]
+    _gate = _gate[:_gate.index("oof_features.append(preds)")]
+    chk("continue" in _gate,
+        "and a seat over tolerance is DROPPED from the stacker, not merely logged - the "
+        "remedy already used when a fold cannot be calibrated")
+
+    # Parsed, so the drop cannot be moved after the append and left inert.
+    import ast as _ast
+    _tree = _ast.parse(SRC_PATH.read_text(encoding="utf-8"))
+    _found = False
+    for _node in _ast.walk(_tree):
+        if not isinstance(_node, _ast.If):
+            continue
+        _cmp = _node.test
+        if (isinstance(_cmp, _ast.Compare) and isinstance(_cmp.left, _ast.Name)
+                and _cmp.left.id == "_cs_rate"
+                and any(isinstance(c, _ast.Name) and c.id == "OOF_CLASS_SET_TOLERANCE"
+                        for c in _cmp.comparators)):
+            _found = any(isinstance(s, _ast.Continue) for s in _ast.walk(_node))
+    chk(_found,
+        "asserted by PARSING the comparison's own body for the continue, so the gate cannot "
+        "be satisfied by a `continue` that happens to appear somewhere nearby")
+
     print("\nOOF / SERVING PARITY:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 
