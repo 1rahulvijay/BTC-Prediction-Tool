@@ -80,6 +80,9 @@ FRONTIER = (
     "bybit_l2_depth_heads_v1.py",
     "score_liquidity_vacuum_continuation_v1.py",
     "side_specific_vacuum_v1.py",
+    # Measures whether per-seat complementarity is selectable. Result: the hindsight
+    # oracle sits BELOW a permutation null, so seat errors are positively correlated.
+    "per_model_complementarity_v1.py",
 )
 # Not studies, and deliberately NOT executed by the suite.
 #   harness.py               - shared library, no standalone behaviour
