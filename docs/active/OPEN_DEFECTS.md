@@ -54,15 +54,39 @@ Chainlink **Data Streams** feed (`data.chain.link/streams/btc-usd`) — pull-bas
 authenticated historical REST (`getReportByTimestamp`, `getReportsPage`, `getReportsBulk`).
 Free unrestricted access is NOT established; credentials are required.
 
-    Historical backfill                  LIKELY POSSIBLE
+    Polymarket resolved metadata         CONFIRMED via /events?slug=
+    BTC 15m round discovery              SOLVED (see below)
     via archive-node getRoundData        WRONG PRODUCT
-    via authenticated Data Streams REST  SUPPORTED, access unproven
+    via Data Streams REST                REACHABLE, AUTH MANDATORY, NO anonymous access
 
-**Do not use Gamma `startDate` as the round anchor.** For recurring 5m/15m markets the interval
+`https://api.dataengine.chain.link/api/v1/reports?feedID=...&timestamp=...` answered HTTP 400
+to an unauthenticated request - the service exists and responded, but every route requires
+three headers (`Authorization` UUID, `X-Authorization-Timestamp` within 5s, and an
+`X-Authorization-Signature-SHA256` HMAC). There is no anonymous tier; `401 Unauthorized User`
+is returned for both bad auth and missing stream permission. **Backfill is gated on obtaining
+Data Streams credentials** - a commercial/access question before an engineering one. If access
+proves unavailable, live capture becomes the only route and history does start when the
+recorder starts, for a different reason than originally claimed.
+
+**Discovery query — SOLVED and verified 2026-08-06.** Use `/events?slug=<slug>`, not
+`/markets?slug=`: the identifier is an EVENT slug and the tradeable market is nested inside.
+`/markets?slug=btc-updown-15m-1778437800` returns EMPTY. `slug_contains` is NOT a supported
+filter — Gamma silently ignores it and returns unrelated markets, which is the worst failure
+mode for discovery because it answers confidently with the wrong rounds.
+
+Verified shape (`btc-updown-15m-1778437800`, "Bitcoin Up or Down - May 10, 2:30PM-2:45PM ET"):
+`conditionId`, `clobTokenIds`, `umaResolutionStatus="resolved"`, `outcomes=["Up","Down"]`
+(NOT Yes/No), `outcomePrices=["0","1"]` → the side priced 1 won.
+
+**Do not use Gamma `startDate` as the round anchor — MEASURED.** For recurring 5m/15m markets the interval
 start is encoded in the slug (`btc-updown-15m-1778437800`); `startDate` is when the market was
 LISTED and can be a day earlier. Three distinct timestamps are needed: `market_created_at`,
 `round_start_ts` (from the slug), `round_end_ts` (= start + duration).
-`round_truth.round_start_from_slug()` does this and refuses rather than guessing.
+For that market `startDate` was **23.8 hours before** the interval it would have anchored.
+`round_start_from_slug()` derives the anchor from the slug; `round_bounds_from_event()`
+cross-checks the implied close against `event.endDate` and RAISES on disagreement rather than
+absorbing a wrong duration into every label. `official_outcome_from_prices()` refuses zero
+winners, two winners, or unexpected labels. 4/0 mutation.
 
 **The boundary-report selection rule is an empirical contract question**, not a preference.
 Data Streams reports carry `validFromTimestamp` and `observationsTimestamp`; a report 5s after

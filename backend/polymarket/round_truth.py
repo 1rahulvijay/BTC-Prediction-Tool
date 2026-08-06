@@ -106,6 +106,71 @@ BOUNDARY_POLICIES = (
     "VALID_INTERVAL_CONTAINS",
 )
 
+#: VERIFIED against the live API 2026-08-06 using btc-updown-15m-1778437800.
+#:
+#: DISCOVERY GOES THROUGH /events, NOT /markets. `GET /markets?slug=btc-updown-15m-...`
+#: returns an EMPTY array - the identifier is an EVENT slug, and the tradeable market is
+#: nested inside the event. `slug_contains` is not a supported filter either: Gamma silently
+#: IGNORES it and returns unrelated markets, which is the worst possible failure for a
+#: discovery query because it answers confidently with the wrong rounds.
+GAMMA_EVENT_BY_SLUG = "https://gamma-api.polymarket.com/events?slug={slug}"
+
+#: The observed shape, recorded so a change is detectable:
+#:     event.slug                 btc-updown-15m-1778437800
+#:     event.title                Bitcoin Up or Down - May 10, 2:30PM-2:45PM ET
+#:     event.startDate            2026-05-09T18:43:15Z   <- 21 HOURS BEFORE the interval
+#:     event.endDate              2026-05-10T18:45:00Z   <- the real round close
+#:     slug suffix 1778437800  =  2026-05-10T18:30:00Z   <- the real anchor boundary
+#:     market.outcomes            ["Up", "Down"]         (NOT ["Yes","No"])
+#:     market.outcomePrices       ["0", "1"]             -> the "1" side won
+#:     market.conditionId, clobTokenIds, umaResolutionStatus="resolved"
+#:
+#: startDate being a day early is not an edge case in this sample - it is the shape. Using it
+#: as the anchor would place the comparison boundary outside the round entirely.
+UP_DOWN_OUTCOMES = ("Up", "Down")
+
+
+def official_outcome_from_prices(outcomes, prices) -> str:
+    """The resolved side, from the outcome whose settled price is 1.
+
+    Refuses anything that is not exactly one winner. A resolved binary market has one; zero or
+    two means the market did not settle cleanly or the fields were misread, and guessing which
+    side won is precisely the kind of silent substitution this module exists to prevent.
+    """
+    if not outcomes or not prices or len(outcomes) != len(prices):
+        raise RoundTruthError(f"outcomes/prices mismatch: {outcomes!r} vs {prices!r}")
+    winners = [str(o).upper() for o, pr in zip(outcomes, prices) if float(pr) == 1.0]
+    if len(winners) != 1:
+        raise RoundTruthError(
+            f"expected exactly one settled outcome, got {winners!r} from {prices!r} - a "
+            f"market with no winner or two winners has not resolved cleanly")
+    won = winners[0]
+    if won not in {tc.UP, tc.DOWN}:
+        raise RoundTruthError(f"unexpected outcome label {won!r}; expected UP or DOWN")
+    return won
+
+
+def round_bounds_from_event(event: dict, duration_s: int = 900) -> tuple[int, int]:
+    """(round_start_ms, round_end_ms) from the SLUG, cross-checked against event.endDate.
+
+    The slug is the source of truth for the anchor boundary; endDate is used only to CHECK it.
+    A disagreement means the assumed duration or the slug convention is wrong for this market,
+    and that must surface rather than be silently absorbed into every label built from it.
+    """
+    start_ms = round_start_from_slug(str(event.get("slug") or ""))
+    end_ms = start_ms + duration_s * 1000
+    declared = event.get("endDate")
+    if declared:
+        import datetime as _dt
+        parsed = int(_dt.datetime.fromisoformat(
+            str(declared).replace("Z", "+00:00")).timestamp() * 1000)
+        if abs(parsed - end_ms) > 60_000:
+            raise RoundTruthError(
+                f"{event.get('slug')}: slug implies close {end_ms} but event.endDate is "
+                f"{parsed} ({abs(parsed - end_ms) / 1000:.0f}s apart). The duration or the "
+                f"slug convention is wrong for this market; refusing to anchor rounds on it.")
+    return start_ms, end_ms
+
 @dataclasses.dataclass(frozen=True)
 class RoundSettlementTruth:
     """One immutable row per resolved market. The canonical label lives here."""
@@ -352,6 +417,48 @@ def selftest() -> int:
     check(len(missing) == 2,
           "a checkpoint with no observed price is DROPPED, not interpolated - an invented "
           "decision price is a feature the model could never have seen live")
+
+    # ---- discovery contract, verified against the live API 2026-08-06 -----------------
+    # btc-updown-15m-1778437800: title "Bitcoin Up or Down - May 10, 2:30PM-2:45PM ET",
+    # event.startDate 2026-05-09T18:43Z, event.endDate 2026-05-10T18:45:00Z.
+    ev = {"slug": "btc-updown-15m-1778437800",
+          "startDate": "2026-05-09T18:43:15.628084Z", "endDate": "2026-05-10T18:45:00Z"}
+    s_ms, e_ms = round_bounds_from_event(ev)
+    import datetime as _d
+    listed_ms = int(_d.datetime.fromisoformat(
+        ev["startDate"].replace("Z", "+00:00")).timestamp() * 1000)
+    check(s_ms == 1778437800 * 1000 and e_ms - s_ms == 900_000,
+          "the anchor comes from the SLUG and the close is anchor+900s")
+    check((s_ms - listed_ms) / 3_600_000 > 20,
+          f"while event.startDate is {(s_ms - listed_ms) / 3_600_000:.1f} HOURS earlier - it "
+          f"is when the market was LISTED, and anchoring on it would place the comparison "
+          f"boundary outside the round entirely")
+    try:
+        round_bounds_from_event({"slug": ev["slug"], "endDate": "2026-05-10T19:45:00Z"})
+        raise AssertionError("a duration mismatch was accepted")
+    except RoundTruthError:
+        checks += 1
+        print("  PASS  and a slug/endDate disagreement RAISES - the duration or the slug "
+              "convention would be wrong for that market, which must surface rather than be "
+              "absorbed into every label built from it")
+
+    check(official_outcome_from_prices(["Up", "Down"], ["0", "1"]) == tc.DOWN,
+          "the official outcome is the side priced 1 - these markets use Up/Down, not Yes/No")
+    for bad_o, bad_p in ((["Up", "Down"], ["0", "0"]), (["Up", "Down"], ["1", "1"]),
+                         (["Yes", "No"], ["0", "1"])):
+        try:
+            official_outcome_from_prices(bad_o, bad_p)
+            raise AssertionError(f"accepted {bad_o} {bad_p}")
+        except RoundTruthError:
+            pass
+    checks += 1
+    print("  PASS  and zero winners, two winners, or unexpected labels are all REFUSED - "
+          "guessing which side won is the substitution this module exists to prevent")
+
+    check("events?slug=" in GAMMA_EVENT_BY_SLUG,
+          "discovery goes through /events - /markets?slug= returns EMPTY for these, and "
+          "slug_contains is silently IGNORED by Gamma, which answers confidently with "
+          "unrelated markets")
 
     check("PRIMARY KEY (market_id)" in SCHEMA
           and "PRIMARY KEY (market_id, checkpoint_index)" in SCHEMA,
