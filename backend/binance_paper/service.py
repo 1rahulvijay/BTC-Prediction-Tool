@@ -255,7 +255,36 @@ class BinancePaperService:
                     reversal_decision=decision,
                 )
                 continue
+            # ONE ENTRY IN FLIGHT PER STRATEGY.
+            #
+            # The check above only asks whether a position is already OPEN. It does not ask
+            # whether an entry for this strategy is already PENDING. Evaluation runs on every
+            # book tick and the configured arrival latency is hundreds of milliseconds, so
+            # several distinct OPEN signals could queue before the first one filled - and
+            # `_process_pending` re-checked the governor and price limits but not whether an
+            # earlier intent had just opened the strategy's only allowed position. The second
+            # fill then collided with portfolio.open().
+            if self._pending_entry_for(strategy.strategy_id) is not None:
+                _LOG.info(
+                    "[PAPER] %s entry suppressed: an entry is already pending (signal %s)",
+                    strategy.strategy_id, decision.signal_id)
+                continue
             self._queue_entry(decision, snapshot, signal_already_seen=False)
+
+    def _pending_entry_for(self, strategy_id: str):
+        """The in-flight ENTRY intent for this strategy, or None.
+
+        `_evaluate` asked only whether a position was already OPEN. Evaluation runs on every
+        book tick while arrival latency is hundreds of milliseconds, so several OPEN signals
+        could queue before the first filled, and `_process_pending` re-checked the governor and
+        price limits but never whether an earlier intent had already taken the strategy's one
+        allowed slot. Checked at BOTH queue time and immediately before the fill, because the
+        window between them is exactly where the collision lived.
+        """
+        for intent in self._pending.values():
+            if intent.operation == "ENTRY" and intent.strategy_id == strategy_id:
+                return intent
+        return None
 
     def _order_id(self, signal_id: str, operation: str, suffix: str = "") -> str:
         return canonical_hash(
@@ -456,6 +485,15 @@ class BinancePaperService:
                 self._cancel_pending_intent(
                     intent,
                     "entry_inactive_before_arrival",
+                )
+                continue
+            # An EARLIER pending entry may have opened this strategy's position while this one
+            # was in flight. Queue-time exclusion cannot see that; only the arrival check can.
+            if intent.operation == "ENTRY" and self.portfolio.position_for(
+                    intent.strategy_id) is not None:
+                self._cancel_pending_intent(
+                    intent,
+                    "position_opened_before_arrival",
                 )
                 continue
             if intent.operation == "ENTRY":

@@ -2640,8 +2640,28 @@ class MultiModelEnsemble:
                     cascade_enabled = self.cascade_monitor.is_active
 
                 if cascade_enabled and lower_pred and lower_acc_stats and lower_pred["direction"] != "NEUTRAL":
-                    recent_accuracy = lower_acc_stats.get("accuracy", 0.0)
-                    predictions_count = lower_acc_stats.get("total", lower_acc_stats.get("total_predictions", 0))
+                    # CLEAN DIRECTIONAL SKILL, not the blended `accuracy`.
+                    #
+                    # The verifier deliberately publishes two different numbers: `accuracy` is
+                    # dual-semantic (it credits correct ABSTENTIONS via avoid_success), while
+                    # `lean_accuracy` counts only rows where a directional lean was actually
+                    # committed. Reading `accuracy` let an abstention-heavy 5m lane earn enough
+                    # apparent skill to bias 15m raw probabilities - the cascade was rewarded
+                    # for the 5m model declining to predict.
+                    #
+                    # `lean_total` is used with it, so the sample floor counts DIRECTIONAL calls
+                    # rather than every row: pairing a lean rate with a total row count would
+                    # clear CASCADE_MIN_PREDICTIONS on a lane that made almost no calls.
+                    _lean_acc = lower_acc_stats.get("lean_accuracy")
+                    if _lean_acc is None:
+                        # Absent means UNKNOWN, and unknown must not read as eligible.
+                        recent_accuracy, predictions_count = 0.0, 0
+                    else:
+                        recent_accuracy = float(_lean_acc)
+                        predictions_count = int(
+                            lower_acc_stats.get("lean_total")
+                            or lower_acc_stats.get("directional_total")
+                            or 0)
                     
                     if recent_accuracy >= CASCADE_MIN_ACCURACY and predictions_count >= CASCADE_MIN_PREDICTIONS:
                         cascade_applied = True

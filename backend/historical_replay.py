@@ -30,6 +30,7 @@ def _emit_progress(progress_cb, **payload):
 
 
 def _actual_direction(entry_price: float, exit_price: float, neutral_band: float) -> str:
+    """ENDPOINT sign with a band. Kept only for the endpoint contract - see _graded_direction."""
     if entry_price <= 0:
         return "NEUTRAL"
     ret = (exit_price - entry_price) / entry_price
@@ -38,6 +39,39 @@ def _actual_direction(entry_price: float, exit_price: float, neutral_band: float
     if ret < -neutral_band:
         return "DOWN"
     return "NEUTRAL"
+
+
+def _graded_direction(entry_price: float, neutral_band: float, klines: list,
+                      entry_ts_ms: int, verify_ts_ms: int) -> tuple:
+    """Grade a replay row through THE canonical grader, under the model's own contract.
+
+    THE DEFECT: replay computed truth as `_actual_direction(entry, endpoint_close, band)` -
+    ENDPOINT sign - while the main ensemble is trained on FIRST_TOUCH_TRIPLE_BARRIER_V1. It
+    never dispatched through `target_contract.grade()` and never looked at the intrabar
+    highs/lows that decide which barrier was touched first.
+
+    That is the same substitution `backtester.py` was repaired for, in a different subsystem -
+    and this one matters more, because the server turns replay output into recommendations
+    ("raise threshold", "keep current gate", "mostly AVOID"). A threshold tuned against the
+    wrong target is worse than no recommendation.
+
+    Returns (direction, status). `direction` is None when the row must NOT be graded: refusing
+    is the honest answer when the path a PATH contract requires is absent, and substituting the
+    endpoint rule is exactly the defect being removed.
+    """
+    import target_contract as _tc
+
+    contract = _tc.TRAINING_CONTRACT
+    threshold = entry_price * float(neutral_band or 0.0)
+    result = _tc.grade(
+        contract=contract,
+        entry=entry_price,
+        threshold=threshold,
+        klines=klines,
+        entry_ts=int(entry_ts_ms),
+        verify_ts=int(verify_ts_ms),
+    )
+    return result.direction, result.status
 
 
 def _hit(final_direction: str, actual_direction: str, raw_direction: str) -> bool:
@@ -175,7 +209,19 @@ async def run_replay(args, progress_cb=None) -> dict:
             exit_price = float(closes[exit_idx])
             actual_move = exit_price - entry_price
             neutral_band = float(pred.get("neutralBand", 0.0008) or 0.0008)
-            actual_dir = _actual_direction(entry_price, exit_price, neutral_band)
+            # Graded under the CONTRACT THE MODEL WAS TRAINED ON, through the canonical
+            # grader, using the intrabar window replay already had in `klines` and never used.
+            actual_dir, _grade_status = _graded_direction(
+                entry_price, neutral_band,
+                klines[i:exit_idx + 1],
+                entry_ts_ms=ts_ms,
+                verify_ts_ms=int(klines[exit_idx].get("time", 0)) * 1000,
+            )
+            if actual_dir is None:
+                # UNGRADEABLE, not NEUTRAL. Counting a refusal as a flat outcome would feed the
+                # threshold recommender rows that were never measured.
+                counts[h]["ungraded"] = counts[h].get("ungraded", 0) + 1
+                continue
             hit = _hit(final_dir, actual_dir, raw_dir)
             expected_signed = float(pred.get("targetPrice", entry_price)) - entry_price
             move_error = abs(actual_move - expected_signed)
