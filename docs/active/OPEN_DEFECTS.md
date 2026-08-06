@@ -170,9 +170,34 @@ mark a bundle trained.
 *Fix:* immutable `releases/<id>/`, atomic pointer swap, load only manifest-declared components,
 require a complete component matrix.
 
+**P0-4 — VERIFIED OPEN, and a fix was attempted and REVERTED 2026-08-06.**
+
+`as_of_close()` selects bars by `open_ms <= at_ms` and returns the OPEN time as the resolution
+event. A one-minute bar that OPENED at the boundary has not closed until 60s later, so its
+close price is FUTURE data relative to the graded moment — admitted while looking like an
+exact-boundary observation, and stamped with a timestamp that was never the resolution moment.
+
+A fix (require `open_ms + interval <= at_ms`, infer the interval from the series, refuse when
+closure is unprovable) worked correctly in isolation:
+
+    boundary at bar-3 OPEN        -> bar 2's close  (was: bar 3's, future data)
+    1ms before bar-3 closes       -> still bar 2
+    boundary at bar-3 CLOSE       -> bar 3
+    single bar, closure unprovable-> refuses
+
+but it broke `target_contract --selftest` and `test_target_contract_parity`, whose fixtures set
+`verify_ts` to the final bar's OPEN — behaviour that only passes under the old rule. Either
+those fixtures encode the incorrect semantics or the change has a real regression, and that was
+not resolvable with the context remaining, so it was REVERTED rather than shipped or papered
+over by editing the tests to match.
+
+**Next session: reconcile the fixtures first, decide which semantics is right, then reapply.**
+The P0-11 assertion ("a LATE resolution grades from the bar at the horizon end") is the one to
+reason about — it may be asserting the same boundary from the other side.
+
 ### CLAIMED — never checked against code
 
-P0-4 candle-open used as resolution timestamp · P0-9 direction/magnitude incoherence ·
+P0-9 direction/magnitude incoherence ·
 P0-10 training vs live neutral band · P0-13 decision identity not threaded ·
 P0-15 restored ≠ live adaptive state · P0-17 incomplete composite release ·
 P0-19 compatibility inconsistency · P0-20 bootstrap contradiction · P0-24 unsafe migrations ·
