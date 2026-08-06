@@ -45,8 +45,12 @@ Both halves plausibly exist as external history:
 If both hold, `RoundSettlementTruth` rows can be reconstructed for past rounds and usable
 history starts months ago.
 
-**UNVERIFIED — the endpoints have not been queried.** Check this BEFORE scheduling live-recorder
-work; it changes the plan entirely. `round_truth.py` is already source-agnostic: it does not
+**VERIFIED 2026-08-06.** `gamma-api.polymarket.com/markets?closed=true` returns resolved
+markets carrying `conditionId`, `startDate`, `endDate`, `closed`, `umaResolutionStatus`,
+`outcomes` and `outcomePrices` — official outcome and round boundaries are recoverable for
+PAST rounds. The Chainlink half (`getRoundData` against an archive node or provider) is
+standard but has not been queried directly. Usable settlement history therefore starts months
+ago, not the day a recorder runs. Live capture is necessary, not schedule-critical. `round_truth.py` is already source-agnostic: it does not
 care whether values arrive live or from an archive, and the reconciler quarantines anything
 that does not tie out against the official outcome.
 
@@ -70,14 +74,19 @@ that does not tie out against the official outcome.
 
 ### VERIFIED OPEN — highest priority
 
-**P0-8 — the backtest validates a different target.**
-`backend/backtester.py` contains **zero** references to `target_contract`, and walk-forward
+**P0-8 — FIXED 2026-08-06** (was: the backtest validates a different target).
+`backend/backtester.py` contained **zero** references to `target_contract`, and walk-forward
 fits a `RandomForestClassifier` surrogate — no stacker, no HMM routing, no policy. A backtest
 result therefore describes a different model answering a different question. A good number
 would be edge you do not have; a bad one might discard a model that was fine. Neither
 announces itself.
-*Fix:* separate evaluators per contract consuming the exact frozen training labels;
-walk-forward must fit the real ensemble configuration.
+*Fixed:* `run()` now takes `target_contract` (defaulting to the training contract) and grades
+through `target_contract.label()`. Grading a PATH contract on FABRICATED bars raises — the
+fallback invents a 0.2% range, and inventing barriers is as wrong as ignoring them. Proven by
+requiring the two contracts to give DIFFERENT confusion matrices on the same data; a
+refusal-only test let a "grade by endpoint sign regardless of contract" mutant survive.
+`run()` had always accepted highs/lows — the path was passed and ignored.
+*Still open:* walk-forward fits a `RandomForestClassifier` surrogate, not the real ensemble.
 
 **P0-14 — two calibration systems disagree.**
 `PrecisionEngine` defines correct as `sign(actual_move)` regardless of the prediction's

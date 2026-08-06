@@ -166,7 +166,8 @@ class Backtester:
         self._trade_returns_by_horizon = {}
 
     def run(self, features: np.ndarray, closes: np.ndarray, horizons: list[int], predict_fn,
-            lookback: int = 60, progress_cb=None, highs=None, lows=None) -> dict:
+            lookback: int = 60, progress_cb=None, highs=None, lows=None,
+            target_contract: str | None = None) -> dict:
         """
         Run backtest over the historical dataset.
         features: [timesteps, NUM_FEATURES]
@@ -227,6 +228,28 @@ class Backtester:
             float(np.median(threshold_series)),
         )
 
+        # Resolved ONCE: which contract this backtest grades, and whether it needs the path.
+        import target_contract as _tc
+        _contract = target_contract or _tc.TRAINING_CONTRACT
+        if _contract not in _tc.KNOWN_CONTRACTS:
+            raise ValueError(
+                f"backtest asked to grade unknown contract {_contract!r}; refusing rather "
+                f"than defaulting to a rule the model was not trained under")
+        _needs_path = _tc.is_path(_contract)
+        # Keyed on ohlc_source, NOT on `highs is None`. The fallback above FABRICATES a
+        # synthetic 0.2% range before this point, so by here highs/lows are always non-None -
+        # the first version of this guard could therefore never fire. Grading first touch
+        # against invented barriers is exactly as wrong as grading it from closes, and the
+        # module already knows the difference: it tags ohlc_source=FABRICATED.
+        if _needs_path and ohlc_source != "REAL":
+            raise ValueError(
+                f"{_contract} is a PATH contract and needs REAL intrabar highs/lows "f"(ohlc_source={ohlc_source}). "
+                f"Grading it from closes alone silently substitutes the endpoint rule - the "
+                f"exact defect this check exists to stop. Pass highs/lows, or grade an "
+                f"endpoint contract explicitly. NOTE: run() has ALWAYS accepted highs/lows; "
+                f"they were passed and ignored, so first touch was gradeable the whole time.")
+        logger.info("Backtest grading under contract: %s (path=%s)", _contract, _needs_path)
+
         for h in horizons:
             if progress_cb:
                 progress_cb({
@@ -273,13 +296,32 @@ class Backtester:
                     continue
                     
                 actual_ret = (future_price - current_price) / current_price
-                
-                if actual_ret > threshold:
-                    actual_dir = 1
-                elif actual_ret < -threshold:
-                    actual_dir = -1
-                else:
-                    actual_dir = 0
+
+                # P0-8. GRADE UNDER THE CONTRACT THE MODEL WAS TRAINED ON.
+                #
+                # This block computed (future - current)/current against a band - that is
+                # `label_endpoint`, ENDPOINT_SETTLEMENT_V1. The ensemble trains on
+                # FIRST_TOUCH_TRIPLE_BARRIER_V1. They are different random variables, and this
+                # module had ZERO references to target_contract, so every backtest number
+                # described a different model answering a different question. A good result
+                # was edge that did not exist; a bad one could discard a sound model.
+                #
+                # First touch cannot be graded from closes alone: it needs the intrabar path.
+                # When highs/lows are absent the row is REFUSED rather than silently graded by
+                # the endpoint rule, which is the substitution that produced the defect.
+                _name = _tc.label(
+                    _contract,
+                    entry=current_price,
+                    threshold=threshold,
+                    highs=(highs[i + 1:i + h + 1] if _needs_path else None),
+                    lows=(lows[i + 1:i + h + 1] if _needs_path else None),
+                    final=(None if _needs_path else future_price),
+                )
+                if _name == _tc.AMBIGUOUS:
+                    # One bar touched both barriers; the order is unknowable. Grading it
+                    # either way manufactures a hit or a miss out of nothing.
+                    continue
+                actual_dir = {_tc.UP: 1, _tc.DOWN: -1, _tc.NEUTRAL: 0}[_name]
                     
                 preds.append(pred_dir)
                 actuals.append(actual_dir)
