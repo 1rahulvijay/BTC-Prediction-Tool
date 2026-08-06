@@ -39,9 +39,24 @@ def promotion_gates() -> dict:
     return {
         "min_holdout_samples": env_int("BTC_PROMOTION_MIN_HOLDOUT_SAMPLES", 1000),
         "min_directional_calls": env_int("BTC_PROMOTION_MIN_DIRECTIONAL_CALLS", 200),
-        "min_directional_precision": env_float("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", 0.48),
-        "max_multiclass_brier": env_float("BTC_PROMOTION_MAX_BRIER", 0.80),
+        # THESE FLOORS ADMITTED MODELS WORSE THAN NO MODEL.
+        #
+        #   directional precision >= 0.48   is BELOW a coin flip. A directional call has a 0.50
+        #                                   baseline by construction, so 0.48 licensed a model
+        #                                   that loses money on every call it commits to.
+        #   multiclass Brier <= 0.80        uniform p=1/3 on three classes scores
+        #                                   2*(1/3)^2 + (2/3)^2 = 6/9 = 0.667, so the ceiling
+        #                                   sat 0.133 ABOVE "predict nothing and mean it".
+        #
+        # An absolute floor cannot express "better than knowing nothing" for a problem whose
+        # class balance moves: the honest bar is the CLASS-PRIOR baseline computed on the same
+        # holdout, which `_baseline_gate_failures` enforces. These remain as a coarse backstop
+        # and are now set where they cannot pass something the baseline gate would reject.
+        "min_directional_precision": env_float("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", 0.50),
+        "max_multiclass_brier": env_float("BTC_PROMOTION_MAX_BRIER", UNIFORM_3CLASS_BRIER),
         "max_ece": env_float("BTC_PROMOTION_MAX_ECE", 0.20),
+        #: Margin the challenger must clear the prior baseline by, not merely tie it.
+        "min_baseline_brier_margin": env_float("BTC_PROMOTION_MIN_BASELINE_BRIER_MARGIN", 0.0),
         "max_precision_regression": env_float("BTC_PROMOTION_MAX_PRECISION_REGRESSION", 0.03),
         "max_brier_regression": env_float("BTC_PROMOTION_MAX_BRIER_REGRESSION", 0.03),
         "max_eval_samples": env_int("BTC_PROMOTION_MAX_EVAL_SAMPLES", 12000),
@@ -84,6 +99,32 @@ def _predict_probabilities(model, values: np.ndarray, horizon: int, regimes=None
             probability /= probability.sum()
         rows.append(probability)
     return np.asarray(rows, dtype=np.float64)
+
+
+#: Multiclass Brier of a uniform 1/3 forecast, under THIS module's convention
+#: (mean over rows of the summed squared error across three classes):
+#:     2*(1/3)^2 + (2/3)^2 = 6/9
+#: Anything at or above this is beaten by refusing to predict, so it is a ceiling no candidate
+#: may reach - the previous limit of 0.80 sat 0.133 above it.
+UNIFORM_3CLASS_BRIER = 2.0 / 3.0
+
+
+def class_prior_brier(actual: np.ndarray) -> float:
+    """Brier of always forecasting the holdout's OWN class priors.
+
+    This, not a literal, is the honest "knows nothing" bar: a constant forecast of the observed
+    base rates. A model that cannot beat it has learned nothing that the label distribution did
+    not already contain, and on a NEUTRAL-heavy horizon that bar is well below the uniform 2/3 -
+    which is exactly why a fixed ceiling cannot express it.
+
+    Algebraically it is `1 - sum(prior^2)`; computed that way rather than by materialising an
+    n x 3 matrix, and it reduces to 2/3 for uniform priors, matching UNIFORM_3CLASS_BRIER.
+    """
+    actual = np.asarray(actual, dtype=np.int64)
+    if actual.size == 0:
+        return float("nan")
+    prior = np.bincount(actual, minlength=3)[:3].astype(np.float64) / float(actual.size)
+    return float(1.0 - np.sum(prior ** 2))
 
 
 def probability_metrics(probability: np.ndarray, actual: np.ndarray, bins: int = 10) -> dict:
@@ -213,6 +254,21 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
             reasons.append("brier_above_limit")
         if candidate_metrics["ece"] > gates["max_ece"]:
             reasons.append("ece_above_limit")
+        # BASELINE-RELATIVE, on the same rows. The absolute limits above are a coarse backstop;
+        # this is the gate that actually means "better than knowing nothing", because it is
+        # computed from the holdout's own class balance rather than from a literal chosen once.
+        # `actual` is ALREADY the sampled labels (argmax of Y[horizon][sampled]); indexing it
+        # with `sampled` again would score a different, wrong subset.
+        prior_brier = class_prior_brier(actual)
+        candidate_metrics["class_prior_brier"] = prior_brier
+        candidate_metrics["brier_skill_vs_prior"] = (
+            float(prior_brier - candidate_metrics["multiclass_brier"])
+            if np.isfinite(prior_brier) else float("nan"))
+        if not np.isfinite(prior_brier):
+            reasons.append("class_prior_baseline_unavailable")
+        elif (candidate_metrics["multiclass_brier"]
+                > prior_brier - gates["min_baseline_brier_margin"]):
+            reasons.append("brier_not_better_than_class_prior")
         if fair_comparison:
             if (candidate_metrics_fair["directional_precision"]
                     < incumbent_metrics_fair["directional_precision"] - gates["max_precision_regression"]):

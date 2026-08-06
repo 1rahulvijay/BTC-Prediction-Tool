@@ -2935,13 +2935,12 @@ class MultiModelEnsemble:
             "modelProbabilities": dict(self.latest_model_probabilities.get(h, {})),
             **self._signal_quality(conf, agreement, direction, data_state, seq, exp_move, last_price, h),
             "lastPrice": last_price,
-            # Neutral band used to grade this prediction at verify time — SAME cost-floored
-            # adaptive formula as the training labels, so verification judges the model on
-            # the target it was actually trained for (not a hardcoded 0.01%).
-            "neutralBand": max(
-                float(os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008")),
-                min(0.003, (atr_val / last_price * 0.15) if last_price > 0 else 0.0008),
-            ),
+            # Neutral band used to grade this prediction at verify time. Now genuinely the
+            # SAME function the training labels were built with - see causal_neutral_band.
+            # The previous inline expression shared only the floor and the cap: it used the
+            # instantaneous ATR and price where training uses EWMA-smoothed ones, so the model
+            # was graded against a different barrier than it was trained on.
+            "neutralBand": self.causal_neutral_band(data_state.get("klines")),
             "positionSize": int(min(max(0, (conf - 0.5) * 200), 100)) if conf >= self.confidence_threshold else 0,
             "stopLoss": round(last_price - atr_val * 1.5, 2) if direction == "UP" else round(last_price + atr_val * 1.5, 2),
             "takeProfit": round(last_price + atr_val * 2.0, 2) if direction == "UP" else round(last_price - atr_val * 2.0, 2),
@@ -3020,6 +3019,48 @@ class MultiModelEnsemble:
                     return "DOWN"
 
         return current_locked
+
+    #: Bars fed to the causal threshold at serving time. The EWMA span is 100, so alpha is
+    #: ~0.0198 and the initial condition decays by 0.9802**N: at 2000 bars that is ~4e-18, i.e.
+    #: the recursion has fully forgotten where it started. Feeding fewer bars than this is what
+    #: makes a live threshold drift from the training one, not the formula.
+    CAUSAL_BAND_BARS = 2000
+
+    def causal_neutral_band(self, klines: list[dict]) -> float:
+        """The SAME threshold the training labels were built with, evaluated at the last bar.
+
+        The live value used to be recomputed inline as
+
+            max(cost_floor, min(0.003, atr_val / last_price * 0.15))
+
+        from the INSTANTANEOUS ATR and the INSTANTANEOUS price, while `build_sequences` labelled
+        every training row with `compute_adaptive_threshold_series`, which is
+        `0.15 * atr_ewma / price_ewma` over an EWMA span of 100 with a 10-bar warm-up. Same
+        constants, different series - so the model could predict its own training label
+        correctly and still be graded at verify time against a different barrier width.
+
+        The comment above the old expression asserted it was the "SAME cost-floored adaptive
+        formula as the training labels". It shared the floor and the cap and nothing else.
+
+        `features.compute_adaptive_threshold` already existed and already returned exactly this.
+        Nothing needed inventing; the serving path simply never called it.
+        """
+        from features import compute_adaptive_threshold
+
+        cost_floor = float(os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008"))
+        cost_floor = min(max(cost_floor, 0.0), 0.003)
+        window = (klines or [])[-self.CAUSAL_BAND_BARS:]
+        # The warm-up is 10 VALID rows; below that the series stays at the floor by
+        # construction, which is the honest answer rather than a thinner invented band.
+        if len(window) < 15:
+            return cost_floor
+        try:
+            closes = np.array([k["close"] for k in window], dtype=np.float64)
+            highs = np.array([k["high"] for k in window], dtype=np.float64)
+            lows = np.array([k["low"] for k in window], dtype=np.float64)
+        except (KeyError, TypeError, ValueError):
+            return cost_floor
+        return float(compute_adaptive_threshold(closes, atr(highs, lows, closes)))
 
     def _compute_live_atr(self, klines: list[dict], period: int = 14) -> float:
         """Compute current ATR from klines."""

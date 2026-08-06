@@ -11,10 +11,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+#: What a walk-forward result DESCRIBES. Only the latter two may inform a live decision; a
+#: surrogate's score is about a different model and must never gate the served ensemble.
+VALID_WF_MODEL_KINDS = (
+    "SURROGATE_RESEARCH_ONLY",
+    "PRODUCTION_BUNDLE_REPLAY",
+    "PRODUCTION_PIPELINE_WALK_FORWARD",
+)
+
+
 def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
                           model_factory=None, embargo: int = 0,
                           window_type: str = "expanding",
-                          progress_cb=None) -> dict:
+                          progress_cb=None, model_kind: str | None = None) -> dict:
     """
     Strict, *purged* temporal walk-forward validation: train on the past, validate
     only on the future, with an embargo gap between them. Never shuffles, never
@@ -37,6 +46,20 @@ def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
     labels (0=DOWN, 1=NEUTRAL, 2=UP). `model_factory` returns a fresh fitted-capable
     sklearn-style classifier; defaults to a small XGBoost for speed.
     """
+    # WHAT WAS ACTUALLY VALIDATED, carried in the result so no consumer has to infer it.
+    #
+    # With no factory this fits a standalone RandomForest. That is not the served model: no
+    # seven seats, no OOF stacker, no HMM regime routing, no dynamic weights, no direction lock,
+    # no server policy. The number is still useful as research, and it was reaching the live
+    # meta-model that decides whether the REAL ensemble may trade. A result that does not say
+    # which model produced it will eventually be read as if it described the ensemble.
+    if model_kind is None:
+        model_kind = ("SURROGATE_RESEARCH_ONLY" if model_factory is None
+                      else "PRODUCTION_PIPELINE_WALK_FORWARD")
+    if model_kind not in VALID_WF_MODEL_KINDS:
+        raise ValueError(
+            f"walk-forward model_kind {model_kind!r} is not one of {VALID_WF_MODEL_KINDS}; "
+            f"refusing to produce a result that cannot be classified")
     if model_factory is None:
         def model_factory():
             # RandomForest is robust to folds where a class (e.g. NEUTRAL) is absent;
@@ -52,7 +75,8 @@ def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
     if fold_size < 60:
         return {"folds": [], "mean_directional_accuracy": 0.0,
                 "std_accuracy": 0.0, "is_overfit_warning": False,
-                "is_below_chance": False, "sample_count": int(n), "note": "insufficient data"}
+                "is_below_chance": False, "sample_count": int(n), "note": "insufficient data",
+                "model_kind": model_kind}
 
     results = []
     for i in range(n_folds):
@@ -128,7 +152,8 @@ def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
     if not results:
         return {"folds": [], "mean_directional_accuracy": 0.0,
                 "std_accuracy": 0.0, "is_overfit_warning": False,
-                "is_below_chance": False, "sample_count": int(n), "note": "no valid folds"}
+                "is_below_chance": False, "sample_count": int(n), "note": "no valid folds",
+                "model_kind": model_kind}
 
     accs = [r["directional_accuracy"] for r in results]
     mean_acc = float(np.mean(accs))
@@ -157,6 +182,7 @@ def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
         "is_overfit_warning": std_acc > 0.07,
         "is_below_chance": below_chance,
         "sample_count": int(n),
+        "model_kind": model_kind,
     }
 
 

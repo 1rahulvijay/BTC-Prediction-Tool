@@ -1889,6 +1889,24 @@ def build_meta_context(p: dict, seq, regime_name: str, now_ms: int) -> dict:
     if backend_state.get("last_backtest_time"):
         wf_age_minutes = (time.time() - backend_state["last_backtest_time"]) / 60.0
 
+    # A SURROGATE's validation score may not decide whether the REAL ensemble trades.
+    #
+    # walk_forward_validate defaults to a standalone RandomForestClassifier. It does not
+    # reproduce the seven seats, the OOF stacker, HMM regime routing, dynamic weights, the
+    # direction lock or any server-side policy - so `wf_accuracy` describes a different model
+    # answering the same question, and these five fields fed straight into the meta-model that
+    # decides whether to execute. A surrogate scoring badly could block the real ensemble, and
+    # a surrogate scoring well could clear it.
+    #
+    # Gated on the run DECLARING itself, rather than deleted: a genuine
+    # PRODUCTION_BUNDLE_REPLAY or PRODUCTION_PIPELINE_WALK_FORWARD may legitimately inform the
+    # decision. Absent a declaration the run is assumed surrogate, because that is what the
+    # default factory produces.
+    _wf_kind = str(last_backtest.get("walk_forward_model_kind") or "SURROGATE_RESEARCH_ONLY")
+    if _wf_kind not in ("PRODUCTION_BUNDLE_REPLAY", "PRODUCTION_PIPELINE_WALK_FORWARD"):
+        wf_res = {}
+        wf_age_minutes = 0.0
+
     return {
         "confidence": p.get("confidence", 0.0),
         "agreement": p.get("agreement", 0.0),
@@ -2575,6 +2593,10 @@ async def run_backtest_legacy_unused():
                     )
                     bt_res["walk_forward"][wf_h] = wf_all
                     bt_res[f"walk_forward_{wf_h}m"] = wf_all
+                    # Carried up so build_meta_context can refuse a SURROGATE without
+                    # re-deriving what produced it. model_factory is None at both call
+                    # sites, so this is SURROGATE_RESEARCH_ONLY today - and says so.
+                    bt_res["walk_forward_model_kind"] = wf_all.get("model_kind")
                 yv = np.argmax(Yv[5], axis=1)
                 # Embargo = lookback + horizon so train/val windows can't overlap (purged WF).
                 embargo = LOOKBACK + 5
@@ -2866,6 +2888,10 @@ async def run_backtest(reason: str = "manual"):
                     )
                     bt_res["walk_forward"][wf_h] = wf_all
                     bt_res[f"walk_forward_{wf_h}m"] = wf_all
+                    # Carried up so build_meta_context can refuse a SURROGATE without
+                    # re-deriving what produced it. model_factory is None at both call
+                    # sites, so this is SURROGATE_RESEARCH_ONLY today - and says so.
+                    bt_res["walk_forward_model_kind"] = wf_all.get("model_kind")
                     logger.info(
                         "[WALKFORWARD] h=%sm precision=%s (calls=%s) recall=%s std=%s below_chance=%s",
                         wf_h,
@@ -4078,8 +4104,19 @@ async def main_loop():
                 # Monday's mtime, so the mtime rule admitted five days of the INCUMBENT's
                 # predictions into the challenger's calibrator. Re-read every refresh: a
                 # promotion between refreshes changes which rows are eligible.
-                precision_engine.active_bundle_id = str(
-                    getattr(model, "model_bundle_id", "") or "")
+                # bind_release(), NOT a direct assignment to active_bundle_id. Assigning the
+                # field was the only thing production ever did, so the clearing logic that
+                # bind_release exists for had no production caller at all - the same shape as
+                # P0-1's orphaned state_dict(). A promotion swapped the bundle id while the
+                # previous release's isotonic maps and refresh age stayed live.
+                #
+                # Rebinding to the SAME id must stay cheap: this runs every ~5 minutes, and
+                # clearing on every tick would keep calibration permanently unavailable.
+                _live_bundle = str(getattr(model, "model_bundle_id", "") or "")
+                if _live_bundle != precision_engine.active_bundle_id:
+                    _bind = precision_engine.bind_release(_live_bundle)
+                    logger.info("[PRECISION] release changed -> %s; cleared %s",
+                                _live_bundle or "(none)", _bind.get("cleared"))
                 asyncio.get_event_loop().run_in_executor(
                     None, precision_engine.refresh_if_stale)
 
@@ -4373,9 +4410,28 @@ async def main_loop():
                             p["modelConfluenceDetail"] = p.get("confluenceDetail", {})
                         p["setupQuality"] = _confluence(p, _of_now)
                         p["confluence"] = p["setupQuality"]  # legacy UI/DB field
-                        _cal = precision_engine.calibrated(h, float(p.get("confidence", 0.0) or 0.0))
+                        # The contract this consumer NEEDS is declared, and the engine refuses
+                        # rather than the caller remembering to ask. is_admissible_for() was
+                        # correct and had zero production callers, so an endpoint-move-sign map
+                        # with UNRECORDED provenance was attached to every first-touch
+                        # prediction and then consumed by the live quality gate.
+                        #
+                        # CONSEQUENCE, STATED: while provenance is UNRECORDED this returns None
+                        # and the gate falls back to RAW confidence (see apply_live_quality_
+                        # filters, eff_conf). That is the honest state, not a free win - raw
+                        # confidence was measured anti-correlated with success at 5m+. What
+                        # restores calibration is recording target_contract on predictions
+                        # (P0-14), not removing this check.
+                        _need = _target_contract.TRAINING_CONTRACT
+                        _cal = precision_engine.calibrated(
+                            h, float(p.get("confidence", 0.0) or 0.0), required_contract=_need)
                         if _cal is not None:
                             p["calibratedConfidence"] = round(_cal, 4)
+                        else:
+                            p["calibrationUnavailableReason"] = (
+                                f"map fitted under {precision_engine.fitted_under_contract!r} "
+                                f"(provenance {precision_engine.contract_provenance}); "
+                                f"{_need} required")
                         # WHICH QUESTION THIS PROBABILITY ANSWERS. Consumers were reading
                         # `calibratedConfidence` with no way to tell a first-touch probability
                         # from a settlement one - both are floats in [0, 1] and nothing about
@@ -4383,7 +4439,8 @@ async def main_loop():
                         # declare what it needs and refuse a mismatch.
                         p["targetContract"] = _target_contract.TRAINING_CONTRACT
                         _ep = precision_engine.expected_precision(
-                            h, p.get("regime", "UNKNOWN"), float(p.get("conviction", 0.0) or 0.0))
+                            h, p.get("regime", "UNKNOWN"), float(p.get("conviction", 0.0) or 0.0),
+                            required_contract=_need)
                         if _ep is not None:
                             p["expectedPrecision"] = _ep
                     except Exception as _pe:

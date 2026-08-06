@@ -25,6 +25,11 @@ def _is_true(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: The only EXECUTION mode this system implements. A production DEPLOYMENT still runs in paper
+#: execution - the two axes are independent, and conflating them is what blocked startup.
+PRODUCTION_EXECUTION_MODE = "paper"
+
+
 def environment_issues(env: dict[str, str], *, mode: str) -> list[str]:
     issues: list[str] = []
     if mode != "paper":
@@ -318,7 +323,20 @@ def preflight_issues(env: dict[str, str] | None = None) -> list[str]:
         convention, not a control.
     """
     env = dict(os.environ if env is None else env)
-    issues = list(environment_issues(env, mode="production"))
+    # `mode` is the EXECUTION mode - paper vs real money - not the deployment environment.
+    # This call passed "production", which is not even a valid --mode choice, and
+    # environment_issues appends "only paper mode is implemented" for anything that is not
+    # "paper". So preflight_issues() could NEVER return empty, and the lifespan hook raises on
+    # any issue: BTC_DEPLOYMENT_ENV=production made startup unconditionally impossible, and no
+    # environment variable could clear it.
+    #
+    # The selftest missed it by exercising mode="paper" and mode="live" - the two the CLI
+    # accepts - and never the value this function actually passes.
+    #
+    # PAPER is correct here and is not a relaxation: real-money execution remains unimplemented,
+    # and environment_issues still refuses mode="live". The deployment environment is checked
+    # separately, on the next line of environment_issues, via BTC_DEPLOYMENT_ENV.
+    issues = list(environment_issues(env, mode=PRODUCTION_EXECUTION_MODE))
     for collector in (_canonical_datastore_issues, _storage_issues):
         try:
             issues.extend(collector())

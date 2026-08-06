@@ -23,6 +23,7 @@ WHAT IS AND IS NOT FIXED HERE
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parent
@@ -43,27 +44,56 @@ def check(cond, text):
 
 
 def main() -> int:
-    from calibration import PrecisionEngine
+    from calibration import REFIT_SEC, PrecisionEngine
 
     e = PrecisionEngine()
+    # THE ATTRIBUTES INFERENCE ACTUALLY READS. The first version of this test wrote
+    # `e.isotonic = {5: "fitted-map"}` - an attribute PrecisionEngine does not have - and then
+    # asserted that invented dict was cleared. It passed while `self.calibrators`, the map
+    # `calibrated()` reads, survived every release change untouched. A test that verifies state
+    # the subject does not possess is the same defect class as the code it guards.
+    check(not hasattr(PrecisionEngine, "isotonic") and "isotonic" not in vars(e),
+          "PrecisionEngine has no `isotonic` attribute at all - the name the old clear list "
+          "and the old test agreed on existed in neither")
+
+    e.calibrators = {5: "fitted-isotonic-map"}
+    e.calib_n = {5: 4242}
+    e.bins = {5: {("RANGE", "high"): (10, 6)}}
     e.global_rate = {5: 0.61}
-    e.bins = {5: [1, 2, 3]}
-    e.isotonic = {5: "fitted-map"}
+    e._last_fit = time.time()          # a fit that just happened, so the 6h timer is armed
     e.active_bundle_id = "release_A"
 
     report = e.bind_release("release_B", "first_touch_triple_barrier_v1")
-    check(not e.global_rate and not e.bins and not e.isotonic,
-          "binding a new release CLEARS every calibration map - the old release's map is not "
-          "a prior for a different model, it is a stale opinion wearing the new model's name")
+    check(not e.calibrators and not e.calib_n and not e.bins and not e.global_rate,
+          "binding a new release CLEARS every map inference reads - INCLUDING `calibrators`, "
+          "which the previous implementation never touched, so the new model served the "
+          "previous model's isotonic maps")
+    check(set(report["cleared"]) == set(PrecisionEngine.RELEASE_SCOPED_MAPS),
+          f"and the report names exactly the release-scoped maps {report['cleared']} - the old "
+          f"one reported clearing 'isotonic', which did not exist")
     check(e.active_bundle_id == "release_B", "and the bundle id is updated")
     check(report["available"] is False,
           "the calibrator reports UNAVAILABLE until refitted - previously a release with no "
           "rows yet simply kept serving the old map")
-    check(sum(report["cleared"].values()) == 3,
-          f"and reports what it discarded {report['cleared']} rather than clearing silently")
-    check(getattr(e, "last_fit_ts", None) == 0.0,
-          "the fit timestamp is reset, so a six-hour refresh timer cannot treat the cleared "
-          "state as freshly fitted")
+    check(e._last_fit == 0.0,
+          "and `_last_fit` - the attribute refresh_if_stale actually compares against - is "
+          "reset. The old code zeroed `last_fit_ts`, which is written twice and read nowhere, "
+          "so the new release inherited up to six hours of the old release's refresh age")
+    check(e.refresh_if_stale.__self__ is e and (time.time() - e._last_fit) >= REFIT_SEC,
+          "so the very next refresh_if_stale() is due immediately rather than deferred")
+
+    # A name in the clear list that is not a real dict must RAISE, not be skipped - silent
+    # skipping is precisely how the previous version cleared nothing and reported success.
+    broken = PrecisionEngine()
+    try:
+        broken.RELEASE_SCOPED_MAPS = tuple(PrecisionEngine.RELEASE_SCOPED_MAPS) + ("not_a_map",)
+        broken.bind_release("release_C")
+        raised = False
+    except AttributeError as exc:
+        raised = "not a dict" in str(exc)
+    check(raised,
+          "a release-scoped name that is not a dict raises instead of being skipped, so the "
+          "list cannot silently drift away from the real state again")
 
     # ---- an unlabelled map must refuse ------------------------------------------------
     check(e.contract_provenance == "UNRECORDED",

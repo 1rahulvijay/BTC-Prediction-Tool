@@ -43,6 +43,11 @@ def _conv_bin(c: float) -> str:
 
 class PrecisionEngine:
 
+    #: Every map whose contents belong to ONE release and must not outlive it. Named once, so
+    #: `bind_release` and the test agree by construction instead of by hand - the previous list
+    #: and the real attribute set had no overlap at all on the inference path.
+    RELEASE_SCOPED_MAPS = ("calibrators", "calib_n", "bins", "global_rate")
+
     def bind_release(self, bundle_id: str, target_contract: str = "") -> dict:
         """Point the calibrator at a release, CLEARING every map first.
 
@@ -54,19 +59,41 @@ class PrecisionEngine:
         Clearing makes the calibrator UNAVAILABLE until it has been refitted on rows from the
         new release, which is the honest state. Callers must handle unavailability; the
         previous behaviour handled it by quietly answering with the old map.
+
+        THE MAPS THIS MUST CLEAR ARE THE ONES INFERENCE READS.
+
+        It cleared `isotonic`, `regime_rate` and `conviction_rate` - none of which exist on this
+        class. `getattr(self, attr, None)` returned None for all three and the loop skipped
+        them, so the clear was a no-op on the only state that matters: `calibrated()` reads
+        `self.calibrators`, and that survived every release change.
+
+        It also reset `last_fit_ts`, an attribute written twice and READ NOWHERE. The refresh
+        timer is `_last_fit`, which was left untouched - so `refresh_if_stale` saw a recent fit
+        and declined to refit for up to six hours. The new release inherited the previous
+        model's isotonic maps AND its refresh age.
+
+        The test passed because it invented `e.isotonic = {...}` and asserted that fabricated
+        attribute was cleared. A check that verifies state the subject does not have is the
+        same defect class as the code it was guarding.
         """
-        cleared = {
-            "global_rate": len(getattr(self, "global_rate", {}) or {}),
-            "bins": len(getattr(self, "bins", {}) or {}),
-            "isotonic": len(getattr(self, "isotonic", {}) or {}),
-        }
-        for attr in ("global_rate", "bins", "isotonic", "regime_rate", "conviction_rate"):
+        cleared = {name: len(getattr(self, name, {}) or {})
+                   for name in self.RELEASE_SCOPED_MAPS}
+        for attr in self.RELEASE_SCOPED_MAPS:
             current = getattr(self, attr, None)
-            if isinstance(current, dict):
-                current.clear()
+            if not isinstance(current, dict):
+                # Refuse silently skipping a name that does not exist - that is exactly how the
+                # previous version cleared nothing while reporting success.
+                raise AttributeError(
+                    f"PrecisionEngine.RELEASE_SCOPED_MAPS names {attr!r}, which is not a dict "
+                    f"on this instance; a release-scoped map that cannot be cleared would "
+                    f"survive the swap")
+            current.clear()
         self.active_bundle_id = (bundle_id or "").strip()
         if target_contract:
             self.fitted_under_contract = target_contract
+        # THE refresh timer. Zeroing it forces the next refresh_if_stale to actually refit
+        # instead of waiting out the remainder of a six-hour window it never started.
+        self._last_fit = 0.0
         self.last_fit_ts = 0.0
         return {"bundle_id": self.active_bundle_id, "cleared": cleared,
                 "available": False,
@@ -216,8 +243,20 @@ class PrecisionEngine:
             conn.close()
 
     # ── inference-time API (cheap, no DB) ────────────────────────────────
-    def calibrated(self, h: int, raw_conf: float):
-        """Calibrated P(correct) for this confidence, or None until active."""
+    def calibrated(self, h: int, raw_conf: float, *, required_contract: str | None = None):
+        """Calibrated P(correct) for this confidence, or None until active AND admissible.
+
+        `required_contract` is enforced HERE, not by the caller. `is_admissible_for` existed and
+        was correct, and had exactly zero production callers - only a test - so the serving path
+        attached this map to every prediction while provenance was UNRECORDED. A guard every
+        caller must remember to invoke is not a guard; it is documentation.
+
+        Pass the contract the consumer actually needs. None preserves the old behaviour for
+        consumers that genuinely do not care which question the map answers, and there should
+        not be many.
+        """
+        if required_contract is not None and not self.is_admissible_for(required_contract):
+            return None
         iso = self.calibrators.get(h)
         if iso is None or raw_conf <= 0:
             return None
@@ -226,8 +265,15 @@ class PrecisionEngine:
         except Exception:
             return None
 
-    def expected_precision(self, h: int, regime: str, conviction: float):
-        """Shrunk empirical P(hit) for this (horizon, regime, conviction-bin)."""
+    def expected_precision(self, h: int, regime: str, conviction: float,
+                           *, required_contract: str | None = None):
+        """Shrunk empirical P(hit) for this (horizon, regime, conviction-bin).
+
+        Same contract enforcement as `calibrated`: these bins are fitted by the same rule and
+        carry the same provenance, so a consumer that may not use one may not use the other.
+        """
+        if required_contract is not None and not self.is_admissible_for(required_contract):
+            return None
         g = self.global_rate.get(h)
         if g is None:
             return None
