@@ -15,6 +15,9 @@ from pathlib import Path
 import numpy as np
 
 from artifact_identity import artifact_compatibility, hash_directory_files
+#: The sequence lookback, imported rather than restated: a local copy that drifts from
+#: features.LOOKBACK would under-purge silently, which is the failure this gap exists to stop.
+from features import LOOKBACK as _LOOKBACK
 
 
 def promotion_required(enabled: bool, reason: str | None = None) -> bool:
@@ -189,7 +192,24 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
             all_pass = False
             continue
         stop = min(len(X), len(Y[horizon]))
-        holdout = np.arange(max(0, int(split_idx)), stop, dtype=np.int64)
+        # PURGED. The holdout began exactly at split_idx, so the last LOOKBACK training
+        # sequences shared most of their bars with the first holdout sequences, and their
+        # first-touch labels look forward up to `horizon` bars - into the holdout window. The
+        # final promotion gate was therefore the one place in this repository that did NOT
+        # purge, while test_oof_serving_parity enforces `required_gap = LOOKBACK + horizon`
+        # on the stacker folds and refuses to shrink it.
+        #
+        # A leaked gate is worse than a leaked fold: it decides whether a challenger replaces
+        # the model that is serving.
+        purge_gap = _LOOKBACK + int(horizon)
+        holdout_start = max(0, int(split_idx)) + purge_gap
+        if holdout_start >= stop:
+            report["horizons"][int(horizon)] = {
+                "passed": False,
+                "reasons": [f"holdout_too_small_after_purge:gap={purge_gap}"]}
+            all_pass = False
+            continue
+        holdout = np.arange(holdout_start, stop, dtype=np.int64)
         excluded = 0
         if valid_mask is not None and horizon in valid_mask:
             vm = np.asarray(valid_mask[horizon], dtype=bool)
@@ -464,7 +484,14 @@ def selftest() -> None:
         f"ambiguity exclusion changed nothing: {honest_precision} vs {leaky_precision}")
     assert abs(honest_precision - 1.0) < 1e-9, (
         f"with undefined rows removed the model is right on every graded row, got {honest_precision}")
-    assert honest["horizons"][5]["ambiguous_excluded"] == int(ambiguous.sum())
+    # Counted over the PURGED holdout, not the whole array. The holdout now starts at
+    # split_idx + LOOKBACK + horizon, so rows before that are not scored at all and were never
+    # candidates for exclusion. Asserting against ambiguous.sum() would make this check fail for
+    # the purge rather than for the property it exists to verify.
+    _purged_from = 0 + _LOOKBACK + 5
+    assert honest["horizons"][5]["ambiguous_excluded"] == int(ambiguous[_purged_from:].sum()), (
+        f"{honest['horizons'][5]['ambiguous_excluded']} excluded vs "
+        f"{int(ambiguous[_purged_from:].sum())} ambiguous rows inside the purged holdout")
     assert leaky["ambiguous_rows_excluded"] is False
     assert honest["ambiguous_rows_excluded"] is True
 

@@ -239,6 +239,33 @@ def main() -> int:
     chk("brier_not_better_than_class_prior" in code_only(BACKEND / "model_promotion.py"),
         "and a candidate that fails to beat that bar is refused by name")
 
+    print("6. the promotion holdout is purged")
+    from features import LOOKBACK
+
+    class _Always:
+        """Votes UP on every row - the interface evaluate_candidate actually calls."""
+        horizons = [5]
+        is_trained = True
+
+        @staticmethod
+        def predict_base(_row, _horizon, _context):
+            return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    rows = LOOKBACK + 5 + 400
+    Xf = rng.normal(size=(rows, 4)).astype(np.float32)
+    Yf = {5: np.tile([0.0, 0.0, 1.0], (rows, 1)).astype(np.float32)}
+    rep = mp.evaluate_candidate(_Always(), None, Xf, Yf, 0)
+    scored = rep["horizons"][5]["candidate"]["samples"]
+    chk(scored == rows - (LOOKBACK + 5),
+        f"the holdout starts LOOKBACK+horizon after split_idx: {scored} scored of {rows} rows, "
+        f"a {LOOKBACK + 5}-row gap. It previously began AT split_idx, so training sequences "
+        f"sharing lookback bars - with labels reaching into the holdout - were graded")
+    tiny = mp.evaluate_candidate(_Always(), None, Xf[:LOOKBACK + 3], {5: Yf[5][:LOOKBACK + 3]}, 0)
+    chk(any("holdout_too_small_after_purge" in r
+            for r in tiny["horizons"][5]["reasons"]),
+        "and a holdout too small to survive the gap REFUSES rather than silently shrinking it - "
+        "the same rule test_oof_serving_parity enforces on the stacker folds")
+
     print("\nCORE DECISION CONTRACTS:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 
