@@ -124,7 +124,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-HISTORICAL_DAYS = max(1, _env_int("BTC_HISTORICAL_DAYS", 30))
+# ONE resolver, shared with model.py, so the window the server fetches candles for is the same
+# window the training-identity contract is checked against. The previous literal default of 30
+# contradicted the matrix manifest's 60, and the app could never train when launched outside
+# start.bat - see artifact_identity.resolve_history_days_verbose.
+from artifact_identity import resolve_history_days_verbose as _resolve_history_days_verbose
+
+HISTORICAL_DAYS, HISTORICAL_DAYS_SOURCE = _resolve_history_days_verbose()
+HISTORICAL_DAYS = max(1, HISTORICAL_DAYS)
 #: P0-5: the hard floor of untouched candles below which no backtest is reported.
 BACKTEST_MIN_HELD_OUT = 500
 BACKTEST_MAX_ROWS = max(0, _env_int("BTC_BACKTEST_MAX_ROWS", 12000))
@@ -3768,7 +3775,10 @@ async def main_loop():
 
     # 1. Warm-up
     boot_started = time.time()
-    logger.info("[BOOT] Startup warm-up begins. historical_days=%s", HISTORICAL_DAYS)
+    # The SOURCE is logged, not just the number. The window silently disagreeing with the matrix
+    # manifest is what made startup training fail 90s later with a message naming neither.
+    logger.info("[BOOT] Startup warm-up begins. historical_days=%s (from %s)",
+                HISTORICAL_DAYS, HISTORICAL_DAYS_SOURCE)
     logger.info(
         "[BOOT] Model is %s. %s",
         "FROZEN (no auto/scheduled retraining)" if MODEL_FROZEN else "AUTO-IMPROVE (will retrain)",

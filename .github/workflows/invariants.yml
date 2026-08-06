@@ -198,6 +198,12 @@ jobs:
       - name: Backtest neutral band comes from REAL intrabar range
         run: python backend/test_backtest_ohlc_honesty.py
 
+      # A direct `python backend/server.py` booted healthy and could NEVER train: the window was
+      # resolved at nine sites with five defaults, so the server used 30, the manifest said 60
+      # and the identity contract was handed 0.
+      - name: Training window is resolved once (server, train and save agree)
+        run: python backend/test_history_days_single_resolver.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -750,6 +756,7 @@ jobs:
           python backend/test_venue_independence.py || exit /b 1
           python backend/test_hmm_bundle_binding.py || exit /b 1
           python backend/test_backtest_ohlc_honesty.py || exit /b 1
+          python backend/test_history_days_single_resolver.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

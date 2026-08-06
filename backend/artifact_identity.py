@@ -138,6 +138,70 @@ def configured_model_training_days() -> int | None:
         return None
 
 
+#: Every environment name that has meant "how many days of history does this run use", in
+#: precedence order. The FIRST one set wins, and this order applies EVERYWHERE.
+#:
+#: It did not. The same setting was resolved at nine sites with five different defaults (30, 0,
+#: 60, 360, "na") and three different precedences - `model.py` read HISTORICAL then BACKFILL when
+#: training and BACKFILL then HISTORICAL when saving, so one run could stamp two disagreeing
+#: identities. `start.bat` papered over it with
+#:     if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
+#: which is the P0-21 lesson again: alignment that only holds when someone uses the right
+#: launcher is a convention, not a control.
+HISTORY_DAYS_ENV_ORDER = (
+    "BTC_MODEL_TRAINING_DAYS",
+    "BTC_HISTORICAL_DAYS",
+    "BTC_BACKFILL_DAYS",
+)
+
+#: Reached only when nothing else answers: no override set AND no matrix manifest on disk.
+HISTORY_DAYS_LAST_RESORT = 60
+
+
+def resolve_history_days_verbose() -> tuple[int, str]:
+    """THE training window for this process, and WHERE it came from.
+
+    The source matters as much as the number. A window that silently differs from the matrix
+    the artifacts are stamped against does not fail at boot - it fails ~90 seconds later,
+    inside a worker thread, as
+
+        training-data identity contract failed: requested_days is missing;
+        matrix requested_days=60 does not match requested_days=0
+
+    which names neither the environment variable nor the manifest. Measured: a direct
+    `python server.py` booted on 30 days (server's own default), built features from them, and
+    then refused to train because the manifest on disk records 60. The app came up healthy,
+    served, and could never produce a model.
+
+    Falling back to the MANIFEST rather than to a literal is the point. The manifest records
+    what the training data actually is; a hardcoded default is a guess that happened to
+    disagree with it.
+    """
+    for name in HISTORY_DAYS_ENV_ORDER:
+        raw = os.environ.get(name)
+        if raw is None or not str(raw).strip():
+            continue
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            # A malformed override is NOT silently treated as unset - that would hand back a
+            # different window than the operator asked for, which is the whole defect.
+            raise ValueError(
+                f"{name}={raw!r} is not an integer number of days; refusing to guess a "
+                f"training window")
+        if value > 0:
+            return value, f"env:{name}"
+    manifest_days = int((load_json(MATRIX_MANIFEST_PATH) or {}).get("requested_days", 0) or 0)
+    if manifest_days > 0:
+        return manifest_days, f"manifest:{MATRIX_MANIFEST_PATH.name}"
+    return HISTORY_DAYS_LAST_RESORT, "last_resort_default"
+
+
+def resolve_history_days() -> int:
+    """The window only. Use `resolve_history_days_verbose` when the source should be logged."""
+    return resolve_history_days_verbose()[0]
+
+
 def model_runtime_versions() -> dict[str, str]:
     versions = {
         "python": platform.python_version(),

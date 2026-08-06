@@ -34,6 +34,7 @@ from artifact_identity import (
     artifact_manifest_path,
     configured_model_training_days,
     current_training_identity,
+    resolve_history_days,
     training_identity_issues,
     write_artifact_manifest,
 )
@@ -798,9 +799,11 @@ class MultiModelEnsemble:
         trained a different partition than serving used — the mismatch P4.3 fixes).
         """
         train_started = time.time()
-        requested_days = _env_int(
-            "BTC_HISTORICAL_DAYS", _env_int("BTC_BACKFILL_DAYS", 0)
-        )
+        # ONE resolver. This read used to be HISTORICAL-then-BACKFILL defaulting to 0, while the
+        # save path below read BACKFILL-then-HISTORICAL - so a single run could stamp two
+        # different windows, and an unset environment produced requested_days=0, which the
+        # identity contract correctly refuses as missing.
+        requested_days = resolve_history_days()
         self.training_identity = current_training_identity(
             requested_days=requested_days,
             feature_names=self.model_feature_names,
@@ -3217,10 +3220,9 @@ class MultiModelEnsemble:
             return False
         target_dir = os.path.abspath(model_dir or self.model_dir)
         try:
-            requested_days = _env_int(
-                "BTC_MODEL_TRAINING_DAYS",
-                _env_int("BTC_BACKFILL_DAYS", _env_int("BTC_HISTORICAL_DAYS", 0)),
-            )
+            # Same resolver as train(), so what is SAVED describes the window that was TRAINED.
+            # These two reads previously disagreed on both precedence and default.
+            requested_days = resolve_history_days()
             current_identity = current_training_identity(
                 requested_days=requested_days,
                 feature_names=self.model_feature_names,
