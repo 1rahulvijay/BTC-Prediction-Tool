@@ -1,4 +1,4 @@
-"""The head that answers the question Polymarket actually resolves on.
+"""A binary endpoint head. NOT the Polymarket settlement model, and it must not be called one.
 
 WHY THIS EXISTS
     `TRAINING_CONTRACT` is `first_touch_triple_barrier_v1` - "which barrier is touched FIRST".
@@ -11,10 +11,22 @@ WHY THIS EXISTS
     requested them and nothing consumed them. This is the consumer.
 
 WHAT IT IS NOT
-    It is not the ensemble. One calibrated gradient-boosted classifier per horizon, trained on
-    endpoint labels, stamped with `ENDPOINT_SETTLEMENT_V1`. Deliberately small: the point is to
-    have an admissible settlement probability that can be MEASURED against the market, not to
-    add a ninth seat to a model zoo whose own evidence says direction is weak.
+    It is not the ensemble. One calibrated gradient-boosted classifier per horizon, stamped
+    with `ROLLING_EXCHANGE_RETURN_SIGN_V1`.
+
+    It is NOT the Polymarket settlement model, for two independent reasons:
+
+      WRONG PRICE SERIES   labels come from exchange closes; the venue settles on a Chainlink
+                           stream.
+      WRONG REFERENCE      labels compare the horizon end to the DECISION-time price; the venue
+                           compares the round end to the round's fixed ANCHOR. Measured, that
+                           inverts the outcome on up to ~35% of rounds late in a round - worst
+                           exactly where seconds-left information is worth most.
+
+    So `POLYMARKET_SETTLEMENT_EV` REFUSES this head, deliberately. Round-aligned labels built
+    from the venue's own source are required before any artifact may price that market. This
+    docstring said the opposite for a day, and a stale description in this repository has been
+    read as verified architecture more than once - hence `test_target_declaration_consistency`.
 
 AUTHORITY
     None. It is registered with `may_price=False, may_rank=False, may_size=False`, and its
@@ -45,14 +57,15 @@ import target_contract as tc                                      # noqa: E402
 #: The Polymarket lane is what this head exists to serve, and that market resolves on a strict
 #: comparison with no neutral band. Training it on the three-class endpoint labels meant ~68%
 #: of real payouts were labelled NEUTRAL, so the head answered a question the venue never asks.
-TARGET_CONTRACT = tc.POLYMARKET_BINARY_SETTLEMENT_V1
+TARGET_CONTRACT = tc.ROLLING_EXCHANGE_RETURN_SIGN_V1
 
 #: Class layout per contract. The head is fitted per contract rather than hardcoding three
 #: columns, because the number of outcomes IS the contract - a binary market has no NEUTRAL
 #: column to widen into, and inventing one is how the band came back.
 CONTRACT_CLASSES = {
     tc.ENDPOINT_SETTLEMENT_V1: tc.CLASS_ORDER,          # (DOWN, NEUTRAL, UP)
-    tc.POLYMARKET_BINARY_SETTLEMENT_V1: tc.BINARY_CLASS_ORDER,   # (DOWN, UP)
+    tc.ROLLING_EXCHANGE_RETURN_SIGN_V1: tc.BINARY_CLASS_ORDER,  # (DOWN, UP)
+    tc.POLYMARKET_BINARY_SETTLEMENT_V1: tc.BINARY_CLASS_ORDER,    # reserved; no labels yet
 }
 
 ARTIFACT_FILENAME = "settlement_head.pkl"
@@ -94,21 +107,72 @@ def class_index(contract: str, name: str) -> int:
     return CONTRACT_CLASSES[contract].index(name)
 
 
-def prior_brier(labels: np.ndarray, n_classes: int = 3) -> float:
-    """Brier of always predicting the TRAIN class prior. The baseline any head must beat.
+def prior_brier(train_labels: np.ndarray, eval_labels: np.ndarray | None = None,
+                n_classes: int = 3) -> float:
+    """Brier of always predicting the TRAIN class prior, SCORED ON `eval_labels`.
+
+    The prior comes from TRAIN so it cannot peek at the holdout's own class balance; the score
+    is computed on the SAME rows the model was scored on, or the comparison is meaningless.
+
+    The earlier version took one array and did both with it, and the caller passed y_train.
+    The model's Brier was measured on y_hold, so `beats_prior` compared two numbers computed
+    on DIFFERENT datasets - it could read True purely because the holdout was easier or more
+    balanced than the training window. That is not a baseline, it is a coincidence.
 
     Accuracy is the wrong yardstick here for the same reason it was wrong for the ensemble
     weights: on an imbalanced settlement bucket, always answering the majority class scores
     well while carrying no information."""
-    counts = np.bincount(labels, minlength=n_classes).astype(float)
+    counts = np.bincount(train_labels, minlength=n_classes).astype(float)
     prior = counts / max(counts.sum(), 1.0)
-    return brier_multiclass(np.tile(prior, (len(labels), 1)), labels)
+    scored_on = train_labels if eval_labels is None else eval_labels
+    return brier_multiclass(np.tile(prior, (len(scored_on), 1)), scored_on)
 
+
+#: Minimum INDEPENDENT units, not rows. Five checkpoints per round and overlapping lookbacks
+#: mean 500 rows can be 100 rounds or fewer, and adjacent rounds are correlated too. A row
+#: floor answers "did we have enough numbers", not "did we have enough independent evidence".
+MIN_TRAIN_GROUPS = 200
+MIN_HOLDOUT_GROUPS = 60
+
+
+def purged_chronological_splits(n_rows: int, purge: int, n_folds: int = 3):
+    """Chronological calibration folds with a purge gap, as (train_idx, val_idx) pairs.
+
+    `CalibratedClassifierCV(..., cv=3)` uses ordinary K-fold: it interleaves later rows into
+    the training half and earlier rows into validation, and it ignores the fact that adjacent
+    sequence rows share most of their lookback and that horizon labels overlap. The isotonic
+    map was therefore fitted partly on rows entangled with the ones it was scoring.
+
+    Each fold trains on a prefix, skips `purge` rows, then validates on the block that follows.
+    """
+    if n_rows <= 0 or n_folds < 2:
+        return []
+    block = n_rows // (n_folds + 1)
+    if block <= purge + 1:
+        return []
+    splits = []
+    for k in range(1, n_folds + 1):
+        train_end = block * k
+        val_start = train_end + purge
+        val_end = min(val_start + block, n_rows)
+        if val_start >= val_end or train_end < 2:
+            continue
+        splits.append((np.arange(0, train_end), np.arange(val_start, val_end)))
+    return splits
+
+
+def _group_count(groups, index) -> int:
+    """Distinct groups (rounds) covered by `index`. Falls back to row count when no groups are
+    supplied, which is recorded rather than silently treated as equivalent."""
+    if groups is None:
+        return len(index)
+    return int(len(np.unique(np.asarray(groups)[index])))
 
 def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
                           horizons=None, valid_mask: dict | None = None,
                           random_state: int = 0,
-                          contract: str = TARGET_CONTRACT) -> dict:
+                          contract: str = TARGET_CONTRACT,
+                          groups=None, lookback: int = 0) -> dict:
     """Fit one calibrated settlement classifier per horizon.
 
     `split_idx` is the SAME chronological boundary the ensemble uses, so the held-out metric
@@ -143,12 +207,38 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
             skipped[h] = f"label/feature length mismatch {len(labels)} vs {len(X_flat)}"
             continue
 
-        train_slice = slice(0, split_idx)
-        y_train = labels[train_slice]
-        x_train = X_flat[train_slice]
+        # PURGED BOUNDARY. Rows just before split_idx share most of their lookback with rows
+        # just after it, and their horizon labels overlap, so an unpurged split leaks the
+        # holdout into training through the entanglement rather than through the index.
+        purge = int(lookback) + int(h)
+        train_end = max(0, split_idx - purge)
+        train_idx = np.arange(0, train_end)
+        hold_idx = np.arange(split_idx, len(labels))
+        y_train = labels[train_idx]
+        x_train = X_flat[train_idx]
         if len(y_train) < MIN_TRAIN_ROWS:
-            skipped[h] = f"only {len(y_train)} train rows (<{MIN_TRAIN_ROWS})"
+            skipped[h] = f"only {len(y_train)} train rows after a {purge}-row purge (<{MIN_TRAIN_ROWS})"
             continue
+        # INDEPENDENT UNITS, not rows.
+        n_train_groups = _group_count(groups, train_idx)
+        n_hold_groups = _group_count(groups, hold_idx)
+        # WITHOUT groups these floors cannot fire at all. Guarding them on `groups is not
+        # None` and leaving every caller passing None made them decorative - a declared limit
+        # that no run could ever hit, which is the same defect as a counter nobody reads.
+        #
+        # Round IDs do not exist yet (they arrive with the round-aligned dataset), so the head
+        # does not pretend to validate independence. It records that it could not, and the
+        # metrics below are marked as carrying NO independence guarantee. A promotion gate
+        # must refuse a bundle whose independence was never established.
+        if groups is not None:
+            if n_train_groups < MIN_TRAIN_GROUPS:
+                skipped[h] = (f"only {n_train_groups} independent train rounds "
+                              f"(<{MIN_TRAIN_GROUPS})")
+                continue
+            if n_hold_groups < MIN_HOLDOUT_GROUPS:
+                skipped[h] = (f"only {n_hold_groups} independent holdout rounds "
+                              f"(<{MIN_HOLDOUT_GROUPS})")
+                continue
         if len(np.unique(y_train)) < 2:
             skipped[h] = "training rows carry a single class"
             continue
@@ -164,14 +254,35 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
         if folds < 2:
             skipped[h] = "thinnest class has too few rows to calibrate"
             continue
-        model = CalibratedClassifierCV(base, method="isotonic", cv=folds)
+        # Chronological and purged, matching what the main ensemble was repaired to use.
+        # An integer cv here would interleave future rows into the calibration training half.
+        cal_splits = purged_chronological_splits(len(y_train), purge, n_folds=folds)
+        if not cal_splits:
+            skipped[h] = (f"cannot build purged chronological calibration folds "
+                          f"(rows={len(y_train)}, purge={purge}) - refusing to fall back to "
+                          f"interleaved K-fold, which would fit the calibrator on rows "
+                          f"entangled with the ones it scores")
+            continue
+        model = CalibratedClassifierCV(base, method="isotonic", cv=cal_splits)
         model.fit(x_train, y_train)
         heads[h] = model
 
         entry = {"train_rows": int(len(y_train)),
                  "train_prior": np.bincount(y_train, minlength=n_classes).tolist()}
-        y_hold = labels[split_idx:]
-        x_hold = X_flat[split_idx:]
+        entry["train_rounds"] = n_train_groups
+        entry["holdout_rounds"] = n_hold_groups
+        entry["purge_rows"] = purge
+        entry["grouped"] = groups is not None
+        # Stated on every horizon's metrics, so a reader cannot mistake "the floor did not
+        # fire" for "the floor was satisfied".
+        entry["independence_validated"] = groups is not None
+        if groups is None:
+            entry["independence_note"] = (
+                "no round grouping supplied: rows are NOT independent (overlapping lookbacks, "
+                "and multiple checkpoints per round once round-aligned labels exist). Row "
+                "counts overstate evidence; holdout metrics carry no independence guarantee.")
+        y_hold = labels[hold_idx]
+        x_hold = X_flat[hold_idx]
         if len(y_hold) >= 100 and len(np.unique(y_hold)) >= 2:
             probabilities = _aligned_proba(model, x_hold, n_classes)
             entry.update({
@@ -179,7 +290,8 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
                 "holdout_brier": brier_multiclass(probabilities, y_hold),
                 # The baseline uses the TRAIN prior, so beating it cannot be achieved by
                 # learning the holdout's own class balance.
-                "prior_brier": prior_brier(y_train, n_classes),
+                # Train prior, scored on the SAME holdout rows as the model.
+                "prior_brier": prior_brier(y_train, y_hold, n_classes),
             })
             entry["beats_prior"] = bool(entry["holdout_brier"] < entry["prior_brier"])
         else:
@@ -191,9 +303,17 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
     if not heads:
         raise SettlementHeadUnavailable(
             f"no horizon produced a settlement head: {skipped or 'no horizons supplied'}")
-    return {"heads": heads, "metrics": metrics, "skipped": skipped,
-            "target_contract": contract, "n_classes": n_classes,
-            "trained_at_ms": int(time.time() * 1000)}
+    # The RULE travels with the artifact, not just the contract name. Two bundles can both
+    # claim `polymarket_binary_settlement_v1` and be fitted under different tie conventions;
+    # only the rule identity distinguishes them, and the tie convention was wrong once already.
+    bundle = {"heads": heads, "metrics": metrics, "skipped": skipped,
+              "target_contract": contract, "n_classes": n_classes,
+              # Bundle-level, so a promotion gate reads one field instead of every horizon.
+              "independence_validated": groups is not None,
+              "trained_at_ms": int(time.time() * 1000)}
+    if tc.is_binary_endpoint(contract):
+        bundle["settlement_rule"] = tc.DEFAULT_SETTLEMENT_RULE.identity()
+    return bundle
 
 
 def _aligned_proba(model, x: np.ndarray, n_classes: int) -> np.ndarray:
@@ -231,6 +351,10 @@ def settlement_probability(bundle: dict, x_row: np.ndarray, horizon: int) -> dic
         "target_contract": contract,
         "horizon": int(horizon),
     }
+    # Carried through to the consumer so an EV calculation can check which market's rule the
+    # probability was fitted under, rather than assuming its own.
+    if bundle.get("settlement_rule"):
+        out["settlement_rule"] = bundle["settlement_rule"]
     # p_neutral only exists where the CONTRACT has a neutral outcome. Emitting a 0.0 under
     # a binary contract would read as "we measured no chance of flat" rather than "flat is
     # not an outcome this market pays".
@@ -248,19 +372,30 @@ def selftest() -> int:
         checks += 1
         print(f"  PASS  {text}")
 
-    check(TARGET_CONTRACT == tc.POLYMARKET_BINARY_SETTLEMENT_V1,
-          "the head declares the BINARY settlement contract - the question the venue pays on")
-    check(tc.assert_admissible(tc.POLYMARKET_SETTLEMENT_EV, TARGET_CONTRACT) == TARGET_CONTRACT,
-          "and a settlement-EV consumer accepts it - the lane that had no head now has one")
+    check(TARGET_CONTRACT == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+          "the head declares the EXCHANGE PROXY contract - its labels use exchange closes and "
+          "a decision-time reference, neither of which is how the venue settles")
+    check(tc.assert_admissible(tc.PROXY_SETTLEMENT_RESEARCH, TARGET_CONTRACT) == TARGET_CONTRACT,
+          "a RESEARCH consumer may use it, so the head can be measured against geometry and "
+          "the market price")
     check(TARGET_CONTRACT not in tc.PATH_CONTRACTS,
           "it is NOT admissible for path questions, so it cannot replace the first-touch head")
+    for _purpose in (tc.POLYMARKET_SETTLEMENT_EV, tc.POLYMARKET_HOLD_EXIT_EV):
+        try:
+            tc.assert_admissible(_purpose, TARGET_CONTRACT)
+            raise AssertionError(f"{_purpose} priced on the exchange proxy")
+        except tc.ContractMisuse:
+            pass
+    checks += 1
+    print("  PASS  while every Polymarket EV purpose REFUSES it - the proxy may be measured, "
+          "never used to price the market it is a proxy for")
     try:
         tc.assert_admissible(tc.POLYMARKET_SETTLEMENT_EV, tc.ENDPOINT_SETTLEMENT_V1)
         raise AssertionError("the banded endpoint contract priced a Polymarket EV")
     except tc.ContractMisuse:
         checks += 1
-        print("  PASS  while the BANDED endpoint contract is refused for the same purpose - "
-              "its NEUTRAL band is our artefact, and ~68% of real payouts fall inside it")
+        print("  PASS  and so is the BANDED endpoint contract - its NEUTRAL band is our "
+              "artefact, and ~68% of real payouts fall inside it")
 
     # ---- a learnable signal, and a prior it must beat --------------------------------
     rng = np.random.default_rng(0)
@@ -275,9 +410,30 @@ def selftest() -> int:
     Ybinary = {5: np.eye(2)[binary_labels].astype(np.float32)}
     bundle = train_settlement_head(X, Ybinary, split, horizons=[5])
     check(5 in bundle["heads"], "a head is fitted for the requested horizon")
-    check(bundle["target_contract"] == tc.POLYMARKET_BINARY_SETTLEMENT_V1
+    check(bundle["target_contract"] == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1
           and bundle["n_classes"] == 2,
           "the fitted bundle carries its contract and its TWO-class layout")
+    check(bundle.get("independence_validated") is False,
+          "a bundle trained WITHOUT round grouping declares independence_validated=False - "
+          "the group floors cannot fire when no caller supplies groups, and a limit that no "
+          "run can reach is decoration, not a gate")
+    _m5 = bundle["metrics"][5]
+    check(_m5.get("independence_validated") is False and _m5.get("independence_note"),
+          "and each horizon states WHY, so 'the floor did not fire' cannot be read as 'the "
+          "floor was satisfied'")
+    _grouped = train_settlement_head(
+        X, Ybinary, split, horizons=[5],
+        groups=np.repeat(np.arange(len(X) // 4 + 1), 4)[:len(X)])
+    check(_grouped.get("independence_validated") is True,
+          "while a run given real round groups declares it True - the flag tracks the input, "
+          "not a constant")
+    _rule_id = bundle.get("settlement_rule") or {}
+    check(_rule_id.get("comparator") == ">=" and _rule_id.get("tie_outcome") == tc.UP,
+          "and the SETTLEMENT RULE it was fitted under, so a bundle trained on the old "
+          "strict-'>' tie convention is distinguishable from one trained on the real rule")
+    check(len(_rule_id.get("rule_text_hash", "")) == 64
+          and _rule_id.get("source") == "chainlink_btc_usd",
+          "including the rule-text hash and the settlement source it resolves against")
     bprobe = settlement_probability(bundle, X[split], 5)
     check("p_neutral" not in bprobe,
           "a binary head emits NO p_neutral - a 0.0 there would read as 'we measured no "

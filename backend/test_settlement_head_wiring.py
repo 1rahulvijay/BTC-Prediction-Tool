@@ -61,6 +61,7 @@ def _code_only(source: str) -> str:
 
 
 def main() -> int:
+    global CHECKS
     server_code = _code_only((BACKEND / "server.py").read_text(encoding="utf-8"))
 
     # ---- the trainer must ASK for the labels ------------------------------------------
@@ -129,10 +130,10 @@ def main() -> int:
     # Labels are keyed BY CONTRACT. Reading them positionally now raises, which is the point:
     # the two settlement label sets disagree on most rows, so a caller has to say which it
     # means rather than receive whichever one happened to be first.
-    check(set(Ysettle) == {tc.ENDPOINT_SETTLEMENT_V1, tc.POLYMARKET_BINARY_SETTLEMENT_V1},
+    check(set(Ysettle) == {tc.ENDPOINT_SETTLEMENT_V1, tc.ROLLING_EXCHANGE_RETURN_SIGN_V1},
           "build_sequences emits BOTH settlement label sets, keyed by the contract they "
           "answer, so neither lane has to reinterpret the other's labels")
-    Ybinary = Ysettle[tc.POLYMARKET_BINARY_SETTLEMENT_V1]
+    Ybinary = Ysettle[tc.ROLLING_EXCHANGE_RETURN_SIGN_V1]
     Ybanded = Ysettle[tc.ENDPOINT_SETTLEMENT_V1]
 
     # Compare by NAME, not by column index: the two layouts have different widths, so equal
@@ -186,15 +187,22 @@ def main() -> int:
 
     split = int(len(X) * 0.8)
     bundle = train_settlement_head(X, Ybinary, split, horizons=[horizon])
-    check(bundle["target_contract"] == tc.POLYMARKET_BINARY_SETTLEMENT_V1,
+    check(bundle["target_contract"] == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
           "the head fitted from REAL build_sequences output carries the BINARY contract")
 
     probability = settlement_probability(bundle, X[split].reshape(-1), horizon)
     check(0.0 <= probability["p_up"] <= 1.0, "and yields a probability in [0, 1]")
-    check(tc.assert_admissible(tc.POLYMARKET_SETTLEMENT_EV,
+    check(tc.assert_admissible(tc.PROXY_SETTLEMENT_RESEARCH,
                                probability["target_contract"])
-          == tc.POLYMARKET_BINARY_SETTLEMENT_V1,
-          "which a settlement-EV consumer ACCEPTS - the refusal that had no remedy now has one")
+          == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+          "which a RESEARCH consumer accepts, so the head is measurable")
+    try:
+        tc.assert_admissible(tc.POLYMARKET_SETTLEMENT_EV, probability["target_contract"])
+        raise AssertionError("the proxy priced a real Polymarket settlement EV")
+    except tc.ContractMisuse:
+        CHECKS += 1
+        print("  PASS  while a real settlement-EV consumer REFUSES it - wrong price series "
+              "and wrong reference point, so the lane still has no admissible head")
     check("p_neutral" not in probability,
           "and it carries no p_neutral, because the market it prices has no flat outcome")
 
@@ -204,7 +212,6 @@ def main() -> int:
         raise AssertionError("the path contract was accepted for a settlement EV")
     except tc.ContractMisuse:
         pass
-    global CHECKS
     CHECKS += 1
     print("  PASS  while the PATH contract is still refused for that purpose, so the head "
           "supplements the ensemble rather than replacing its guard")

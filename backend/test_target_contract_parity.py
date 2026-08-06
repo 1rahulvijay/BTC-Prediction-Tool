@@ -167,7 +167,7 @@ def main() -> int:
         highs=np.asarray(highs, dtype=np.float64), lows=np.asarray(lows, dtype=np.float64),
         return_valid_mask=True, return_settlement_labels=True)
     Ybanded = Ysettle[tc.ENDPOINT_SETTLEMENT_V1]
-    Ybinary = Ysettle[tc.POLYMARKET_BINARY_SETTLEMENT_V1]
+    Ybinary = Ysettle[tc.ROLLING_EXCHANGE_RETURN_SIGN_V1]
     path_label = NAMES[int(np.argmax(Ypath[horizon][0]))]
     settle_label = NAMES[int(np.argmax(Ybanded[horizon][0]))]
     binary_label = tc.BINARY_CLASS_ORDER[int(np.argmax(Ybinary[horizon][0]))]

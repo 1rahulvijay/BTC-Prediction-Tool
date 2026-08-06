@@ -1609,7 +1609,7 @@ def _ob_os_status(val, ob_thresh, os_thresh):
 from target_contract import (  # noqa: E402
     AMBIGUOUS as _AMBIGUOUS, DOWN as _DOWN, UP as _UP,
     ENDPOINT_SETTLEMENT_V1 as _ENDPOINT_V1,
-    POLYMARKET_BINARY_SETTLEMENT_V1 as _BINARY_V1,
+    ROLLING_EXCHANGE_RETURN_SIGN_V1 as _BINARY_V1,
     label_endpoint as _label_endpoint,
     label_first_touch as _label_first_touch,
     label_polymarket_binary as _label_binary)

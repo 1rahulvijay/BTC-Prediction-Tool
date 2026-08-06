@@ -198,3 +198,46 @@ contemporaneous book snapshots, and the HF recorder has ~2.5 minutes of lifetime
 5. **Canonical datastore** — resolve the competing stores before any evaluation joins them.
 
 Only after 1–5 does the retrain specification get frozen.
+
+## Gate 4.4 - POLYMARKET SETTLEMENT HEAD (revised 2026-08-06)
+
+    Status:            BLOCKED_MISSING_EXACT_TARGET_DATA
+    Current proxy:     ROLLING_EXCHANGE_RETURN_SIGN_V1
+    Proxy authority:   no pricing / no ranking / no sizing / no settlement consumer
+
+This gate was previously recorded as PASS. That was wrong, and the reason is measured rather
+than argued. The head was trained on
+
+    P(exchange close after h minutes >= exchange close at the DECISION time)
+
+while the market resolves
+
+    P(Chainlink value at the fixed round end >= Chainlink value at the round ANCHOR)
+
+Those differ in the price series AND in the reference point. The reference point is the worse
+of the two: simulated over 40k rounds, the decision-anchored label disagrees with the venue's
+own outcome on
+
+    0m  (15m left)   0.0%     (only correct because decision price IS the anchor)
+    3m  (12m left)  14.8%
+    6m  ( 9m left)  21.5%
+    9m  ( 6m left)  28.2%
+    12m ( 3m left)  35.3%     <- worst where late-round information is worth most
+
+A 35% inversion is not miscalibration. Recalibration cannot repair a label that is inverted,
+so no amount of retraining on this target produces a Polymarket settlement model.
+
+### Unblock requirements
+
+    exact market rule (version + text hash, per market - not a global convention)
+    exact round anchor (admissible Chainlink observation at the wall-clock round start)
+    exact settlement source (admissible Chainlink observation at the round end)
+    official outcome reconciliation (derived == official, mismatches QUARANTINED)
+    round-aligned checkpoints (C0..C4 sharing one anchor and one outcome)
+    grouped chronological validation (one market in exactly one split; day-clustered CIs)
+
+### What the proxy head IS good for
+
+The quantity is real and keeps its head, under consumers that ask the same question:
+Binance directional confirmation, quote-revision research, cross-venue propagation, path
+continuation. It was assigned to the wrong economic question, not fabricated.

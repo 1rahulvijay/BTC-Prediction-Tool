@@ -31,6 +31,8 @@ AMBIGUOUS IS NOT NEUTRAL
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import hashlib
 import sys
 
 import numpy as np
@@ -45,8 +47,8 @@ UP, DOWN, NEUTRAL, AMBIGUOUS = "UP", "DOWN", "NEUTRAL", "AMBIGUOUS"
 #: A model trained under one of these may only be graded under the same one.
 FIRST_TOUCH_TRIPLE_BARRIER_V1 = "first_touch_triple_barrier_v1"
 ENDPOINT_SETTLEMENT_V1 = "endpoint_settlement_v1"
-#: How the Polymarket BTC up/down market ACTUALLY resolves: a strict comparison of the final
-#: price against the strike, two outcomes, no neutral band.
+#: How the Polymarket BTC up/down market ACTUALLY resolves: a direct comparison of the final
+#: price against the strike under the market's own rule, two outcomes, no neutral band.
 #:
 #: ENDPOINT_SETTLEMENT_V1 answers "where does price end, allowing for a flat zone" using an
 #: ADAPTIVE volatility threshold. That flat zone does not exist on the venue. Every row inside
@@ -54,9 +56,52 @@ ENDPOINT_SETTLEMENT_V1 = "endpoint_settlement_v1"
 #: probability trained under it is systematically not the probability the market pays out on -
 #: and the gap is widest in exactly the quiet regimes where the band is widest relative to the
 #: move.
+#: WHAT THIS ACTUALLY PREDICTS
+#:
+#:     P(exchange close after h minutes  >=  exchange close at the DECISION time)
+#:
+#: That is the sign of a rolling h-minute return. It is a real, useful quantity - it is simply
+#: not the question Polymarket settles. The name says the quantity so no future reader has to
+#: infer it from the contract family, which is how "binary endpoint" came to be read as
+#: "Polymarket settlement" in the first place.
+#:
+#: WRONG REFERENCE POINT for Polymarket - the defect that matters most about this contract.
+#:
+#:     build_sequences labels   final > closes[i]        (the DECISION-time price)
+#:     the venue resolves       final >= round anchor    (fixed at the round's wall-clock open)
+#:
+#: Those are different questions, and the label is not merely noisier - it is INVERTED on a
+#: large share of rounds. Worked example: anchor 100, minute-6 price 104, settlement 102.
+#: The venue pays UP (102 >= 100); this label says DOWN (102 < 104).
+#:
+#: Measured on 40k simulated 15m rounds at realistic per-bar volatility, disagreement with the
+#: venue's outcome by checkpoint:
+#:
+#:     0m  (15m left)   0.0%     <- only correct because decision price IS the anchor
+#:     3m  (12m left)  14.8%
+#:     6m  ( 9m left)  21.5%
+#:     9m  ( 6m left)  28.2%
+#:     12m ( 3m left)  35.3%     <- worst exactly where seconds-left information is worth most
+#:
+#: A head fitted on this cannot be corrected by recalibration; it is answering "will price rise
+#: from here" while the market asks "will price close above the anchor". Round-aligned labels
+#: (fixed anchor, fixed wall-clock end, one outcome shared by every checkpoint in the round)
+#: are required before any artifact may claim to price this market.
+#:
+#: What we can build TODAY: the market's comparison rule applied to EXCHANGE CLOSES.
+#: `build_sequences` reads closes[i] and closes[i+h]; the venue settles on a Chainlink
+#: stream. The rule is right, the price series is not, so the name says so. Calling this
+#: `polymarket_binary_settlement` asserted a data source the pipeline never touched, and
+#: nothing downstream could have caught the claim.
+ROLLING_EXCHANGE_RETURN_SIGN_V1 = "rolling_exchange_return_sign_v1"
+
+#: RESERVED. The real thing: the venue's rule applied to the venue's own oracle values, with
+#: the window start/end observations recorded. No labels and no artifact exist under this yet,
+#: so every consumer requiring it still REFUSES - which is the honest state, not a regression.
 POLYMARKET_BINARY_SETTLEMENT_V1 = "polymarket_binary_settlement_v1"
+
 KNOWN_CONTRACTS = (FIRST_TOUCH_TRIPLE_BARRIER_V1, ENDPOINT_SETTLEMENT_V1,
-                   POLYMARKET_BINARY_SETTLEMENT_V1)
+                   ROLLING_EXCHANGE_RETURN_SIGN_V1, POLYMARKET_BINARY_SETTLEMENT_V1)
 
 #: What `build_sequences` produces today. Stamped onto artifacts and predictions so the grader
 #: can pick the matching rule instead of assuming one.
@@ -76,15 +121,105 @@ SETTLEMENT_CONTRACTS = frozenset({ENDPOINT_SETTLEMENT_V1})
 #: banded probability price a binary market again, which is the defect this contract exists
 #: to close.
 BINARY_SETTLEMENT_CONTRACTS = frozenset({POLYMARKET_BINARY_SETTLEMENT_V1})
+#: Same question, wrong price series. Kept in its OWN family so it can be measured without
+#: being admissible anywhere a real settlement probability is required.
+PROXY_SETTLEMENT_CONTRACTS = frozenset({ROLLING_EXCHANGE_RETURN_SIGN_V1})
 
-#: The venue's tie rule, named once. "Up" requires the final price to be STRICTLY greater than
-#: the strike; an exact tie resolves DOWN.
-#:
-#: This is declared as a constant, and pinned by the selftest, so it is a stated rule rather
-#: than an inline `>` somebody can flip while refactoring. It must match the market's own
-#: resolution text - if the venue's rule differs, change it HERE and the label, grader and
-#: every trained head move together.
-TIE_RESOLVES_TO = DOWN
+@dataclasses.dataclass(frozen=True)
+class SettlementRule:
+    """How ONE market decides its outcome. Not a global convention.
+
+    A previous version of this file hardcoded `TIE_RESOLVES_TO = DOWN` with a strict `>`,
+    reasoned from the usual "Up requires strictly greater" convention. That was WRONG for the
+    market this system trades: Polymarket's BTC Up/Down 15m resolves Up when the ending
+    Chainlink price is greater than OR EQUAL TO the starting price. Every label, every grade
+    and every trained head inherited the error, and nothing in the system could have detected
+    it - the code was self-consistent, just self-consistently wrong.
+
+    Replacing one hardcoded convention with another would repeat the mistake at a different
+    value. Resolution rules are per-market: the source, the end condition and the edge cases
+    are defined by each market's own text. So the rule is an OBJECT, carried on the artifact
+    and stamped on every label, and a market whose rule text differs cannot silently reuse a
+    contract fitted under this one.
+    """
+
+    rule_version: str
+    #: What the MARKET settles against. A claim about the venue, not about our data.
+    source: str
+    comparator: str          # ">=", ">", "<=", "<"
+    tie_outcome: str         # UP, DOWN, or UNKNOWN when the text does not say
+    rule_text: str
+    market_id: str
+    #: What OUR labels were actually observed from. When this differs from `source` the
+    #: labels are a PROXY: the comparison rule is the market's, the price series is not.
+    #: Recorded separately because stamping the venue's source onto exchange candles is a
+    #: false provenance claim that nothing downstream could detect.
+    observed_source: str = "exchange_close_proxy"
+
+    @property
+    def rule_text_hash(self) -> str:
+        """Digest of the recorded rule text. A venue edit changes this, and the mismatch is
+        detectable instead of being absorbed silently by a model trained under the old text."""
+        return hashlib.sha256(self.rule_text.encode("utf-8")).hexdigest()
+
+    def resolve(self, start: float, end: float) -> str:
+        """Apply THIS market's rule. The comparator and tie outcome both come from the rule."""
+        if self.comparator == ">=":
+            return UP if end >= start else DOWN
+        if self.comparator == ">":
+            if end > start:
+                return UP
+            if end < start:
+                return DOWN
+            return self.tie_outcome
+        raise UnknownTargetContract(
+            f"{self.rule_version}: unsupported comparator {self.comparator!r}; refusing to "
+            f"guess how this market resolves")
+
+    @property
+    def is_proxy(self) -> bool:
+        """True when the labels did not come from the venue's own settlement source."""
+        return self.observed_source != self.source
+
+    def identity(self) -> dict:
+        return {"rule_version": self.rule_version, "source": self.source,
+                "observed_source": self.observed_source, "is_proxy": self.is_proxy,
+                "comparator": self.comparator, "tie_outcome": self.tie_outcome,
+                "market_id": self.market_id, "rule_text_hash": self.rule_text_hash}
+
+
+#: The rule for the market this system actually trades, recorded from its published terms
+#: (verified by the operator 2026-08-06). Equality resolves UP - this is the correction that
+#: made the previous strict-`>` labelling wrong on every tied round.
+POLYMARKET_BTC_UPDOWN_15M_V1 = SettlementRule(
+    rule_version="polymarket_btc_updown_15m_v1",
+    source="chainlink_btc_usd",
+    comparator=">=",
+    tie_outcome=UP,
+    rule_text=("Resolves Up when the ending Chainlink BTC/USD price is greater than or equal "
+               "to the starting price; otherwise Down."),
+    market_id="btc-updown-15m",
+    # OUR labels are built from exchange closes, so this rule is applied to a proxy series.
+    # Stating it here is what makes `is_proxy` true and keeps the artifact honest about what
+    # it was actually fitted on.
+    observed_source="exchange_close_proxy",
+)
+
+#: Which rule resolves which contract. The grader looks up by CONTRACT rather than assuming
+#: the default, so a second market with a different comparator cannot be graded under this one.
+SETTLEMENT_RULE_BY_CONTRACT: dict = {}
+
+#: The rule used when a caller does not name one. Kept as a single binding so the default is
+#: greppable, rather than a literal repeated at each call site.
+DEFAULT_SETTLEMENT_RULE = POLYMARKET_BTC_UPDOWN_15M_V1
+
+#: Retained because callers and artifacts reference it, but it is now DERIVED from the rule
+#: rather than being the source of truth. Editing it in isolation no longer changes labelling.
+TIE_RESOLVES_TO = DEFAULT_SETTLEMENT_RULE.tie_outcome
+SETTLEMENT_RULE_BY_CONTRACT[POLYMARKET_BINARY_SETTLEMENT_V1] = POLYMARKET_BTC_UPDOWN_15M_V1
+# The rolling-return proxy uses the same comparator, applied to exchange closes from a
+# decision-time reference. Registered explicitly so it is a stated choice, not a fallback.
+SETTLEMENT_RULE_BY_CONTRACT[ROLLING_EXCHANGE_RETURN_SIGN_V1] = POLYMARKET_BTC_UPDOWN_15M_V1
 
 #: Binary settlement has two outcomes, not three. NEUTRAL is not reachable.
 BINARY_CLASS_ORDER = (DOWN, UP)
@@ -110,13 +245,32 @@ PATH_EXCURSION_FORECAST = "path_excursion_forecast"
 #: cover it. Splitting the name is what makes the guard able to see it.
 PATH_STOP_MANAGEMENT = "path_stop_management"
 POLYMARKET_HOLD_EXIT_EV = "polymarket_hold_exit_ev"
+#: Consumers of the ROLLING RETURN SIGN. These ask "will the exchange price be higher than it
+#: is right now, h minutes from now" - which is exactly what the head predicts. None of them
+#: is a Polymarket settlement question, and none carries pricing authority today.
+PROXY_SETTLEMENT_RESEARCH = "proxy_settlement_research"
+BINANCE_DIRECTION_CONFIRMATION = "binance_direction_confirmation"
+QUOTE_REVISION_RESEARCH = "quote_revision_research"
+CROSS_VENUE_PROPAGATION_RESEARCH = "cross_venue_propagation_research"
+PATH_CONTINUATION_RESEARCH = "path_continuation_research"
 
 PURPOSE_REQUIREMENTS: dict[str, frozenset] = {
     # Polymarket resolves on a STRICT comparison with no neutral band. The three-class
     # endpoint contract is refused here too, not just the path one: its band is an artefact
     # of our labelling, not of the market.
+    # These require the ORACLE-sourced contract. No artifact exists under it, so both still
+    # refuse - the proxy head is measurable but may not price a real settlement.
     POLYMARKET_SETTLEMENT_EV: BINARY_SETTLEMENT_CONTRACTS,
     POLYMARKET_HOLD_EXIT_EV: BINARY_SETTLEMENT_CONTRACTS,
+    # Research only: scoring the proxy head against geometry and the market price. Carries no
+    # authority, which is why it is a separate purpose rather than a widening of the two above.
+    # The rolling-return-sign head answers all of these directly. It is refused for every
+    # Polymarket purpose above, and admitted here, because the QUESTION matches.
+    PROXY_SETTLEMENT_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
+    BINANCE_DIRECTION_CONFIRMATION: PROXY_SETTLEMENT_CONTRACTS,
+    QUOTE_REVISION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
+    CROSS_VENUE_PROPAGATION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
+    PATH_CONTINUATION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
     # The Binance EV is (2p-1) * expected_move - costs, which treats p as the probability
     # that the ENDPOINT lands on the predicted side. A neutral band is meaningful there: it
     # is the region where the perp trade is not worth its costs.
@@ -142,8 +296,30 @@ def is_path(contract: str) -> bool:
     return contract in PATH_CONTRACTS
 
 
-def is_settlement(contract: str) -> bool:
+def is_banded_endpoint(contract: str) -> bool:
+    """Three-class endpoint with an adaptive neutral band."""
     return contract in SETTLEMENT_CONTRACTS
+
+
+def is_binary_endpoint(contract: str) -> bool:
+    """Two-class endpoint, no band - either the venue's rule or the exchange proxy."""
+    return contract in (BINARY_SETTLEMENT_CONTRACTS | PROXY_SETTLEMENT_CONTRACTS)
+
+
+def is_endpoint(contract: str) -> bool:
+    """Any contract answering 'where does price END', banded or binary."""
+    return is_banded_endpoint(contract) or is_binary_endpoint(contract)
+
+
+def is_settlement(contract: str) -> bool:
+    """DEPRECATED spelling of `is_banded_endpoint`.
+
+    It returned False for the binary contracts, which is the opposite of what the name
+    suggests: a caller routing on `is_settlement` would have sent the one contract that
+    actually answers a settlement question down the non-settlement branch. Kept only so no
+    existing caller changes behaviour silently; new code should name which endpoint it means.
+    """
+    return is_banded_endpoint(contract)
 
 
 def assert_admissible(purpose: str, contract: str | None) -> str:
@@ -253,18 +429,19 @@ def label_endpoint(entry: float, final: float, threshold: float) -> str:
     return NEUTRAL
 
 
-def label_polymarket_binary(entry: float, final: float) -> str:
-    """How the venue resolves: strictly greater than the strike is UP, everything else DOWN.
+def label_polymarket_binary(entry: float, final: float,
+                            rule: SettlementRule = DEFAULT_SETTLEMENT_RULE) -> str:
+    """Resolve one round under a specific market's rule.
 
     Takes NO threshold, by signature. The three-class endpoint label needs one and uses an
     adaptive volatility band; passing one here would silently reintroduce a flat zone that the
     market does not have, so the parameter simply does not exist to be passed.
+
+    The comparator and the tie outcome come from `rule`, not from a module constant. The
+    default was `>` with a DOWN tie, which mislabelled every tied round on a market that
+    actually resolves Up on equality.
     """
-    if final > entry:
-        return UP
-    if final < entry:
-        return DOWN
-    return TIE_RESOLVES_TO
+    return rule.resolve(entry, final)
 
 
 def label(contract: str, *, entry: float, threshold: float | None = None,
@@ -273,9 +450,13 @@ def label(contract: str, *, entry: float, threshold: float | None = None,
     if contract == POLYMARKET_BINARY_SETTLEMENT_V1:
         if final is None:
             raise UnknownTargetContract(f"{contract} requires the final price")
-        if threshold:
+        if threshold is not None:
+            # `if threshold:` let 0.0 through - exactly the value a caller passes while
+            # believing they have disabled the band. The parameter is refused by PRESENCE,
+            # not by truthiness, so "I turned the band off" cannot silently mean "I passed
+            # a banded contract's argument to a binary one".
             raise UnknownTargetContract(
-                f"{contract} resolves on a STRICT comparison and takes no threshold; got "
+                f"{contract} resolves on a direct comparison and takes no threshold; got "
                 f"{threshold!r}. A threshold here would carve a neutral band into a market "
                 f"that pays out on two outcomes.")
         return label_polymarket_binary(entry, final)
@@ -379,6 +560,28 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
             return GradeResult(None, "GRADE_UNAVAILABLE:no_as_of_price", contract=contract)
         # Here the close IS the resolving event, so price/interval/endpoint all coincide.
         return GradeResult(label_endpoint(entry, endpoint_price, threshold), "GRADED_ENDPOINT",
+                           endpoint_price, endpoint_ts, contract, "as_of_kline_close",
+                           interval_start_ms=endpoint_ts, interval_end_ms=endpoint_ts,
+                           endpoint_price=endpoint_price, endpoint_ts=endpoint_ts)
+
+    # BINARY ENDPOINT, BEFORE the first-touch fall-through.
+    #
+    # This branch was missing while both binary contracts were added to KNOWN_CONTRACTS. The
+    # effect was worse than an oversight: previously an unrecognised contract was REFUSED
+    # here, so extending the known set converted a safe refusal into a confident wrong grade.
+    # A prediction stamped binary was resolved using intrabar highs/lows, a barrier threshold,
+    # first-touch direction and a barrier price - none of which its contract mentions.
+    #
+    #     entry 100, price touches 98 first, settles 101
+    #     first touch -> DOWN        binary -> UP
+    #
+    # No threshold is consulted. These contracts resolve on a direct comparison, and the
+    # neutral band belongs to a different contract.
+    if is_binary_endpoint(contract):
+        if endpoint_price is None:
+            return GradeResult(None, "GRADE_UNAVAILABLE:no_as_of_price", contract=contract)
+        rule = SETTLEMENT_RULE_BY_CONTRACT.get(contract, DEFAULT_SETTLEMENT_RULE)
+        return GradeResult(rule.resolve(entry, endpoint_price), "GRADED_BINARY_ENDPOINT",
                            endpoint_price, endpoint_ts, contract, "as_of_kline_close",
                            interval_start_ms=endpoint_ts, interval_end_ms=endpoint_ts,
                            endpoint_price=endpoint_price, endpoint_ts=endpoint_ts)
@@ -573,12 +776,46 @@ def selftest() -> int:
           "and the merged purpose is gone, so no caller can keep asking the ambiguous question")
 
     # ---- the binary contract ---------------------------------------------------------
-    check(label_polymarket_binary(100.0, 100.01) == UP
-          and label_polymarket_binary(100.0, 99.99) == DOWN,
-          "binary settlement resolves on a STRICT comparison, with no neutral band")
-    check(label_polymarket_binary(100.0, 100.0) == TIE_RESOLVES_TO == DOWN,
-          "an exact tie resolves DOWN - 'Up' requires strictly greater, stated once as "
-          "TIE_RESOLVES_TO rather than as a bare '>' somewhere in the grader")
+    # The three cases from the market's published terms, asserted literally.
+    check(label_polymarket_binary(100.0, 100.0) == UP,
+          "an exact tie resolves UP - the market resolves Up when the ending price is greater "
+          "than OR EQUAL TO the start, and the previous strict-'>' convention mislabelled "
+          "every tied round")
+    check(label_polymarket_binary(100.0, 100.01) == UP,
+          "a higher ending price resolves UP")
+    check(label_polymarket_binary(100.0, 99.99) == DOWN,
+          "and a lower one resolves DOWN, with no neutral band between them")
+
+    _rule = DEFAULT_SETTLEMENT_RULE
+    check(_rule.comparator == ">=" and _rule.tie_outcome == UP,
+          f"the rule itself declares comparator {_rule.comparator!r} and tie {_rule.tie_outcome} "
+          f"- the label reads them from the rule rather than from a module constant")
+    check(_rule.source == "chainlink_btc_usd",
+          "and names its settlement SOURCE, so a model cannot be scored against a price feed "
+          "the market does not settle on")
+    check(len(_rule.rule_text_hash) == 64,
+          "the rule text is hashed, so a venue wording change is detectable rather than being "
+          "absorbed by a model still trained under the old text")
+
+    # A DIFFERENT market may not silently reuse this contract's labelling.
+    _other = SettlementRule(
+        rule_version="some_other_market_v1", source="chainlink_btc_usd", comparator=">",
+        tie_outcome=DOWN, rule_text="Resolves Up only when the ending price exceeds the start.",
+        market_id="other-market")
+    check(_other.resolve(100.0, 100.0) == DOWN
+          and label_polymarket_binary(100.0, 100.0, _other) == DOWN,
+          "a market whose rule says a tie is DOWN resolves it DOWN - the outcome follows the "
+          "rule object, so one market's convention cannot leak into another's labels")
+    check(_other.rule_text_hash != _rule.rule_text_hash,
+          "and its rule hash differs, so an artifact trained under one cannot pass as the other")
+    try:
+        SettlementRule(rule_version="bad", source="x", comparator="~=", tie_outcome=UP,
+                       rule_text="unparseable", market_id="m").resolve(1.0, 1.0)
+        raise AssertionError("an unsupported comparator resolved anyway")
+    except UnknownTargetContract:
+        checks += 1
+        print("  PASS  an unsupported comparator RAISES rather than falling back to a default "
+              "- guessing how a market resolves is how the tie rule was wrong to begin with")
     check(set(BINARY_CLASS_ORDER) == {UP, DOWN} and NEUTRAL not in BINARY_CLASS_ORDER,
           "NEUTRAL is not reachable under the binary contract")
     check(not (BINARY_SETTLEMENT_CONTRACTS & SETTLEMENT_CONTRACTS)
@@ -599,6 +836,68 @@ def selftest() -> int:
         checks += 1
         print("  PASS  and omitting the threshold on a BANDED contract raises rather than "
               "defaulting to zero, which would silently make it binary")
+
+    # THE REFERENCE-POINT DEFECT, MEASURED. A rolling label anchored to the decision price is
+    # not a weaker version of the venue's question; it is inverted on a large share of rounds,
+    # and worst late in the round where the edge would be.
+    _r = np.random.default_rng(5)
+    _rounds, _dur, _vol = 20000, 15, 0.0009
+    _worst = 0.0
+    for _cp in (3, 6, 9, 12):
+        _steps = _r.normal(0, _vol, (_rounds, _dur))
+        _path = 100.0 * np.cumprod(1.0 + _steps, axis=1)
+        _decision, _final = _path[:, _cp - 1], _path[:, -1]
+        _venue = _final >= 100.0                 # vs the fixed round anchor
+        _ours = _final > _decision               # vs the decision-time price
+        _worst = max(_worst, float(np.mean(_venue != _ours)))
+    check(_worst > 0.25,
+          f"a decision-anchored label disagrees with the venue on up to {_worst:.1%} of rounds "
+          f"late in the round - this is why the proxy contract may not price the market, and "
+          f"why recalibration cannot repair it")
+
+    # ---- P0-1: the grader must not resolve a binary contract by first touch -------------
+    # Both binary contracts were added to KNOWN_CONTRACTS with no branch of their own, so they
+    # fell through to the first-touch path. That is worse than an omission: an unrecognised
+    # contract used to be REFUSED, so extending the known set turned a safe refusal into a
+    # confident wrong grade.
+    _BASE = 1_785_000_000_000
+    _entry = 100.0
+    # Touches the LOWER barrier first, then settles ABOVE entry. The contracts must disagree.
+    _bars = [
+        {"time": _BASE + 60_000, "high": 100.2, "low": 98.0, "close": 99.0},
+        {"time": _BASE + 120_000, "high": 101.5, "low": 99.5, "close": 101.0},
+    ]
+    _ft = grade(contract=FIRST_TOUCH_TRIPLE_BARRIER_V1, entry=_entry, threshold=0.01,
+                klines=_bars, entry_ts=_BASE, verify_ts=_BASE + 120_000)
+    _bin = grade(contract=ROLLING_EXCHANGE_RETURN_SIGN_V1, entry=_entry, threshold=0.01,
+                 klines=_bars, entry_ts=_BASE, verify_ts=_BASE + 120_000)
+    check(_ft.direction == DOWN and _ft.status == "GRADED_FIRST_TOUCH",
+          f"first touch grades this path DOWN ({_ft.status}) - the lower barrier is hit first")
+    check(_bin.direction == UP,
+          f"while the BINARY contract grades the SAME path UP (settles 101 >= 100) - before "
+          f"this branch existed it returned {_ft.direction}, the first-touch answer, under a "
+          f"binary contract name")
+    check(_bin.status == "GRADED_BINARY_ENDPOINT",
+          f"and says so in its status ({_bin.status}), so a reader can tell which rule ran")
+    check(_bin.resolution_basis == "as_of_kline_close"
+          and _ft.resolution_basis == "first_touch_barrier",
+          f"resolving on the as-of close ({_bin.resolution_basis}) rather than the barrier "
+          f"price the first-touch path uses ({_ft.resolution_basis}) - a contract the binary "
+          f"rule never mentions")
+
+    # A tie resolves UP under the verified venue rule, through the GRADER too - not only
+    # through label_polymarket_binary.
+    _tie = [{"time": _BASE + 60_000, "high": 100.5, "low": 99.5, "close": 100.0}]
+    _tg = grade(contract=ROLLING_EXCHANGE_RETURN_SIGN_V1, entry=_entry, threshold=0.01,
+                klines=_tie, entry_ts=_BASE, verify_ts=_BASE + 60_000)
+    check(_tg.direction == UP,
+          "an exact tie grades UP through the dispatcher, matching the market rule rather "
+          "than a second convention living inside the grader")
+
+    check(set(SETTLEMENT_RULE_BY_CONTRACT) == set(BINARY_SETTLEMENT_CONTRACTS
+                                                  | PROXY_SETTLEMENT_CONTRACTS),
+          "every binary contract has a REGISTERED rule, so the grader looks one up instead of "
+          "assuming the default for a market it has never seen")
 
     # The two settlement contracts must actually disagree, or the split is a naming exercise.
     _rng = np.random.default_rng(11)

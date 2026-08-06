@@ -95,19 +95,17 @@ REGISTRY: tuple[ModelRegistryEntry, ...] = (
                        "train_heads", may_rank=True),
     ModelRegistryEntry("activity_keeper", "activity_keeper_model.pkl", "activity", "train_heads",
                        may_rank=True),
-    # 4.4. The settlement lane had NO head: build_sequences could emit endpoint labels but
-    # nothing requested them, so every settlement-EV consumer refused for want of an
-    # admissible probability. Authority is NONE - it exists to be MEASURED against the
-    # Polymarket price by a separately preregistered study, not to price anything yet.
-    # The contract is the BINARY one: Polymarket resolves on a strict comparison with no
-    # neutral band. Under the three-class endpoint contract ~68% of real payouts were labelled
-    # NEUTRAL, so the head was scored on a question the venue never asks.
-    ModelRegistryEntry("settlement", "settlement_head.pkl", "polymarket_binary_settlement_v1",
+    # A binary endpoint head, and NOT the Polymarket settlement model. Its labels use exchange
+    # closes (the venue settles on Chainlink) and compare the horizon end to the DECISION-time
+    # price rather than the round's fixed anchor - which inverts the outcome on up to ~35% of
+    # rounds late in a round. `POLYMARKET_SETTLEMENT_EV` therefore refuses it, by design.
+    # Authority is NONE: it exists to be MEASURED, not to price anything.
+    ModelRegistryEntry("settlement", "settlement_head.pkl", "rolling_exchange_return_sign_v1",
                        "settlement_head.train_settlement_head",
                        may_price=False, may_rank=False, may_size=False,
-                       notes="Binary settlement probability (strict comparison, venue tie "
-                             "rule). Untested against the market; carries no authority until "
-                             "a frozen protocol scores it."),
+                       notes="Exchange-proxy binary endpoint probability. Wrong price series "
+                             "and wrong reference point for Polymarket settlement; measurable "
+                             "only. No authority until round-aligned oracle labels exist."),
     ModelRegistryEntry("selectivity", "selectivity_models.pkl", "selectivity",
                        "decision.train_selectivity_models", may_rank=True),
     ModelRegistryEntry("champion_meta", "champion_meta_model.pkl", "champion_decision",
