@@ -5,14 +5,19 @@ Keeps the conformal band + P(Hold) + selectivity calibrated to the RECENT regime
 in. Reruns only the cheap head trainers (seconds-minutes each, single-thread, no GPU).
 
 OUTPUT IS A CANDIDATE, NOT A DEPLOY (2026-08-05):
-  Every trainer is redirected to data/saved_models/candidates/<UTC-stamp>/ and the serving
-  artifacts are left untouched. Until this change the job REWROTE the five serving .pkls in
-  place and the live app hot-reloaded them within ~30s with no challenger gate - so a position
-  could open under one artifact and be managed under another, both recorded under a single
-  logical name, with nothing in the record showing a swap had occurred.
+  Every trainer is redirected to data/model_candidates/<UTC-stamp>/ - a SIBLING of the serving
+  directory, not a child of it - and the serving artifacts are left untouched. Until this
+  change the job REWROTE the five serving .pkls in place and the live app hot-reloaded them
+  within ~30s with no challenger gate, so a position could open under one artifact and be
+  managed under another, both recorded under a single logical name.
 
-  The redirect is verified, not trusted: serving artifacts are hashed before the run and
-  restored from backup if anything changed. Promotion is a separate, gated, recorded act.
+  The redirect is verified, not trusted, and verified AFTER EVERY TRAINER (2026-08-06).
+  Checking only in `finally` proved serving was correct when the job finished; it did not
+  bound how long a wrong artifact was reachable by the ~30s reloader while later trainers ran.
+  Any mutation now aborts the run immediately after the trainer that caused it.
+
+  One run at a time, enforced by an exclusive lock: two concurrent jobs would each snapshot
+  the other's intermediate bytes as "the original" and restore each other's mistakes.
 
 What it does NOT do (by design):
   • NOT the 6h direction-ensemble retrain (that's a deliberate FREEZE=0 job; direction is at the
@@ -40,8 +45,12 @@ BACKEND = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BACKEND)
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 SERVING_DIR = os.path.join(DATA_DIR, "saved_models")
-#: Where a nightly run puts its OUTPUT. Never the serving directory.
-CANDIDATE_ROOT = os.path.join(SERVING_DIR, "candidates")
+#: Where a nightly run puts its OUTPUT. Deliberately OUTSIDE saved_models: the live app
+#: reloads artifacts by scanning the serving directory, so a candidate written beneath it
+#: could be picked up by a path glob or an operator copy. A sibling directory cannot be.
+CANDIDATE_ROOT = os.path.join(DATA_DIR, "model_candidates")
+#: Held for the whole run so two nightly jobs cannot interleave trainers over one serving dir.
+LOCK_PATH = os.path.join(DATA_DIR, "model_candidates", ".refit.lock")
 PY = sys.executable
 
 # The matrix + cheap heads recalibrate on the SAME window as the main retrain, so every head stays
@@ -113,6 +122,36 @@ def snapshot_serving():
         if digests[name] is not None:
             shutil.copy2(live, os.path.join(backup, name))
     return {"backup_dir": backup, "digests": digests}
+
+
+def _acquire_lock():
+    """Exclusive, O_EXCL-based. Returns the fd, or None when another run holds it."""
+    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+    try:
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    os.write(fd, f"pid={os.getpid()} started={time.time():.0f}".encode())
+    return fd
+
+
+def _release_lock(fd) -> None:
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    try:
+        os.remove(LOCK_PATH)
+    except Exception:
+        pass
+
+
+def serving_mutations(before) -> list:
+    """Serving artifacts whose bytes differ from the pre-run snapshot. Cheap enough to run
+    after every trainer, which is the point - a check that only runs at the end cannot bound
+    how long a wrong artifact was reachable by the live reloader."""
+    return [name for name in REFIT_ARTIFACTS
+            if _digest(os.path.join(SERVING_DIR, name)) != before["digests"].get(name)]
 
 
 def protect_serving(before, candidate_dir):
@@ -201,6 +240,11 @@ def main():
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     candidate_dir = os.path.join(CANDIDATE_ROOT, stamp)
     os.makedirs(candidate_dir, exist_ok=True)
+    lock = _acquire_lock()
+    if lock is None:
+        print(f"  REFUSED: another refit holds {LOCK_PATH}. Two concurrent runs would each "
+              f"snapshot the other's intermediate bytes as the original.")
+        return 2
     before = snapshot_serving()
     os.environ["BTC_MODEL_OUTPUT_DIR"] = candidate_dir
     print(f"  output -> {candidate_dir}")
@@ -213,10 +257,27 @@ def main():
             if res is not None:
                 run += 1
                 ok += int(bool(res))
+            # VERIFY AFTER EVERY TRAINER, not once at the end.
+            #
+            # Restoring in `finally` proved serving was correct when the job FINISHED. It did
+            # not prove the live process never saw the intermediate bytes: the app reloads on
+            # mtime within ~30s, and the remaining trainers can run for minutes. A temporary
+            # overwrite was therefore a temporarily SERVED model. Checking here shrinks the
+            # exposure to one trainer and aborts instead of continuing.
+            _touched = serving_mutations(before)
+            if _touched:
+                guard_now = protect_serving(before, candidate_dir)
+                raise SystemExit(
+                    f"ABORTED: '{label}' wrote to the serving directory ({', '.join(_touched)})"
+                    f" despite BTC_MODEL_OUTPUT_DIR. Serving was restored immediately "
+                    f"({', '.join(guard_now['restored']) or 'nothing to restore'}) and the run "
+                    f"stopped rather than leaving further trainers to run against a serving "
+                    f"directory that has already been mutated once.")
     finally:
         # Runs on failure and on interrupt too: a half-finished job must never leave a
         # partially-rewritten serving directory behind.
         guard = protect_serving(before, candidate_dir)
+        _release_lock(lock)
 
     if guard["captured"]:
         print(f"  !! {len(guard['captured'])} artifact(s) ignored BTC_MODEL_OUTPUT_DIR and wrote to "

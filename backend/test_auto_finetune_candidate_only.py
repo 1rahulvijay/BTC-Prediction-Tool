@@ -158,6 +158,53 @@ def main() -> int:
               for t in tries for stmt in t.finalbody),
           "from a finally: block, so a crash mid-run cannot leave serving half-rewritten")
 
+    # ---- the hot-reload race ----------------------------------------------------------
+    # Restoring in `finally` proved serving was correct when the job ENDED. The live app
+    # reloads on mtime within ~30s and the remaining trainers run for minutes, so a temporary
+    # overwrite was a temporarily SERVED model. These bound the exposure to one trainer -
+    # something the 17 checks above pass without establishing.
+    check(hasattr(af, "serving_mutations"),
+          "a per-trainer mutation detector exists, so serving is checked between trainers "
+          "rather than once at the end")
+
+    loop = next(n for n in ast.walk(main_fn)
+                if isinstance(n, ast.For)
+                and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                        and c.func.id == "_run" for c in ast.walk(n)))
+    called_in_loop = {n.func.id for n in ast.walk(loop)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    check("serving_mutations" in called_in_loop,
+          "and it is called INSIDE the trainer loop - parsed, because calling it after the "
+          "loop is exactly the weaker check this replaces")
+    check(any(isinstance(n, ast.Raise) for n in ast.walk(loop)),
+          "a detected mutation ABORTS the run rather than letting later trainers continue "
+          "against an already-mutated serving directory")
+
+    check(not af.CANDIDATE_ROOT.startswith(af.SERVING_DIR),
+          "candidates live OUTSIDE the serving directory - a candidate written beneath it "
+          "could be picked up by a path glob or an operator copy")
+
+    # ---- one run at a time -------------------------------------------------------------
+    check(hasattr(af, "_acquire_lock") and hasattr(af, "_release_lock"),
+          "the job takes an exclusive lock - two concurrent runs would each snapshot the "
+          "other's intermediate bytes as 'the original' and restore each other's mistakes")
+    with tempfile.TemporaryDirectory() as lock_tmp:
+        saved_lock = af.LOCK_PATH
+        af.LOCK_PATH = os.path.join(lock_tmp, "refit.lock")
+        try:
+            first = af._acquire_lock()
+            check(first is not None, "the first caller acquires the lock")
+            check(af._acquire_lock() is None,
+                  "and a second concurrent caller is REFUSED rather than proceeding")
+            af._release_lock(first)
+            second = af._acquire_lock()
+            check(second is not None,
+                  "while a later run acquires it cleanly once released, so a crash does not "
+                  "wedge the nightly job forever")
+            af._release_lock(second)
+        finally:
+            af.LOCK_PATH = saved_lock
+
     print(f"\nAUTO-FINETUNE CANDIDATE-ONLY: PASS ({CHECKS} checks)")
     return 0
 
