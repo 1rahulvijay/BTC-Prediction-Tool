@@ -3557,6 +3557,27 @@ def _neutralize_prediction(prediction: dict, code: str, message: str, status: st
     prediction["skipReason"] = message
     prediction["neutralReasonCode"] = code
     prediction["neutralReason"] = message
+    # ATOMIC REJECTION. This used to change direction, signal and the reason fields only, so a
+    # single object could simultaneously say NO_TRADE / NEUTRAL and carry actionable=True,
+    # positionSize=24, stopLoss=63200, takeProfit=64500 - live instructions left behind by a
+    # refused lean. The current simulator ignores those size fields; the UI and any future
+    # execution path have no way to know they are stale.
+    #
+    # The model's own recommendation is PRESERVED under model_* names rather than deleted: it
+    # is useful diagnostics, and moving it makes it impossible to mistake for an instruction.
+    for live, diagnostic in (("positionSize", "model_positionSize"),
+                             ("stopLoss", "model_stopLoss"),
+                             ("takeProfit", "model_takeProfit"),
+                             ("targetPrice", "model_targetPrice")):
+        if live in prediction and prediction[live] is not None:
+            prediction.setdefault(diagnostic, prediction[live])
+    prediction["actionable"] = False
+    prediction["positionSize"] = 0
+    prediction["authorizedQuantity"] = 0
+    prediction["stopLoss"] = None
+    prediction["takeProfit"] = None
+    prediction["finalDirection"] = "NEUTRAL"
+    prediction["finalAction"] = "NO_TRADE"
     return prediction
 
 
@@ -4818,6 +4839,13 @@ async def main_loop():
                 "actionable", "no_trade_reasons", "calibratedConfidence", "agreement",
                 "metaTrust", "expectedMove", "expectedMoveRange", "stopLoss",
                 "model_bundle_id", "regime",
+                # WHICH QUESTION the probability answers. Omitted from this whitelist, so the
+                # model-consensus strategy received None and refused - the right outcome for
+                # the WRONG reason ("missing" rather than "inadmissible for endpoint EV"), and
+                # a refusal that would have persisted even after an admissible endpoint head
+                # existed. p["targetContract"] is stamped upstream at line ~4461 and was simply
+                # not copied across the boundary.
+                "targetContract",
             )
             data_state["_binance_paper_context"] = {
                 "updated_at_ms": int(now_ms if _paper_prediction else 0),

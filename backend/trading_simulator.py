@@ -112,6 +112,10 @@ class TradingSimulator:
         
         self.active_trades = {}
         self.trade_history = []
+        #: reason -> count. Refusals are COUNTED, not just skipped: "the simulator stopped
+        #: trading" and "the simulator is refusing every lean for a named reason" look
+        #: identical from the outside otherwise.
+        self.blocked_entries: dict[str, int] = {}
         
         self.max_equity = starting_capital
         self.max_drawdown_usd = 0.0
@@ -429,6 +433,44 @@ class TradingSimulator:
             "max_consecutive_losses": self._max_consecutive_losses,
         }
 
+    #: Verdicts that authorize opening. WEAK_LEAN is deliberately absent: it means the decision
+    #: layer committed to a side and declined to act on it.
+    AUTHORIZED_ACTIONS = frozenset({"TRADE"})
+
+    def _entry_refusal(self, prediction: dict) -> str:
+        """The reason this prediction may NOT open a position, or "" if it may.
+
+        Returns a string rather than a bool so the refusal is countable and nameable - a silent
+        `return` is what let the previous version look like it was working.
+        """
+        verdict = str(prediction.get("finalAction")
+                      or prediction.get("trade_verdict") or "").strip().upper()
+        if not verdict:
+            return "no_verdict_on_prediction"
+        if verdict not in self.AUTHORIZED_ACTIONS:
+            return f"verdict_{verdict.lower()}"
+        if prediction.get("actionable") is not True:
+            return "not_actionable"
+        blockers = prediction.get("no_trade_reasons")
+        if blockers:
+            return f"blocked:{','.join(str(b) for b in blockers)[:60]}"
+
+        # TARGET ADMISSIBILITY. `prob_win = prediction["confidence"]` below feeds an
+        # endpoint-shaped EV formula, but the main ensemble is trained under
+        # FIRST_TOUCH_TRIPLE_BARRIER_V1 - "which barrier is touched first" is not "does the
+        # position finish ahead at the horizon". The contract layer already refuses that
+        # substitution for BINANCE_DIRECTIONAL_EV; this engine simply never asked it.
+        try:
+            import target_contract as _tc
+
+            contract = prediction.get("targetContract") or prediction.get("target_contract")
+            if not contract:
+                return "target_contract_missing"
+            _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_EV, str(contract))
+        except Exception as exc:                    # ContractMisuse and anything it wraps
+            return f"target_contract_inadmissible:{type(exc).__name__}"
+        return ""
+
     def calculate_signal_expectancy(self, prediction: dict, current_price: float, order_book_data: dict = None, spread_expansion: float = 1.0) -> dict:
         """
         Calculates the expected value (Expectancy) in USD of a given signal.
@@ -483,11 +525,40 @@ class TradingSimulator:
 
     def process_signal(self, prediction: dict, current_price: float, now_ms: int,
                        order_book_data: dict = None, spread_expansion: float = 1.0):
-        """Processes a new prediction signal and opens a virtual position if valid."""
+        """Processes a new prediction signal and opens a virtual position if AUTHORIZED.
+
+        THE DEFECT: this consumed `direction` and nothing else.
+
+        The decision gate deliberately keeps a committed UP/DOWN side visible on a WEAK_LEAN
+        verdict (decision_gate.py: "a committed side but with caveats"). `finalAction` is
+        assigned in server.py BEFORE this call, so the authoritative verdict existed and was
+        simply not read. That let this exact state open a position:
+
+            direction        = UP
+            actionable       = False
+            trade_verdict    = WEAK_LEAN
+            no_trade_reasons = ["not_actionable"]
+
+        A lean the decision layer refused to act on became a simulated trade, and its P&L then
+        fed win-rate and Kelly sizing.
+
+        Every gate FAILS CLOSED: a missing field refuses. A prediction that does not carry a
+        verdict is not a prediction this engine may act on, and defaulting to "TRADE" is how
+        the original defect would return the moment a caller forgot a key.
+        """
         direction = prediction.get("direction", "NEUTRAL")
         if direction not in ["UP", "DOWN"]:
             return
-            
+
+        refusal = self._entry_refusal(prediction)
+        if refusal:
+            self.blocked_entries[refusal] = self.blocked_entries.get(refusal, 0) + 1
+            if self.blocked_entries[refusal] in (1, 10) or self.blocked_entries[refusal] % 500 == 0:
+                logger.info("[SIMULATOR] entry refused (%s) x%d",
+                            refusal, self.blocked_entries[refusal])
+            return
+
+
         horizon = prediction["horizon"]
         pred_id = prediction.get("id", str(uuid.uuid4()))
         exp_calc = self.calculate_signal_expectancy(prediction, current_price, order_book_data, spread_expansion)
