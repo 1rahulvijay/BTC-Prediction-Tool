@@ -100,3 +100,61 @@ least six confirmed defects across all four scans trace to its absence.
 **That is now the single highest-leverage item in the entire backlog**, ahead of the
 executed-training snapshot: 2.3, 2.4, 2.5, 4.1, 4.2, 4.3 and P0-4 are one defect wearing seven
 numbers.
+
+---
+
+# Scan 5 — first verdict, and a REFUSAL — `2026-08-07`
+
+A fifth scan arrived with 31 further claims. Its own top-priority item is verified below. The
+remaining 30 are **not yet investigated** and must not be quoted as findings.
+
+## 5.1 — "TRADE is unreachable" — CONFIRMED-ADJUSTED. **Do not implement the proposed fix.**
+
+The mechanism is exactly as described:
+
+```python
+# decision_gate.py:55
+if cfl.get("grade") in ("A", "B", "C") and not cfl.get("grade_validated"):
+    reasons.append("grade_unproven")
+```
+
+`_confluence()` sets `grade_validated` **zero times**, and the selftest injects it by hand. So
+every directional setup carrying an A/B/C grade collects `grade_unproven`, which makes
+`no_trade_reasons` non-empty and yields `WEAK_LEAN` rather than `TRADE`.
+
+**But that is deliberate, and the gate says so in two places:**
+
+```text
+line 29  "grade_unproven": "setup grade not a trust signal yet (currently inverted, §5br)"
+line 51  # 4. Grade not yet a trust signal (inverted, §5br) - only flag if a grade is shown
+```
+
+The setup grade was **measured to be inverted** — A grades underperform. Blocking on a shown
+grade is the evidence-based response, and `grade_validated` is an intentional escape hatch that
+nothing sets *because no validation artifact exists yet*.
+
+The scan's proposed remedy — *"`grade_unproven` must be diagnostic-only; it cannot automatically
+block the final verdict"* — **removes a deliberate safety block, and arrives framed as a P0 bug
+fix.** It is the most dangerous single change available in this repository right now.
+
+**Correct remedy if `TRADE` is wanted:** produce the missing validation artifact — a versioned,
+preregistered measurement showing the grade is no longer inverted — and have `_confluence()` set
+`grade_validated` from it. That is: earn the escape hatch, do not delete the lock.
+
+### Why this is recorded rather than just skipped
+
+Four scans in, this is the first claim whose *fix* would have caused real harm. The verdict is
+written down so a later session reading "P0: TRADE is unreachable" does not implement the
+obvious repair. A blocker with no producer for its clearing condition **looks** like a bug and
+here is a control.
+
+It also explains a result from the previous commit: the legacy simulator opening nothing is
+**over-determined**. It fails the target-contract check *and* would never see `finalAction ==
+"TRADE"` anyway.
+
+## 5.2–5.31 — NOT INVESTIGATED
+
+Thirty claims remain unread against source, including two the scan ranks alongside 5.1: the live
+first-touch interval being shorter than the declared horizon, and post-inference re-anchoring of
+`predicted_price` / `verify_at`. Both are plausible and both touch the same event-time root as
+2.4. Neither has been verified, so neither is a finding yet.
