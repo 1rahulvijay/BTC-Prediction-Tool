@@ -99,7 +99,10 @@ def output_path(config: AdvConfig, suffix: str) -> Path:
 def parse_models(s: str) -> list[str]:
     if s.lower() in {"all", "advanced"}:
         return ["vlstm", "lpatchtst", "patchtst", "itransformer", "mamba", "mamba2", "vsn_mamba2"]
-    aliases = {"patchtst": "patchtst", "patchtst": "patchtst", "mamb2": "mamba2", "mamba2": "mamba2", "vsn+mamba2": "vsn_mamba2"}
+    # Only REAL aliases. Identity entries were dead - `aliases.get(k, k)` already falls back to
+    # the key, and one of them ("patchtst") was written twice, so the second silently replaced
+    # the first. Behaviour is unchanged; the dict no longer implies coverage it never added.
+    aliases = {"mamb2": "mamba2", "vsn+mamba2": "vsn_mamba2"}
     out = []
     for item in s.split(","):
         k = item.strip().lower().replace("-", "_")

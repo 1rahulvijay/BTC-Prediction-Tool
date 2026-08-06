@@ -109,9 +109,31 @@ def main() -> int:
                  highs=real_high[:200], lows=real_low[:200])
     chk(out.get("ohlc_source") == "REAL" and out.get("valid_for_promotion") is True,
         "supplying real extremes yields a promotion-eligible result")
-    out2 = bt.run(feats, closes[:200], [5], lambda *a, **k: (0.3, 0.4, 0.3), lookback=60)
+    # STRENGTHENED by 87a036d, which this test originally contradicted. Tagging a fabricated
+    # run was the whole remedy when this file was written; a PATH contract now REFUSES it
+    # outright, because grading first touch against an invented constant 0.2% range silently
+    # substitutes the endpoint rule. A tag the caller may ignore is weaker than a raise.
+    import target_contract as _tc
+
+    _refused = ""
+    try:
+        bt.run(feats, closes[:200], [5], lambda *a, **k: (0.3, 0.4, 0.3), lookback=60,
+               target_contract=_tc.FIRST_TOUCH_TRIPLE_BARRIER_V1)
+    except ValueError as exc:
+        _refused = str(exc)
+    chk("PATH contract" in _refused and "FABRICATED" in _refused,
+        "a PATH contract with fabricated extremes REFUSES, naming both the contract family and "
+        "the ohlc_source - it does not grade first touch against an invented barrier")
+
+    # The tag still has to work, so it is asserted on the contract where a fabricated range is
+    # survivable rather than disqualifying: an endpoint rule never reads the intrabar path, so
+    # the run proceeds - but its neutral band is ATR-derived and therefore still meaningless,
+    # which is precisely what the tag exists to record.
+    out2 = bt.run(feats, closes[:200], [5], lambda *a, **k: (0.3, 0.4, 0.3), lookback=60,
+                  target_contract=_tc.ENDPOINT_SETTLEMENT_V1)
     chk(out2.get("ohlc_source") == "FABRICATED" and out2.get("valid_for_promotion") is False,
-        "omitting them yields a result that says so, rather than one that looks identical")
+        "and on an endpoint contract, omitting them yields a result that SAYS so rather than "
+        "one that looks identical to a real run")
 
     print("both production call sites supply them")
     server = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")

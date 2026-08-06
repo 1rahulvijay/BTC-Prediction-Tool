@@ -1,6 +1,6 @@
 # Research Ledger — every idea: tested, retracted, untested, or blocked
 
-`2026-08-02`, last extended `2026-08-05` (§13). The canonical answer to "what do we actually
+`2026-08-02`, last extended `2026-08-06` (§13). The canonical answer to "what do we actually
 know?" Machine-readable status lives in `research/research_status.py`; this is the reader's
 version.
 
@@ -1317,12 +1317,32 @@ module may import it. A grep would have missed `score`, `edge`, `rank` and `elig
 [`docs/active/PRE_RETRAIN_GATE_2026-08-05.md`](active/PRE_RETRAIN_GATE_2026-08-05.md), completed
 and documented **before** any challenger bundle was created.
 
-| # | gate | opened | now | closed by |
+**Superseded twice since, in both directions — corrected here `2026-08-06`.** The table below is
+the current state; the two rows that moved are the point of the section.
+
+| # | gate | opened | now | by |
 |---|---|---|---|---|
-| 4.1 | OOF / serving parity | FAIL | **PASS** | `e9a394f`, `376ba87` |
+| 4.1 | OOF / serving parity | FAIL | **PARTIAL** | `e9a394f`, `376ba87`, `3989e87` |
 | 4.2 | historical snapshot broadcasting | FAIL | **PASS** | `6b0bb1a` |
 | 4.3 | VWAP / feature contract | FAIL | **PASS (clearable)** | `154cccf` |
-| 4.4 | settlement head exists and is trained | FAIL | **FAIL** | — |
+| 4.4 | settlement head exists and is trained | FAIL | **PASS (clearable)** | `cb1f4cf` |
+
+**4.1 was marked PASS prematurely, and that was my call.** An external audit disputed it and was
+right on all three residuals. Two were fail-open defects of exactly the class this ledger keeps
+recording: a seat whose wrapper rejected `sample_weight` was **logged and then fitted anyway** —
+the warning said its OOF probabilities do not match its served pipeline, and then those
+probabilities reached the stacker regardless, because a warning is not a safety boundary. And
+folds wrapped seats in `CalibratedClassifierCV(cv=2)`, an integer `cv` that proves neither
+chronology, purge, embargo nor absence of label overlap, so OOF calibration came from a
+different protocol than the served one. Both now drop the seat instead of substituting a weaker
+fit.
+
+The third — fold-local **regime similarity** — is open and was deliberately not attempted:
+production weights are recency x similarity x class x ambiguity, and the fold rebuilds all but
+similarity. Slicing the global weights is *not* the repair, for the reason recorded above in
+§13.2's spirit: they reference the global `split_idx`, which lies in an early fold's future.
+**Consequence, stated rather than buried: stacker-derived numbers carry that caveat until 4.1
+fully closes.**
 
 **4.3 is the instructive one.** The failure was never "the models are stale":
 `check_feature_contract` reported *0 STALE, 12 UNKNOWN* because the two halves of the provenance
@@ -1334,8 +1354,16 @@ gate document itself, was unachievable as written.
 The retrain must run **from a committed clean tree**, or `code_dirty` makes the resulting bundle
 refuse itself.
 
-**4.4 is the remaining hard stop.** No settlement head exists, so no challenger bundle may be
-created.
+**4.4 is no longer the hard stop.** It read FAIL for one session because no settlement head
+existed; `cb1f4cf` built one and wired the trainer to call it, and it now clears in the same
+sense as 4.3 — the code exists, and the gate goes green on the first clean-tree retrain.
+
+**What still blocks a retrain is not on this table.** It is the round-aligned label: `build_sequences`
+compares the horizon end to the DECISION-time price while the venue compares the round end to
+the round ANCHOR, and the two disagree on **35.3%** of rounds at 3 minutes left — worst exactly
+where late-round information is worth most. No retraining or recalibration repairs a backwards
+label. See [`OPEN_DEFECTS.md`](active/OPEN_DEFECTS.md); the label logic is fixed, the
+capture/backfill path is not.
 
 ### 13.5 What this changes, and what it does not
 

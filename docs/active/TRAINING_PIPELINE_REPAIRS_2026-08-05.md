@@ -240,12 +240,34 @@ Recorded because they are the same defect class as the code they guard.
 ## Status
 
 ```text
-local CI                171 OK / 144 checks
+local CI (2026-08-06)   157 steps, 1 FAIL, 400s          at b18b064 + this file's fixes
 1 FAIL                  check_feature_contract - no artifact trained under the repaired
                         contract yet; clears on the first clean-tree retrain
+frontend gate           PASS - vite build clean, npm audit 0 vulnerabilities
+                        (local CI skips this; it needs --all)
 promotable strategies   0
 real-money authority    NONE
 ```
 
-Gate: see [`PRE_RETRAIN_GATE_2026-08-05.md`](PRE_RETRAIN_GATE_2026-08-05.md). **4.4, the
-settlement head, is the only remaining hard stop.**
+**One regression was found by re-running CI and is fixed here.** `87a036d` made the backtester
+*refuse* a PATH contract graded on fabricated bars, where this document's own test asserted the
+older tag-and-continue behaviour — so the test failed against a strictly better rule. The test
+now asserts the refusal (naming both the contract family and `ohlc_source`) and checks the tag
+on an endpoint contract, where a fabricated range is survivable rather than disqualifying. The
+gate was not relaxed to restore green.
+
+Gate: see [`PRE_RETRAIN_GATE_2026-08-05.md`](PRE_RETRAIN_GATE_2026-08-05.md).
+
+**Superseded `2026-08-06`.** This file originally ended "4.4, the settlement head, is the only
+remaining hard stop." Both halves of that sentence have since moved:
+
+* **4.4 is closed** — `cb1f4cf` built the settlement head and wired the trainer to call it.
+* **4.1 reopened as PARTIAL** — `3989e87`. The OOF section above records the residuals that were
+  fixed; two more were found afterwards, both fail-open (a seat whose wrapper rejected
+  `sample_weight` was warned about and then **fitted anyway**; folds calibrated with an integer
+  `cv` that proves no chronology or purge). Fold-local regime similarity remains open.
+
+The real blocker was never on that table: `build_sequences` grades against the DECISION-time
+price where the venue grades against the round ANCHOR — **35.3% of rounds disagree at 3 minutes
+left**. A backwards label is not repaired by retraining. See
+[`OPEN_DEFECTS.md`](OPEN_DEFECTS.md).
