@@ -162,6 +162,9 @@ jobs:
       - name: Production preflight runs in-process; feeds keep alive
         run: python backend/test_preflight_and_feed_keepalive.py
 
+      - name: Round-truth settlement labels (anchor-based, reconciled, causal)
+        run: python backend/polymarket/round_truth.py --selftest
+
       - name: Current state doc is machine-generated and not stale
         run: python backend/audit/current_state.py --selftest
 
@@ -721,6 +724,7 @@ jobs:
           python backend/test_promotion_activation_boundary.py || exit /b 1
           python backend/test_health_vocabulary_and_atomic_temp.py || exit /b 1
           python backend/test_preflight_and_feed_keepalive.py || exit /b 1
+          python backend/polymarket/round_truth.py --selftest || exit /b 1
           python backend/audit/current_state.py --selftest || exit /b 1
           python backend/audit/current_state.py --check || exit /b 1
           python backend/test_feature_semantics_v5.py || exit /b 1
