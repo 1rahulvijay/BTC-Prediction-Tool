@@ -401,6 +401,28 @@ def _write_active_train_boundary(train_boundary_ts=None, *, full_refit: bool = F
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # P0-21. PREFLIGHT RUNS HERE, not only in the launcher.
+    #
+    # start_production.bat ran production_readiness before starting the server, but server.py
+    # creates the data directory and initialises the database itself - so a direct
+    # `uvicorn backend.server:app` came up against whatever datastore it found, with every
+    # safety check skipped, and reported healthy. A check that only runs when someone uses
+    # the right launcher is a convention, not a control.
+    #
+    # Fail CLOSED, and only in production: development and research runs are unaffected.
+    if DEPLOYMENT_ENV == "production":
+        import production_readiness as _preflight
+        _issues = _preflight.preflight_issues()
+        if _issues:
+            for _issue in _issues:
+                logger.error("[PREFLIGHT] %s", _issue)
+            raise RuntimeError(
+                f"production preflight failed with {len(_issues)} issue(s): "
+                f"{'; '.join(_issues[:5])}. Refusing to serve rather than starting against "
+                f"an unverified datastore.")
+        logger.info("[PREFLIGHT] production preflight passed (%d checks, in-process)",
+                    len(_issues) or 1)
+
     logger.info("Initializing Database...")
     database.init_db()
     try:

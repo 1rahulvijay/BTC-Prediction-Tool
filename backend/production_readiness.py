@@ -303,6 +303,30 @@ def selftest() -> int:
     return 0 if ok else 1
 
 
+def preflight_issues(env: dict[str, str] | None = None) -> list[str]:
+    """The FAST production checks, safe to run inside the server's own startup.
+
+    `main()` also shells out to gate subprocesses with 180s timeouts. That is right for an
+    operator wrapper and wrong for a lifespan hook - it would make startup slow and give a
+    hung gate the power to hang the server. These are the in-process checks only.
+
+    WHY THE SERVER MUST RUN THEM ITSELF
+        Preflight lived solely in start_production.bat. `server.py` creates the data directory
+        and initialises the database on its own, so `uvicorn backend.server:app` started
+        against a fresh or wrong datastore with every safety check skipped - and looked
+        healthy doing it. A check that only runs when someone uses the right launcher is a
+        convention, not a control.
+    """
+    env = dict(os.environ if env is None else env)
+    issues = list(environment_issues(env, mode="production"))
+    for collector in (_canonical_datastore_issues, _storage_issues):
+        try:
+            issues.extend(collector())
+        except Exception as exc:                      # a check that cannot run is not a pass
+            issues.append(f"{collector.__name__} could not run: {exc}")
+    return issues
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("paper", "live"), default="paper")

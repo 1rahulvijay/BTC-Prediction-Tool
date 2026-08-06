@@ -9,6 +9,7 @@ import asyncio
 from collections import deque
 import json
 import math
+import os
 import time
 import logging
 from pathlib import Path
@@ -16,6 +17,18 @@ from typing import Callable, Optional
 
 import aiohttp
 import websockets
+
+#: P0-23. KEEPALIVE, so a socket that is open but DEAD is detected.
+#:
+#: These were both None, which disables websockets' ping/pong entirely. A TCP connection can
+#: stay established while the venue has stopped sending anything, and with no ping there is
+#: nothing to notice: the task stays pending, the supervisor sees a live coroutine, and the
+#: feed is silently stale. Staleness then looks like a quiet market rather than a dead feed.
+#:
+#: With pings enabled the library raises ConnectionClosed when pongs stop arriving, which the
+#: existing reconnect loops already handle.
+WS_PING_INTERVAL_S = float(os.environ.get("BTC_WS_PING_INTERVAL_S", "20"))
+WS_PING_TIMEOUT_S = float(os.environ.get("BTC_WS_PING_TIMEOUT_S", "20"))
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +170,7 @@ class BinanceWebSocketClient:
         while self.running:
             try:
                 async with websockets.connect(
-                    url, ping_interval=None, ping_timeout=None
+                    url, ping_interval=WS_PING_INTERVAL_S, ping_timeout=WS_PING_TIMEOUT_S
                 ) as ws:
                     logger.info("Connected to Binance WebSocket")
                     self.protocol_health.connected = True
@@ -359,7 +372,7 @@ class BinanceFuturesWebSocketClient:
         while self.running:
             try:
                 async with websockets.connect(
-                    url, ping_interval=None, ping_timeout=None
+                    url, ping_interval=WS_PING_INTERVAL_S, ping_timeout=WS_PING_TIMEOUT_S
                 ) as ws:
                     logger.info("Connected to Binance Futures WebSocket")
                     self.protocol_health.connected = True
@@ -730,7 +743,7 @@ class CoinbaseWebSocketClient:
         while self.running:
             try:
                 async with websockets.connect(
-                    self.WS_URL, ping_interval=None, ping_timeout=None
+                    self.WS_URL, ping_interval=WS_PING_INTERVAL_S, ping_timeout=WS_PING_TIMEOUT_S
                 ) as ws:
                     logger.info("Connected to Coinbase WebSocket")
                     self.protocol_health.connected = True
@@ -911,7 +924,7 @@ class CrossAssetWebSocketClient:
         while self.running:
             try:
                 async with websockets.connect(
-                    url, ping_interval=None, ping_timeout=None
+                    url, ping_interval=WS_PING_INTERVAL_S, ping_timeout=WS_PING_TIMEOUT_S
                 ) as ws:
                     logger.info("Connected to Binance Cross-Asset WebSocket")
                     self._emit("status", {"connected": True})
