@@ -195,7 +195,8 @@
     "backend/model.py": "0860ee7f33e72b40ae6a3b498c7fcba2986b3501d0a12af20e657196f2a5ee08",
     "backend/model_registry.py": "22ec0377c8c7f143c4dd0299eb3a16e8fe5bdd28762f70417e0b14700963b2ca",
     "backend/settlement_head.py": "4b0f1bbc448ca75d4401d36546a85f8d1f79ce6da9b0cbdf6fd576479274711d",
-    "backend/target_contract.py": "f658262313df0106f3ad4814a7361efbcea83da6d58e81b055c254145147cda5"
+    "backend/target_contract.py": "f658262313df0106f3ad4814a7361efbcea83da6d58e81b055c254145147cda5",
+    "docs/active/OPEN_DEFECTS.md": "4fbf6b8824dd5fcea7912cf3665e585b9cd5aeb7c4c6f6a717f1c45ec2dddbbc"
   },
   "target_contracts": {
     "known": [

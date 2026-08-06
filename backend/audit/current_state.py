@@ -65,6 +65,10 @@ SOURCES = (
     "backend/model.py",
     "backend/features.py",
     ".github/workflows/invariants.yml",
+    # The backlog is hashed too. A defect marked FIXED whose source later changes makes
+    # the state document stale, so the two cannot drift apart silently - which is the
+    # failure every hand-written status file in docs/active/ has had at least once.
+    "docs/active/OPEN_DEFECTS.md",
 )
 
 
