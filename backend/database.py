@@ -1382,6 +1382,45 @@ def fetch_open_rule_paper_positions(round_id: str) -> list[dict]:
             conn.close()
 
 
+def mark_predictions_terminal_invalid(horizon: int, ids: list[str], reason: str) -> int:
+    """Persist a TERMINAL non-graded outcome for rows the verifier has stopped tracking.
+
+    A prediction that exceeds MAX_RESOLUTION_LATENESS_MS is correctly refused rather than graded
+    against a price from the wrong moment - but it was then dropped from the verifier's pending
+    list WITHOUT being written anywhere. It was not in `newly_verified` either, and
+    `newly_verified` is the only thing the server persists. The row therefore stayed PENDING in
+    DuckDB while memory had forgotten it, and was only reconciled by the orphan sweep on the
+    next restart - which attributes it to RESTART_MISSED_BOUNDARY, a different and untrue cause.
+
+    Terminal means terminal: it is recorded when it happens, with the reason that actually
+    applied. Returns the number of rows updated so a silent no-op is visible to the caller.
+    """
+    if not ids or int(horizon) not in (5, 15):
+        return 0
+    unique = sorted({str(i) for i in ids if i})
+    if not unique:
+        return 0
+    placeholders = ",".join("?" for _ in unique)
+    with _connect() as conn:
+        rows = conn.execute(f"""
+            UPDATE predictions_{int(horizon)}m
+            SET resolution_status = 'INVALID',
+                invalid_reason = ?
+            WHERE id IN ({placeholders})
+              AND COALESCE(resolution_status, 'PENDING') = 'PENDING'
+            RETURNING id
+        """, (str(reason)[:120], *unique)).fetchall()
+        updated = len(rows)
+        if updated:
+            conn.execute(f"""
+                UPDATE model_predictions
+                SET resolution_status = 'INVALID'
+                WHERE parent_prediction_id IN ({placeholders})
+                  AND COALESCE(resolution_status, 'PENDING') = 'PENDING'
+            """, tuple(unique))
+    return updated
+
+
 def invalidate_price_to_beat(round_id: str):
     """Atomically remove a round with an unrecoverable same-feed boundary."""
     conn = None

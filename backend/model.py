@@ -625,6 +625,29 @@ class CascadeMonitor:
         return self.cascade_enabled
 
 
+#: EVERY source file whose content can change a prediction or how it is graded.
+#:
+#: The bundle hashed model.py, features.py and model_contract.py only. A change to
+#: target_contract.py (which QUESTION the labels answer), regime.py (which expert routes a row)
+#: or calibration.py (what the served probability becomes) left an old artifact reading as
+#: "code compatible" - so the identity certified compatibility across exactly the edits most
+#: likely to invalidate it.
+#:
+#: Declared once and shared by the train and both save paths, which previously each restated
+#: the list and could drift apart. Missing files are dropped rather than raising: this is a
+#: provenance hash, and a partial repository should not make training impossible - but the set
+#: is asserted non-empty so it cannot silently degrade to hashing nothing.
+def SEMANTIC_CODE_PATHS() -> list[str]:
+    here = os.path.dirname(__file__)
+    names = ("model.py", "features.py", "model_contract.py", "target_contract.py",
+             "regime.py", "calibration.py", "decision_gate.py")
+    paths = [os.path.join(here, n) for n in names]
+    present = [p for p in paths if os.path.isfile(p)]
+    if not present:
+        raise RuntimeError("no semantic code paths resolved; refusing to hash an empty set")
+    return present
+
+
 class MultiModelEnsemble:
     """
     Institutional-grade multi-model ensemble with stability controls.
@@ -807,11 +830,7 @@ class MultiModelEnsemble:
         self.training_identity = current_training_identity(
             requested_days=requested_days,
             feature_names=self.model_feature_names,
-            code_paths=[
-                __file__,
-                os.path.join(os.path.dirname(__file__), "features.py"),
-                os.path.join(os.path.dirname(__file__), "model_contract.py"),
-            ],
+            code_paths=SEMANTIC_CODE_PATHS(),
             full_refit=full_refit,
         )
         identity_issues = training_identity_issues(self.training_identity)
@@ -3267,11 +3286,7 @@ class MultiModelEnsemble:
             current_identity = current_training_identity(
                 requested_days=requested_days,
                 feature_names=self.model_feature_names,
-                code_paths=[
-                    __file__,
-                    os.path.join(os.path.dirname(__file__), "features.py"),
-                    os.path.join(os.path.dirname(__file__), "model_contract.py"),
-                ],
+                code_paths=SEMANTIC_CODE_PATHS(),
                 full_refit=self.full_refit,
             )
             base_identity = copy.deepcopy(
@@ -3437,11 +3452,7 @@ class MultiModelEnsemble:
             expected_identity = current_training_identity(
                 requested_days=configured_model_training_days(),
                 feature_names=self.model_feature_names,
-                code_paths=[
-                    __file__,
-                    os.path.join(os.path.dirname(__file__), "features.py"),
-                    os.path.join(os.path.dirname(__file__), "model_contract.py"),
-                ],
+                code_paths=SEMANTIC_CODE_PATHS(),
             )
             compatible, incompatibilities = artifact_compatibility(
                 model_dir, expected_identity, strict=strict_identity

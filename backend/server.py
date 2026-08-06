@@ -4816,6 +4816,32 @@ async def main_loop():
             # would silently stop, so this argument is load-bearing, not optional.
             newly_verified = verifier.check_and_verify(
                 current_price, now_ms, klines=data_state["klines"][-2000:])
+            # TERMINAL non-graded rows are persisted as terminal, HERE, when they happen.
+            # `newly_verified` is the only thing this loop persisted, so a row refused for
+            # lateness left the verifier's memory and stayed PENDING in DuckDB until the next
+            # restart's orphan sweep relabelled it RESTART_MISSED_BOUNDARY - a cause that never
+            # applied. Draining is unconditional so the queue cannot grow without bound.
+            if verifier.terminal_invalid:
+                _terminal = verifier.terminal_invalid
+                verifier.terminal_invalid = []
+                _by_h: dict[int, list[str]] = {}
+                _reasons: dict[int, str] = {}
+                for _row in _terminal:
+                    _h = int(_row.get("horizon") or 0)
+                    if not _row.get("id") or _h not in (5, 15):
+                        continue
+                    _by_h.setdefault(_h, []).append(str(_row["id"]))
+                    _reasons.setdefault(_h, str(_row.get("reason") or "INVALID_LATE"))
+                for _h, _ids in _by_h.items():
+                    try:
+                        _n = database.mark_predictions_terminal_invalid(
+                            _h, _ids, _reasons.get(_h, "INVALID_LATE"))
+                        logger.warning(
+                            "[VERIFY] %s/%s %sm rows persisted INVALID (%s)",
+                            _n, len(_ids), _h, _reasons.get(_h, "INVALID_LATE"))
+                    except Exception as _tie:
+                        logger.error("[VERIFY] terminal-invalid persist failed for %sm: %s",
+                                     _h, _tie)
             # P1-3. The same intrabar window the main verifier grades from. Without it the
             # per-model panel graded an endpoint sign at loop time while these models are
             # trained on first touch.

@@ -267,7 +267,11 @@ def _load_bigmove_keeper_model():
     global _BIGMOVE_MODEL, _BIGMOVE_CHECKED
     if _BIGMOVE_CHECKED:
         return _BIGMOVE_MODEL
-    _BIGMOVE_CHECKED = True
+    # PINNED ON SUCCESS, not on ATTEMPT. Setting this before the load meant one
+    # transient failure - file not yet written by the trainer, a momentary lock, a
+    # partial write - permanently disabled this head for the life of the process, and
+    # the only symptom was a head that silently stopped contributing. The flag now
+    # moves only after a verified load, so a later attempt can still succeed.
     try:
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -275,6 +279,7 @@ def _load_bigmove_keeper_model():
         path = os.path.join(data_dir, "saved_models", "bigmove_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "bigmove_keeper"):
             _BIGMOVE_MODEL = _verified_load(path)
+            _BIGMOVE_CHECKED = True
             logger.info(f"Big-move keeper head loaded: AUC={_BIGMOVE_MODEL.get('auc'):.3f}, "
                         f"features={_BIGMOVE_MODEL.get('features')}")
     except Exception as _e:
@@ -291,7 +296,11 @@ def _load_bigdrop_keeper_model():
     global _BIGDROP_MODEL, _BIGDROP_CHECKED
     if _BIGDROP_CHECKED:
         return _BIGDROP_MODEL
-    _BIGDROP_CHECKED = True
+    # PINNED ON SUCCESS, not on ATTEMPT. Setting this before the load meant one
+    # transient failure - file not yet written by the trainer, a momentary lock, a
+    # partial write - permanently disabled this head for the life of the process, and
+    # the only symptom was a head that silently stopped contributing. The flag now
+    # moves only after a verified load, so a later attempt can still succeed.
     try:
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -299,6 +308,7 @@ def _load_bigdrop_keeper_model():
         path = os.path.join(data_dir, "saved_models", "bigdrop_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "bigdrop_keeper"):
             _BIGDROP_MODEL = _verified_load(path)
+            _BIGDROP_CHECKED = True
             logger.info(f"Big-drop keeper head loaded: AUC={_BIGDROP_MODEL.get('auc'):.3f}, "
                         f"top5%={_BIGDROP_MODEL.get('top5_prec'):.2f}")
     except Exception as _e:
@@ -315,7 +325,11 @@ def _load_directional_keeper_model():
     global _DIRECTIONAL_MODEL, _DIRECTIONAL_CHECKED
     if _DIRECTIONAL_CHECKED:
         return _DIRECTIONAL_MODEL
-    _DIRECTIONAL_CHECKED = True
+    # PINNED ON SUCCESS, not on ATTEMPT. Setting this before the load meant one
+    # transient failure - file not yet written by the trainer, a momentary lock, a
+    # partial write - permanently disabled this head for the life of the process, and
+    # the only symptom was a head that silently stopped contributing. The flag now
+    # moves only after a verified load, so a later attempt can still succeed.
     try:
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -323,6 +337,7 @@ def _load_directional_keeper_model():
         path = os.path.join(data_dir, "saved_models", "directional_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "directional_keeper"):
             _DIRECTIONAL_MODEL = _verified_load(path)
+            _DIRECTIONAL_CHECKED = True
             logger.info("Directional keeper heads loaded: %s", list((_DIRECTIONAL_MODEL.get("models") or {}).keys()))
     except Exception as _e:
         logger.debug(f"directional keeper model load skipped: {_e}")
@@ -338,7 +353,11 @@ def _load_activity_keeper_model():
     global _ACTIVITY_MODEL, _ACTIVITY_CHECKED
     if _ACTIVITY_CHECKED:
         return _ACTIVITY_MODEL
-    _ACTIVITY_CHECKED = True
+    # PINNED ON SUCCESS, not on ATTEMPT. Setting this before the load meant one
+    # transient failure - file not yet written by the trainer, a momentary lock, a
+    # partial write - permanently disabled this head for the life of the process, and
+    # the only symptom was a head that silently stopped contributing. The flag now
+    # moves only after a verified load, so a later attempt can still succeed.
     try:
         import os
         data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
@@ -346,6 +365,7 @@ def _load_activity_keeper_model():
         path = os.path.join(data_dir, "saved_models", "activity_keeper_model.pkl")
         if os.path.exists(path) and not _identity_blocks_load(path, "activity_keeper"):
             _ACTIVITY_MODEL = _verified_load(path)
+            _ACTIVITY_CHECKED = True
             logger.info(f"Activity keeper head loaded: AUC={_ACTIVITY_MODEL.get('auc'):.3f}")
     except Exception as _e:
         logger.debug(f"activity keeper model load skipped: {_e}")

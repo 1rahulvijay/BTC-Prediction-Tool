@@ -215,6 +215,12 @@ jobs:
       - name: Simulator entry authority (a lean is not an authorization)
         run: python backend/test_simulator_entry_authority.py
 
+      # A terminal verification state that is never written, a code hash blind to the file
+      # deciding WHICH question the labels answer, and a head disabled for the process
+      # lifetime by one transient load failure.
+      - name: Evidence durability and provenance (terminal states, code hash, loaders)
+        run: python backend/test_evidence_durability_and_provenance.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -770,6 +776,7 @@ jobs:
           python backend/test_history_days_single_resolver.py || exit /b 1
           python backend/test_core_decision_contracts.py || exit /b 1
           python backend/test_simulator_entry_authority.py || exit /b 1
+          python backend/test_evidence_durability_and_provenance.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

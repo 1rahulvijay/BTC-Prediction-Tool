@@ -32,6 +32,10 @@ class PredictionVerifier:
     def __init__(self, max_history_per_horizon: int = 500):
         self.max_history = max_history_per_horizon
         self.pending_predictions: list[dict] = []
+        #: Rows that reached a TERMINAL non-graded state and must be persisted as such. Drained
+        #: by the server each cycle. Without this, a row left memory and stayed PENDING on disk.
+        self.terminal_invalid: list[dict] = []
+        self.invalid_late = 0
         
         # Per-horizon verified history
         self.verified_by_horizon: dict[int, deque] = {
@@ -269,6 +273,20 @@ class PredictionVerifier:
                 if lateness_ms > self.MAX_RESOLUTION_LATENESS_MS:
                     pred["grade_status"] = f"INVALID_LATE:{lateness_ms}ms"
                     self.invalid_late = getattr(self, "invalid_late", 0) + 1
+                    # TERMINAL, AND RECORDED. Refusing to grade a late row is right; dropping
+                    # it was not. `continue` skips both still_pending and newly_verified, and
+                    # newly_verified is the ONLY thing the server persists - so the row left
+                    # memory while staying PENDING in DuckDB, reconciled only by the next
+                    # restart's orphan sweep, which then attributes it to
+                    # RESTART_MISSED_BOUNDARY: a different and untrue cause.
+                    #
+                    # Queued rather than written here: this class does no I/O, and a DB call
+                    # inside the grading loop would put a lock on the hot path.
+                    self.terminal_invalid.append({
+                        "id": pred.get("id"),
+                        "horizon": int(pred.get("horizon") or 0),
+                        "reason": f"INVALID_LATE:{lateness_ms}ms",
+                    })
                     continue          # dropped: not graded, not silently mislabelled
 
                 result = self._grade(pred, current_price, threshold, klines)
