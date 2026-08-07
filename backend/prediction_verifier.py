@@ -165,6 +165,13 @@ class PredictionVerifier:
             "neutral_reason": prediction.get("neutralReason", prediction.get("skipReason", "")),
             "quality_status": prediction.get("qualityStatus", ""),
             "confidence": prediction["confidence"],
+            # The PRE-CALIBRATION score. `confidence` has already been through regime
+            # calibration and the live isotonic map, so fitting a calibrator on it means
+            # calibrating a calibrator's own previous output - and feeding that back in. This
+            # is the immutable score the calibrator must be fitted against.
+            "confidence_raw": float(
+                prediction.get("confidenceRaw", prediction.get("confidence", 0.0)) or 0.0),
+            "confidence_raw_available": prediction.get("confidenceRaw") is not None,
             "target_price": prediction["targetPrice"],
             "expected_move_usd": round(expected_move, 2),
             "signed_expected_move_usd": round(signed_expected_move, 2),
@@ -621,6 +628,27 @@ class PredictionVerifier:
         the realized hit rate. Isotonic enforces monotonicity (higher confidence ⇒
         not-lower hit rate), which directly repairs the live inversion where a 0.5
         confidence was hitting *less* than a 0.4. Cheap; call on a cadence.
+
+        TWO DEFECTS THIS NOW AVOIDS
+
+        1. RECURSION. The docstring said "raw confidence" and the code fitted on
+           `prediction["confidence"]` - a value that had ALREADY been through regime
+           calibration and this very isotonic map. Each refit therefore calibrated its own
+           previous output and fed the result back in. `confidence_raw` is the immutable
+           pre-calibration score, and `model.py` now predicts from `conf_raw` so the apply end
+           matches the fit end; feeding it post-calibration `conf` would reintroduce the loop
+           at the other side.
+
+        2. SELECTION BIAS. It trained only on rows whose FINAL direction stayed UP/DOWN -
+           i.e. rows that survived the server gates - and the resulting map was then applied
+           BEFORE those gates to every future prediction. That estimates
+           P(correct | survived the gates, score) and uses it as P(correct | score).
+
+        CONSEQUENCE, STATED: rows recorded before `confidence_raw` existed are skipped, so the
+        calibrator is UNAVAILABLE until enough new rows accumulate. Raw score cannot be
+        recovered retroactively, and an unavailable calibrator is the honest state - the model
+        shrinks toward its own confidence when none is supplied. Logged below rather than left
+        to look like a silently idle component.
         """
         try:
             from sklearn.isotonic import IsotonicRegression
@@ -629,11 +657,32 @@ class PredictionVerifier:
         for h in ALL_HORIZONS:
             confs, hits = [], []
             for v in self.verified_by_horizon[h]:
-                if v.get("direction") in ("UP", "DOWN"):
-                    confs.append(float(v.get("confidence", 0.0) or 0.0))
-                    hits.append(1.0 if v.get("hit") else 0.0)
+                # SELECTION. Every scoreable RAW lean, not only the ones that survived the
+                # server gates. Filtering on the FINAL `direction` estimated
+                # P(correct | survived the gates, score) and then applied it BEFORE those
+                # gates to future predictions - a different quantity wearing the same name.
+                raw_dir = v.get("raw_direction") or v.get("model_raw_direction")
+                actual = v.get("actual_direction")
+                if raw_dir not in ("UP", "DOWN") or actual not in ("UP", "DOWN", "NEUTRAL"):
+                    continue
+                # SCORE. The pre-calibration value. Fitting on `confidence` calibrated this
+                # map's own previous output and fed the result back in on the next refit.
+                if not v.get("confidence_raw_available"):
+                    continue
+                # TARGET. Whether the RAW lean was right - not `hit`, which is dual-semantic
+                # and credits correct abstentions the raw score never proposed.
+                confs.append(float(v.get("confidence_raw", 0.0) or 0.0))
+                hits.append(1.0 if raw_dir == actual else 0.0)
             n = len(confs)
             if n < min_samples or len(set(hits)) < 2:
+                # Visible, and rate-limited so it does not spam a healthy cadence.
+                _seen = len(self.verified_by_horizon[h])
+                if _seen and _seen % 50 == 0:
+                    logger.info(
+                        "[CALIB] %sm confidence calibrator UNAVAILABLE: %s/%s rows carry a raw "
+                        "score (of %s verified). Rows recorded before confidence_raw existed "
+                        "cannot be used; it accumulates from here.",
+                        h, n, min_samples, _seen)
                 continue
             try:
                 iso = IsotonicRegression(out_of_bounds="clip", y_min=0.05, y_max=0.95)

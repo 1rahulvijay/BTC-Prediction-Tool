@@ -648,6 +648,27 @@ def SEMANTIC_CODE_PATHS() -> list[str]:
     return present
 
 
+def _normalize_neutral(res: dict) -> dict:
+    """A finalized NEUTRAL carries no executable instruction. Idempotent; safe on any result.
+
+    Model recommendations are PRESERVED under model_* names rather than deleted - they remain
+    useful diagnostics and become impossible to mistake for an order. Mirrors the server's
+    _neutralize_prediction() so the two paths cannot drift.
+    """
+    if res.get("direction") != "NEUTRAL":
+        return res
+    for live, diagnostic in (("positionSize", "model_positionSize"),
+                             ("stopLoss", "model_stopLoss"),
+                             ("takeProfit", "model_takeProfit")):
+        if res.get(live) is not None:
+            res.setdefault(diagnostic, res[live])
+    res["positionSize"] = 0
+    res["stopLoss"] = None
+    res["takeProfit"] = None
+    res["actionable"] = False
+    return res
+
+
 class MultiModelEnsemble:
     """
     Institutional-grade multi-model ensemble with stability controls.
@@ -2802,7 +2823,15 @@ class MultiModelEnsemble:
         cc = (data_state.get("confidence_calibrators") or {}).get(h)
         if direction in ("UP", "DOWN") and cc and cc.get("iso") is not None:
             try:
-                mapped = float(cc["iso"].predict([conf])[0])
+                # APPLIED TO THE SAME QUANTITY IT WAS FITTED ON.
+                #
+                # The verifier now fits this map on `confidence_raw` - the pre-calibration
+                # score - because fitting it on `confidence` calibrated the map's own previous
+                # output and fed the result back in on every refit. Predicting from `conf`
+                # here, which has already been through regime calibration above, would feed
+                # the map a different input domain than it was trained on: the recursion
+                # removed at the fit end and reintroduced at the apply end.
+                mapped = float(cc["iso"].predict([conf_raw])[0])
                 w = min(1.0, float(cc.get("n", 0)) / 120.0)
                 conf = max(0.0, min(0.99, conf * (1.0 - w) + mapped * w))
             except Exception:
@@ -2996,8 +3025,16 @@ class MultiModelEnsemble:
             res["skipReason"] = res["qualityMessage"]
             res["neutralReasonCode"] = "wide_target_range"
             res["neutralReason"] = res["qualityMessage"]
-            
-        return res
+
+        # EVERY NEUTRAL EXIT IS NORMALIZED, not only the actively-rejected ones.
+        #
+        # `positionSize` is assigned from confidence alone and the stop/take-profit geometry is
+        # built with an `if UP else SHORT-shaped` branch, so a NATURALLY neutral prediction
+        # could carry a positive size and short-looking stop/target values. The server's atomic
+        # `_neutralize_prediction()` only fires when an existing DIRECTIONAL call is rejected -
+        # it never saw a row that was NEUTRAL from the start, nor the quantile skip above, which
+        # rewrote direction and reason fields and left the geometry describing the old side.
+        return _normalize_neutral(res)
 
     def _apply_direction_lock(self, h: int, raw_direction: str, p_up: float, p_down: float, p_neutral: float) -> str:
         """

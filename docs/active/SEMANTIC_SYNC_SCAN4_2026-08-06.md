@@ -158,3 +158,58 @@ Thirty claims remain unread against source, including two the scan ranks alongsi
 first-touch interval being shorter than the declared horizon, and post-inference re-anchoring of
 `predicted_price` / `verify_at`. Both are plausible and both touch the same event-time root as
 2.4. Neither has been verified, so neither is a finding yet.
+
+## 5.8 / 5.9 / 5.24 / 5.25 — CONFIRMED and FIXED
+
+**5.8 — the calibrator fitted on its own previous output.** `refit_confidence_calibrators` says
+it maps "raw confidence" and fitted on `prediction["confidence"]`, a value already through
+regime calibration *and* this very isotonic map. Every refit learned from its own last answer.
+
+**5.9 — and it was selection-biased.** It trained only on rows whose FINAL direction stayed
+UP/DOWN — rows that survived the server gates — then applied the map **before** those gates to
+every future prediction. That estimates `P(correct | survived the gates, score)` and uses it as
+`P(correct | score)`.
+
+The two interact, which is why they were fixed together: correcting the score without correcting
+the population yields a correctly-scaled map of the wrong conditional.
+
+Demonstrated on a population built so the defects point in opposite directions — survivors
+mostly right, abstained rows mostly wrong, same raw score:
+
+```text
+true P(correct | raw 0.80)      0.500
+fitted, after the fix           0.500      n = 200 (all scoreable raw leans)
+fitted, filtering on final dir  ~1.0       n = 100 (every survivor was a winner)
+```
+
+**The apply end had to move too.** The model now predicts from `conf_raw`, not from `conf`.
+Feeding a map fitted on the raw score a post-regime-calibration input would have removed the
+recursion at one end and reintroduced it at the other.
+
+**Consequence, stated:** rows recorded before `confidence_raw` existed are skipped, so the
+calibrator is UNAVAILABLE until new rows accumulate. Raw score cannot be recovered
+retroactively; unavailable is the honest state, and it is logged rather than left looking like
+an idle component.
+
+**5.24 / 5.25 — a NEUTRAL prediction carried trading instructions.** `positionSize` comes from
+confidence alone and the stop/target geometry is built with an `if UP else SHORT-shaped` branch,
+so a naturally-NEUTRAL row could carry a positive size and short-looking levels. The server's
+atomic `_neutralize_prediction()` only fires when a DIRECTIONAL call is actively rejected — it
+never saw a row NEUTRAL from the start, nor the quantile skip, which rewrote direction and
+reasons and left the geometry describing the old side. One idempotent `_normalize_neutral()`
+now finalizes every NEUTRAL exit, preserving the model's recommendation under `model_*` names.
+
+### A test error worth recording
+
+The source assertions initially matched **the fix's own documentation**: `ast.unparse()` re-emits
+the docstring, which explains the defect and therefore contains both "direction" and
+"confidence". A later attempt matched the fix's own **log message** ("confidence calibrator
+UNAVAILABLE"). Both now assert the actual data access through the AST. That trap has fired four
+times in this repository.
+
+## 5.2–5.7, 5.10–5.23, 5.26–5.31 — still NOT investigated
+
+24 claims remain unread against source, including the two the scan ranks alongside 5.1: the live
+first-touch interval being shorter than the declared horizon, and post-inference re-anchoring of
+`predicted_price` / `verify_at`. Both are plausible and both touch the same event-time root as
+2.4. Neither is a finding yet.

@@ -221,6 +221,12 @@ jobs:
       - name: Evidence durability and provenance (terminal states, code hash, loaders)
         run: python backend/test_evidence_durability_and_provenance.py
 
+      # The live isotonic map fitted on its OWN previous output, on rows that had already
+      # survived the gates it is applied before; and a NEUTRAL prediction could carry a
+      # position size and short-shaped stop/target.
+      - name: Confidence calibrator population and NEUTRAL finalization
+        run: python backend/test_calibrator_and_neutral_finalization.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -777,6 +783,7 @@ jobs:
           python backend/test_core_decision_contracts.py || exit /b 1
           python backend/test_simulator_entry_authority.py || exit /b 1
           python backend/test_evidence_durability_and_provenance.py || exit /b 1
+          python backend/test_calibrator_and_neutral_finalization.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1
