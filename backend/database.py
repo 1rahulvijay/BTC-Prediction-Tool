@@ -133,6 +133,22 @@ def init_db():
             "ADD COLUMN neutral_band DOUBLE DEFAULT 0.0008",
             "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
             "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
+            # P0-14 / 1.7. WHICH QUESTION this row answers, and WHICH RELEASE answered it.
+            #
+            # Without these, no query can separate a first-touch row from an endpoint row, so
+            # contract-correct calibration cannot be written at all - which is why
+            # PrecisionEngine declares contract_provenance=UNRECORDED and refuses.
+            #
+            # The default is UNKNOWN_LEGACY and it exists ONLY for rows written before this
+            # column did. `log_prediction` requires the value explicitly, so a NEW row can
+            # never quietly inherit it - a default that also stamps fresh rows is the
+            # fill-engine defect (fd46d51) in a different costume.
+            "ADD COLUMN target_contract VARCHAR DEFAULT 'UNKNOWN_LEGACY'",
+            "ADD COLUMN release_id VARCHAR DEFAULT 'UNKNOWN_LEGACY'",
+            "ADD COLUMN resolution_basis VARCHAR DEFAULT ''",
+            "ADD COLUMN resolution_event_ts BIGINT DEFAULT NULL",
+            "ADD COLUMN resolution_price DOUBLE DEFAULT NULL",
+            "ADD COLUMN label_version VARCHAR DEFAULT ''",
         ]:
             try:
                 conn.execute(f"ALTER TABLE predictions_{tf}m {ddl};")
@@ -3008,7 +3024,22 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                    trade_verdict: str = "", no_trade_reasons: list = None,
                    decision_state: dict = None, model_confluence: float = 0.0,
                    setup_score: float = 0.0, setup_quality: dict = None,
-                   neutral_band: float = 0.0008):
+                   neutral_band: float = 0.0008,
+                   target_contract: str = "", release_id: str = ""):
+    """Persist one prediction.
+
+    `target_contract` and `release_id` are REQUIRED in practice: a row that cannot say which
+    question it answers, or which release answered it, is unusable for contract-correct
+    calibration and for any incumbent-vs-challenger comparison. They are keyword arguments with
+    an empty default only so the failure is a loud refusal here rather than a TypeError deep in
+    a caller - see the check below.
+    """
+    if not target_contract or not release_id:
+        raise ValueError(
+            f"log_prediction requires target_contract and release_id "
+            f"(got {target_contract!r}, {release_id!r}). A prediction that cannot state which "
+            f"question it answers is exactly the provenance gap P0-14 exists to close; "
+            f"UNKNOWN_LEGACY is for rows written before the column existed, not for new ones.")
     conn = None
     try:
         conn = _connect()
@@ -3022,8 +3053,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
                 confluence_grade, expected_precision, calibrated_confidence,
                 model_raw_direction, pre_server_direction, final_direction, trade_verdict,
                 no_trade_reasons_json, decision_state_json, model_confluence, setup_score,
-                setup_quality_json, neutral_band
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                setup_quality_json, neutral_band, target_contract, release_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (pred_id, timestamp, horizon, binance_price, target_price, expected_move,
               confidence, signal, chainlink_price, chainlink_target, False, cascade_active, regime,
               raw_direction or signal, skip_reason or "", avoid_success, prob_up, prob_down,
@@ -3044,7 +3075,8 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
               float(model_confluence or 0.0),
               float(setup_score or 0.0),
               json.dumps(setup_quality or {}),
-              float(neutral_band or 0.0008)))
+              float(neutral_band or 0.0008),
+              str(target_contract), str(release_id)))
         # Store prediction-time context for the trained meta-model.
         if context:
             conn.execute(f"""

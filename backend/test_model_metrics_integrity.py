@@ -41,6 +41,10 @@ def main() -> None:
                 prediction_id=parent_id,
             )
             database.log_prediction(
+                # Required provenance: a row that cannot say which question it
+                # answers is refused by the writer (P0-14).
+                target_contract="first_touch_triple_barrier_v1",
+                release_id="test_bundle",
                 pred_id=parent_id,
                 timestamp=timestamp,
                 horizon=5,
@@ -114,6 +118,10 @@ def main() -> None:
             now_ms = int(time.time() * 1000)
             for suffix, verify_at in (("expired", now_ms - 1_000), ("future", now_ms + 300_000)):
                 database.log_prediction(
+                # Required provenance: a row that cannot say which question it
+                # answers is refused by the writer (P0-14).
+                target_contract="first_touch_triple_barrier_v1",
+                release_id="test_bundle",
                     pred_id=f"pred_{suffix}", timestamp=now_ms - 10_000, horizon=5,
                     binance_price=100.0, target_price=101.0, expected_move=1.0,
                     confidence=0.6, signal="UP", chainlink_price=100.0,

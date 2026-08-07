@@ -269,6 +269,7 @@ def current_training_identity(
     split_timestamps: dict[str, Any] | None = None,
     calibration_timestamps: dict[str, Any] | None = None,
     full_refit: bool = False,
+    executed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matrix_manifest = load_json(MATRIX_MANIFEST_PATH)
     summary = matrix_manifest.get("summary") or {}
@@ -314,7 +315,7 @@ def current_training_identity(
     # oracle freeze) continue to work.
     semantics = _current_semantics_versions()
     commit, dirty = _source_commit_state()
-    return {
+    identity = {
         "manifest_version": 1,
         "feature_semantics_version": semantics["feature"],
         "training_semantics_version": semantics["training"],
@@ -349,6 +350,86 @@ def current_training_identity(
         "split_timestamps": split_timestamps or {},
         "calibration_timestamps": calibration_timestamps or {},
         "full_refit": bool(full_refit),
+    }
+    # THE EXECUTED DATASET, beside the matrix one rather than instead of it.
+    #
+    # Every field above describes research_matrix_1m.parquet. `train()` is handed in-memory
+    # X/Y built from freshly fetched klines, so the manifest could truthfully hash the matrix
+    # while certifying a model trained on different data (2.1). Both are now recorded, and
+    # `executed_matches_matrix` says whether they agree - "two, and they differ" is a far more
+    # useful answer than one number that describes the wrong dataset.
+    if executed:
+        identity.update(executed)
+        _mrows = int((summary or {}).get("rows") or 0)
+        _erows = int(executed.get("executed_rows") or 0)
+        identity["executed_matches_matrix"] = bool(
+            _mrows and _erows and _mrows == _erows
+            and executed.get("executed_feature_matrix_sha256")
+            and matrix_hash
+            # Row COUNT agreement is not data agreement - the live 60-day fetch and the matrix
+            # both hold 86,400 rows. Only a hash match may claim identity.
+            and executed.get("executed_feature_matrix_sha256") == matrix_hash)
+        identity["executed_identity_recorded"] = True
+    else:
+        identity["executed_identity_recorded"] = False
+        identity["executed_matches_matrix"] = None
+    return identity
+
+
+def executed_training_identity(X, Y, *, valid_mask=None, regime_labels=None,
+                               decision_timestamps=None) -> dict[str, Any]:
+    """Hash the arrays the model is ACTUALLY about to train on.
+
+    THE DEFECT THIS CLOSES (scan-2 item 2.1, the keystone).
+
+    `current_training_identity` describes `research_matrix_1m.parquet` and its manifest -
+    training_data_hash, row_count, coverage_ok, actual_start/end, monthly_quality_passed - while
+    `train()` receives in-memory X and Y built from `data_state["klines"]`, fetched fresh from
+    Binance at boot. Measured: the manifest records 86,400 rows and hash 281657b2..., written at
+    04:05, and the live run trains on 86,400 freshly-fetched bars. SAME COUNT, DIFFERENT DATA.
+
+    So the manifest could truthfully hash the research matrix while certifying a model trained
+    on something else, and every downstream gate that reads it - artifact_compatibility, the
+    oracle freeze, check_feature_contract - was certifying provenance for the wrong dataset.
+
+    This does not replace the matrix identity; it sits BESIDE it under `executed_*` keys, so a
+    reader can see both and tell whether they agree. Answering "which dataset was this trained
+    on?" with a number that describes a different dataset is worse than answering "two, and they
+    differ" - and that is exactly what `executed_matches_matrix` now reports.
+    """
+    import numpy as _np
+
+    def _arr_hash(a) -> str | None:
+        if a is None:
+            return None
+        arr = _np.ascontiguousarray(_np.asarray(a))
+        h = hashlib.sha256()
+        h.update(str(arr.dtype).encode())
+        h.update(str(arr.shape).encode())
+        # The BYTES, not a summary. A mean or a min/max collides trivially and would let two
+        # different training sets certify as one.
+        h.update(arr.tobytes())
+        return h.hexdigest()
+
+    x = _np.asarray(X)
+    per_horizon = {}
+    for key in sorted((Y or {}).keys(), key=lambda k: str(k)):
+        per_horizon[str(key)] = {
+            "labels_sha256": _arr_hash((Y or {})[key]),
+            "rows": int(len(_np.asarray((Y or {})[key]))),
+            "valid_mask_sha256": _arr_hash((valid_mask or {}).get(key)),
+        }
+    ts = None if decision_timestamps is None else _np.asarray(decision_timestamps)
+    return {
+        "executed_feature_matrix_sha256": _arr_hash(x),
+        "executed_rows": int(x.shape[0]) if x.ndim else 0,
+        "executed_shape": list(x.shape),
+        "executed_labels": per_horizon,
+        "executed_regime_labels_sha256": _arr_hash(
+            None if regime_labels is None else _np.asarray(list(regime_labels), dtype=object).astype("U")),
+        "executed_decision_ts_sha256": _arr_hash(ts),
+        "executed_first_ts_ms": int(ts.min()) if ts is not None and ts.size else None,
+        "executed_last_ts_ms": int(ts.max()) if ts is not None and ts.size else None,
     }
 
 

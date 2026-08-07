@@ -256,6 +256,12 @@ jobs:
       - name: Maintenance journal split (only decision-free writes are deferred)
         run: python backend/test_maintenance_journal_split.py
 
+      # 2.1 keystone: the manifest described research_matrix_1m.parquet while train() was handed
+      # in-memory arrays from freshly fetched klines - same row count, different data. Plus 1.7:
+      # a prediction must state which question it answers and which release answered it.
+      - name: Executed training identity + prediction contract columns
+        run: python backend/test_executed_training_identity.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -818,6 +824,7 @@ jobs:
           python backend/test_book_freshness_and_ordering.py || exit /b 1
           python backend/test_venue_freshness_shared_rule.py || exit /b 1
           python backend/test_maintenance_journal_split.py || exit /b 1
+          python backend/test_executed_training_identity.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

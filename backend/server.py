@@ -4817,6 +4817,15 @@ async def main_loop():
                             setup_score=float(setup_quality.get("score", 0.0) or 0.0),
                             setup_quality=setup_quality,
                             neutral_band=float(p.get("neutralBand", 0.0008) or 0.0008),
+                            # P0-14 / 1.7. WHICH question this row answers and WHICH release
+                            # answered it. Stamped from the prediction itself rather than
+                            # assumed, so a future contract change cannot silently relabel
+                            # history. Without these two columns no query could separate a
+                            # first-touch row from an endpoint one, which is why calibration
+                            # still declares contract_provenance=UNRECORDED.
+                            target_contract=str(
+                                p.get("targetContract") or _target_contract.TRAINING_CONTRACT),
+                            release_id=str(getattr(model, "model_bundle_id", "") or "UNKNOWN"),
                         )
                         try:
                             database.log_forward_ev_event({

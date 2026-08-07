@@ -34,6 +34,7 @@ from artifact_identity import (
     artifact_manifest_path,
     configured_model_training_days,
     current_training_identity,
+    executed_training_identity,
     resolve_history_days,
     training_identity_issues,
     write_artifact_manifest,
@@ -848,12 +849,25 @@ class MultiModelEnsemble:
         # different windows, and an unset environment produced requested_days=0, which the
         # identity contract correctly refuses as missing.
         requested_days = resolve_history_days()
+        # 2.1. THE DATASET ACTUALLY TRAINED ON, hashed from the arrays in hand BEFORE any
+        # fitting starts. Every other field in the identity describes
+        # research_matrix_1m.parquet, which is not what these arrays are - so the manifest
+        # could truthfully hash the matrix while certifying a model trained on different data.
+        # Recorded beside it, never instead of it, with an explicit agreement flag.
+        _executed = executed_training_identity(
+            X, Y, valid_mask=valid_mask, regime_labels=regime_labels)
         self.training_identity = current_training_identity(
             requested_days=requested_days,
             feature_names=self.model_feature_names,
             code_paths=SEMANTIC_CODE_PATHS(),
             full_refit=full_refit,
+            executed=_executed,
         )
+        logger.info(
+            "[TRAIN] executed dataset: rows=%s sha=%s | matrix agreement=%s",
+            _executed.get("executed_rows"),
+            str(_executed.get("executed_feature_matrix_sha256"))[:16],
+            self.training_identity.get("executed_matches_matrix"))
         identity_issues = training_identity_issues(self.training_identity)
         if identity_issues:
             raise RuntimeError(
