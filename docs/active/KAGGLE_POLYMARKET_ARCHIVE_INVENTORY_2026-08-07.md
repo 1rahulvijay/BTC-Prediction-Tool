@@ -113,3 +113,100 @@ far better covered or far worse, and nothing should be designed until that is kn
 
 Doing it the other way round — building ten heads and then discovering the depth panel is 3%
 — is precisely how this repository accumulated the backlog it has spent five audits clearing.
+
+---
+
+# BTC rounds located, and depth measured on them - `2026-08-07`
+
+The follow-up the inventory called for. Every number below is measured, not estimated.
+
+## The rounds exist, and there are enough of them
+
+`labels/market_targets.parquet` holds 123,895 markets, 8,495 mentioning bitcoin/BTC. The Up/Down
+series is identifiable by question text (`"Bitcoin Up or Down - March 16, 8:05PM-8:10PM ET"`),
+and the window is parseable from the title:
+
+```text
+Bitcoin Up or Down markets   6,418
+   5-minute rounds           4,461
+  15-minute rounds           1,483
+ 240-minute rounds              93
+  unparsed titles             381
+```
+
+5,944 usable 5m/15m rounds over 21 days. As a *count*, adequate for LightGBM-scale work.
+
+## Depth on BTC rounds is ~3x the archive average - and still thin
+
+| | 2026-03-12 | 2026-03-19 |
+|---|---:|---:|
+| BTC 5m/15m rows | 106,762 | 12,624 |
+| share of that day's rows | 0.765% | 0.130% |
+| **rows with depth (BTC rounds)** | **7.64%** | **7.72%** |
+| rows with depth (all markets) | 2.60% | 4.48% |
+
+Split by round length on 2026-03-12:
+
+```text
+ 5m rounds   576 markets    6.73% of rows have depth   99.8% of markets have >=1 depth row
+15m rounds   193 markets   10.34% of rows have depth   96.9% of markets have >=1 depth row
+```
+
+Better than feared, still sparse: ~92% of BTC market-minutes carry a mid price with no book
+behind it. Nearly every round has *some* depth observation, which makes event-conditioned
+features viable and a minute-by-minute depth panel not.
+
+## Two findings that matter more than the depth number
+
+### 1. There are no settlement outcomes for BTC rounds. None.
+
+```text
+target over ALL markets        None 100,749   |   0: 17,177   |   1: 5,969
+target over BITCOIN UP/DOWN    None   6,418   |   0:      0   |   1:     0
+market_outcome in features_v3  0.00% of BTC rows, on both days sampled
+```
+
+23,146 other markets carry a resolved `target`. **Every one of the 6,418 BTC Up/Down markets is
+NULL** - despite `uma_status = "resolved"` on 6,247 of them.
+
+The supervision signal for the exact markets this repository cares about is **absent from the
+archive**. A settlement-residual model cannot be trained on it as published. The label would
+have to be reconstructed per round from the Polymarket API - which is the `round_truth.py` work
+already in this repo, and which makes the archive's value order-book features, not labels.
+
+### 2. There are no trades on BTC rounds
+
+```text
+trade_count non-null   100.00%
+trade_count > 0          0.00%     on both 5m and 15m rounds
+```
+
+Present on every row and zero on every row. A coverage check that counts non-nulls reports 100%
+and means nothing - the same "a check that passes while the property it guarantees is false"
+shape this repository keeps finding, here in someone else's dataset.
+
+Corroborated by the metadata: **5,703 of 6,418** BTC markets have zero recorded volume
+(p50 = 0, p75 = 0), and **6,247** have zero liquidity.
+
+### A detail that would have bitten later
+
+Rows per market are ~139-140, not 5 or 15. A market's rows span far more than its own round
+window, so a per-round dataset must **clip to the bounds parsed from the title**. Grouping by
+`market_id` alone would silently include ~134 minutes of out-of-round observations per
+5-minute round.
+
+## Verdict
+
+| proposed head | verdict on this data |
+|---|---|
+| settlement residual alpha | **BLOCKED** - no outcome labels for BTC rounds |
+| any trade-flow feature (VPIN, CVD, intensity) | **DEAD** - trade_count is zero on every BTC row |
+| depth imbalance / book shape, event-conditioned | **viable** - 7.6% of rows, ~99% of rounds have >=1 observation |
+| minute-by-minute depth panel | **not viable** - ~92% would be imputed |
+| Binance -> Polymarket repricing lag | **viable, and the strongest remaining use** - it needs the mid price (100% present) and a synchronised Binance join, not outcomes or trades |
+
+**This is a YES-side quote-and-book dataset, not a settlement dataset.** Its BTC value is
+repricing dynamics against Binance; the labels must come from elsewhere.
+
+Measuring this cost one afternoon. Building the ten-head lane first and discovering
+`target = NULL` afterwards would have cost considerably more.
