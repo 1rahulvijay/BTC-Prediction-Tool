@@ -250,6 +250,12 @@ jobs:
       - name: Venue freshness is ONE rule (panel and features agree)
         run: python backend/test_venue_freshness_shared_rule.py
 
+      # _emit calls book callbacks synchronously inside the websocket read loop, so a slow
+      # DuckDB write delayed the feed. Audit/telemetry writes now leave that thread; every
+      # write that FEEDS A DECISION deliberately stays inline, and the test pins both halves.
+      - name: Maintenance journal split (only decision-free writes are deferred)
+        run: python backend/test_maintenance_journal_split.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -811,6 +817,7 @@ jobs:
           python backend/test_shadow_hmm_mask_and_purge.py || exit /b 1
           python backend/test_book_freshness_and_ordering.py || exit /b 1
           python backend/test_venue_freshness_shared_rule.py || exit /b 1
+          python backend/test_maintenance_journal_split.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

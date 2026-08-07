@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, replace
 import math
 import threading
@@ -44,6 +45,96 @@ class PendingIntent:
     position_id: str | None = None
     exit_reason: str | None = None
     reversal_decision: StrategyDecision | None = None
+
+
+class _MaintenanceJournal:
+    """Bounded, counted, non-blocking sink for writes with NO decision consequence.
+
+    `_emit` in data_ingestion calls every book callback SYNCHRONOUSLY inside the websocket read
+    loop, so any DuckDB write in `on_book` can delay consumption of the very feed whose freshness
+    this engine depends on (scan-4 item 4.16).
+
+    THE SPLIT, AND WHY IT IS NOT "MOVE ALL DB WORK".
+
+    The audit's remedy was to enqueue an immutable event and let a worker own evaluation and all
+    DuckDB writes. Most of `on_book`'s work CANNOT move:
+
+        _process_pending      the code deliberately keeps fill latency faithful to the live
+                              quote stream; deferring it would trade a correctness property
+                              of a paper engine for throughput
+        portfolio.mark        the exit triggers below read the marked position
+        apply_funding         changes realised P&L, which the governor then reads
+        _governor_decision    decides can_open / must_flatten
+        _queue_*_exits        risk exits must be queued promptly, not on a worker's schedule
+
+    What is left is genuinely deferrable: the AUDIT LOG and the EQUITY TELEMETRY. Nothing reads
+    them back to make a decision, and they are the writes that grow without bound.
+
+    Drops are COUNTED, never silent - the feed_writer precedent in this repository. A journal
+    that quietly discards is worse than one that blocks, because the gap is invisible.
+    """
+
+    def __init__(self, maxlen: int = 4096):
+        self._q: deque = deque(maxlen=maxlen)
+        self._cv = threading.Condition()
+        self._thread: threading.Thread | None = None
+        self._stopping = False
+        self.dropped = 0
+        self.written = 0
+        self.errors = 0
+
+    def start(self) -> "_MaintenanceJournal":
+        with self._cv:
+            if self._thread is not None:
+                return self
+            self._stopping = False
+            self._thread = threading.Thread(
+                target=self._run, name="paper-maintenance-journal", daemon=True)
+            self._thread.start()
+        return self
+
+    def submit(self, fn) -> None:
+        """Never blocks the caller. A full queue drops the OLDEST and counts it."""
+        with self._cv:
+            if self._stopping:
+                self.dropped += 1
+                return
+            if len(self._q) == self._q.maxlen:
+                self.dropped += 1          # deque discards the oldest on append
+            self._q.append(fn)
+            self._cv.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while not self._q and not self._stopping:
+                    self._cv.wait(timeout=1.0)
+                if self._stopping and not self._q:
+                    return
+                fn = self._q.popleft() if self._q else None
+            if fn is None:
+                continue
+            try:
+                fn()
+                self.written += 1
+            except Exception as exc:
+                self.errors += 1
+                _LOG.warning("[PAPER] maintenance journal write failed: %s", exc)
+
+    def stop(self, timeout: float = 5.0) -> dict:
+        """Drain and join, so shutdown does not abandon queued audit rows."""
+        with self._cv:
+            self._stopping = True
+            self._cv.notify_all()
+            thread = self._thread
+            self._thread = None
+        if thread is not None:
+            thread.join(timeout=timeout)
+        with self._cv:
+            abandoned = len(self._q)
+            self._q.clear()
+        return {"written": self.written, "dropped": self.dropped,
+                "errors": self.errors, "abandoned_at_shutdown": abandoned}
 
 
 class BinancePaperService:
@@ -90,6 +181,9 @@ class BinancePaperService:
         self._last_funding_time_ms: int | None = None
         self._last_equity_snapshot_ms = 0
         self._integrity_error: str | None = None
+        #: 4.16. Audit/telemetry writes leave the websocket callback thread. Only
+        #: writes with NO decision consequence go here - see _MaintenanceJournal.
+        self.journal = _MaintenanceJournal()
 
     def initialize(self) -> None:
         with self._lock:
@@ -114,14 +208,22 @@ class BinancePaperService:
                     "hard_enabled": self.config.hard_enabled,
                 },
             )
+            self.journal.start()
             self.initialized = True
 
     def shutdown(self) -> None:
         with self._lock:
             self.running = False
             self.runtime_active = False
+            # Drain BEFORE closing the connection: queued audit rows are written through the
+            # same persistence object, and abandoning them is the gap this journal exists to
+            # make visible rather than create.
+            drain = self.journal.stop()
+            if drain.get("dropped") or drain.get("abandoned_at_shutdown") or drain.get("errors"):
+                _LOG.warning("[PAPER] maintenance journal drain: %s", drain)
             if self.persistence is not None:
-                self.persistence.append_event("SHUTDOWN", "Binance paper service stopped")
+                self.persistence.append_event(
+                    "SHUTDOWN", "Binance paper service stopped", details=drain)
                 self.persistence.close()
             self.initialized = False
 
@@ -192,12 +294,16 @@ class BinancePaperService:
             funding_events = self.portfolio.apply_funding(snapshot)
             if funding_due:
                 self._last_funding_time_ms = snapshot.funding_time_ms
+            # AUDIT LOG, deferred. The funding itself was already applied above - this is the
+            # record of it, and nothing reads it back to make a decision.
             for event in funding_events:
-                self.persistence.append_event(
-                    "FUNDING_APPLIED",
-                    "Observed Binance funding applied to paper position",
-                    strategy_id=event["strategy_id"],
-                    details=event,
+                self.journal.submit(
+                    lambda ev=event: self.persistence.append_event(
+                        "FUNDING_APPLIED",
+                        "Observed Binance funding applied to paper position",
+                        strategy_id=ev["strategy_id"],
+                        details=ev,
+                    )
                 )
             governor = self._governor_decision(snapshot)
             if not governor.can_open:
@@ -211,7 +317,12 @@ class BinancePaperService:
                 snapshot.received_at_ms - self._last_equity_snapshot_ms
                 >= 10_000
             ):
-                self.persistence.append_equity_snapshots(snapshot.received_at_ms)
+                # EQUITY TELEMETRY, deferred. Pure reporting, on a 10s cadence, and the
+                # largest recurring write on this thread.
+                self.journal.submit(
+                    lambda ts=snapshot.received_at_ms:
+                        self.persistence.append_equity_snapshots(ts)
+                )
                 self._last_equity_snapshot_ms = snapshot.received_at_ms
 
     def start_engine(self) -> dict[str, Any]:
