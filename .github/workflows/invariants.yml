@@ -245,6 +245,11 @@ jobs:
       - name: Book freshness and exchange ordering (source age, not receipt age)
         run: python backend/test_book_freshness_and_ordering.py
 
+      # Coinbase staleness was enforced for the venue panel and bypassed by the feature vector;
+      # Bybit/KuCoin shared one timestamp and retained stale prices into the consensus median.
+      - name: Venue freshness is ONE rule (panel and features agree)
+        run: python backend/test_venue_freshness_shared_rule.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -805,6 +810,7 @@ jobs:
           python backend/kline_schema.py --selftest || exit /b 1
           python backend/test_shadow_hmm_mask_and_purge.py || exit /b 1
           python backend/test_book_freshness_and_ordering.py || exit /b 1
+          python backend/test_venue_freshness_shared_rule.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

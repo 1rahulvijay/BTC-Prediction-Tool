@@ -1061,7 +1061,8 @@ class MultiExchangePriceClient:
 
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
-        self.data = {"bybit": None, "kucoin": None, "time": 0}
+        self.data = {"bybit": None, "kucoin": None, "time": 0,
+                     "bybit_observed_ts": 0.0, "kucoin_observed_ts": 0.0}
 
     async def _ensure_session(self):
         if self.session is None or self.session.closed:
@@ -1078,6 +1079,18 @@ class MultiExchangePriceClient:
         return None
 
     async def fetch_all(self):
+        """Poll each venue and stamp EACH ONE with its own observation time.
+
+        The client kept one shared `time` for both venues and retained the previous price on a
+        failed poll (`= float(...) or self.data["bybit"]`). So a venue that stopped responding
+        kept contributing its last price to the consensus median indefinitely, while the shared
+        `time` was refreshed every cycle and made the whole client look current.
+
+        A price is now only as fresh as ITS OWN successful fetch. The retain-on-failure
+        behaviour is kept - a brief blip should not blank a venue - but it is now DATED, so a
+        consumer can age it out.
+        """
+        _now = time.time()
         bybit = await self._get(self.BYBIT_URL)
         try:
             if bybit and bybit.get("retCode") == 0:
@@ -1085,15 +1098,23 @@ class MultiExchangePriceClient:
                 lst = result.get("list", []) if isinstance(result, dict) else []
                 first = lst[0] if lst and isinstance(lst[0], dict) else {}
                 if first:
-                    self.data["bybit"] = float(first.get("lastPrice", 0)) or self.data["bybit"]
+                    _px = float(first.get("lastPrice", 0))
+                    if _px:
+                        self.data["bybit"] = _px
+                        self.data["bybit_observed_ts"] = _now
         except Exception:
             pass
         kucoin = await self._get(self.KUCOIN_URL)
         try:
             if kucoin and kucoin.get("data"):
-                self.data["kucoin"] = float(kucoin["data"].get("price", 0)) or self.data["kucoin"]
+                _px = float(kucoin["data"].get("price", 0))
+                if _px:
+                    self.data["kucoin"] = _px
+                    self.data["kucoin_observed_ts"] = _now
         except Exception:
             pass
+        # Retained for back-compat. It means "when the client last POLLED", not "when either
+        # price was last OBSERVED" - the distinction that made a dead venue look alive.
         self.data["time"] = time.time()
         return self.data
 

@@ -1768,6 +1768,24 @@ def refresh_derivatives_from_rest() -> None:
 COINBASE_MAX_STALE_MS = 60_000
 
 
+#: Max age of a per-venue REST observation before it stops counting toward consensus.
+VENUE_MAX_STALE_MS = 120_000
+
+
+def coinbase_if_fresh(data_state: dict):
+    """The Coinbase print, or None when it is too old to be treated as an observation.
+
+    ONE definition. `current_venue_prices` applied this rule and `prepare_derivatives_data` did
+    not, so a disconnected Coinbase stream vanished from the venue panel while its last premium
+    kept flowing into the ML feature vector as though it were live.
+    """
+    px = data_state.get("coinbase_price")
+    recv = int(data_state.get("coinbase_price_recv_ms") or 0)
+    if not px or not recv or (int(time.time() * 1000) - recv) > COINBASE_MAX_STALE_MS:
+        return None
+    return px
+
+
 def current_venue_prices(data_state: dict) -> dict:
     """Latest OBSERVED BTC spot price per venue. A venue with no live print is None.
 
@@ -1790,16 +1808,26 @@ def current_venue_prices(data_state: dict) -> dict:
     mx = _safe_dict(data_state.get("multi_exchange"))
     chainlink = data_state.get("chainlink_price") or None
 
-    coinbase = data_state.get("coinbase_price")
-    recv = int(data_state.get("coinbase_price_recv_ms") or 0)
-    if not coinbase or not recv or (int(time.time() * 1000) - recv) > COINBASE_MAX_STALE_MS:
-        coinbase = None                     # absent beats invented
+    coinbase = coinbase_if_fresh(data_state)
+
+    # PER-VENUE AGE. `multi_exchange` carried one shared `time` for both venues and retained the
+    # previous price on a failed poll, so a venue that stopped responding kept contributing its
+    # last price to the consensus MEDIAN indefinitely while the client looked current. Each
+    # venue is now aged against its OWN last successful observation.
+    _now_s = time.time()
+
+    def _venue(name):
+        px = mx.get(name)
+        seen = float(mx.get(f"{name}_observed_ts") or 0.0)
+        if not px or not seen or (_now_s - seen) * 1000.0 > VENUE_MAX_STALE_MS:
+            return None                     # absent beats invented
+        return px
 
     return {
         "binance": binance,
         "coinbase": float(coinbase) if coinbase else None,
-        "bybit": mx.get("bybit"),
-        "kucoin": mx.get("kucoin"),
+        "bybit": _venue("bybit"),
+        "kucoin": _venue("kucoin"),
         "chainlink": float(chainlink) if chainlink else None,
     }
 
@@ -1949,7 +1977,14 @@ def prepare_derivatives_data():
     der = _safe_dict(data_state.get("derivatives"))
     data_state["derivatives"] = der
     bybit = _safe_dict(data_state.get("bybit_data"))
-    der["coinbase_premium"] = data_state.get("coinbase_premium", 0.0)
+    # SAME staleness rule as the venue panel. This passed the last computed premium straight
+    # through, so a disconnected Coinbase stream disappeared from the UI while its stale premium
+    # stayed an ACTIVE model feature. 0.0 is the declared neutral for this column, and it is
+    # what "no current observation" must produce.
+    der["coinbase_premium"] = (
+        float(data_state.get("coinbase_premium", 0.0) or 0.0)
+        if coinbase_if_fresh(data_state) is not None else 0.0
+    )
     # Feed the live Chainlink/CoinGecko oracle price to the ML pipeline. features.py
     # converts it to a BOUNDED normalized deviation vs Binance (col 51) and a fair-value
     # mean-reversion signal (col 60); 0.0 means "no oracle yet" (neutral), so saved
@@ -1965,7 +2000,11 @@ def prepare_derivatives_data():
         dt = recent["t"] - old["t"]
         if dt > 0:
             prem_vel = (recent["value"] - old["value"]) / dt
-    der["coinbase_premium_velocity"] = prem_vel
+    # Velocity is a DERIVATIVE of the same premium, so it inherits the same staleness. A frozen
+    # premium produces a velocity that decays toward zero and reads as "the premium is stable"
+    # rather than "there is no premium observation" - two different states, one number.
+    der["coinbase_premium_velocity"] = (
+        prem_vel if coinbase_if_fresh(data_state) is not None else 0.0)
 
     # Calculate global OI change from history
     der["global_oi_change"] = _pct_change(global_oi_history)
