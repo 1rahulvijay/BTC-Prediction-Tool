@@ -1,6 +1,6 @@
 # Research Ledger — every idea: tested, retracted, untested, or blocked
 
-`2026-08-02`, last extended `2026-08-06` (§13). The canonical answer to "what do we actually
+`2026-08-02`, last extended `2026-08-07` (§14). The canonical answer to "what do we actually
 know?" Machine-readable status lives in `research/research_status.py`; this is the reader's
 version.
 
@@ -12,6 +12,8 @@ Valid measured candidates      : 0
 Real-money authority           : 0
 Correct mode                   : shadow / paper
 Lanes with untested headroom   : 0        <- every lane now has a measured answer
+New information sources tried  : 1        <- Polymarket L2 archive (§14). Cannot supervise
+                                             BTC rounds: 0 outcome labels, 0 trades on them.
 Binding constraint             : forward data. FORWARD_UNTOUCHED = 0 rows.
 ```
 
@@ -1381,6 +1383,106 @@ elimination-grade by construction; `FORWARD_UNTOUCHED` still contains **0 rows**
 already named the market-prior residual as the only supported modelling direction — §13.2 is the
 *outcome-relative* version of that experiment, and it fails before the market-relative version
 was ever reached.
+
+## 14. Polymarket L2 archive and the arbitrage post-mortems - `2026-08-07`
+
+The first genuinely NEW information source examined since the direction work closed. Both items
+are measured, and both are negative for the plan they were meant to support.
+
+### 14.1 The Kaggle Polymarket archive cannot supervise BTC rounds
+
+`docs/active/KAGGLE_POLYMARKET_ARCHIVE_INVENTORY_2026-08-07.md`. 39.7 GiB, 21 days
+(`2026-03-06` -> `03-26`), 270,998,156 rows, read from the archive's own validation reports
+without extracting it. The archive self-audits cleanly - 21/21 partitions, 0 missing dates,
+0 outcome conflicts, per-file sha256 - which is not the same as being fit for purpose.
+
+**Coverage, across all 24k+ daily markets:**
+
+```text
+rows with DEPTH (L2)          2.89%      per-day 2.10% - 4.90%
+rows with TRADES              0.242%     per-day 0.032% - 0.596%
+rows with a market outcome    13.21%
+rows with an exact 15m target 73.7%
+```
+
+**BTC rounds located** by question text - 6,418 "Bitcoin Up or Down" markets (4,461 5m,
+1,483 15m, 93 240m, 381 unparsed), 5,944 usable. Depth on those rounds is ~3x the archive
+average and still thin:
+
+| | 2026-03-12 | 2026-03-19 |
+|---|---:|---:|
+| rows with depth, BTC rounds | **7.64%** | **7.72%** |
+| rows with depth, all markets | 2.60% | 4.48% |
+
+15m rounds fare better than 5m (10.34% vs 6.73%), and ~99% of rounds carry at least one depth
+observation - so event-conditioned book features are viable and a minute-by-minute depth panel
+is not (~92% would be imputed).
+
+**The two findings that decide it:**
+
+```text
+target over ALL markets        None 100,749  |  0: 17,177  |  1: 5,969
+target over BITCOIN UP/DOWN    None   6,418  |  0:      0  |  1:     0
+market_outcome in features_v3  0.00% of BTC rows
+
+trade_count non-null          100.00%
+trade_count > 0                 0.00%
+```
+
+23,146 other markets carry a resolved target. **Every one of the 6,418 BTC markets is NULL**,
+despite `uma_status = "resolved"` on 6,247. And `trade_count` is present on every BTC row and
+zero on every BTC row - a coverage check counting non-nulls reports 100% and means nothing,
+which is this ledger's recurring defect class appearing in someone else's dataset. Corroborated
+by the metadata: 5,703 of 6,418 BTC markets have zero volume, 6,247 have zero liquidity.
+
+| head | verdict on this data |
+|---|---|
+| settlement residual alpha | **BLOCKED** - no outcome labels for BTC rounds |
+| VPIN / CVD / trade intensity | **DEAD** - zero trades |
+| depth and book shape, event-conditioned | viable |
+| minute-by-minute depth panel | not viable |
+| Binance -> Polymarket repricing lag | **viable, and the strongest remaining use** |
+
+**It is a YES-side quote-and-book dataset, not a settlement dataset.** Labels would have to come
+from `round_truth.py` against the Polymarket API. Licence is CC BY-NC 4.0 (non-commercial), and
+the window is five months stale - fine for microstructure, useless as forward evidence.
+
+### 14.2 Two arbitrage post-mortems: the failure was execution, not forecasting
+
+`docs/active/POLYMARKET_ARB_EVIDENCE_2026-08-07.md`, retrieved from source.
+
+**Correction first:** the strategy is **sportsbook odds against Polymarket** in **esports**
+markets with 20-30c spreads - not `1 - (Ask_YES + Ask_NO)` package arbitrage within one market,
+which is what a proposal drafted against these articles assumed. None of the magnitudes transfer
+to BTC Up/Down.
+
+The mechanisms do:
+
+```text
+arb legs (1,075 matched pairs)   +$8,293
+unhedged directional residual    -$3,185     38% of arb profit destroyed by LEGGING RISK
+fill rate                        37.4% -> 1.0% over four months
+```
+
+Every leg carried >=7% theoretical edge at detection and the arb legs **did** make money. The
+author's own #1 loss cause was **adverse selection from stale quotes** - odds 7-30 minutes old
+while lines moved >=5pp in 31-60% of games. That is the same defect class as scan-4 items
+4.1/4.2/4.3, and it is why the book-freshness repair (source age vs receipt age) was prioritised
+over the rest of the execution backlog.
+
+He also records that he did not log orders from day one and was "flying blind" - the same
+argument as the evidence-durability work here.
+
+**Nothing in either item changes the evidence position.** No new economic candidate. What they
+change is the ORDER: finish execution integrity before opening a new alpha lane.
+
+### 14.3 What remains untested
+
+| question | why it is still open |
+|---|---|
+| `Phi(z)` versus the Polymarket ask | the only comparison that decides tradeability, and still not run - it needs recorded book snapshots, not a new model |
+| Binance -> Polymarket repricing lag | viable on this archive; needs a synchronised Binance join, and 21 days bounds it to discovery |
+| everything gated on forward data | `FORWARD_UNTOUCHED` is still **0 rows** |
 
 ## 5. Governance added because of the retraction
 
