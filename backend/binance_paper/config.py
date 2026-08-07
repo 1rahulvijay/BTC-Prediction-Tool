@@ -79,6 +79,19 @@ class EngineConfig:
             ),
         )
 
+    @property
+    def round_trip_cost_bps(self) -> float:
+        """Total cost of a complete round trip, in bps. ONE definition, shared.
+
+        The post-fill admissibility check charged `2 * fee_rate_bps` - fees only - while the
+        exit fill simulator ADDITIONALLY applies `slippage_bps`. A target could therefore pass
+        "this still clears costs" at fill time and then fail to clear the cost the engine
+        actually charges on exit.
+
+        Two crossings, each paying a fee and slippage.
+        """
+        return 2.0 * (float(self.fee_rate_bps) + float(self.slippage_bps))
+
     def public_dict(self) -> dict:
         value = asdict(self)
         value["db_path"] = str(self.db_path)

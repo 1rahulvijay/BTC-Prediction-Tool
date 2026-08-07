@@ -165,13 +165,25 @@ class BinancePaperService:
                 snapshot.funding_time_ms is not None
                 and snapshot.funding_time_ms != self._last_funding_time_ms
             )
+            # CLOSE_ONLY, not FROZEN.
+            #
+            # This returned early whenever `hard_enabled` was false, skipping portfolio
+            # marking, funding application and the automatic risk exits. A persisted open
+            # position recovered after a restart with the flag switched off therefore became
+            # inventory the engine neither maintained nor would let the operator close
+            # (close_position raised PermissionError on the same flag).
+            #
+            # Entry authority and position MAINTENANCE are different powers. With the gate off
+            # there are no new entries - `_evaluate` is still gated in run() - but an existing
+            # position is still marked, still charged funding, and can still exit.
+            _has_inventory = bool(self.portfolio and self.persistence
+                                  and self.persistence.open_positions())
+            if not self.config.hard_enabled and not _has_inventory:
+                return
             if (
-                not self.config.hard_enabled
-                or (
-                    not funding_due
-                    and snapshot.received_at_ms - self._last_portfolio_update_ms
-                    < self.config.sample_interval_ms
-                )
+                not funding_due
+                and snapshot.received_at_ms - self._last_portfolio_update_ms
+                < self.config.sample_interval_ms
             ):
                 return
 
@@ -562,7 +574,10 @@ class BinancePaperService:
                             decided_entry=intent.decision.decision_mark_price,
                             stop_price=intent.decision.stop_price,
                             target_price=intent.decision.take_profit_price,
-                            round_trip_bps=2.0 * self.config.fee_rate_bps,
+                            # FEES AND SLIPPAGE. This charged fees only, while the exit
+                            # simulator also applies slippage_bps - so a target could clear
+                            # the post-fill check and then not clear the real exit cost.
+                            round_trip_bps=self.config.round_trip_cost_bps,
                         )
                         self._last_post_fill_geometry = geo
                         if not geo.get("admissible"):
@@ -789,8 +804,10 @@ class BinancePaperService:
         self._require_initialized()
         if not confirm:
             raise ValueError("confirm=true is required")
-        if not self.config.hard_enabled:
-            raise PermissionError("paper environment gate is disabled")
+        # DELIBERATELY NOT GATED on hard_enabled. Refusing to close while the environment is
+        # disabled is what turned "disabled" into "your position is stuck". Closing REDUCES
+        # exposure; the gate exists to stop new risk, not to trap existing risk.
+        
         with self._lock:
             position = self.persistence.position(position_id)
             if position["status"] != "OPEN":
