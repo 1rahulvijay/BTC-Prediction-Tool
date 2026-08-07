@@ -60,6 +60,10 @@ def config(path: Path, *, hard_enabled: bool = True, latency_ms: int = 500):
         slippage_bps=1.0,
         latency_ms=latency_ms,
         quote_stale_ms=2_000,
+        # Stated explicitly, not defaulted. A gate with a default is a gate that disappears
+        # when a caller forgets it - the fill-engine lesson (fd46d51) applied to freshness.
+        source_stale_ms=3_000,
+        max_transport_lag_ms=2_000,
         evaluation_interval_ms=1_000,
         sample_interval_ms=1_000,
     )

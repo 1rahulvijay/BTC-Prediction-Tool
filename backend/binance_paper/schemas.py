@@ -78,6 +78,7 @@ class MarketSnapshot:
     ask_size: float
     spread: float
     spread_bps: float
+    #: LOCAL age: how long since THIS PROCESS received the message.
     feed_age_ms: int
     feed_health: DataQuality
     update_id: int | None
@@ -95,6 +96,13 @@ class MarketSnapshot:
     #: Coverage facts behind the count above and behind mid_history. Without these a consumer
     #: cannot tell a genuine 60-second window from two samples a second apart, or a continuous
     #: history from one with a five-minute hole in it.
+    #: SOURCE age: how long since the EXCHANGE stamped the event. `feed_age_ms` measures only
+    #: how long ago THIS PROCESS received it, so a delayed old event received now scored ~0 and
+    #: passed as fresh - then became the executable quote.
+    source_age_ms: int = 0
+    #: TRANSPORT lag: received_at_ms - event_ts_ms. The fill simulator computed this as
+    #: `quote_age` and discarded it without ever testing it.
+    transport_lag_ms: int = 0
     agg_trade_coverage_seconds: float = 0.0
     agg_trades_per_second: float | None = None
     agg_trade_window_complete: bool = False

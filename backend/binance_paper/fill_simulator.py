@@ -48,6 +48,16 @@ class BinancePaperFillSimulator:
             rejection = "latency_not_reached"
         elif snapshot.feed_age_ms > self.config.quote_stale_ms:
             rejection = "stale_quote"
+        # SOURCE age, not local age. `feed_age_ms` only measures how long ago WE received the
+        # message, so a delayed old exchange event received now scored ~0 and passed as fresh -
+        # then became the executable quote. This is the "stale quote picked off" failure the
+        # arbitrage post-mortems measured as their single largest loss cause.
+        elif getattr(snapshot, "source_age_ms", 0) > self.config.source_stale_ms:
+            rejection = "stale_source_event"
+        # TRANSPORT delay. `quote_age` was computed on the line above the rejection chain and
+        # never tested; a book that took seconds to reach us describes a market that has moved.
+        elif quote_age > self.config.max_transport_lag_ms:
+            rejection = "transport_lag"
 
         if rejection:
             return FillResult(

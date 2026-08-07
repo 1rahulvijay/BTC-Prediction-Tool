@@ -31,6 +31,9 @@ class BinancePaperMarketAdapter:
         self.config = config
         self._lock = threading.RLock()
         self._last_book: dict | None = None
+        #: Books dropped for arriving out of EXCHANGE order. Counted, not silently discarded:
+        #: a rising number means the feed is reordering, which is itself a health signal.
+        self.stale_book_drops = 0
         self._samples: deque[tuple[int, float, int]] = deque(maxlen=900)
 
     def ingest_book(self, book: dict) -> None:
@@ -63,6 +66,24 @@ class BinancePaperMarketAdapter:
             }
         )
         with self._lock:
+            # MONOTONIC EXCHANGE ORDER. `_last_book` was overwritten on every message, so a
+            # delayed or out-of-order event replaced a NEWER one and then became the executable
+            # quote - with `received_at_ms = now` making it look perfectly fresh.
+            #
+            # Ordering is judged on the EXCHANGE's clock, never on ours: arrival order is a
+            # fact about the network, event order is a fact about the market. `update_id` is
+            # preferred where the venue supplies it, because two events can share a millisecond.
+            previous = self._last_book
+            if previous is not None:
+                prev_update = previous.get("update_id")
+                this_update = normalized.get("update_id")
+                if prev_update is not None and this_update is not None:
+                    if int(this_update) <= int(prev_update):
+                        self.stale_book_drops += 1
+                        return
+                elif event_ts_ms < int(previous.get("event_ts_ms") or 0):
+                    self.stale_book_drops += 1
+                    return
             self._last_book = normalized
             last_sample_ms = self._samples[-1][0] if self._samples else None
             if (
@@ -173,6 +194,8 @@ class BinancePaperMarketAdapter:
             spread=spread,
             spread_bps=spread / mark * 10_000.0,
             feed_age_ms=age_ms,
+            source_age_ms=max(0, now - int(book.get("event_ts_ms") or 0)),
+            transport_lag_ms=max(0, received_at_ms - int(book.get("event_ts_ms") or 0)),
             feed_health=feed_health,
             update_id=book.get("update_id"),
             funding_rate=funding_rate,

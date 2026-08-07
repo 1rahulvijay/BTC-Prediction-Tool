@@ -239,6 +239,12 @@ jobs:
       - name: Shadow HMM binding, mask fail-closed, settlement purge
         run: python backend/test_shadow_hmm_mask_and_purge.py
 
+      # A delayed old exchange event received NOW scored feed_age_ms ~ 0 and became the
+      # executable quote. Source age, transport lag and local age are now separate, and the
+      # book must arrive in EXCHANGE order.
+      - name: Book freshness and exchange ordering (source age, not receipt age)
+        run: python backend/test_book_freshness_and_ordering.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -798,6 +804,7 @@ jobs:
           python backend/test_calibrator_and_neutral_finalization.py || exit /b 1
           python backend/kline_schema.py --selftest || exit /b 1
           python backend/test_shadow_hmm_mask_and_purge.py || exit /b 1
+          python backend/test_book_freshness_and_ordering.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

@@ -35,6 +35,13 @@ class EngineConfig:
     slippage_bps: float
     latency_ms: int
     quote_stale_ms: int
+    #: Max age of the EXCHANGE EVENT itself (now - event_ts_ms). `quote_stale_ms` measures only
+    #: how long ago this process RECEIVED the message, so a delayed old event received now
+    #: scored ~0 and passed as fresh.
+    source_stale_ms: int
+    #: Max transport delay (received_at_ms - event_ts_ms). The fill simulator already computed
+    #: this as `quote_age` and then discarded it without ever testing it.
+    max_transport_lag_ms: int
     evaluation_interval_ms: int
     sample_interval_ms: int
 
@@ -57,6 +64,12 @@ class EngineConfig:
             latency_ms=_int_env("BTC_BINANCE_PAPER_LATENCY_MS", 500, 0, 10_000),
             quote_stale_ms=_int_env(
                 "BTC_BINANCE_PAPER_QUOTE_STALE_MS", 2_000, 100, 60_000
+            ),
+            source_stale_ms=_int_env(
+                "BTC_BINANCE_PAPER_SOURCE_STALE_MS", 3_000, 100, 60_000
+            ),
+            max_transport_lag_ms=_int_env(
+                "BTC_BINANCE_PAPER_MAX_TRANSPORT_LAG_MS", 2_000, 50, 60_000
             ),
             evaluation_interval_ms=_int_env(
                 "BTC_BINANCE_PAPER_EVAL_MS", 1_000, 250, 60_000
