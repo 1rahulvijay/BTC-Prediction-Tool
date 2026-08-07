@@ -233,6 +233,12 @@ jobs:
       - name: Canonical kline schema (closure is proven, never assumed)
         run: python backend/kline_schema.py --selftest
 
+      # Three small omissions with large consequences: the full-refit shadow saved
+      # hmm_state=None, a misaligned valid_mask trained anyway, and the settlement head's
+      # purge collapsed to the horizon because lookback was never passed.
+      - name: Shadow HMM binding, mask fail-closed, settlement purge
+        run: python backend/test_shadow_hmm_mask_and_purge.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -791,6 +797,7 @@ jobs:
           python backend/test_evidence_durability_and_provenance.py || exit /b 1
           python backend/test_calibrator_and_neutral_finalization.py || exit /b 1
           python backend/kline_schema.py --selftest || exit /b 1
+          python backend/test_shadow_hmm_mask_and_purge.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

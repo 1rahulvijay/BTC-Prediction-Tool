@@ -2294,6 +2294,17 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         Ysettle[_SETTLEMENT_CONTRACT],
                         int(target_model.train_split_idx),
                         horizons=target_model.horizons,
+                        # PURGE = lookback + horizon. This was omitted, so `lookback` took its
+                        # default of 0 and the purge collapsed to the horizon alone - leaving
+                        # rows that share up to LOOKBACK bars of their sequence, and whose
+                        # labels overlap the boundary, on both sides of the split. The head's
+                        # own comment states the requirement; the caller simply never met it.
+                        lookback=LOOKBACK,
+                        # `groups` is deliberately NOT passed. The head documents that round
+                        # IDs "do not exist yet (they arrive with the round-aligned dataset)",
+                        # so there is nothing real to supply. Passing row indices as pseudo
+                        # rounds would let the independence floors report a guarantee that was
+                        # never established - worse than recording that it could not be.
                         contract=_SETTLEMENT_CONTRACT))
                 _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
                 from verified_io import atomic_dump as _atomic_dump
@@ -2396,6 +2407,22 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         model_dir=full_dir,
                     )
                     full_model.cascade_monitor = cascade_monitor
+                    # THE SHADOW MUST CARRY THE HMM THAT PARTITIONED IT.
+                    #
+                    # `regime_labels` below were produced by the candidate's HMM, so the
+                    # full-refit experts are trained on that partition - but nothing assigned
+                    # the matching state, and `_save_models` persists
+                    # `getattr(self, "hmm_state", None)`. The shadow therefore saved None and
+                    # was served through whichever engine the incumbent had installed: trained
+                    # under one regime partition, routed by another.
+                    #
+                    # That invalidates the live A/B comparison the shadow exists to provide,
+                    # and it is one assignment.
+                    full_model.hmm_state = getattr(target_model, "hmm_state", None)
+                    if full_model.hmm_state is None:
+                        logger.warning(
+                            "[TRAIN] full-refit shadow has NO hmm_state to inherit; its regime "
+                            "routing will not match the partition its experts were trained on")
                     await loop.run_in_executor(
                         None,
                         functools.partial(

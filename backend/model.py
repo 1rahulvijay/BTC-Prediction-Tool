@@ -1097,9 +1097,21 @@ class MultiModelEnsemble:
                             "barriers touched in one bar, first-touch order unknowable.",
                             h, _dropped, 100.0 * _dropped / max(split_idx, 1))
                 else:
-                    logger.warning(
-                        "[TRAIN] h=%sm valid_mask length %s != labels %s - NOT applying it "
-                        "rather than misaligning the weights.", h, len(_vm), len(y_classes))
+                    # FAIL CLOSED. This logged a warning and trained anyway - so a mask that
+                    # was REQUESTED but unusable silently reverted to labelling every
+                    # ambiguous bar NEUTRAL, which asserts "price went nowhere" about the most
+                    # violent bars in the sample. That is the exact defect the mask exists to
+                    # remove, reappearing whenever the mask is malformed.
+                    #
+                    # Not applying it is still the right handling of a misaligned array - the
+                    # error is CONTINUING. A caller that supplied a mask asked for ambiguity
+                    # exclusion; silently training without it returns a different model than
+                    # the one requested, under the same name.
+                    raise ValueError(
+                        f"valid_mask for h={h}m has length {len(_vm)} but there are "
+                        f"{len(y_classes)} labels. Refusing to train: applying it would "
+                        f"misalign the weights, and ignoring it would relabel every AMBIGUOUS "
+                        f"bar as NEUTRAL - the defect the mask was added to remove.")
 
             # V5 §1 — CLASS-BALANCED LOSS (root-cause fix for the one-sided lean).
             # Recency-only weights let the window's majority class dominate the loss,
