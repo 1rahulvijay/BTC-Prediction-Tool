@@ -11,6 +11,11 @@ import json
 import math
 import os
 import time
+
+# ONE canonical candle shape for every producer. See kline_schema for why:
+# REST emitted close_time and no is_closed, WS emitted is_closed and no
+# close_time, and consumers disagreed about what a missing key meant.
+from kline_schema import canonical_kline
 import logging
 from pathlib import Path
 from typing import Callable, Optional
@@ -216,16 +221,20 @@ class BinanceWebSocketClient:
                                 k = data["k"]
                                 self._emit(
                                     "kline",
-                                    {
-                                        "time": k["t"] // 1000,
-                                        "open": float(k["o"]),
-                                        "high": float(k["h"]),
-                                        "low": float(k["l"]),
-                                        "close": float(k["c"]),
-                                        "volume": float(k["v"]),
-                                        "is_closed": k["x"],
-                                        "trades": k["n"],
-                                    },
+                                    canonical_kline(
+                                        open_ts_ms=int(k["t"]),
+                                        close_ts_ms=int(k["T"]),
+                                        open_=float(k["o"]),
+                                        high=float(k["h"]),
+                                        low=float(k["l"]),
+                                        close=float(k["c"]),
+                                        volume=float(k["v"]),
+                                        source="binance_ws",
+                                        is_closed=bool(k["x"]),
+                                        source_event_ts_ms=int(data.get("E") or k["t"]),
+                                        received_ts_ms=int(time.time() * 1000),
+                                        trades=k["n"],
+                                    ),
                                 )
                             else:
                                 self.protocol_health.unknown()
@@ -522,19 +531,21 @@ class BinanceRESTClient:
                 break
 
             klines = [
-                {
-                    "time": int(k[0]) // 1000,
-                    "open": float(k[1]),
-                    "high": float(k[2]),
-                    "low": float(k[3]),
-                    "close": float(k[4]),
-                    "volume": float(k[5]),
-                    "close_time": int(k[6]) // 1000,
-                    "quote_volume": float(k[7]),
-                    "trades": int(k[8]),
-                    "taker_buy_base": float(k[9]),
-                    "taker_buy_quote": float(k[10]),
-                }
+                canonical_kline(
+                    open_ts_ms=int(k[0]),
+                    close_ts_ms=int(k[6]),
+                    open_=float(k[1]),
+                    high=float(k[2]),
+                    low=float(k[3]),
+                    close=float(k[4]),
+                    volume=float(k[5]),
+                    source="binance_rest",
+                    received_ts_ms=int(time.time() * 1000),
+                    quote_volume=float(k[7]),
+                    trades=int(k[8]),
+                    taker_buy_base=float(k[9]),
+                    taker_buy_quote=float(k[10]),
+                )
                 for k in data
             ]
             all_klines.extend(klines)

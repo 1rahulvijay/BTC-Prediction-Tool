@@ -227,6 +227,12 @@ jobs:
       - name: Confidence calibrator population and NEUTRAL finalization
         run: python backend/test_calibrator_and_neutral_finalization.py
 
+      # ONE candle shape for every producer, and closure PROVEN rather than inferred. REST
+      # emitted close_time and no is_closed; WS emitted is_closed and no close_time; consumers
+      # disagreed on what a missing key meant. Seven tracked defects trace here, including P0-4.
+      - name: Canonical kline schema (closure is proven, never assumed)
+        run: python backend/kline_schema.py --selftest
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -784,6 +790,7 @@ jobs:
           python backend/test_simulator_entry_authority.py || exit /b 1
           python backend/test_evidence_durability_and_provenance.py || exit /b 1
           python backend/test_calibrator_and_neutral_finalization.py || exit /b 1
+          python backend/kline_schema.py --selftest || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

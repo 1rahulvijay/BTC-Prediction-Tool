@@ -528,9 +528,29 @@ class GradeResult:
 
 
 def as_of_close(klines, at_ms: int):
-    """(close, open_ms) of the last CLOSED bar at or before `at_ms`, else (None, None).
+    """(close, resolution_event_ms) of the last closed bar at or before `at_ms`.
 
-    Grading from a live `current_price` resolves at LOOP time, not at horizon end."""
+    P0-4, FIXED HERE - and the reason it could not be fixed before.
+
+    SELECTION IS UNCHANGED, deliberately. `at_ms` NAMES the horizon-end bar; callers set
+    `verify_at` to that bar's OPEN, and the P0-11 fixture asserts exactly that. Requiring
+    `open + interval <= at_ms` would silently redefine every horizon by one bar - which is why
+    that attempt was reverted twice.
+
+    What WAS wrong is the second element. It returned the bar's OPEN timestamp as the
+    resolution event, so every consumer recording `resolution_event_ts` stamped the observation
+    one interval early. Correcting it needed the bar's duration, and the only signal available
+    was the spacing of neighbouring rows - unsafe, because on a filtered or sparse list that is
+    not the real cadence (the P0-11 fixture's bars run +60s/+300s/+540s, so `min(diffs)` yields
+    240s).
+
+    `kline_schema` removes the guess: producers now RECORD `close_ts_ms` from the exchange, on
+    both transports. Where it is present the true close is returned; where it is absent - a
+    legacy row - the open time is returned as before, so nothing regresses while the schema
+    propagates.
+    """
+    from kline_schema import close_ts_ms as _recorded_close
+
     best = None
     best_ms = None
     for k in (klines or []):
@@ -541,7 +561,8 @@ def as_of_close(klines, at_ms: int):
                 best, best_ms = k, ts
     if best is None:
         return None, None
-    return float(best["close"]), int(best_ms)
+    recorded = _recorded_close(best) if isinstance(best, dict) else None
+    return float(best["close"]), int(recorded if recorded is not None else best_ms)
 
 
 def grade(*, contract: str, entry: float, threshold: float, klines,
