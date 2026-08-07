@@ -18,3 +18,10 @@ releases/*/artifacts/
 data/bybit_trades/
 data/bybit_l2_grid/
 data/cross_window.duckdb
+
+# Downloaded forensic/archive bundles. `polymarket_data/archive.zip` is 42.5 GB, was untracked,
+# and matched no existing rule - so `git add -A` walked it on every commit (hanging for minutes)
+# and one careless add would have staged it. The data itself is left alone; only git is told to
+# ignore it.
+polymarket_data/
+*.zip
