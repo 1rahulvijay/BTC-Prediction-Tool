@@ -323,3 +323,88 @@ backend/test_expectancy_and_consensus.py    17 checks   5/5 mutation
 The median test initially **reimplemented** the median rather than calling
 `build_exchanges_block` — the same "test measures itself" error caught twice already this
 session. It now feeds crafted venue prices through the shipped function and reads its output.
+
+---
+
+# Fourth pass — a fixed $250 stake, and the limits that had to change with it
+
+## The stake
+
+The paper account is now a **fixed $250**, never topped up, so a run has a definite end. A
+bankroll that silently refills answers no question about whether a strategy works.
+
+## Setting it exposed that the risk limits were absolute dollars
+
+The per-strategy defaults were sized for a $10,000 account:
+
+```text
+                              default   against a $250 stake
+max_position_notional_usd      1,000    4.0x the ENTIRE account
+max_account_exposure_usd       1,000    4.0x the ENTIRE account
+maximum_daily_loss_usd           100    40% of the account in ONE DAY
+maximum_weekly_loss_usd          250    100% of the account = TOTAL RUIN
+```
+
+A weekly loss limit equal to the whole account can never bind before ruin, so a gate named
+"maximum weekly loss" would not have stopped anything. **A limit that does not scale with the
+capital it protects is not a limit.** They are now fractions of the stake:
+
+```text
+position 10%  ->  $25.00      exposure 20%  ->  $50.00
+daily     5%  ->  $12.50      weekly   12%  ->  $30.00
+```
+
+## Capital exhaustion had no name
+
+Nothing stopped a strategy whose money was gone. The nearest check was
+`peak_equity_usd <= 0` inside `invalid_or_missing_account_state` — which tests the **peak**.
+An account that started at 250, peaked at 300 and fell to 0 has a perfectly valid peak and
+would have kept trading on an empty book.
+
+Zero is now `capital_exhausted`, checked **first**, EMERGENCY_FLATTEN and terminal. Filing
+the end of a run under "capital limit severely breached" would call it a limit breach; it is
+the answer. `capital_below_minimum_position` is the softer sibling — still solvent, but too
+little left to open the smallest permitted position, so it can produce no further evidence
+either.
+
+The measured ladder on $250:
+
+```text
+$250.00  dd   0.0%   NORMAL              open=True
+$235.00  dd   6.0%   REDUCED_SIZE        open=True    capital_limit_half_consumed
+$224.00  dd  10.4%   CLOSE_ONLY          open=False   capital_limit_breached
+$ 30.00  dd  88.0%   EMERGENCY_FLATTEN   open=False   capital_limit_severely_breached
+$  0.00  dd 100.0%   EMERGENCY_FLATTEN   open=False   capital_exhausted
+```
+
+New entries stop at a **10% drawdown — about $25** — so the account cannot reach zero while
+the limits are in force. `capital_exhausted` is the answer if it ever does, not the plan.
+
+## P1-C verified and fixed: the A/B test leaked memory
+
+`OPEN_DEFECTS.md` listed "C A/B testing (unbounded memory...)" as unexamined. It is real:
+
+```text
+ModelVariant.predictions   the FULL prediction dict, every cycle, every horizon, every
+                           variant. ~4 KB each, ~4,800/hour -> ~19 MB/hour, ~3.2 GB/week.
+                           NOTHING ever read it.
+ModelVariant.verified      a list of booleans where only len() is used; total_correct is
+                           already a counter. restore_from_db even materialised
+                           [True]*hits + [False]*misses purely to be measured.
+ABTestRunner.comparison_log  only len() and the agree-count are read.
+```
+
+All three are now `deque(maxlen=200)` with **exact, unbounded counters** beside them.
+`accuracy` divides by every outcome, not by the retained tail — bounding a buffer must not
+silently narrow the denominator a promotion gate reads.
+
+`comparison_log.clear()` at the two challenger-swap sites became `reset_comparisons()`, which
+clears the counters too. Clearing only the list would have carried the previous challenger's
+agreement rate into the new one — 5.14's identity defect, one attribute over.
+
+## Tests
+
+```text
+backend/test_fixed_stake_and_ruin.py           14 checks   6/6 mutation
+backend/test_ab_isolation_and_durability.py    +5 checks (P1-C section)
+```

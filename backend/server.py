@@ -3247,7 +3247,7 @@ async def relearn_models_background(reason: str = "manual"):
                 started_at=float(((pipeline_result or {}).get("shadow_manifest") or {}).get("created_at") or time.time()),
             )
             ab_runner.enabled = True
-            ab_runner.comparison_log.clear()
+            ab_runner.reset_comparisons()
             _write_retrain_completion_marker(
                 shadow_model,
                 deployment_state="shadow",
@@ -5189,7 +5189,7 @@ async def main_loop():
                         ab_runner.primary = promoted_variant
                         ab_runner.challenger = None
                         ab_runner.enabled = False
-                        ab_runner.comparison_log.clear()
+                        ab_runner.reset_comparisons()
 
                 # Feed the CascadeMonitor — grade the RAW lean vs the realized sign,
                 # NOT the `hit` column: on gated rows (the majority) hit=avoid_success,

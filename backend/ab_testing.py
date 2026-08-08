@@ -7,6 +7,7 @@ Does NOT affect live signal output — both variants predict silently.
 
 import copy
 import time
+from collections import deque
 import logging
 import numpy as np
 from typing import Optional
@@ -14,6 +15,10 @@ from typing import Optional
 import database
 
 logger = logging.getLogger(__name__)
+
+#: How many recent items each bounded buffer keeps for inspection. The COUNTS are exact and
+#: unbounded; only the retained detail is capped.
+RECENT_RETAINED = 200
 
 
 class ModelVariant:
@@ -37,8 +42,22 @@ class ModelVariant:
         #: must be able to tell a restored clock from one that started at this boot.
         self.started_at_source = "process_start" if started_at is None else "caller"
         self.evidence_scope = "none"
-        self.predictions = []
-        self.verified = []
+        # BOUNDED. P1-C ("A/B testing: unbounded memory") verified 2026-08-08.
+        #
+        # `predictions` retained the FULL prediction dict for every cycle, for every horizon,
+        # for every variant - ~4 KB each, ~4,800/hour across two horizons and two variants,
+        # which is ~19 MB/hour and ~3.2 GB/week. Nothing ever read it: the only consumer of
+        # this attribute was `len()`, and `total_predictions` already counts.
+        #
+        # `verified` was a list of BOOLEANS where only the count is used - `total_correct`
+        # is a separate counter and `accuracy` divides by the length. `restore_from_db` even
+        # materialised `[True] * hits + [False] * misses` purely to be measured.
+        #
+        # Both are now counters, with a small bounded tail kept for inspection. A count is
+        # what the code asked for; the list was the part nobody needed.
+        self.predictions = deque(maxlen=RECENT_RETAINED)
+        self.verified = deque(maxlen=RECENT_RETAINED)
+        self.total_verified = 0
         self.total_correct = 0
         self.total_predictions = 0
 
@@ -54,20 +73,23 @@ class ModelVariant:
 
     def record_outcome(self, was_correct: bool):
         self.verified.append(was_correct)
+        self.total_verified += 1
         if was_correct:
             self.total_correct += 1
 
     @property
     def accuracy(self) -> float:
-        if not self.verified:
+        # Over EVERY outcome, not just the retained tail - bounding the buffer must not
+        # silently narrow the denominator of the accuracy a promotion gate reads.
+        if not self.total_verified:
             return 0.0
-        return self.total_correct / len(self.verified)
+        return self.total_correct / self.total_verified
 
     def get_stats(self) -> dict:
         return {
             "label": self.label,
             "total_predictions": self.total_predictions,
-            "verified": len(self.verified),
+            "verified": self.total_verified,
             "accuracy": round(self.accuracy, 4),
             "started_at": self.started_at,
             "live_days": round(max(0.0, time.time() - self.started_at) / 86400.0, 3),
@@ -98,7 +120,11 @@ class ABTestRunner:
         self.primary = primary
         self.challenger = challenger
         self.enabled = challenger is not None
-        self.comparison_log = []
+        # Same treatment: only `len()` and the agree-count are read, so those are counted
+        # and the per-cycle detail is a bounded tail.
+        self.comparison_log = deque(maxlen=RECENT_RETAINED)
+        self.total_comparisons = 0
+        self.total_agreements = 0
         # Latest prediction per horizon per variant, and pending (pred_id -> dirs)
         # so outcomes can be attributed to the exact recorded prediction at resolve time.
         self.last_by_horizon: dict = {}
@@ -112,6 +138,18 @@ class ABTestRunner:
         self.variant_accuracy: dict = {}
         self.restore_report: dict = {}
         self._last_cascade_obj = False   # sentinel: never equals a real dict or None
+
+    def reset_comparisons(self) -> None:
+        """Clear the agreement record AND the counters that summarise it.
+
+        Callers used `comparison_log.clear()` when a challenger was replaced. With the log
+        bounded and the aggregates counted, clearing only the list would carry the previous
+        challenger's comparison count and agreement rate into the new one - the same
+        label-vs-model identity defect as 5.14, one attribute over.
+        """
+        self.comparison_log.clear()
+        self.total_comparisons = 0
+        self.total_agreements = 0
 
     def restore_from_db(self) -> int:
         """Rebuild every piece of durable A/B state a restart would otherwise destroy.
@@ -145,8 +183,9 @@ class ABTestRunner:
             except Exception:
                 continue
             verified, hits = int(ev.get("verified") or 0), int(ev.get("hits") or 0)
-            variant.verified = [True] * hits + [False] * max(0, verified - hits)
+            variant.total_verified = verified
             variant.total_correct = hits
+            variant.verified.clear()
             variant.evidence_scope = str(ev.get("scope_reason") or "none")
             restored += verified
 
@@ -252,6 +291,9 @@ class ABTestRunner:
                     "challenger_confidence": challenger_pred.get("confidence"),
                     "agree": primary_pred.get("direction") == challenger_pred.get("direction"),
                 })
+                self.total_comparisons += 1
+                if primary_pred.get("direction") == challenger_pred.get("direction"):
+                    self.total_agreements += 1
             except Exception as e:
                 logger.debug(f"A/B challenger prediction failed: {e}")
 
@@ -342,8 +384,8 @@ class ABTestRunner:
                 },
             }
 
-        n = len(self.comparison_log)
-        agree_count = sum(1 for c in self.comparison_log if c["agree"])
+        n = self.total_comparisons
+        agree_count = self.total_agreements
         disagreement_rate = 1 - (agree_count / max(1, n))
         accuracy_delta = (
             (self.challenger.accuracy - self.primary.accuracy)
@@ -399,7 +441,7 @@ class ABTestRunner:
         challenger_ev = float(challenger_profit.get("expectancy_usd", 0.0) or 0.0)
         challenger_trades = int(challenger_profit.get("trades", 0) or 0)
         
-        passes_sample_size = len(self.challenger.verified) >= criteria["min_verified"]
+        passes_sample_size = self.challenger.total_verified >= criteria["min_verified"]
         passes_paired = len(paired) >= criteria["min_paired"]
         passes_accuracy_delta = accuracy_delta > 0.0
         passes_bootstrap = passes_paired and bootstrap_lower > 0.0

@@ -304,6 +304,11 @@ jobs:
       - name: Expectancy is a realised return, and the consensus is a median
         run: python backend/test_expectancy_and_consensus.py
 
+      # A fixed $250 paper stake, limits derived from it rather than absolute dollars sized
+      # for a $10k account, and capital exhaustion as a named terminal state.
+      - name: Fixed paper stake, scaled limits and a terminal ruin state
+        run: python backend/test_fixed_stake_and_ruin.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -875,6 +880,7 @@ jobs:
           python backend/test_core_scan_band_and_verdict.py || exit /b 1
           python backend/test_lean_hit_contract_truth.py || exit /b 1
           python backend/test_expectancy_and_consensus.py || exit /b 1
+          python backend/test_fixed_stake_and_ruin.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

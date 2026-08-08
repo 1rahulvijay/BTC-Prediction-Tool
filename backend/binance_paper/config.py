@@ -52,8 +52,13 @@ class EngineConfig:
             db_path=Path(
                 os.getenv("BTC_BINANCE_PAPER_DB", str(DEFAULT_DB_PATH))
             ).resolve(),
+            #: A FIXED STAKE. The paper account starts here and is never topped up, so the
+            #: run has a definite end: if it reaches zero the strategy is ruined and says so
+            #: (see `GovernorMode.EMERGENCY_FLATTEN` / `capital_exhausted`). A bankroll that
+            #: silently refills answers no question.
             starting_cash_usd=_float_env(
-                "BTC_BINANCE_PAPER_STARTING_CASH", 10_000.0, 100.0, 10_000_000.0
+                "BTC_BINANCE_PAPER_STARTING_CASH", DEFAULT_STARTING_CASH_USD,
+                25.0, 10_000_000.0
             ),
             fee_rate_bps=_float_env(
                 "BTC_BINANCE_PAPER_FEE_BPS", 5.0, 0.0, 100.0
@@ -98,6 +103,23 @@ class EngineConfig:
         return value
 
 
+#: The fixed paper stake. Every dollar limit below is derived from it rather than written
+#: as a constant, because a constant limit stops being a limit when the capital changes.
+DEFAULT_STARTING_CASH_USD = 250.0
+
+#: Dollar risk limits AS FRACTIONS OF STARTING CAPITAL.
+#:
+#: The defaults used to be absolute: max_position_notional 1000, max_exposure 1000, daily
+#: loss 100, weekly loss 250 - all sized for a 10,000 account. On a 250 account those become
+#: 4x the entire account per position and a weekly loss limit equal to TOTAL RUIN, so a gate
+#: that reads "maximum weekly loss" would never have stopped anything. A limit that does not
+#: scale with the capital it protects is not a limit.
+POSITION_NOTIONAL_FRACTION = 0.10      # one position risks at most a tenth of the book
+ACCOUNT_EXPOSURE_FRACTION = 0.20       # all open positions together, at most a fifth
+DAILY_LOSS_FRACTION = 0.05             # stop for the day after 5%
+WEEKLY_LOSS_FRACTION = 0.12            # stop for the week after 12%
+
+
 @dataclass(frozen=True)
 class StrategyRiskConfig:
     enabled: bool = True
@@ -105,11 +127,11 @@ class StrategyRiskConfig:
     allow_short: bool = True
     leverage: float = 1.0
     max_leverage: float = 2.0
-    max_position_notional_usd: float = 1_000.0
-    max_account_exposure_usd: float = 1_000.0
+    max_position_notional_usd: float = DEFAULT_STARTING_CASH_USD * POSITION_NOTIONAL_FRACTION
+    max_account_exposure_usd: float = DEFAULT_STARTING_CASH_USD * ACCOUNT_EXPOSURE_FRACTION
     risk_per_trade_fraction: float = 0.001
-    maximum_daily_loss_usd: float = 100.0
-    maximum_weekly_loss_usd: float = 250.0
+    maximum_daily_loss_usd: float = DEFAULT_STARTING_CASH_USD * DAILY_LOSS_FRACTION
+    maximum_weekly_loss_usd: float = DEFAULT_STARTING_CASH_USD * WEEKLY_LOSS_FRACTION
     maximum_drawdown_fraction: float = 0.10
     maximum_trades_per_hour: int = 4
     cooldown_seconds: int = 60

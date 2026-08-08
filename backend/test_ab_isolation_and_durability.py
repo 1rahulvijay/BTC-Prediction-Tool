@@ -221,6 +221,43 @@ def main():
     finally:
         ab_testing.database = real_db
 
+    # ------------------------------------------------------------ P1-C memory
+    print("\nP1-C the A/B buffers are bounded, and the COUNTS stay exact")
+    from ab_testing import RECENT_RETAINED
+
+    class _Trivial:
+        is_trained = True
+        model_bundle_id = "b"
+
+        def generate_ensemble_prediction(self, *a, **k):
+            return {"direction": "UP", "confidence": 0.6}
+
+    mv = ModelVariant("v", _Trivial())
+    for i in range(5000):
+        mv.predict(5, None, {}, None, None)
+        mv.record_outcome(i % 3 == 0)
+    chk(len(mv.predictions) == RECENT_RETAINED and len(mv.verified) == RECENT_RETAINED,
+        f"5,000 cycles retain {RECENT_RETAINED} - `predictions` held the FULL prediction "
+        f"dict per cycle per horizon per variant (~4 KB each, ~19 MB/hour, ~3.2 GB/week) "
+        f"and nothing ever read it")
+    chk(mv.total_predictions == 5000 and mv.total_verified == 5000,
+        "while the counts remain exact and unbounded - the code only ever wanted len()")
+    chk(abs(mv.accuracy - 1667 / 5000) < 1e-6,
+        f"and accuracy divides by EVERY outcome ({mv.accuracy:.4f}), not by the retained "
+        f"tail - bounding a buffer must not silently narrow the denominator a promotion "
+        f"gate reads")
+
+    r6 = ABTestRunner(primary=mv, challenger=None)
+    r6.total_comparisons, r6.total_agreements = 900, 700
+    r6.reset_comparisons()
+    chk(r6.total_comparisons == 0 and r6.total_agreements == 0 and not r6.comparison_log,
+        "and replacing a challenger resets the aggregates with the log - clearing only the "
+        "list would carry the previous challenger's agreement rate into the new one, which "
+        "is 5.14's identity defect one attribute over")
+    srv6 = (BACKEND / "server.py").read_text(encoding="utf-8")
+    chk("comparison_log.clear()" not in srv6 and "reset_comparisons()" in srv6,
+        "so both call sites use the reset rather than the list operation")
+
     # ------------------------------------------------------------- disclosure
     print("\nthe verdict carries what the experiment was NOT")
     ab_testing.database = _FakeDB({})

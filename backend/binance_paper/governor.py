@@ -97,6 +97,27 @@ class CapitalPreservationGovernor:
             )
         )
 
+        # CAPITAL EXHAUSTION IS A TERMINAL STATE, AND IT HAD NO NAME.
+        #
+        # Nothing in this engine stopped a strategy whose money was gone. The nearest thing
+        # was `peak_equity_usd <= 0` inside `invalid_or_missing_account_state`, which tests
+        # the PEAK - a strategy that started at 250, peaked at 300 and fell to 0 has a
+        # perfectly valid peak and would have kept trading on an empty account.
+        #
+        # The stake is fixed and never topped up, so reaching zero is the run ENDING, not an
+        # error. It is reported under its own name so the outcome is unambiguous: the
+        # strategy is ruined, and that is the answer rather than a missing one.
+        #
+        # `capital_below_minimum_position` is the softer sibling: still solvent, but with too
+        # little left to open the smallest position the risk config permits, so it cannot
+        # produce further evidence either.
+        ruined = [st for st in states if float(st.equity_usd) <= 0.0]
+        starved = [
+            st for st in states
+            if float(st.equity_usd) > 0.0
+            and float(st.equity_usd) < float(st.risk.max_position_notional_usd)
+        ]
+
         portfolio_drawdown: float | None = None
         daily_fraction: float | None = None
         weekly_fraction: float | None = None
@@ -147,7 +168,12 @@ class CapitalPreservationGovernor:
             daily_fraction or 0.0,
             weekly_fraction or 0.0,
         )
-        if invalid_account_state or loss_severity >= 1.5:
+        if ruined:
+            # Checked FIRST: an account at zero is not a drawdown to be sized down, and
+            # naming it "severely breached" would file the end of the run under a limit.
+            mode = GovernorMode.EMERGENCY_FLATTEN
+            reasons.append("capital_exhausted")
+        elif invalid_account_state or loss_severity >= 1.5:
             mode = GovernorMode.EMERGENCY_FLATTEN
             reasons.append("capital_limit_severely_breached")
         elif loss_severity >= 1.0:
@@ -157,6 +183,9 @@ class CapitalPreservationGovernor:
             mode = GovernorMode.NO_NEW_ENTRIES
         elif "market_snapshot_missing" in reasons or "market_feed_not_healthy" in reasons:
             mode = GovernorMode.NO_NEW_ENTRIES
+        elif starved:
+            mode = GovernorMode.CLOSE_ONLY
+            reasons.append("capital_below_minimum_position")
         elif loss_severity >= 0.5:
             mode = GovernorMode.REDUCED_SIZE
             reasons.append("capital_limit_half_consumed")
