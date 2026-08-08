@@ -2712,14 +2712,20 @@ class MultiModelEnsemble:
                     # `lean_total` is used with it, so the sample floor counts DIRECTIONAL calls
                     # rather than every row: pairing a lean rate with a total row count would
                     # clear CASCADE_MIN_PREDICTIONS on a lane that made almost no calls.
-                    _lean_acc = lower_acc_stats.get("lean_accuracy")
+                    # THE DECISIVE RATE, not the all-rows one. `CASCADE_MIN_ACCURACY = 0.62`
+                    # and `bias_strength = (recent_accuracy - 0.5) * 0.6` below both take 0.5
+                    # as no-skill. `lean_accuracy` now counts a NEUTRAL contract outcome as a
+                    # miss - correctly, the bet did not win - so its no-skill point is ~0.27
+                    # and its ceiling ~0.534 at 5m. Reading it here would make this cascade
+                    # permanently inert while looking like a measurement.
+                    _lean_acc = lower_acc_stats.get("lean_decisive_accuracy")
                     if _lean_acc is None:
                         # Absent means UNKNOWN, and unknown must not read as eligible.
                         recent_accuracy, predictions_count = 0.0, 0
                     else:
                         recent_accuracy = float(_lean_acc)
                         predictions_count = int(
-                            lower_acc_stats.get("lean_total")
+                            lower_acc_stats.get("lean_decisive_total")
                             or lower_acc_stats.get("directional_total")
                             or 0)
                     

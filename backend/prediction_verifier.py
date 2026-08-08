@@ -355,11 +355,33 @@ class PredictionVerifier:
                 actual_change = actual_move_usd / pred["predicted_price"]
                 # Pure LEAN sign-truth for the DB's lean_hit column. Unlike `hit`
                 # (dual-semantic: avoid_success on gated rows), this is always
-                # "did the raw lean match the realized direction" — the betting truth.
+                # "did the raw lean match the realized outcome" - the betting truth, and the
+                # column the schema itself names as the one a betting-accuracy consumer must
+                # read.
+                #
+                # IT COMPARED AGAINST THE MOVE SIGN, NOT THE CONTRACT'S OUTCOME:
+                #
+                #     lean_hit = (_raw_lean == "UP") == (actual_move_usd > 0)
+                #
+                # On a TOUCHING row that is right by accident - `resolution_price` is the
+                # barrier, so its sign IS the graded direction. On a TIMEOUT row it is wrong:
+                # `resolution_price` is the last bar's close, `actual_move_usd` is a small
+                # residual drift, and a lean was credited as CORRECT whenever that drift
+                # happened to agree with it. The contract graded that row NEUTRAL - no barrier
+                # was reached, so the bet did not win.
+                #
+                # Timeouts are not rare. The 5m training distribution is
+                # DOWN 23,009 / NEUTRAL 40,206 / UP 23,110 - NEUTRAL is 46.6% of rows, so
+                # nearly half the betting-accuracy column was a coin flip on residual drift
+                # that the contract says was not a win.
+                #
+                # The graded direction is right here, in `actual_direction`, produced by the
+                # same `grade()` call as the price. Comparing against it makes lean_hit mean
+                # what its own docstring says.
                 _raw_lean = pred.get("raw_direction", pred.get("direction"))
                 lean_hit = None
-                if _raw_lean in ("UP", "DOWN") and actual_move_usd != 0:
-                    lean_hit = (_raw_lean == "UP") == (actual_move_usd > 0)
+                if _raw_lean in ("UP", "DOWN") and actual_direction in ("UP", "DOWN", "NEUTRAL"):
+                    lean_hit = (_raw_lean == actual_direction)
                 # SIGNED expected move (target carries the predicted direction). Taking
                 # abs() of each side separately made the magnitude error direction-BLIND:
                 # predict +$500, market does -$500 → abs(500-500)=$0, logging a
@@ -481,23 +503,50 @@ class PredictionVerifier:
             avoid_hits = sum(1 for v in avoid_preds if v.get("avoid_success") or v["hit"])
             avoid_total = len(avoid_preds)
 
-            # LEAN sign-truth accuracy — the headline betting metric. Counts every raw
-            # lean (committed AND gated), graded purely by realized move sign. Without
-            # this, a cautious gate (all WAITs) leaves the accuracy panel empty forever
-            # while leans resolve in plain sight. lean_hit when present; sign fallback
-            # for rows verified by older code.
+            # LEAN accuracy - the headline betting metric. Counts every raw lean (committed
+            # AND gated), graded by the CONTRACT'S outcome. Without this, a cautious gate
+            # (all WAITs) leaves the accuracy panel empty forever while leans resolve in
+            # plain sight.
+            #
+            # The fallback below is for rows verified by older code, and it used the move
+            # SIGN - which credits a lean on a row the contract graded NEUTRAL, the same
+            # defect `lean_hit` itself carried. Where the graded direction is on the row it
+            # is used; where it is not, the row is UNKNOWN and excluded, rather than given
+            # an answer from a rule the contract does not use.
             def _lean_ok(v):
                 if v.get("lean_hit") is not None:
                     return v["lean_hit"]
                 rd = v.get("raw_direction")
-                mv = v.get("actual_move_usd", 0.0)
-                if rd in ("UP", "DOWN") and mv:
-                    return (rd == "UP") == (mv > 0)
+                ad = v.get("actual_direction")
+                if rd in ("UP", "DOWN") and ad in ("UP", "DOWN", "NEUTRAL"):
+                    return rd == ad
                 return None
             _lean_rows = [(v, _lean_ok(v)) for v in h_preds]
             lean_rows = [(v, ok) for v, ok in _lean_rows if ok is not None]
             lean_total = len(lean_rows)
             lean_hits = sum(1 for _, ok in lean_rows if ok)
+            # TWO NAMESPACES, BECAUSE CORRECTING THE METRIC WITHOUT THEM WOULD BREAK EVERY
+            # THRESHOLD WRITTEN AGAINST IT.
+            #
+            # `lean_accuracy` above now counts a NEUTRAL contract outcome as a miss, which is
+            # what the contract says: no barrier was reached, the bet did not win. But NEUTRAL
+            # is ~46.6% of 5m rows, so the ceiling for a directional lean is ~0.534 and a
+            # zero-skill model scores ~0.27 rather than ~0.50.
+            #
+            # Consumers whose constants assume a COIN-FLIP baseline must not read that number.
+            # `CASCADE_MIN_ACCURACY = 0.62` and `bias_strength = (recent_accuracy - 0.5) * 0.6`
+            # both take 0.5 as no-skill explicitly; so does the `< 0.45` retrain trigger.
+            # Feeding them the all-rows rate would make the cascade permanently inert and the
+            # retrain trigger permanently on - a bound derived from one quantity enforced
+            # against another, which is defect 5.21.
+            #
+            # `lean_decisive_*` is the rate over rows the contract actually decided. Its
+            # no-skill point IS 0.5, so those constants keep meaning what they were chosen to
+            # mean.
+            _decisive = [(v, ok) for v, ok in lean_rows
+                         if v.get("actual_direction") in ("UP", "DOWN")]
+            lean_decisive_total = len(_decisive)
+            lean_decisive_hits = sum(1 for _, ok in _decisive if ok)
             lean_up = [(v, ok) for v, ok in lean_rows if v.get("raw_direction") == "UP"]
             lean_down = [(v, ok) for v, ok in lean_rows if v.get("raw_direction") == "DOWN"]
 
@@ -568,6 +617,11 @@ class PredictionVerifier:
                 "avoid_hits": avoid_hits,
                 "lean_accuracy": round(lean_hits / lean_total, 4) if lean_total else 0,
                 "lean_total": lean_total,
+                #: Over rows the contract DECIDED. No-skill is 0.5 here; in `lean_accuracy`
+                #: it is not. Any threshold chosen against a coin flip belongs on this one.
+                "lean_decisive_accuracy": (round(lean_decisive_hits / lean_decisive_total, 4)
+                                           if lean_decisive_total else None),
+                "lean_decisive_total": lean_decisive_total,
                 "lean_up_accuracy": (round(sum(1 for _, ok in lean_up if ok) / len(lean_up), 4)
                                      if lean_up else 0),
                 "lean_up_total": len(lean_up),
@@ -599,6 +653,12 @@ class PredictionVerifier:
                 "total": total,
                 "lean_accuracy": round(lean_hits / lean_total, 4) if lean_total else None,
                 "lean_total": lean_total,
+                #: Recorded so the TREND can be computed in the same namespace as the 0.45
+                #: bar it is paired with. A trend measured on one metric and compared against
+                #: a threshold chosen for another is the same mistake one level up.
+                "lean_decisive_accuracy": (round(lean_decisive_hits / lean_decisive_total, 4)
+                                           if lean_decisive_total else None),
+                "lean_decisive_total": lean_decisive_total,
             })
             # Keep last 100 accuracy snapshots
             if len(self.accuracy_history[h]) > 100:
@@ -1090,8 +1150,16 @@ class PredictionVerifier:
             # Trend on the clean lean series (legacy history rows fall back to blended).
             history = self.accuracy_history.get(h, [])
             trend = "stable"
-            _hv = [x.get("lean_accuracy") if x.get("lean_accuracy") is not None
-                   else x["accuracy"] for x in history]
+            # The DECISIVE series, because `needs_retrain` below compares this trend against
+            # 0.45 - a coin-flip bar. Older snapshots that predate the field fall back, and a
+            # snapshot with neither is skipped rather than contributing a number from a
+            # different scale to an average.
+            _hv = [x.get("lean_decisive_accuracy")
+                   if x.get("lean_decisive_accuracy") is not None
+                   else (x.get("lean_accuracy") if x.get("lean_accuracy") is not None
+                         else x.get("accuracy"))
+                   for x in history]
+            _hv = [v for v in _hv if isinstance(v, (int, float))]
             if len(_hv) >= 3:
                 avg_recent = sum(_hv[-3:]) / 3
                 older = _hv[:max(1, len(_hv) - 3)]
@@ -1110,8 +1178,14 @@ class PredictionVerifier:
                 "price_match_rate": acc.get("price_match_rate", 0),
                 "avg_move_error_usd": acc.get("avg_move_error_usd", 0),
                 "total": acc["lean_total"],
+                # 0.45 is a bar chosen against a COIN FLIP, so it reads the decisive rate.
+                # `lean_accuracy` counts NEUTRAL contract outcomes as misses and sits near
+                # 0.27 for a zero-skill model, which would have left this trigger latched on
+                # permanently and made "needs_retrain" mean nothing.
                 "needs_retrain": (
-                    trend == "degrading" and acc["lean_accuracy"] < 0.45
+                    trend == "degrading"
+                    and (acc.get("lean_decisive_accuracy") is not None)
+                    and acc["lean_decisive_accuracy"] < 0.45
                 ) or (
                     acc.get("lean_total", 0) >= 10
                     and acc.get("price_match_rate", 1) < 0.35

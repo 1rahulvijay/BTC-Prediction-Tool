@@ -294,6 +294,11 @@ jobs:
       - name: Core scan - grading band and verdict blockers
         run: python backend/test_core_scan_band_and_verdict.py
 
+      # The betting-accuracy column graded a first-touch model by the move sign, crediting a
+      # win on the 46.6% of rows the contract graded NEUTRAL.
+      - name: lean_hit is graded by the contract, and its thresholds share a namespace
+        run: python backend/test_lean_hit_contract_truth.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -863,6 +868,7 @@ jobs:
           python backend/test_observed_window_and_restored_state.py || exit /b 1
           python backend/test_calibration_contract_filter.py || exit /b 1
           python backend/test_core_scan_band_and_verdict.py || exit /b 1
+          python backend/test_lean_hit_contract_truth.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

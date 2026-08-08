@@ -170,15 +170,25 @@ def init_db():
             """)
         except Exception:
             pass
-        # One-time backfill of lean_hit for already-resolved historical rows (no-op
-        # when nothing qualifies; safe to run every boot).
+        # Backfill lean_hit for already-resolved rows (no-op when nothing qualifies; safe
+        # to run every boot).
+        #
+        # This used the MOVE SIGN: `raw_direction='UP' AND actual_move > 0`. That is the
+        # endpoint rule, and on a first-touch TIMEOUT row it credits a lean as correct
+        # because a small residual drift happened to agree with it, when the contract graded
+        # the row NEUTRAL and the bet did not win. NEUTRAL is 46.6% of 5m rows.
+        #
+        # Now it backfills from the contract's own graded outcome, and only where that
+        # outcome was recorded. A row that cannot say what the contract decided is left
+        # NULL - unknown, and excluded from the betting metric - rather than assigned an
+        # answer by a rule the contract does not use.
         try:
             conn.execute(f"""
                 UPDATE predictions_{tf}m
-                SET lean_hit = ((raw_direction = 'UP'   AND actual_move > 0)
-                             OR (raw_direction = 'DOWN' AND actual_move < 0))
+                SET lean_hit = (raw_direction = actual_direction)
                 WHERE lean_hit IS NULL AND resolved = TRUE
-                  AND raw_direction IN ('UP', 'DOWN') AND actual_move IS NOT NULL
+                  AND raw_direction IN ('UP', 'DOWN')
+                  AND actual_direction IS NOT NULL AND actual_direction <> ''
             """)
         except Exception:
             pass

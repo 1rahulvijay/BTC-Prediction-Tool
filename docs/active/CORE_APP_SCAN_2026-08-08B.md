@@ -155,3 +155,91 @@ own truthiness before use.
 | contract admissibility | **still refuses, correctly** — needs an endpoint head or a first-touch EV |
 
 The third is the only remaining one, and it is the one that should hold.
+
+---
+
+# Continued scan — the betting-accuracy column was not measuring the contract
+
+Second pass. More automated sweeps came back clean: **un-awaited coroutines** (2 candidates,
+both false positives — `create_task` and `asyncio.run` on the preceding line), **bare
+`except:`** (none), **bounded buffers whose consumers demand more samples than they hold**
+(none). One large defect remained.
+
+## `lean_hit` — right by accident on half the rows, wrong on the other half
+
+`database.py` states the rule in its own schema comment: *"betting-accuracy consumer must
+use `lean_hit`, never `hit`"*. That column was computed as:
+
+```python
+lean_hit = (_raw_lean == "UP") == (actual_move_usd > 0)
+```
+
+`actual_move_usd` is `resolution_price - entry`. Under first touch:
+
+```text
+TOUCHING row   resolution_price is the BARRIER   -> sign IS the graded direction, correct by accident
+TIMEOUT row    resolution_price is the last CLOSE -> sign is a small residual drift
+```
+
+On a timeout the contract graded the row **NEUTRAL** — no barrier was reached, the bet did
+not win — and the rule credited the lean as correct whenever that residual drift happened to
+agree with it. So the column was neither the endpoint question nor the first-touch question,
+but a mixture: barrier sign on some rows, drift on others.
+
+**Timeouts are 46.6% of 5m rows** (measured at boot: DOWN 23,009 / NEUTRAL 40,206 / UP
+23,110). Simulated on that distribution with a zero-skill model:
+
+```text
+old rule (move sign)   0.501      a coin flip
+contract               0.268
+gap                   +0.233 of all rows
+```
+
+The graded direction was in scope the whole time, produced by the same `grade()` call as the
+price. It is now what decides.
+
+## Correcting the metric without its thresholds would have been defect 5.21 again
+
+Three consumers take **0.5 as no-skill, explicitly**:
+
+```text
+CASCADE_MIN_ACCURACY = 0.62
+bias_strength = (recent_accuracy - 0.5) * 0.6
+needs_retrain: trend == "degrading" and lean_accuracy < 0.45
+```
+
+The corrected all-rows rate cannot exceed ~0.534 at 5m and sits near 0.27 for a zero-skill
+model. Feeding it to those constants would have made the cascade **permanently inert** and
+latched `needs_retrain` **permanently on** — a bound derived from one quantity enforced
+against another, which is exactly the defect fixed earlier this session.
+
+So there are two named quantities now:
+
+| metric | over | no-skill point |
+|---|---|---|
+| `lean_accuracy` | every directional lean; NEUTRAL counts as a miss | ~0.27 at 5m |
+| `lean_decisive_accuracy` | rows the contract actually decided | 0.5 |
+
+The cascade gate, its sample floor, the retrain trigger **and the trend series it is compared
+against** all read the decisive one. An absent decisive rate never triggers a retrain: 40
+timeouts is not evidence a model is broken.
+
+## The stored column and the restore path agree
+
+The boot backfill used the same endpoint rule and now grades from `actual_direction`, and
+only where that outcome was recorded — a row that cannot say what the contract decided is
+left NULL, unknown and excluded, rather than assigned an answer by a rule the contract does
+not use. The in-memory fallback for older rows was corrected the same way.
+
+## Tests
+
+```text
+backend/test_lean_hit_contract_truth.py    17 checks   7/7 mutation
+```
+
+The source-extraction helper needed hardening **twice**, both times the same error — the
+test matching the fix's own description of the code it removed. `ast.get_docstring` returns
+*cleaned* text, so subtracting it from raw source removes nothing; and
+`ast.get_source_segment` per statement still carries every comment nested inside a compound
+statement, and the comment above a fix always quotes the line it replaced. The helper now
+uses `ast.unparse`, which emits code and nothing else.
