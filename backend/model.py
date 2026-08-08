@@ -2807,6 +2807,27 @@ class MultiModelEnsemble:
         # Per-horizon first (BTC_DIR_MARGIN_5 / _15), then global BTC_DIR_MARGIN, then 0.0.
         # The tilt is 5m-SPECIFIC (15m leans are already balanced, tilt -1.7pt), so we target
         # 5m and leave the balanced + more-tradeable 15m untouched by default.
+        #
+        # MEASURE-BEFORE-GATE COMPLETED 2026-08-08, AND THE REMEDY IS REFUTED. Do not set it.
+        #
+        # The margin assumes the tilt is a small offset CONCENTRATED NEAR THE BOUNDARY, so a
+        # dead zone would remove it. Measured on 2,514 served 5m predictions, it is a
+        # WHOLE-DISTRIBUTION shift instead:
+        #
+        #     mean prob_up 0.3430   vs   mean prob_down 0.2920      +5.1pp
+        #     median (prob_up - prob_down)  +0.058
+        #
+        # so widening the dead zone selects MORE of the biased side, not less:
+        #
+        #     margin 0.000 -> 100.0% of rows survive, UP share 69.5%
+        #     margin 0.015 ->  91.1%                  UP share 71.1%
+        #     margin 0.050 ->  71.3%                  UP share 74.8%
+        #     margin 0.100 ->  36.9%                  UP share 76.8%
+        #
+        # Setting BTC_DIR_MARGIN would make the skew WORSE while shrinking the sample. The
+        # 0.0 default is correct and the knob is kept only so this record has something to
+        # attach to. The tilt is in the probabilities themselves and has to be fixed where
+        # they are produced - see docs/active/DIRECTIONAL_TILT_2026-08-08.md.
         _dir_margin = float(os.environ.get(f"BTC_DIR_MARGIN_{h}",
                                            os.environ.get("BTC_DIR_MARGIN", "0.0")) or 0.0)
         if prob_up > prob_down + _dir_margin and prob_up > prob_neutral + 0.02:

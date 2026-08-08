@@ -1629,7 +1629,7 @@ class PriceToBeatTracker:
         return restored
 
     @staticmethod
-    def _bet_lean(p: dict) -> str:
+    def _bet_lean(p: dict, horizon: int | None = None) -> str:
         """The side to bet on a Polymarket binary up/down market. Polymarket has NO
         neutral outcome — the window ALWAYS settles UP or DOWN — so we always surface
         the side the model favors. Prefer the 3-class lean when it actually picks a
@@ -1648,6 +1648,25 @@ class PriceToBeatTracker:
         pu = float(p.get("probUp", 0.0) or 0.0)
         pd = float(p.get("probDown", 0.0) or 0.0)
         if pu <= 0.0 and pd <= 0.0:
+            return "NEUTRAL"
+        # THE SAME DEAD ZONE THE HEAD APPLIES, APPLIED HERE TOO.
+        #
+        # `model.generate_ensemble_prediction` refuses to commit when prob_up and prob_down
+        # are within `BTC_DIR_MARGIN` of each other, precisely so that a bare
+        # `prob_up > prob_down` cannot turn a systematic tilt into a directional call. This
+        # function then performed that bare comparison - on exactly the rows the head had
+        # just sent to NEUTRAL. A margin applied at one site and bypassed at the next is not
+        # a margin.
+        #
+        # It changes nothing at the shipped default of 0.0, and the tilt it was written for
+        # is NOT fixed by any margin (see the measurement at the knob in model.py: the skew
+        # gets worse as the margin widens). This is a consistency fix, not a cure.
+        import os as _os
+        _m = float(_os.environ.get(f"BTC_DIR_MARGIN_{horizon}",
+                                   _os.environ.get("BTC_DIR_MARGIN", "0.0")) or 0.0)
+        if abs(pu - pd) <= _m:
+            # Inside the noise floor the two sides are indistinguishable, which is what
+            # this function's own last line calls "no probability signal at all".
             return "NEUTRAL"
         return "UP" if pu >= pd else "DOWN"
 
@@ -1790,7 +1809,7 @@ class PriceToBeatTracker:
                     # place on a binary Polymarket up/down market. The final gated action
                     # (signal) is usually WAIT and can't be expressed on a binary market,
                     # so keep it as our_action for the "lean UP, action WAIT" display.
-                    "our_direction": self._bet_lean(p),
+                    "our_direction": self._bet_lean(p, h),
                     # Which rule produced the lean. EVIDENCE (DuckDB 2026-06-10, 9.6h): the
                     # model's committed 3-class leans win ~64% at 5m, but the two-way
                     # probability FALLBACK leans are ~coin-flip — mixing them dragged the

@@ -65,8 +65,16 @@ def main() -> None:
             conn.close()
             assert child_ids == [f"{parent_id}::lgb", f"{parent_id}::xgb"], child_ids
 
-            # Main resolution must grade committed UP/DOWN votes only.  NEUTRAL is an
-            # abstention and remains NULL rather than becoming a false miss.
+            # WITHOUT the contract's direction, main resolution grades NOTHING.
+            #
+            # It used to compute `"UP" if actual_move >= 0 else "DOWN"` and grade every seat
+            # vote against it - the endpoint rule applied to a first-touch model, three lines
+            # under a docstring naming that exact defect. And `actual_move` is
+            # `resolution_price - entry`, which under first touch is the BARRIER, so that
+            # "endpoint sign" was the barrier side on touching rows and the closing residual
+            # on timeouts. `model_verifier` already grades these rows through `tc.grade()`
+            # under each vote's declared contract, so two writers shared one column and the
+            # later one won.
             database.update_outcome(
                 parent_id, 5, actual_price=102.0, actual_move=2.0,
                 hit=True, price_match=False, move_error=1.0, lean_hit=True,
@@ -76,9 +84,51 @@ def main() -> None:
                 "SELECT model, direction, hit, resolved FROM model_predictions ORDER BY model"
             ).fetchall()
             assert rows == [
+                ("lgb", "UP", None, False),
+                ("xgb", "NEUTRAL", None, False),
+            ], rows
+            assert all(r[2] is None for r in rows), (
+                "a positive actual_move must not grade a seat vote: the contract decides, "
+                f"and it was not supplied. {rows}")
+
+            # WITH the contract's direction, it grades committed UP/DOWN votes only. NEUTRAL
+            # is an abstention and remains NULL rather than becoming a false miss.
+            database.update_outcome(
+                parent_id, 5, actual_price=102.0, actual_move=2.0,
+                hit=True, price_match=False, move_error=1.0, lean_hit=True,
+                actual_direction="UP",
+            )
+            rows = conn.execute(
+                "SELECT model, direction, hit, resolved FROM model_predictions ORDER BY model"
+            ).fetchall()
+            assert rows == [
                 ("lgb", "UP", True, True),
                 ("xgb", "NEUTRAL", None, True),
             ], rows
+
+            # And a row the CONTRACT grader already resolved is never re-graded: a second
+            # pass with the opposite direction must not overwrite it.
+            database.update_outcome(
+                parent_id, 5, actual_price=98.0, actual_move=-2.0,
+                hit=False, price_match=False, move_error=1.0, lean_hit=False,
+                actual_direction="DOWN",
+            )
+            rows = conn.execute(
+                "SELECT model, direction, hit, resolved FROM model_predictions ORDER BY model"
+            ).fetchall()
+            assert rows == [
+                ("lgb", "UP", True, True),
+                ("xgb", "NEUTRAL", None, True),
+            ], f"an already-resolved seat vote was re-graded: {rows}"
+
+            # That probe also rewrote the PARENT row, which has no such guard - restore it,
+            # because the assertions below read the parent's accuracy. The seat rows are
+            # already resolved so this pass leaves them untouched, which is the point.
+            database.update_outcome(
+                parent_id, 5, actual_price=102.0, actual_move=2.0,
+                hit=True, price_match=False, move_error=1.0, lean_hit=True,
+                actual_direction="UP",
+            )
 
             # Simulate one legacy duplicate from the historical dual-write period.
             conn.execute("""

@@ -309,6 +309,11 @@ jobs:
       - name: Fixed paper stake, scaled limits and a terminal ruin state
         run: python backend/test_fixed_stake_and_ruin.py
 
+      # The dead zone is applied at every site that turns two probabilities into a side, and
+      # the measurement refuting it AS A REMEDY is pinned so nobody sets the knob.
+      - name: Directional dead zone is not bypassed, and is not a remedy
+        run: python backend/test_directional_tilt_contract.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -881,6 +886,7 @@ jobs:
           python backend/test_lean_hit_contract_truth.py || exit /b 1
           python backend/test_expectancy_and_consensus.py || exit /b 1
           python backend/test_fixed_stake_and_ruin.py || exit /b 1
+          python backend/test_directional_tilt_contract.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

@@ -3344,19 +3344,37 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
             WHERE id = ?
         """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
               lean_hit, str(actual_direction or ""), True, pred_id))
-        strict_direction = "UP" if float(actual_move or 0.0) >= 0.0 else "DOWN"
-        conn.execute("""
-            UPDATE model_predictions
-            SET actual_price = ?, actual_direction = ?,
-                hit = CASE
-                    WHEN direction IN ('UP', 'DOWN') THEN (direction = ?)
-                    ELSE NULL
-                END,
-                resolved = TRUE, resolution_status = 'RESOLVED', invalid_reason = ''
-            WHERE starts_with(id, ?)
-        """, (
-            float(actual_price), strict_direction, strict_direction, f"{pred_id}::",
-        ))
+        # SEAT VOTES ARE GRADED BY THE CONTRACT, ONCE, BY ONE GRADER.
+        #
+        # This block computed `strict_direction = "UP" if actual_move >= 0 else "DOWN"` and
+        # graded every seat vote against it - the endpoint rule, applied to a first-touch
+        # model, three lines below a docstring that names that exact defect. And
+        # `actual_move` is `resolution_price - entry`, which under first touch is the
+        # BARRIER, so the "endpoint sign" was really the barrier side on touching rows and
+        # the closing residual on timeouts: not one rule at all.
+        #
+        # `model_verifier.check_and_verify` already grades these rows through `tc.grade()`
+        # under each vote's own declared contract and writes them via
+        # `resolve_model_prediction`. Two writers on one column means the later one wins and
+        # they can disagree, which is worse than either rule alone.
+        #
+        # So: use the CONTRACT's direction, never the move sign; skip rows the contract
+        # grader has already resolved; and when the contract outcome is unknown, resolve
+        # nothing rather than grade by a rule this model was not trained on.
+        graded_direction = str(actual_direction or "")
+        if graded_direction in ("UP", "DOWN", "NEUTRAL"):
+            conn.execute("""
+                UPDATE model_predictions
+                SET actual_price = ?, actual_direction = ?,
+                    hit = CASE
+                        WHEN direction IN ('UP', 'DOWN') THEN (direction = ?)
+                        ELSE NULL
+                    END,
+                    resolved = TRUE, resolution_status = 'RESOLVED', invalid_reason = ''
+                WHERE starts_with(id, ?) AND resolved = FALSE
+            """, (
+                float(actual_price), graded_direction, graded_direction, f"{pred_id}::",
+            ))
     except Exception as e:
         print(f"DuckDB Update Error: {e}")
     finally:
