@@ -1790,3 +1790,35 @@ gap, nanosecond timestamps, 449 BTC rounds). The blocker is the BTC reference at
 Sub-second lead/lag is blocked on a **fast BTC tick series**, not on Polymarket capture.
 
 Detail: `docs/active/CROSS_VENUE_REPRICING_LAG_2026-08-08.md`.
+
+---
+
+## 18. No profitable subset to select into — `2026-08-08`
+
+Tests the premise underneath the entire selectivity architecture (reliability models, OOD
+detection, error predictors, contradiction vetoes, state specialists, precision frontiers).
+All of it concentrates capital into a profitable subset; none of it creates one.
+
+`research/profitability_surface.py`, model-free, on 106,053 observations across 547 settled
+rounds. For each cell of `seconds remaining × |distance|/(σ√T)`: buy that side at the recorded
+ask, hold to settlement, pay the real taker fee.
+
+**0 of 15 positive cells has a positive round-clustered 5th percentile.** The best two
+(DOWN, 5–15m, near the anchor: +7.46c and +6.48c on 135 rounds each) have lower bounds of
+−1.19c and −1.00c.
+
+**The DOWN column is a base-rate artifact, not a state effect.** DOWN won 52.5% of these 547
+rounds against a mean down_ask of 0.5025, so a *blanket* state-blind DOWN buyer books +2.22c
+gross. The imbalance is **1.2 standard errors** from an even split — noise. Any cell below
++2.22c is worse than not selecting at all, which disqualifies eleven of the fifteen. The
+control prints beside the table so it cannot be read without it.
+
+**Sequencing consequence:** a reliability model fitted on this surface would learn which cells
+had favourable noise and would backtest beautifully. Find a subset with a positive lower bound
+first; build the machinery that concentrates into it second.
+
+**Untested here:** maker fills (different price, no platform fee, unseen toxicity), **early
+exit** (every cell holds to settlement — the largest untested P&L source in the design),
+sub-second states, and Binance first-touch.
+
+Detail: `docs/active/PROFITABILITY_SURFACE_2026-08-08.md`.

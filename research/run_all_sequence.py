@@ -62,6 +62,11 @@ FRONTIER = (
     # over the next quote change (r=0.0016 at k=1). No multi-second lag; blind below ~2s.
     #   docs/active/CROSS_VENUE_REPRICING_LAG_2026-08-08.md
     "cross_venue_repricing_lag.py",
+    # Does a profitable SUBSET exist to concentrate capital into? Model-free surface over
+    # (seconds left x anchor distance / expected remaining move). 0 of 15 positive cells
+    # survive a round-clustered lower bound, and the DOWN column is a base-rate artifact.
+    #   docs/active/PROFITABILITY_SURFACE_2026-08-08.md
+    "profitability_surface.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",
