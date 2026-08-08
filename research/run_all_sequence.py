@@ -53,6 +53,11 @@ FRONTIER = (
     # Read-only. Exits 2 when the analytics database is absent, which is a DATA problem and
     # not a finding - the runner treats a non-zero exit as a failure, which is correct.
     "live_round_edge_audit.py",
+    # The comparison the ledger called decisive: structural fair value against the executable
+    # ask on 106,058 live snapshots over 545 settled rounds. The market wins on Brier and log
+    # loss, and every claimed-edge bucket loses before fees.
+    #   docs/active/POLY_FAIR_VALUE_VS_ASK_2026-08-08.md
+    "poly_fair_value_vs_ask.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",

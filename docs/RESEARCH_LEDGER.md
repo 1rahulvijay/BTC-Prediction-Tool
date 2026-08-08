@@ -1712,3 +1712,38 @@ Does **not** test `big_move` timing, the P(hold) keepers, or the frozen late-lea
 different questions, untouched.
 
 Detail: `docs/active/LIVE_ROUND_EDGE_AUDIT_2026-08-08.md`.
+
+---
+
+## 16. Structural fair value loses to the executable ask — `2026-08-08`
+
+The comparison this ledger has called "the only one that decides tradeability", finally run.
+`research/poly_fair_value_vs_ask.py` on **106,058 live in-window snapshots across 545 settled
+BTC Up/Down rounds**, each carrying the recorded Polymarket ask.
+
+| | structural Φ(z) | market ask |
+|---|---:|---:|
+| Brier | 0.18132 | **0.16693** |
+| log loss | 0.56518 | **0.49634** |
+
+**The ask is the better forecaster of the venue's own settlement.** Where the model claims a
+2–10% mispricing the realised UP rate lands *below* the ask — the market is right and the model
+is wrong in exactly the region a trader would act on. Every raw-edge bucket loses **before** the
+1.75c/share taker fee; the round-clustered bootstrap (resampling rounds, not snapshots) puts the
+5th percentile at **−7.18c/share**. **FAIL_NO_EDGE.**
+
+The failure is diagnosable — overconfident at both tails, the signature of underestimated
+volatility — and fixing it does not rescue the result. With the σ multiplier chosen *in-sample
+on the test set*, the most generous possible test, the best Brier is 0.17808, still short of the
+ask's 0.16692.
+
+Three independent measurements now point the same way: the served lean is a coin flip on the
+venue's question (§15), the ask beats both model vintages (§4.5), and the ask beats the
+structural baseline (here).
+
+**Closes** the taker lane driven by structural fair value. **Does not close** the residual lane
+(harder bar now, not removed), the maker lane (different economics, untested toxicity),
+cross-venue repricing latency (a quote-timing question, not a forecasting one), or Binance
+first-touch (different contract, different venue).
+
+Detail: `docs/active/POLY_FAIR_VALUE_VS_ASK_2026-08-08.md`.

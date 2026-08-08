@@ -326,6 +326,12 @@ jobs:
       - name: Scan-6 replay units, executed identity, control gate, capital scaling
         run: python backend/test_scan6_replay_identity_control.py
 
+      # The baseline any Polymarket pricing claim has to satisfy: monotone in distance, time
+      # and volatility, symmetric about the anchor, refusing rather than fabricating certainty,
+      # and carrying the venue's real fee curve (1.75c/share at 50c).
+      - name: Structural fair value monotonicity and the Polymarket fee curve
+        run: python backend/polymarket_fair_value.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -901,6 +907,7 @@ jobs:
           python backend/test_directional_tilt_contract.py || exit /b 1
           python backend/test_model_load_refusal_reason.py || exit /b 1
           python backend/test_scan6_replay_identity_control.py || exit /b 1
+          python backend/polymarket_fair_value.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1
