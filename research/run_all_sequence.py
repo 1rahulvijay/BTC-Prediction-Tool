@@ -67,6 +67,12 @@ FRONTIER = (
     # survive a round-clustered lower bound, and the DOWN column is a base-rate artifact.
     #   docs/active/PROFITABILITY_SURFACE_2026-08-08.md
     "profitability_surface.py",
+    # Can you sell before settlement instead of holding? The oracle budget is +25c over
+    # holding, and NO causal take-profit/stop rule reaches it: entering at the ask and
+    # exiting at the bid starts the position 1c underwater, so a symmetric-looking band is
+    # asymmetric against it before any forecasting.
+    #   docs/active/EARLY_EXIT_LANE_2026-08-08.md
+    "early_exit_lane.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",

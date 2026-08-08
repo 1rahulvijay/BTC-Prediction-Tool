@@ -1822,3 +1822,32 @@ exit** (every cell holds to settlement — the largest untested P&L source in th
 sub-second states, and Binance first-touch.
 
 Detail: `docs/active/PROFITABILITY_SURFACE_2026-08-08.md`.
+
+---
+
+## 19. Early exit is unreachable as a taker round trip — `2026-08-08`
+
+1,088 entries across 545 settled rounds. Enter by paying the ask, exit by receiving the bid,
+taker fee on both legs.
+
+**The budget is huge.** MFE of the bid over the entry ask: median +23.00c, p90 +55.00c. A
+perfect oracle exit returns +23.26c/share against −2.00c for holding — a **+25.25c premium**,
+ten times the ~2.5c round-trip cost.
+
+**None of it is reachable.** All twenty cells of a frozen take-profit/stop grid, walked
+causally, are **worse than holding**. Best by lower bound (tp 3%, stop 5%): −3.97c mean,
+−4.08c 5th percentile, against holding's −2.00c.
+
+**The mechanism is structural, not a bad rule.** Entering at the ask and exiting at the bid
+opens the position 1c underwater at the median spread, so a nominal +2c target needs 3c of
+favourable move while a nominal −3c stop needs only 2c against — and 55% of first crossings
+are stops. No threshold choice removes a spread crossed twice.
+
+**What it opens:** a maker entry fills at the bid instead of the ask, turning the 1c handicap
+into a 1c head start and dropping the platform fee on that leg — a 2c swing per round trip,
+larger than the margin by which every rule above loses to holding. That does not make the maker
+lane profitable; it makes it the only remaining lane whose cost structure is not already
+decisive. Its blocker is adverse selection, invisible here and visible in the 32.5ms `pm_l2`
+store.
+
+Detail: `docs/active/EARLY_EXIT_LANE_2026-08-08.md`.
