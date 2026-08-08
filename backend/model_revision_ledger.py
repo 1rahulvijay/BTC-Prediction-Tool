@@ -495,6 +495,37 @@ class ModelRevisionLedger:
                             continue
                         markout = price - float(reference_price)
                         actual = "UP" if markout > 0 else "DOWN" if markout < 0 else "NEUTRAL"
+                        # WHICH QUESTION THIS ROW ANSWERS.
+                        #
+                        # Every row here is graded on the ENDPOINT sign of a single observed
+                        # price. For the sub-horizon markouts that is the only meaningful
+                        # rule - a first-touch barrier contract is not defined over 1000ms,
+                        # so those rows are correct as they stand.
+                        #
+                        # The HORIZON_{h}M row is different: that IS the model's own
+                        # question, and the model is trained on
+                        # FIRST_TOUCH_TRIPLE_BARRIER_V1. A forecast that correctly called
+                        # first-touch UP and then reversed by the horizon end is recorded
+                        # here as WRONG. Grading it correctly needs the intrabar path, which
+                        # this resolver does not have - it sees one price.
+                        #
+                        # So the row is LABELLED rather than silently mixed. A consumer
+                        # reading `correct` for a HORIZON row is reading endpoint accuracy
+                        # for a first-touch model and must know it.
+                        _is_horizon = kind.startswith("HORIZON_")
+                        _detail = {
+                            "source": "live_binance_price",
+                            "maximum_lateness_ms": maximum_lateness_ms,
+                            "outcome_contract": "ENDPOINT_MARKOUT_V1",
+                            "answers_training_contract": False,
+                            "contract_note": (
+                                "HORIZON row: endpoint sign, NOT the first-touch contract the "
+                                "model is trained on - do not read as directional accuracy"
+                                if _is_horizon else
+                                "sub-horizon markout: endpoint sign is the only rule defined "
+                                "at this offset"
+                            ),
+                        }
                         before = con.execute(
                             "SELECT 1 FROM model_revision_outcomes "
                             "WHERE revision_id = ? AND outcome_kind = ?",
@@ -508,8 +539,7 @@ class ModelRevisionLedger:
                             """,
                             [revision_id, kind, target_ts, observed_ts, price, markout, actual,
                              str(prediction) == actual, latency,
-                             _canonical_json({"source": "live_binance_price",
-                                              "maximum_lateness_ms": maximum_lateness_ms})],
+                             _canonical_json(_detail)],
                         )
                         appended += 1
                 return appended

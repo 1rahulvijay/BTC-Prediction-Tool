@@ -139,6 +139,32 @@ class StrategyRiskConfig:
     minimum_fill_fraction: float = 1.0
     stop_required: bool = True
 
+    @classmethod
+    def for_capital(cls, starting_cash_usd: float, **overrides) -> "StrategyRiskConfig":
+        """Risk limits derived from the bankroll THIS ENGINE ACTUALLY STARTS WITH.
+
+        The dataclass defaults are computed from `DEFAULT_STARTING_CASH_USD`, which is a
+        CONSTANT. That fixed the original defect - absolute dollars sized for $10,000 that
+        stopped being limits on a $250 stake - and introduced its mirror image: fractions of
+        250 that stop being limits on anything larger.
+
+            bankroll $10,000, defaults tied to the constant
+              max_position_notional  $25.00   0.25% of the account
+              maximum_daily_loss     $12.50   0.12% of the account
+
+        A limit must be a fraction of the capital it protects, not of a number that happened
+        to be the default. `starting_cash_usd` is configurable to $10M, so this reads it.
+        """
+        cash = max(0.0, float(starting_cash_usd))
+        derived = {
+            "max_position_notional_usd": cash * POSITION_NOTIONAL_FRACTION,
+            "max_account_exposure_usd": cash * ACCOUNT_EXPOSURE_FRACTION,
+            "maximum_daily_loss_usd": cash * DAILY_LOSS_FRACTION,
+            "maximum_weekly_loss_usd": cash * WEEKLY_LOSS_FRACTION,
+        }
+        derived.update(overrides)
+        return cls(**derived).clamped()
+
     def clamped(self) -> "StrategyRiskConfig":
         return StrategyRiskConfig(
             enabled=bool(self.enabled),

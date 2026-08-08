@@ -5191,15 +5191,24 @@ async def main_loop():
                         ab_runner.enabled = False
                         ab_runner.reset_comparisons()
 
-                # Feed the CascadeMonitor — grade the RAW lean vs the realized sign,
-                # NOT the `hit` column: on gated rows (the majority) hit=avoid_success,
-                # TRUE when the lean was WRONG, which would invert the cascade-on vs
-                # cascade-off accuracy comparison that auto-enables/disables the cascade.
+                # Feed the CascadeMonitor — grade the RAW lean against the CONTRACT'S
+                # OUTCOME, not the `hit` column and not the move sign.
+                #
+                # Not `hit`: on gated rows (the majority) hit=avoid_success, TRUE when the
+                # lean was WRONG, which would invert the cascade-on vs cascade-off comparison
+                # that auto-enables and scales the cascade. That reasoning was already here.
+                #
+                # But the replacement was `(raw_dir == "UP") == (actual_move_usd > 0)`, and
+                # `actual_move_usd` is `resolution_price - entry` - the BARRIER under first
+                # touch, the closing residual on a timeout. So the feedback controlling the
+                # cascade was graded by a rule the model is not trained on, and on ~47% of
+                # rows by a coin flip on drift. `actual_direction` is the graded result and is
+                # on the same row.
                 if h == 15:   # cascade TARGET (15m<-5m, cascade_map={15:5}); pruned 2026-06-21
                     raw_dir = v.get("raw_direction", v.get("direction"))
-                    move = float(v.get("actual_move_usd") or 0.0)
-                    if raw_dir in ("UP", "DOWN") and move != 0.0:
-                        lean_correct = (raw_dir == "UP") == (move > 0)
+                    graded = v.get("actual_direction")
+                    if raw_dir in ("UP", "DOWN") and graded in ("UP", "DOWN", "NEUTRAL"):
+                        lean_correct = (raw_dir == graded)
                         cascade_monitor.record_outcome(f"{h}m", cascade_active, lean_correct)
 
                 database.update_outcome(

@@ -90,10 +90,20 @@ def main() -> int:
     chk(ident.get("executed_feature_matrix_sha256") == e["executed_feature_matrix_sha256"],
         "and merged into the artifact identity, beside the matrix fields rather than replacing "
         "them - a reader can now see both")
-    chk(ident.get("executed_matches_matrix") is False,
-        f"and the agreement flag is FALSE ({ident.get('executed_matches_matrix')}) - these "
-        f"synthetic arrays are not the research matrix, and the manifest now SAYS so instead of "
-        f"quietly describing the matrix")
+    # THIS ASSERTION USED TO REQUIRE `is False`, AND IT COULD NOT FAIL.
+    #
+    # The flag compared a NumPy tensor digest against a Parquet FILE digest. Those never
+    # agree - measured, even on logically identical data - so False was structural, not a
+    # finding about these arrays. The assertion read like evidence and was a tautology, and
+    # the obvious next step (enforce the flag) would have rejected every honest retrain.
+    chk(ident.get("executed_matches_matrix") is None,
+        f"the agreement flag is NOT COMPARABLE ({ident.get('executed_matches_matrix')}) "
+        f"rather than a False that merely restates the hash domains")
+    chk("HASH_DOMAINS_NOT_COMPARABLE" in str(ident.get("executed_matrix_comparison_basis")),
+        f"and it says why: {ident.get('executed_matrix_comparison_basis')}")
+    chk(ident.get("executed_rows_match_matrix_rows") in (True, False),
+        "while the comparison that CAN be made - row counts - is reported separately, so "
+        "nothing that is knowable is thrown away with the part that is not")
 
     bare = current_training_identity(requested_days=60, feature_names=["a", "b"])
     chk(bare.get("executed_identity_recorded") is False

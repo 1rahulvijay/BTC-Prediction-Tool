@@ -179,31 +179,39 @@ def main() -> int:
     from binance_paper.metrics import _apply_control_relative_gate
     from binance_paper.strategy_registry import CONTROL_STRATEGY_ID
 
+    # THE REAL GATE SHAPE. This fixture used `{"passes": True}` - a shape `_promotion_gate`
+    # has never returned. The code under test then looked for `passes` and the test supplied
+    # it, so the two agreed on a fiction and the assertion could not detect that the verdict
+    # field is actually `status`. A fixture must be the thing it stands in for.
+    def _real_gate():
+        return {"status": "FORWARD_GATE_PASSED_PAPER_ONLY",
+                "checks": {"sample_size_sufficient": True}}
+
     strategies = [
         {"strategy_id": CONTROL_STRATEGY_ID, "mean_expectancy_usd": 0.50,
-         "promotion_gate": {"passes": True}},
+         "promotion_gate": _real_gate()},
         {"strategy_id": "trend_following", "mean_expectancy_usd": 0.20,
-         "promotion_gate": {"passes": True}},
+         "promotion_gate": _real_gate()},
         {"strategy_id": "breakout", "mean_expectancy_usd": 0.90,
-         "promotion_gate": {"passes": True}},
+         "promotion_gate": _real_gate()},
     ]
     _apply_control_relative_gate(strategies)
     by_id = {s["strategy_id"]: s["promotion_gate"] for s in strategies}
-    chk(by_id["trend_following"]["beats_random_control"] is False
-        and by_id["trend_following"]["passes"] is False,
+    chk(by_id["trend_following"]["checks"]["beats_random_control"] is False
+        and by_id["trend_following"]["status"] == "BLOCKED_FAILED_GATE",
         "a strategy earning LESS than the zero-information control fails, and the overall "
         "verdict flips - previously it could pass on its own positive expectancy alone")
-    chk(by_id["breakout"]["beats_random_control"] is True
-        and by_id["breakout"]["passes"] is True,
+    chk(by_id["breakout"]["checks"]["beats_random_control"] is True
+        and by_id["breakout"]["status"] == "FORWARD_GATE_PASSED_PAPER_ONLY",
         "one that beats it is unaffected")
-    chk(by_id[CONTROL_STRATEGY_ID]["control_relative_basis"] == "IS_THE_CONTROL",
+    chk(by_id[CONTROL_STRATEGY_ID]["checks"]["control_relative_basis"] == "IS_THE_CONTROL",
         "and the control is exempt - 'the control must beat the control' claims nothing")
 
     orphan = [{"strategy_id": "trend_following", "mean_expectancy_usd": 5.0,
-               "promotion_gate": {"passes": True}}]
+               "promotion_gate": _real_gate()}]
     _apply_control_relative_gate(orphan)
-    chk(orphan[0]["promotion_gate"]["beats_random_control"] is False
-        and orphan[0]["promotion_gate"]["passes"] is False,
+    chk(orphan[0]["promotion_gate"]["checks"]["beats_random_control"] is False
+        and orphan[0]["promotion_gate"]["status"] == "BLOCKED_FAILED_GATE",
         "with NO control present the comparison was never made, so it refuses - unknown is not "
         "a pass, however good the raw number looks")
 

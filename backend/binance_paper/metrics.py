@@ -45,6 +45,20 @@ def _side_metrics(trades: list[dict], side: str) -> dict[str, Any]:
     }
 
 
+def _status_from_checks(checks: dict[str, Any]) -> str:
+    """The ONE rule that turns gate checks into a verdict.
+
+    Extracted so `_apply_control_relative_gate` can RECOMPUTE the verdict after adding its
+    criterion instead of reimplementing the rule beside it. A second copy is a second thing
+    to drift.
+    """
+    if any(value is False for value in checks.values()):
+        return "BLOCKED_FAILED_GATE"
+    if any(value is None for value in checks.values()):
+        return "BLOCKED_UNMEASURED"
+    return "FORWARD_GATE_PASSED_PAPER_ONLY"
+
+
 def _promotion_gate(
     trades: list[dict[str, Any]],
     *,
@@ -115,12 +129,7 @@ def _promotion_gate(
         "deflated_sharpe_supports_skill": None,
         "backtest_overfit_probability_acceptable": None,
     }
-    if any(value is False for value in checks.values()):
-        status = "BLOCKED_FAILED_GATE"
-    elif any(value is None for value in checks.values()):
-        status = "BLOCKED_UNMEASURED"
-    else:
-        status = "FORWARD_GATE_PASSED_PAPER_ONLY"
+    status = _status_from_checks(checks)
     return {
         "status": status,
         "checks": checks,
@@ -273,7 +282,14 @@ def _apply_control_relative_gate(strategies: list[dict[str, Any]]) -> None:
         gate = item.get("promotion_gate")
         if not isinstance(gate, dict):
             continue
-        criteria = gate.get("criteria") if isinstance(gate.get("criteria"), dict) else gate
+        # INTO `checks`, WHICH IS WHAT THE VERDICT IS COMPUTED FROM.
+        #
+        # This read `gate.get("criteria")` and fell back to `gate` itself. There is no
+        # "criteria" key, so the criterion landed BESIDE `status` and `checks` rather than
+        # inside `checks` - recorded, and invisible to the rule that decides.
+        criteria = gate.get("checks")
+        if not isinstance(criteria, dict):
+            criteria = gate.setdefault("checks", {})
         if item.get("strategy_id") == CONTROL_STRATEGY_ID:
             criteria["beats_random_control"] = True
             criteria["control_relative_basis"] = "IS_THE_CONTROL"
@@ -288,10 +304,15 @@ def _apply_control_relative_gate(strategies: list[dict[str, Any]]) -> None:
             criteria["beats_random_control"] = bool(float(own) > float(control_expectancy))
             criteria["control_relative_basis"] = (
                 f"own={float(own):.6f} vs control={float(control_expectancy):.6f}")
-        # The overall verdict must reflect the new criterion, not just list it.
-        for key in ("passes", "eligible", "promotable", "ready"):
-            if key in gate and gate[key] is True and not criteria["beats_random_control"]:
-                gate[key] = False
+        # THE VERDICT IS RECOMPUTED, not patched.
+        #
+        # This looked for `passes`, `eligible`, `promotable` and `ready`. `_promotion_gate`
+        # returns none of those - its verdict field is `status` - so the fail-close was a
+        # no-op and a strategy that lost to a zero-information control still read
+        # FORWARD_GATE_PASSED_PAPER_ONLY. The criterion was recorded and never enforced,
+        # which is precisely the defect this function was written to remove: it committed it
+        # while fixing it.
+        gate["status"] = _status_from_checks(criteria)
 
 
 def all_metrics(persistence) -> dict[str, Any]:

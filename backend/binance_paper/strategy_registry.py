@@ -50,7 +50,25 @@ class StrategyRegistry:
         return bool(self._enabled.get(strategy_id, False))
 
     def persist_defaults(self, persistence, starting_cash_usd: float) -> None:
+        """Persist each strategy's defaults, with the DOLLAR limits bound to THIS bankroll.
+
+        The dataclass defaults are fractions of `DEFAULT_STARTING_CASH_USD`, a constant. This
+        is the one place the ACTUAL starting capital is known, so it is where the derivation
+        belongs - otherwise a $10,000 engine runs limits sized for $250 (a 0.25% position
+        cap), which is the same "a limit that does not scale with the capital it protects"
+        defect that the absolute-dollar version had, pointing the other way.
+
+        Only the four capital-derived dollar fields are rebound. Everything a strategy set
+        deliberately - leverage, side permissions, cooldown, trade rate - is preserved, so
+        this cannot silently undo a strategy's own risk intent.
+        """
         for strategy in self.all():
+            values = strategy.risk.to_dict()
+            scaled = StrategyRiskConfig.for_capital(starting_cash_usd)
+            for field_name in ("max_position_notional_usd", "max_account_exposure_usd",
+                               "maximum_daily_loss_usd", "maximum_weekly_loss_usd"):
+                values[field_name] = getattr(scaled, field_name)
+            strategy.risk = StrategyRiskConfig(**values).clamped()
             config = {"risk": strategy.risk.to_dict()}
             persistence.ensure_strategy(
                 strategy.strategy_id,

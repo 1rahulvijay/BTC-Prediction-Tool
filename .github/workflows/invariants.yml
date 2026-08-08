@@ -319,6 +319,13 @@ jobs:
       - name: A refused model load names its reason
         run: python backend/test_model_load_refusal_reason.py
 
+      # Scan-6. Replay handed a fraction-taking grader a dollar amount and collapsed every row
+      # to NEUTRAL while reporting GRADED_FIRST_TOUCH; the executed-identity flag compared two
+      # incomparable hash domains; the control-relative gate recorded a criterion it never
+      # enforced. Three of the five were introduced by earlier fixes in this same series.
+      - name: Scan-6 replay units, executed identity, control gate, capital scaling
+        run: python backend/test_scan6_replay_identity_control.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -893,6 +900,7 @@ jobs:
           python backend/test_fixed_stake_and_ruin.py || exit /b 1
           python backend/test_directional_tilt_contract.py || exit /b 1
           python backend/test_model_load_refusal_reason.py || exit /b 1
+          python backend/test_scan6_replay_identity_control.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

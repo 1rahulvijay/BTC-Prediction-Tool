@@ -62,7 +62,19 @@ def _graded_direction(entry_price: float, neutral_band: float, klines: list,
     import target_contract as _tc
 
     contract = _tc.TRAINING_CONTRACT
-    threshold = entry_price * float(neutral_band or 0.0)
+    # THE BAND IS A FRACTION, AND `grade` WANTS A FRACTION.
+    #
+    # This multiplied it by the entry price first, so a declared 8bps band arrived as 80.
+    # `first_touch_at` then builds `entry * (1 +/- threshold)`:
+    #
+    #     correct   threshold 0.0008  ->  barriers [ 99,920 ..    100,080]
+    #     this bug  threshold 80      ->  barriers [-7,900,000 .. 8,100,000]
+    #
+    # Neither barrier is reachable, so EVERY row timed out and returned NEUTRAL - while the
+    # status still read GRADED_FIRST_TOUCH. Replay reported first-touch grading and delivered
+    # a constant. Measured: a path that genuinely touches the upper barrier grades UP under
+    # the fraction and NEUTRAL under the product.
+    threshold = _tc.resolve_neutral_band(neutral_band)
     result = _tc.grade(
         contract=contract,
         entry=entry_price,
@@ -229,9 +241,13 @@ async def run_replay(args, progress_cb=None) -> dict:
             hit = _hit(final_dir, actual_dir, raw_dir)
             expected_signed = float(pred.get("targetPrice", entry_price)) - entry_price
             move_error = abs(actual_move - expected_signed)
+            # The CONTRACT decides this too. `actual_dir` above is graded through
+            # `target_contract.grade()`; computing the headline `direction_hit` from
+            # `actual_move > 0` put two different truths in one replay row, and the endpoint
+            # one is the question this model is not trained on.
             direction_hit = None
-            if raw_dir in ("UP", "DOWN") and actual_move != 0:
-                direction_hit = bool((raw_dir == "UP") == (actual_move > 0))
+            if raw_dir in ("UP", "DOWN") and actual_dir in ("UP", "DOWN", "NEUTRAL"):
+                direction_hit = bool(raw_dir == actual_dir)
             price_match = (
                 final_dir in ("UP", "DOWN")
                 and final_dir == actual_dir

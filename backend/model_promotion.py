@@ -580,6 +580,10 @@ def selftest() -> None:
         staged_manifest = {
             "artifact_files": [relative],
             "artifact_hash": hash_directory_files(source, [relative]),
+            # A promoted bundle must be able to say what it was fitted on. `train()` records
+            # this on every real bundle; this fixture fabricates one, so it states it too
+            # rather than being exempted from the rule it is meant to exercise.
+            "executed_identity_recorded": True,
         }
         (source / "artifact_manifest.json").write_text(
             json.dumps(staged_manifest), encoding="utf-8"
@@ -587,6 +591,7 @@ def selftest() -> None:
         old_manifest = {
             "artifact_files": [relative],
             "artifact_hash": hash_directory_files(live, [relative]),
+            "executed_identity_recorded": True,
         }
         (live / "artifact_manifest.json").write_text(
             json.dumps(old_manifest), encoding="utf-8"

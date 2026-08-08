@@ -362,17 +362,38 @@ def current_training_identity(
         identity.update(executed)
         _mrows = int((summary or {}).get("rows") or 0)
         _erows = int(executed.get("executed_rows") or 0)
-        identity["executed_matches_matrix"] = bool(
-            _mrows and _erows and _mrows == _erows
-            and executed.get("executed_feature_matrix_sha256")
-            and matrix_hash
-            # Row COUNT agreement is not data agreement - the live 60-day fetch and the matrix
-            # both hold 86,400 rows. Only a hash match may claim identity.
-            and executed.get("executed_feature_matrix_sha256") == matrix_hash)
+        # THE TWO HASHES ARE NOT COMPARABLE, AND SAYING SO IS THE HONEST ANSWER.
+        #
+        # This compared `executed_feature_matrix_sha256` - a sha256 over the in-memory NumPy
+        # X bytes - against `matrix_hash`, which is `hash_file(research_matrix_1m.parquet)`
+        # or the manifest's file hash. A tensor-byte digest and a Parquet-file digest are
+        # different domains: measured, logically IDENTICAL data hashes differently, so the
+        # flag was structurally False for every training run that ever recorded one.
+        #
+        # That matters more than it looks. The flag reads like "the executed data disagrees
+        # with the matrix", so enforcing it - which is the obvious next step and was
+        # explicitly proposed - would have rejected every honest retrain forever.
+        #
+        # A real comparison needs ONE canonical logical-row hash computed the same way on
+        # both sides. Until that exists, this reports None (not comparable) with the reason,
+        # and publishes the facts that ARE comparable so a reader can judge.
+        _ehash = executed.get("executed_feature_matrix_sha256")
+        if not (_ehash and matrix_hash):
+            identity["executed_matches_matrix"] = None
+            identity["executed_matrix_comparison_basis"] = "HASH_MISSING"
+        else:
+            identity["executed_matches_matrix"] = None
+            identity["executed_matrix_comparison_basis"] = (
+                "HASH_DOMAINS_NOT_COMPARABLE:"
+                "executed=numpy_tensor_bytes vs matrix=parquet_file_digest")
+        identity["executed_rows_match_matrix_rows"] = bool(
+            _mrows and _erows and _mrows == _erows)
         identity["executed_identity_recorded"] = True
     else:
         identity["executed_identity_recorded"] = False
         identity["executed_matches_matrix"] = None
+        identity["executed_matrix_comparison_basis"] = "NO_EXECUTED_IDENTITY"
+        identity["executed_rows_match_matrix_rows"] = None
     return identity
 
 
@@ -544,6 +565,27 @@ def artifact_compatibility(
             reasons.append(
                 f"{key} mismatch: artifact={manifest.get(key)!r} current={expected_value!r}"
             )
+
+    # THE EXECUTED IDENTITY IS ENFORCED FOR WHAT IT CAN PROVE.
+    #
+    # `executed_training_identity` hashes the arrays the model was actually fitted on, and
+    # nothing consulted it - a manifest could record that the executed data differed from the
+    # research matrix and still pass compatibility.
+    #
+    # What is enforceable HERE is the RECORDING, not the hash. At load time the training
+    # arrays are long gone, so `executed_feature_matrix_sha256` cannot be recomputed and
+    # compared against anything. And `executed_matches_matrix` must NOT be enforced: it
+    # compares a NumPy tensor digest against a Parquet file digest, which never agree even
+    # for identical data, so requiring it would reject every honest retrain.
+    #
+    # So the rule is: under strict identity, a bundle must be able to SAY what it trained on.
+    # A bundle that cannot is unprovable, which is the same standard the manifest requirement
+    # itself applies.
+    if strict and manifest.get("executed_identity_recorded") is not True:
+        reasons.append(
+            "executed_identity_recorded is not True: the bundle does not record the data it "
+            "was actually fitted on, so the training set cannot be attested"
+        )
 
     if artifact.exists():
         if artifact.is_dir() and manifest.get("artifact_files"):
