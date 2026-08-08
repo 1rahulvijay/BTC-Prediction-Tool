@@ -243,11 +243,63 @@ def strategy_metrics(persistence, strategy_id: str) -> dict[str, Any]:
     }
 
 
+def _apply_control_relative_gate(strategies: list[dict[str, Any]]) -> None:
+    """Add the criterion the registry already demands in prose (scan-5 item 5.30).
+
+    `strategy_registry` states it in its own module docstring:
+
+        "A strategy that does not beat random_control over the [same period] has established
+         nothing."
+
+    `_promotion_gate` contained ZERO references to `random_control` or CONTROL_STRATEGY_ID. It
+    evaluated a strategy against its OWN positive expectancy, profit factor, bootstrap lower
+    bound, stress tests and concentration - every one of which a zero-information control can
+    also satisfy in a trending sample. The requirement was written down and never enforced,
+    which is this repository's most repeated defect shape.
+
+    Applied HERE rather than inside `strategy_metrics` because only the cross-strategy view
+    knows what the control did. Mutates each gate in place.
+
+    The control itself is exempt: it is the yardstick, and "the control must beat the control"
+    is not a claim about anything.
+    """
+    from .strategy_registry import CONTROL_STRATEGY_ID
+
+    control = next((s for s in strategies
+                    if s.get("strategy_id") == CONTROL_STRATEGY_ID), None)
+    control_expectancy = None if control is None else control.get("mean_expectancy_usd")
+
+    for item in strategies:
+        gate = item.get("promotion_gate")
+        if not isinstance(gate, dict):
+            continue
+        criteria = gate.get("criteria") if isinstance(gate.get("criteria"), dict) else gate
+        if item.get("strategy_id") == CONTROL_STRATEGY_ID:
+            criteria["beats_random_control"] = True
+            criteria["control_relative_basis"] = "IS_THE_CONTROL"
+            continue
+        own = item.get("mean_expectancy_usd")
+        if control_expectancy is None or own is None:
+            # UNKNOWN is not a pass. A missing control means the comparison the registry
+            # requires was never made, and that is a reason to refuse rather than to proceed.
+            criteria["beats_random_control"] = False
+            criteria["control_relative_basis"] = "CONTROL_UNAVAILABLE"
+        else:
+            criteria["beats_random_control"] = bool(float(own) > float(control_expectancy))
+            criteria["control_relative_basis"] = (
+                f"own={float(own):.6f} vs control={float(control_expectancy):.6f}")
+        # The overall verdict must reflect the new criterion, not just list it.
+        for key in ("passes", "eligible", "promotable", "ready"):
+            if key in gate and gate[key] is True and not criteria["beats_random_control"]:
+                gate[key] = False
+
+
 def all_metrics(persistence) -> dict[str, Any]:
     strategies = [
         strategy_metrics(persistence, row["strategy_id"])
         for row in persistence.accounts()
     ]
+    _apply_control_relative_gate(strategies)
     return {
         "status": (
             "EVIDENCE_READY"

@@ -61,8 +61,16 @@ def compute_no_trade_reasons(p: dict) -> dict:
         if (not p.get("actionable")) and direction in ("UP", "DOWN") \
                 and not any(r in reasons for r in _hard):
             reasons.append("not_actionable")
-    except Exception:
-        pass
+    except Exception as exc:
+        # FAIL CLOSED. This was `pass`, and execution then fell through to verdict construction
+        # with a PARTIALLY assembled reason list - so a malformed setup object produced a
+        # verdict computed from fewer blockers than actually applied, in a function whose
+        # docstring promises it "never raises".
+        #
+        # Never raising is still honoured: the exception becomes a blocker rather than a
+        # traceback, and an incomplete analysis can only ever produce NO_TRADE.
+        reasons.append("decision_gate_error")
+        p["decision_gate_error"] = f"{type(exc).__name__}: {exc}"[:200]
 
     # de-dup, preserve order
     seen, ordered = set(), []

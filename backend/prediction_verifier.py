@@ -322,6 +322,34 @@ class PredictionVerifier:
                 # later. That contaminated magnitude error, target error, expectancy, lean-hit,
                 # the calibration labels and the learned regime weights simultaneously.
                 resolution_price = float(result.resolution_price)
+                # TWO OBSERVATIONS, KEPT SEPARATE (scan-5 items 5.5/5.6/5.7).
+                #
+                # Under FIRST TOUCH, `resolution_price` is the BARRIER - the observation that
+                # defined the outcome. target_contract says so at its own definition: "under
+                # first touch, |move| is always the barrier distance, so magnitude error on
+                # these rows measures the barrier, not a magnitude forecast ... endpoint_price,
+                # which is carried for exactly that purpose."
+                #
+                # It was nonetheless used for actual_move_usd, target/move error, the forward-EV
+                # ledger and the live gate's `expectancy_usd` - which the UI calls "historical
+                # EV". Four consumers computing trading economics from a classification barrier,
+                # where |move| is a CONSTANT by construction.
+                #
+                # THE FIX IS NOT TO OVERWRITE actual_price. P1-1 requires that ONE GRADED ROW
+                # DESCRIBES ONE MOMENT: `actual_price`, `actual_move_usd`, `target_error_usd`
+                # and `actual_change_pct` all belong to the moment named by
+                # `resolution_event_ts`, which under first touch IS the barrier touch. Swapping
+                # the price to the endpoint while leaving that timestamp made the row describe
+                # two moments - the exact defect P1-1 exists to catch, and it did.
+                #
+                # So the endpoint economics are ADDED as their own clearly-named fields. The
+                # classification row stays internally consistent; economic consumers read
+                # `endpoint_*`; and `endpoint_price_basis` says whether a real endpoint existed,
+                # so a barrier fallback can never be mistaken for endpoint economics.
+                _endpoint = getattr(result, "endpoint_price", None)
+                endpoint_price = float(_endpoint) if _endpoint is not None else resolution_price
+                endpoint_basis = "ENDPOINT" if _endpoint is not None else "BARRIER_FALLBACK"
+                endpoint_move_usd = endpoint_price - pred["predicted_price"]
                 actual_move_usd = resolution_price - pred["predicted_price"]
                 actual_abs_move_usd = abs(actual_move_usd)
                 actual_change = actual_move_usd / pred["predicted_price"]
@@ -348,6 +376,13 @@ class PredictionVerifier:
                 verified = {
                     **pred,
                     "actual_price": resolution_price,
+                    # ECONOMIC observation, separate from the classification one above. Under
+                    # first touch |actual_move_usd| is the barrier distance - a CONSTANT by
+                    # construction - so magnitude error, forward EV and "historical EV" computed
+                    # from it measured the barrier, not a forecast.
+                    "endpoint_price": endpoint_price,
+                    "endpoint_move_usd": round(endpoint_move_usd, 2),
+                    "endpoint_price_basis": endpoint_basis,
                     # Recorded ON the row: which observation every number here came from, and
                     # when. A price without its basis is unauditable after the fact.
                     "resolution_price": resolution_price,

@@ -37,18 +37,19 @@ class PerModelVerifier:
         self.invalid_late = 0
         self.ungraded = 0
 
-    def _direction(self, price: float, ref_price: float) -> str:
+    def _direction(self, price: float, ref_price: float, band: float | None = None) -> str:
         if ref_price <= 0:
             return "NEUTRAL"
         chg = (price - ref_price) / ref_price
-        if chg > self.neutral_band:
+        _b = float(band) if band else float(self.neutral_band)
+        if chg > _b:
             return "UP"
-        if chg < -self.neutral_band:
+        if chg < -_b:
             return "DOWN"
         return "NEUTRAL"
 
     def record(self, model_dirs: dict, horizon: int, ref_price: float, now_ms: int,
-               prediction_id: str = ""):
+               prediction_id: str = "", neutral_band: float | None = None):
         """Record each base model's directional vote for this horizon.
 
         ``prediction_id`` is the canonical parent prediction id.  Keeping the child id
@@ -57,6 +58,16 @@ class PerModelVerifier:
         """
         if not model_dirs or ref_price <= 0:
             return
+        # THE PARENT'S BAND, not this class's 8bps constant (scan-5 item 5.4).
+        #
+        # `self.neutral_band` is a fixed 0.0008 floor. The parent prediction carries an ADAPTIVE
+        # `neutralBand` derived from EWMA ATR - measured up to 0.0029 in a violent regime, 3.6x
+        # the floor. Grading every seat vote at the floor while the parent is graded at the real
+        # band means the two disagree about the same market, and any seat-complementarity or
+        # error-correlation study inherits that disagreement.
+        #
+        # Recorded per row so a vote can never be re-graded later at a different width.
+        band = float(neutral_band) if neutral_band else float(self.neutral_band)
         for name, cls in model_dirs.items():
             try:
                 direction = _CLASS_DIR.get(int(cls), "NEUTRAL")
@@ -70,6 +81,10 @@ class PerModelVerifier:
                 # The contract is stamped ON the vote, so a row recorded under one target is
                 # never graded by whatever the default happens to be when it resolves.
                 "target_contract": _tc.TRAINING_CONTRACT,
+                # The PARENT's adaptive band, carried on the row so this vote is graded at the
+                # same barrier width as the prediction it belongs to - and can never be
+                # re-graded later at a different one.
+                "neutral_band": band,
             }
             self.pending.append(entry)
             self.last_vote[name][horizon] = direction
@@ -180,7 +195,7 @@ class PerModelVerifier:
             result = tc.grade(
                 contract=p.get("target_contract") or tc.TRAINING_CONTRACT,
                 entry=float(p["ref_price"]),
-                threshold=float(self.neutral_band),
+                threshold=float(p.get("neutral_band") or self.neutral_band),
                 klines=klines,
                 entry_ts=int(p.get("ts") or 0),
                 verify_ts=int(p["verify_at"]),

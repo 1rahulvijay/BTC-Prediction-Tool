@@ -264,6 +264,17 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
             candidate_metrics_fair = incumbent_metrics_fair = None
 
         reasons = []
+        # 5.16 / 5.17. PRODUCTION-PARITY EVIDENCE UNAVAILABLE -> REFUSE.
+        #
+        # Both of these were RECORDED and then passed. `ambiguous_rows_excluded` noted that the
+        # mask was absent; `regime_routing: RANGE_DEFAULT` noted that every holdout row had been
+        # scored through the RANGE experts. Neither added a failure reason, so a candidate could
+        # be promoted on evidence that did not reproduce how it will actually serve - which is
+        # what the gate exists to establish.
+        if valid_mask is None or horizon not in (valid_mask or {}):
+            reasons.append("ambiguity_mask_unavailable")
+        if regime_labels is None:
+            reasons.append("regime_history_unavailable")
         if candidate_metrics["samples"] < gates["min_holdout_samples"]:
             reasons.append("insufficient_holdout_samples")
         if candidate_metrics["directional_calls"] < gates["min_directional_calls"]:
@@ -289,6 +300,12 @@ def evaluate_candidate(candidate, incumbent, X, Y: dict, split_idx: int,
         elif (candidate_metrics["multiclass_brier"]
                 > prior_brier - gates["min_baseline_brier_margin"]):
             reasons.append("brier_not_better_than_class_prior")
+        # 5.19. If an incumbent EXISTS and no fair paired comparison can be formed, the
+        # challenger has not shown it does not regress - and "we could not check" is not a pass.
+        # Previously both regression checks were simply skipped in that case, so a challenger
+        # could clear the absolute floors without ever being measured against what it replaces.
+        if incumbent is not None and getattr(incumbent, "is_trained", False)                 and not fair_comparison:
+            reasons.append("no_fair_incumbent_comparison")
         if fair_comparison:
             if (candidate_metrics_fair["directional_precision"]
                     < incumbent_metrics_fair["directional_precision"] - gates["max_precision_regression"]):

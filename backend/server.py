@@ -4709,6 +4709,11 @@ async def main_loop():
                         model_verifier.record(
                             p.get("modelDirs", {}), h, current_price, now_ms,
                             prediction_id=pred_id,
+                            # 5.4. The PARENT's adaptive band. Without it every seat vote was
+                            # graded at a fixed 8bps floor while the parent used the real
+                            # EWMA-ATR width - so the two disagreed about the same market, and
+                            # seat-complementarity research inherited the disagreement.
+                            neutral_band=float(p.get("neutralBand", 0.0008) or 0.0008),
                         )
 
                         # A10 setup-fingerprint recorder — the per-prediction DECISION context
@@ -5059,8 +5064,14 @@ async def main_loop():
                 try:
                     database.resolve_forward_ev_event(
                         pred_id,
-                        v.get("actual_price", current_price),
-                        v.get("actual_move_usd", 0.0),
+                        # ENDPOINT economics (scan-5 5.5). This ledger computes notional
+                        # trading return, and `actual_price` is the first-touch BARRIER - under
+                        # that contract |move| is a constant by construction, so net_pnl_usd,
+                        # avoided_loss_usd and opportunity_cost_usd were not horizon-end trade
+                        # economics at all. The classification row keeps the barrier; this
+                        # consumer takes the endpoint.
+                        v.get("endpoint_price", v.get("actual_price", current_price)),
+                        v.get("endpoint_move_usd", v.get("actual_move_usd", 0.0)),
                         v.get("actual_direction", "NEUTRAL"),
                         v.get("hit", False),
                         int(v.get("verified_at") or now_ms),

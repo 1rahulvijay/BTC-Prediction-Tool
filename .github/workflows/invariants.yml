@@ -262,6 +262,12 @@ jobs:
       - name: Executed training identity + prediction contract columns
         run: python backend/test_executed_training_identity.py
 
+      # A first-touch BARRIER is not a trade price - under that contract |move| is a constant by
+      # construction, and four consumers were computing economics from it. Plus four gates that
+      # recorded degraded evidence and passed anyway.
+      - name: Scan-5 barrier price, seat band, and four fail-open gates
+        run: python backend/test_scan5_barrier_and_gates.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -825,6 +831,7 @@ jobs:
           python backend/test_venue_freshness_shared_rule.py || exit /b 1
           python backend/test_maintenance_journal_split.py || exit /b 1
           python backend/test_executed_training_identity.py || exit /b 1
+          python backend/test_scan5_barrier_and_gates.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1
