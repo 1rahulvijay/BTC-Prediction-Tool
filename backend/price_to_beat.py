@@ -1651,6 +1651,33 @@ class PriceToBeatTracker:
             return "NEUTRAL"
         return "UP" if pu >= pd else "DOWN"
 
+    def _grade_provenance(self, p: dict, h: int, win_start: int) -> dict:
+        """Everything needed to know what a graded round actually compared.
+
+        `contract_match` is False under the shipped configuration, and that is the point:
+        it makes a standing cross-contract comparison visible instead of implicit. An
+        unknown contract is recorded as None and counted as unknown - never as a match.
+        """
+        pred_ts = int(p.get("timestamp") or 0) or None
+        offset_ms = (win_start - pred_ts) if pred_ts else None
+        win_len = h * 60_000
+        overlap = (max(0.0, 1.0 - abs(offset_ms) / win_len)
+                   if offset_ms is not None else None)
+        pred_contract = p.get("targetContract") or None
+        return {
+            "pred_ts_ms": pred_ts,
+            "pred_offset_ms": offset_ms,
+            "horizon_overlap": round(overlap, 4) if overlap is not None else None,
+            "pred_contract": pred_contract,
+            "grading_contract": self.GRADING_CONTRACT,
+            "contract_match": (pred_contract == self.GRADING_CONTRACT
+                               if pred_contract else None),
+            # Unknown overlap is NOT usable: a round whose forecast cannot be dated
+            # cannot be shown to describe the same interval.
+            "grade_usable": bool(overlap is not None
+                                 and overlap >= self.MIN_HORIZON_OVERLAP),
+        }
+
     def _direction(self, price: float, ref_price: float) -> str:
         """Polymarket BTC up/down resolution rule: UP if the price is GREATER THAN OR EQUAL
         to the reference (start) price, else DOWN. There is no NEUTRAL outcome — a tie
@@ -1680,6 +1707,23 @@ class PriceToBeatTracker:
         return fallback
 
     LATE_MS = 3000  # ticks later than this use the kline-recovered boundary price
+
+    #: WHAT THIS MIRROR'S GRADER ANSWERS. `_direction` resolves a round on the sign of
+    #: (end price - anchor) on the anchor feed. That is the venue's own rule and it is the
+    #: right question for tradeability - but it is NOT the question the model was trained
+    #: on. The training contract is `first_touch_triple_barrier_v1`, under which "UP" means
+    #: "touches +band before -band", which is correlated with but not identical to "ends
+    #: above the anchor". So every row in the win-rate strip is a CROSS-CONTRACT grade.
+    #: Nothing here changes the grading; the contract on both sides is now recorded so the
+    #: number is labelled with the question it answers.
+    GRADING_CONTRACT = "endpoint_sign_vs_anchor_v1"
+
+    #: A prediction and a round are each `h` minutes long. Offset them by `a` and they
+    #: share (1 - a/h) of their window; a round graded against a prediction that barely
+    #: overlaps it is measuring a forecast of a different interval. `_ptb_preds` holds
+    #: whatever the heavy loop last produced, so this offset is normally one cycle (a few
+    #: seconds) and occasionally much larger - a retrain, a throttled machine, a stall.
+    MIN_HORIZON_OVERLAP = 0.90
 
     def update(self, now_ms: int, ref_price: float, predictions_by_h: dict,
                kronos_dir_by_h: dict, klines=None, feed_fresh: bool = True, keepers=None):
@@ -1768,6 +1812,13 @@ class PriceToBeatTracker:
                     "window_start": win_start,
                     "window_end": win_end,
                     "window_label": f"{_hms(win_start)}-{_hms(win_end)}",
+                    # WHICH QUESTION, AND OVER WHICH INTERVAL. Both sides of the grade are
+                    # recorded on the row itself: the contract the forecast was made under,
+                    # the contract this mirror grades by, and how much of the model's own
+                    # forecast window this round actually covers. Without them the strip
+                    # published one number for two different questions over two different
+                    # intervals.
+                    **self._grade_provenance(p, h, win_start),
                 }
                 # Keep one shared round object. Live fields such as late_entry and the frozen
                 # path plan must still be present when _resolve grades/persists this pending row.
@@ -3044,9 +3095,12 @@ class PriceToBeatTracker:
                 bet = p["our_direction"] in ("UP", "DOWN")
                 hit = (p["our_direction"] == actual_dir) if bet else None
                 if bet:
-                    # (hit, lean_source) so accuracy() can split model-vs-fallback win rates.
+                    # (hit, lean_source, usable) so accuracy() can split model-vs-fallback
+                    # win rates AND separate rounds whose forecast actually covered the
+                    # interval from those it barely overlapped.
                     self.history[p["horizon"]].append(
-                        (1 if hit else 0, p.get("lean_source", "model")))
+                        (1 if hit else 0, p.get("lean_source", "model"),
+                         bool(p.get("grade_usable", False))))
                 resolved = {**p, "actual_price": round(end_price, 2),
                             "actual_direction": actual_dir, "hit": hit,
                             "move": move, "status": "resolved"}
@@ -3159,12 +3213,25 @@ class PriceToBeatTracker:
         out = {}
         for h in self.horizons:
             hh = list(self.history[h])
-            # Back-compat: older persisted entries are plain ints; normalize to tuples.
-            hh = [(e, "model") if isinstance(e, int) else e for e in hh]
+            # Back-compat over three shapes. A plain int predates lean_source; a 2-tuple
+            # predates the interval check. Neither can be shown to have covered the round,
+            # so both are UNUSABLE rather than usable-by-default - a rehydrated row must
+            # not inherit a guarantee it was never measured against.
+            norm = []
+            for e in hh:
+                if isinstance(e, int):
+                    norm.append((e, "model", False))
+                elif len(e) == 2:
+                    norm.append((e[0], e[1], False))
+                else:
+                    norm.append((e[0], e[1], bool(e[2])))
+            hh = norm
             n = len(hh)
             hits = sum(e[0] for e in hh)
             model = [e for e in hh if e[1] == "model"]
             fb = [e for e in hh if e[1] == "fallback"]
+            usable = [e for e in hh if e[2]]
+            model_usable = [e for e in model if e[2]]
             out[h] = {
                 "total": n,
                 "hits": int(hits),
@@ -3174,6 +3241,19 @@ class PriceToBeatTracker:
                 "model_accuracy": round(sum(e[0] for e in model) / len(model), 4) if model else 0.0,
                 "fallback_total": len(fb),
                 "fallback_accuracy": round(sum(e[0] for e in fb) / len(fb), 4) if fb else 0.0,
+                # WHAT THIS NUMBER IS. The mirror grades endpoint sign against the anchor;
+                # the model forecasts a first-touch barrier. The rate above is therefore a
+                # cross-contract measurement, and the interval-covered subset is the only
+                # part of it whose forecast window can be shown to match the round.
+                "grading_contract": self.GRADING_CONTRACT,
+                "min_horizon_overlap": self.MIN_HORIZON_OVERLAP,
+                "interval_covered_total": len(usable),
+                "interval_covered_accuracy": (
+                    round(sum(e[0] for e in usable) / len(usable), 4) if usable else 0.0),
+                "model_interval_covered_total": len(model_usable),
+                "model_interval_covered_accuracy": (
+                    round(sum(e[0] for e in model_usable) / len(model_usable), 4)
+                    if model_usable else 0.0),
                 "pending": sum(1 for p in self.pending if p["horizon"] == h),
             }
         return out

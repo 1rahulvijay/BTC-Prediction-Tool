@@ -1,6 +1,12 @@
 # OPEN DEFECTS AND FUTURE FIXES
 
-Status of every known defect. Updated 2026-08-06. HEAD at time of writing: `9ed6d1d`.
+Status of every known defect. Updated 2026-08-08. HEAD at time of writing: `34ee2d6`.
+
+**2026-08-08 sweep.** Three entries below were STALE — P0-4, P0-10 and the P0-14
+blocker were all fixed while this file still listed them open. A defect register that is
+wrong in that direction is its own defect: it aims work at solved problems and implies
+coverage that does not exist. Corrected inline. Full account:
+`SCAN5_CLOSEOUT_AND_OPEN_DEFECTS_2026-08-08.md`.
 
 **How to read this.** `FIXED` means a specific measurement or mutation run backs it, and a test
 is registered in CI. `VERIFIED OPEN` means the code was read and the defect is real. `CLAIMED`
@@ -152,12 +158,15 @@ leaves the old map active.
 reports unavailable until refitted. `is_admissible_for()` refuses while provenance is
 UNRECORDED — "we do not know" must not read as "yes".
 
-**Still OPEN, and the blocker is deeper than the audit stated:** `predictions_{h}m` has NO
-`target_contract` column. The provenance was never recorded, so no query can separate
-first-touch rows from endpoint rows and the contract filter cannot be written. Adding that
-column, backfilling it, and writing it on every new prediction is the real fix. Until then the
-map declares `contract_provenance=UNRECORDED` and is inadmissible for contract-sensitive
-consumers rather than silently answering.
+**The stated blocker is GONE (corrected 2026-08-08).** This entry said `predictions_{h}m`
+has no `target_contract` column. It has one, along with `release_id`, `resolution_basis`,
+`resolution_event_ts` and `resolution_price`, and `log_prediction` REQUIRES the first two
+explicitly — a new row cannot inherit the `UNKNOWN_LEGACY` default, which exists only
+for rows written before the column did. A contract filter is now writable.
+
+What remains is the consumer work: `PrecisionEngine` still declares
+`contract_provenance=UNRECORDED` and refuses for contract-sensitive consumers rather than
+silently answering. That refusal is correct until it is taught to read the new column.
 
 **P0-27 — unauthenticated reads.**
 Read routes expose database paths, positions, orders, fills, equity, model and evidence state.
@@ -170,7 +179,8 @@ mark a bundle trained.
 *Fix:* immutable `releases/<id>/`, atomic pointer swap, load only manifest-declared components,
 require a complete component matrix.
 
-**P0-4 — VERIFIED OPEN, and a fix was attempted and REVERTED 2026-08-06.**
+**P0-4 — FIXED. The history below is kept because the two failed attempts are the
+reason the third one is shaped the way it is.**
 
 `as_of_close()` selects bars by `open_ms <= at_ms` and returns the OPEN time as the resolution
 event. A one-minute bar that OPENED at the boundary has not closed until 60s later, so its
@@ -215,18 +225,34 @@ must carry `close_ts_ms` (and `is_closed`, `source_event_ts_ms`) rather than hav
 guess a duration. Then `as_of_close` returns a recorded close time and nothing is inferred.
 That is a change to the ingestion path and every kline producer, not a patch to this function.
 
-**Scope when picked up:** add `close_ts_ms` at ingestion → have `as_of_close` return it →
-update the P0-11 assertion to expect the recorded close → leave selection semantics alone.
-The P0-11 assertion ("a LATE resolution grades from the bar at the horizon end") is the one to
-reason about — it may be asserting the same boundary from the other side.
+**DONE, exactly that way.** `backend/kline_schema.py` defines `canonical_kline()`,
+`close_ts_ms()` and `is_closed_at()` under one rule — closure must be PROVEN, never
+inferred, and unknown means OPEN. Producers record `close_ts_ms` from the exchange on both
+transports; `as_of_close` returns the recorded close where it exists and the open time where
+it does not, so nothing regresses while the schema propagates. Selection semantics are
+untouched, and the docstring now carries the reason.
+
+Related, from the 2026-08-08 sweep: the FIRST-TOUCH path has the mirror-image issue and it is
+NOT fixable the same way. Its bar window is shifted forward by up to 60s rather than
+mis-stamped, and tightening the selection would grade a 5-minute contract over four minutes.
+Every graded row now carries `observed_start_ms` / `observed_end_ms` / `window_shift_ms`
+instead. See 5.2 in the closeout document.
 
 ### CLAIMED — never checked against code
 
-P0-9 direction/magnitude incoherence ·
-P0-10 training vs live neutral band · P0-13 decision identity not threaded ·
-P0-15 restored ≠ live adaptive state · P0-17 incomplete composite release ·
-P0-19 compatibility inconsistency · P0-20 bootstrap contradiction · P0-24 unsafe migrations ·
-P0-26 fill-engine optimism.
+**Swept 2026-08-08.** Four are resolved and the rest have a verdict:
+
+| # | verdict |
+|---|---|
+| P0-9 direction/magnitude incoherence | **CONFIRMED-ADJUSTED, recorded.** The served object cannot be incoherent — the target is derived from the direction and `exp_move` is unsigned on all three paths. What was silently discarded is the magnitude head's own SIGN; `magnitudeSignAgrees` now carries it, three-valued |
+| P0-10 training vs live neutral band | **FIXED** by `causal_neutral_band` — the live value is the training threshold series, not an instantaneous recomputation |
+| P0-13 decision identity not threaded | OPEN. This is the `DecisionEnvelope` work (3.15), tracked as architecture |
+| P0-15 restored ≠ live adaptive state | **FIXED.** The percentile window is rehydrated at boot, scoped to the serving release and in the same calibrated/raw namespace the gate compares against |
+| P0-17 incomplete composite release | OPEN, and it is one job with P0-16/P0-18 |
+| P0-19 compatibility inconsistency | read, not resolved |
+| P0-20 bootstrap contradiction | read, not resolved |
+| P0-24 unsafe migrations | **CONFIRMED, and it is the real one.** `ALTER TABLE ... except: pass` appears 13 times in `database.py`, so a migration that fails for a genuine reason is indistinguishable from one already applied. The 5.29 funding migration uses `PRAGMA table_info` instead — that is the pattern the rest should adopt, and it matters most wherever an INSERT is positional |
+| P0-26 fill-engine optimism | addressed by the `fd46d51` work ("a defaulted gate is a disabled gate"); not re-verified end to end |
 
 P0-11/12 are partially evidenced: the complementarity study exposed the endpoint-vs-first-touch
 grading mismatch in the archive (47% of seat predictions are NEUTRAL; `actual_direction` never

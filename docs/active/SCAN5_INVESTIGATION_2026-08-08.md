@@ -162,15 +162,16 @@ That makes **four** claims across all scans whose stated remedy would have been 
 
 ## NOT COMPLETED — 5 claims
 
-| # | claim |
-|---|---|
-| 5.2 | the live first-touch interval is shorter than the declared horizon |
-| 5.12 | promotion inherits the incumbent's adaptive feedback state |
-| 5.18 | regime-aware promotion does not reproduce production's posterior blending |
-| 5.29 | funding uses observation-time mark price for an event-time cashflow |
-| 5.31 | cross-venue "accuracy" measures a different question and moment |
+| # | claim | closed |
+|---|---|---|
+| 5.2 | the live first-touch interval is shorter than the declared horizon | **CONFIRMED-ADJUSTED, FIXED.** Not shorter - SHIFTED forward by up to 60s. Always five bars |
+| 5.12 | promotion inherits the incumbent's adaptive feedback state | CONFIRMED, FIXED (`_reset_adaptive_state_for_release`) |
+| 5.18 | regime-aware promotion does not reproduce production's posterior blending | CONFIRMED, OPEN - same replay work as 4.5 / 2.9 |
+| 5.29 | funding uses observation-time mark price for an event-time cashflow | CONFIRMED, FIXED (basis + lag recorded; the charge still applies) |
+| 5.31 | cross-venue "accuracy" measures a different question and moment | CONFIRMED, FIXED (both contracts and the horizon overlap on every round) |
 
-Plausible, unread, **not findings yet**.
+All five read against source and closed out on 2026-08-08:
+`SCAN5_CLOSEOUT_AND_OPEN_DEFECTS_2026-08-08.md`.
 
 Two were verified under other numbers: **5.3** is scan-2 2.7 (post-inference global re-reads,
 SHAPE-CONFIRMED) and **5.11** is scan-1 1.6 (restart reconstructs the label from `actual_move`,

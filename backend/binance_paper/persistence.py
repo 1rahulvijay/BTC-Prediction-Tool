@@ -20,8 +20,14 @@ from .schemas import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 STRATEGY_IDS = ("trend_following", "breakout")
+
+#: How close an observed mark has to be to a funding settlement for the notional it
+#: prices to be the notional the exchange actually charged. Funding settles every 8h and
+#: is discovered from a "last settled" REST field, so the observation is normally hours
+#: later - `OBSERVATION_TIME_MARK_ESTIMATED` is the expected label, not the exception.
+MARK_AT_FUNDING_TOLERANCE_MS = 60_000
 
 
 def _now_ms() -> int:
@@ -200,7 +206,17 @@ class BinancePaperPersistence:
                 notional_usd DOUBLE NOT NULL,
                 funding_usd DOUBLE NOT NULL,
                 source VARCHAR NOT NULL,
-                created_at_ms BIGINT NOT NULL
+                created_at_ms BIGINT NOT NULL,
+                -- WHICH MOMENT PRICED THIS CASHFLOW. The exchange charges funding on the
+                -- notional at `funding_time_ms`; the only mark this engine holds is the one
+                -- observed at `observed_at_ms`, and funding settles every 8h so the two can
+                -- be hours apart. The charge is still applied - skipping a real cashflow
+                -- would flatter paper P&L, which is the worse error - but the row now says
+                -- so. The dollar effect is small (a mark error of x% moves a ~0.01% funding
+                -- rate by x% OF that), and it is a provenance defect either way: one row
+                -- must not silently describe two moments.
+                mark_basis VARCHAR DEFAULT '',
+                mark_lag_ms BIGINT DEFAULT 0
             )
             """,
             """
@@ -332,6 +348,26 @@ class BinancePaperPersistence:
                 if name not in signal_columns:
                     conn.execute(
                         f"ALTER TABLE binance_paper_signals "
+                        f"ADD COLUMN {name} {definition}"
+                    )
+
+            # SCHEMA v5: which moment priced each funding cashflow. Additive, and it must
+            # run on existing databases - the insert below is positional, so a table
+            # created before these columns would reject every funding event and the
+            # engine would silently stop charging funding at all.
+            funding_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info('binance_paper_funding_events')"
+                ).fetchall()
+            }
+            for name, definition in {
+                "mark_basis": "VARCHAR DEFAULT ''",
+                "mark_lag_ms": "BIGINT DEFAULT 0",
+            }.items():
+                if name not in funding_columns:
+                    conn.execute(
+                        f"ALTER TABLE binance_paper_funding_events "
                         f"ADD COLUMN {name} {definition}"
                     )
 
@@ -833,6 +869,12 @@ class BinancePaperPersistence:
                 direction = 1.0 if position["side"] == "LONG" else -1.0
                 notional = float(position["quantity"]) * snapshot.mark_price
                 funding_usd = -direction * notional * funding_rate
+                mark_lag_ms = int(snapshot.received_at_ms) - funding_time_ms
+                mark_basis = (
+                    "FUNDING_TIME_MARK"
+                    if 0 <= mark_lag_ms <= MARK_AT_FUNDING_TOLERANCE_MS
+                    else "OBSERVATION_TIME_MARK_ESTIMATED"
+                )
                 account = conn.execute(
                     """
                     SELECT available_cash_usd, used_margin_usd,
@@ -854,7 +896,7 @@ class BinancePaperPersistence:
                 conn.execute(
                     """
                     INSERT INTO binance_paper_funding_events VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event_id,
@@ -868,6 +910,8 @@ class BinancePaperPersistence:
                         funding_usd,
                         "binance_futures_public_rest_last_settled",
                         _now_ms(),
+                        mark_basis,
+                        mark_lag_ms,
                     ),
                 )
                 conn.execute(

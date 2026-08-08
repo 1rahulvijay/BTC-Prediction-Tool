@@ -470,6 +470,26 @@ async def lifespan(app: FastAPI):
     )
     ab_restored = ab_runner.restore_from_db()
     logger.info(f"Restored {ab_restored} A/B variant outcomes from DuckDB")
+    # P0-15. The percentile gate's rolling window is a module global that starts empty on
+    # every boot, so the learned confidence bar ran unbounded until 20 fresh samples
+    # accumulated. Rehydrated from THIS release's served rows, in the same namespace the
+    # gate compares against - see fetch_effective_confidence_window for why both
+    # qualifiers are load-bearing rather than caution.
+    try:
+        _release_now = str(getattr(model, "model_bundle_id", "") or "")
+        _conf_restored = 0
+        for _h, _win in _recent_conf.items():
+            _win.clear()
+            for _c in database.fetch_effective_confidence_window(
+                    _h, _release_now, _win.maxlen or 400):
+                if _c > 0.1:
+                    _win.append(float(_c))
+            _conf_restored += len(_win)
+        logger.info(
+            "Restored %s served confidences into the percentile window (release %s)",
+            _conf_restored, _release_now or "UNKNOWN")
+    except Exception as _cw:
+        logger.warning("Could not rehydrate the confidence percentile window: %s", _cw)
     # Rehydrate the price-to-beat win-rate history so the mirror's accuracy strip
     # (model X% | all Y%) survives restarts instead of resetting to "no rounds yet".
     try:

@@ -692,7 +692,18 @@ def init_db():
                  "ADD COLUMN path_p_touch_asym DOUBLE",
                  "ADD COLUMN path_pred_high DOUBLE",
                  "ADD COLUMN path_pred_low DOUBLE",
-                 "ADD COLUMN path_net_move DOUBLE"]:
+                 "ADD COLUMN path_net_move DOUBLE",
+                 # Additive migration: WHICH QUESTION each graded round answered. The
+                 # mirror resolves on endpoint sign against the anchor while the model
+                 # forecasts a first-touch barrier, and the forecast covers the round's
+                 # interval only to the extent the two windows overlap. Persisted so the
+                 # split survives the restart that rehydrates this history - otherwise
+                 # the labelled subset resets to empty on every boot and the unlabelled
+                 # blended number is all that is left.
+                 "ADD COLUMN pred_contract VARCHAR DEFAULT ''",
+                 "ADD COLUMN grading_contract VARCHAR DEFAULT ''",
+                 "ADD COLUMN horizon_overlap DOUBLE",
+                 "ADD COLUMN grade_usable BOOLEAN DEFAULT FALSE"]:
         try:
             conn.execute(f"ALTER TABLE price_to_beat {_ddl}")
         except Exception:
@@ -2297,14 +2308,17 @@ def log_price_to_beat(entry: dict):
             INSERT OR REPLACE INTO price_to_beat
             (id, timestamp, horizon, price_to_beat, our_direction, signal, conviction,
              actionable, kronos_direction, target_price, verify_at, lean_source,
-             confluence_grade, regime, source, resolved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+             confluence_grade, regime, source, pred_contract, grading_contract,
+             horizon_overlap, grade_usable, resolved)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
         """, (
             entry["id"], entry["timestamp"], entry["horizon"], entry["price_to_beat"],
             entry["our_direction"], entry.get("signal", ""), float(entry.get("conviction", 0.0)),
             bool(entry.get("actionable", False)), entry.get("kronos_direction", ""),
             entry.get("target_price"), entry["verify_at"], entry.get("lean_source", ""),
             grade, entry.get("regime", "UNKNOWN"), entry.get("source", "pyth"),
+            str(entry.get("pred_contract") or ""), str(entry.get("grading_contract") or ""),
+            entry.get("horizon_overlap"), bool(entry.get("grade_usable", False)),
         ))
     except Exception as e:
         print(f"DuckDB PriceToBeat Insert Error: {e}")
@@ -2330,7 +2344,8 @@ def fetch_open_price_to_beat(source: str = "pyth", now_ms: int | None = None) ->
         rows = conn.execute("""
             SELECT id, timestamp, horizon, price_to_beat, our_direction, signal,
                    conviction, actionable, kronos_direction, target_price, verify_at,
-                   lean_source, confluence_grade, regime, source
+                   lean_source, confluence_grade, regime, source,
+                   pred_contract, grading_contract, horizon_overlap, grade_usable
             FROM price_to_beat
             WHERE resolved = FALSE AND verify_at > ?
               AND COALESCE(source, 'pyth') = ?
@@ -2345,6 +2360,12 @@ def fetch_open_price_to_beat(source: str = "pyth", now_ms: int | None = None) ->
             "verify_at": int(r[10]), "lean_source": r[11] or "fallback",
             "confluence_grade": r[12] or "", "regime": r[13] or "UNKNOWN",
             "source": r[14] or "pyth",
+            # A round open across a restart keeps the provenance it was OPENED with. Without
+            # this it would be re-graded as interval-unusable purely because the process
+            # bounced - a restart is not evidence about the forecast.
+            "pred_contract": r[15] or None, "grading_contract": r[16] or None,
+            "horizon_overlap": float(r[17]) if r[17] is not None else None,
+            "grade_usable": bool(r[18]),
         } for r in rows]
     except Exception as exc:
         print(f"DuckDB open price-to-beat restore error: {exc}")
@@ -2615,15 +2636,18 @@ def fetch_price_to_beat_history(horizon: int, limit: int = 500) -> list:
             pass
         conn = _connect()
         rows = conn.execute(f"""
-            SELECT CASE WHEN hit THEN 1 ELSE 0 END, COALESCE(lean_source, '')
+            SELECT CASE WHEN hit THEN 1 ELSE 0 END, COALESCE(lean_source, ''),
+                   COALESCE(grade_usable, FALSE)
             FROM price_to_beat
             WHERE horizon = ? AND resolved AND our_direction IN ('UP','DOWN')
               AND COALESCE(source, 'pyth') = 'pyth'
               AND timestamp >= {int(min_ts)}
             ORDER BY timestamp DESC LIMIT {int(limit)}
         """, (horizon,)).fetchall()
-        out = [(int(h), (s if s in ("model", "fallback") else "model"))
-               for h, s in reversed(rows)]
+        # Rows written before `grade_usable` existed default to FALSE: a round that was
+        # never measured against the interval rule cannot be reported as having passed it.
+        out = [(int(h), (s if s in ("model", "fallback") else "model"), bool(u))
+               for h, s, u in reversed(rows)]
     except Exception as e:
         print(f"DuckDB PTB History Error: {e}")
     finally:
@@ -2884,6 +2908,148 @@ def resolve_ab_results(pred_id: str, actual_direction: str):
     finally:
         if conn:
             conn.close()
+
+
+def fetch_effective_confidence_window(horizon: int, release_id: str,
+                                      limit: int = 400) -> list[float]:
+    """P0-15. The served EFFECTIVE confidences the percentile gate needs, oldest-first.
+
+    The gate derives a rolling cap and floor from `_recent_conf`, a module-level deque
+    that starts EMPTY on every boot. Below 20 samples it returns None, so a restart
+    leaves the learned bar unbounded until the window refills - the condition the
+    threshold ceiling exists to survive rather than a state worth staying in.
+
+    Two rules make rehydration safe, and both are the difference between restoring
+    evidence and manufacturing it:
+
+    NAMESPACE. `eff_conf` is `calibrated_confidence` where a calibrator produced one and
+    the raw score otherwise. Loading raw scores into a window a calibrated bar is
+    compared against is defect 5.21 in a new place, so the same resolution is applied
+    here rather than reading one column and hoping.
+
+    RELEASE. A percentile is a claim about ONE model's distribution. Mixing two releases
+    is the pooled-calibration defect (5.10) with a different denominator, so rows are
+    scoped to the release now serving.
+    """
+    if not release_id:
+        # Without a release we cannot say whose distribution these are. An empty window
+        # is the honest answer; the gate already handles it.
+        return []
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute(f"""
+            SELECT COALESCE(calibrated_confidence, confidence)
+            FROM predictions_{int(horizon)}m
+            WHERE release_id = ?
+              AND COALESCE(calibrated_confidence, confidence) IS NOT NULL
+            ORDER BY timestamp DESC LIMIT {int(limit)}
+        """, (str(release_id),)).fetchall()
+        return [float(r[0]) for r in reversed(rows) if r[0] is not None]
+    except Exception as exc:
+        print(f"DuckDB effective-confidence window error: {exc}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def fetch_ab_variant_evidence(variant: str, model_bundle_id: str = "") -> dict:
+    """Durable A/B evidence for ONE variant, scoped to the MODEL that produced it.
+
+    `fetch_ab_variant_stats` groups by variant alone. Evidence belongs to a model, not to
+    a label: a replaced challenger that reuses a label inherits its predecessor's hit
+    count and - once the calendar clock is restored too - its accumulated age. So the
+    scope here is (variant, bundle) whenever the bundle is known.
+
+    Legacy rows written before bundle stamping carry an empty `model_bundle_id`. Scoping
+    those out would silently delete real evidence, so if NOT ONE row for this variant
+    carries a bundle id the whole record is treated as legacy and returned unscoped -
+    with `bundle_scoped=False`, because a caller must be able to tell an
+    identity-scoped number from an unscoped one. The clock is only restored on a scoped
+    record; unidentifiable evidence does not earn calendar credit.
+
+    Returns counts, the earliest prediction timestamp, the still-unresolved predictions
+    (so in-flight attribution survives a restart), and per-horizon DIRECTIONAL accuracy
+    (the cascade gate's own denominator).
+    """
+    out = {
+        "variant": variant,
+        "verified": 0,
+        "hits": 0,
+        "first_ts_ms": None,
+        "unresolved": [],
+        "by_horizon": {},
+        "bundle_scoped": False,
+        "scope_reason": "no_rows",
+    }
+    conn = None
+    try:
+        conn = _connect()
+        want_bundle = str(model_bundle_id or "")
+        stamped = conn.execute("""
+            SELECT COUNT(*) FILTER (WHERE COALESCE(model_bundle_id, '') <> '') AS stamped,
+                   COUNT(*) AS total
+            FROM ab_results WHERE variant = ?
+        """, (variant,)).fetchone()
+        n_stamped = int((stamped or [0, 0])[0] or 0)
+        n_total = int((stamped or [0, 0])[1] or 0)
+        if not n_total:
+            return out
+        if want_bundle and n_stamped:
+            where, params = "variant = ? AND COALESCE(model_bundle_id, '') = ?", (variant, want_bundle)
+            out["bundle_scoped"] = True
+            out["scope_reason"] = "bundle"
+        elif want_bundle:
+            where, params = "variant = ?", (variant,)
+            out["scope_reason"] = "legacy_rows_unstamped"
+        else:
+            where, params = "variant = ?", (variant,)
+            out["scope_reason"] = "variant_has_no_bundle_id"
+
+        row = conn.execute(f"""
+            SELECT COUNT(*) FILTER (WHERE resolved) AS verified,
+                   SUM(CASE WHEN resolved AND hit THEN 1 ELSE 0 END) AS hits,
+                   MIN(timestamp) AS first_ts
+            FROM ab_results WHERE {where}
+        """, params).fetchone()
+        if row:
+            out["verified"] = int(row[0] or 0)
+            out["hits"] = int(row[1] or 0)
+            out["first_ts_ms"] = int(row[2]) if row[2] is not None else None
+
+        out["unresolved"] = [
+            (str(pid), str(direction or "NEUTRAL"))
+            for pid, direction in conn.execute(f"""
+                SELECT pred_id, direction FROM ab_results
+                WHERE {where} AND resolved = FALSE AND pred_id IS NOT NULL
+                ORDER BY timestamp
+            """, params).fetchall()
+        ]
+
+        for h, lean_total, lean_hits in conn.execute(f"""
+            SELECT horizon,
+                   COUNT(*) FILTER (WHERE resolved AND direction IN ('UP', 'DOWN')) AS lean_total,
+                   SUM(CASE WHEN resolved AND hit AND direction IN ('UP', 'DOWN')
+                            THEN 1 ELSE 0 END) AS lean_hits
+            FROM ab_results WHERE {where} GROUP BY horizon
+        """, params).fetchall():
+            lt = int(lean_total or 0)
+            if h is None or lt <= 0:
+                # A horizon with no DIRECTIONAL outcome of its own is omitted, not
+                # published as 0.0 - the cascade gate reads absence as "unknown" and
+                # refuses, which is the answer here.
+                continue
+            out["by_horizon"][int(h)] = {
+                "lean_accuracy": round(int(lean_hits or 0) / lt, 4),
+                "lean_total": lt,
+            }
+    except Exception as exc:
+        print(f"DuckDB A/B Evidence Error: {exc}")
+    finally:
+        if conn:
+            conn.close()
+    return out
 
 
 def fetch_ab_variant_stats() -> dict:

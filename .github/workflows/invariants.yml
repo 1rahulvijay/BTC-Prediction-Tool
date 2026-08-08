@@ -268,6 +268,22 @@ jobs:
       - name: Scan-5 barrier price, seat band, and four fail-open gates
         run: python backend/test_scan5_barrier_and_gates.py
 
+      # An A/B test whose conditions are not controlled: the challenger was conditioned on the
+      # incumbent's output and scored with the incumbent's track record, and the calendar clock
+      # the promotion gate measures restarted with the process.
+      - name: Scan-5 A/B isolation and durability
+        run: python backend/test_ab_isolation_and_durability.py
+
+      # A published win rate that grades a first-touch model by endpoint sign, and a funding
+      # cashflow stamped with one moment and priced at another.
+      - name: Scan-5 grade provenance and funding moment
+        run: python backend/test_grade_provenance_and_funding_moment.py
+
+      # The interval a first-touch label actually watched (shifted, not shortened), the
+      # percentile window that started empty on every boot, and the magnitude head's discarded sign.
+      - name: Scan-5 / P0-15 / P0-9 observed window and restored state
+        run: python backend/test_observed_window_and_restored_state.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -832,6 +848,9 @@ jobs:
           python backend/test_maintenance_journal_split.py || exit /b 1
           python backend/test_executed_training_identity.py || exit /b 1
           python backend/test_scan5_barrier_and_gates.py || exit /b 1
+          python backend/test_ab_isolation_and_durability.py || exit /b 1
+          python backend/test_grade_provenance_and_funding_moment.py || exit /b 1
+          python backend/test_observed_window_and_restored_state.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

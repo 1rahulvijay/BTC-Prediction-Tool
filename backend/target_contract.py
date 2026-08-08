@@ -494,11 +494,13 @@ class GradeResult:
 
     __slots__ = ("direction", "status", "resolution_price", "resolution_event_ts", "contract",
                  "resolution_basis", "interval_start_ms", "interval_end_ms",
-                 "endpoint_price", "endpoint_ts")
+                 "endpoint_price", "endpoint_ts",
+                 "observed_start_ms", "observed_end_ms", "window_shift_ms")
 
     def __init__(self, direction, status, resolution_price=None, resolution_event_ts=None,
                  contract=None, resolution_basis=None, interval_start_ms=None,
-                 interval_end_ms=None, endpoint_price=None, endpoint_ts=None):
+                 interval_end_ms=None, endpoint_price=None, endpoint_ts=None,
+                 observed_start_ms=None, observed_end_ms=None, window_shift_ms=None):
         self.direction = direction
         self.status = status
         self.resolution_price = resolution_price
@@ -517,6 +519,29 @@ class GradeResult:
         #: re-deriving it from a price that answers a different question.
         self.endpoint_price = endpoint_price
         self.endpoint_ts = endpoint_ts
+        #: 5.2. THE INTERVAL ACTUALLY WATCHED, which is not the interval declared.
+        #:
+        #: A path is selected as `entry_ts < open_ms <= verify_ts` over 1-minute bars, and a
+        #: prediction is issued at an arbitrary second. MEASURED on a 5m horizon: the count
+        #: is always 5 bars, so the window is the right LENGTH - the scan's "shorter than
+        #: the declared horizon" is wrong - but it is SHIFTED forward by up to 60s:
+        #:
+        #:     entry +0s   observed [ 60s.. 360s]  declared [ 0s.. 300s]
+        #:     entry +20s  observed [ 60s.. 360s]  declared [20s.. 320s]
+        #:     entry +59s  observed [ 60s.. 360s]  declared [59s.. 359s]
+        #:
+        #: Both ends matter and they do not cancel. At the head, a barrier touched between
+        #: entry and the first bar open is INVISIBLE. At the tail, a touch after the horizon
+        #: ended is attributed to the round - an outcome no position could have taken.
+        #:
+        #: Tightening the selection to bars fully inside the horizon would drop to 4 bars
+        #: and grade a 5-minute contract over 4 minutes, which is a worse error than the
+        #: one being fixed. The structural remedy is bar-aligned entry timestamps, which is
+        #: a change to when predictions are issued, not to this function. Until then every
+        #: row carries what was watched, so no consumer has to assume it matched.
+        self.observed_start_ms = observed_start_ms
+        self.observed_end_ms = observed_end_ms
+        self.window_shift_ms = window_shift_ms
 
     @property
     def graded(self) -> bool:
@@ -612,6 +637,11 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
             and (k.get("is_closed") is not False if isinstance(k, dict) else True)]
     if not path:
         return GradeResult(None, "GRADE_UNAVAILABLE:no_intrabar_path", contract=contract)
+    # 5.2. What was WATCHED, measured from the bars actually selected, so every graded row
+    # below can carry it. `close_ts_ms` is used where the producer recorded one and the bar
+    # cadence is inferred only as a last resort - a duration guessed from an irregular list
+    # is how the earlier P0-4 attempt went wrong.
+    _observed = _observed_window(path, entry_ts, verify_ts)
     outcome, index = first_touch_at(entry, [float(k["high"]) for k in path],
                                     [float(k["low"]) for k in path], threshold)
     if outcome == AMBIGUOUS:
@@ -634,7 +664,7 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
         return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(last["close"]),
                            kline_open_ms(last), contract, "first_touch_timeout_close",
                            interval_start_ms=kline_open_ms(last), interval_end_ms=int(verify_ts),
-                           endpoint_price=endpoint_price, endpoint_ts=endpoint_ts)
+                           endpoint_price=endpoint_price, endpoint_ts=endpoint_ts, **_observed)
 
     # P0-2. THE BARRIER, not the resolving bar's CLOSE.
     #
@@ -658,7 +688,38 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
     return GradeResult(outcome, "GRADED_FIRST_TOUCH", float(barrier), start_ms, contract,
                        "first_touch_barrier", interval_start_ms=start_ms,
                        interval_end_ms=end_ms, endpoint_price=endpoint_price,
-                       endpoint_ts=endpoint_ts)
+                       endpoint_ts=endpoint_ts, **_observed)
+
+
+def _observed_window(path, entry_ts, verify_ts) -> dict:
+    """The interval the selected bars actually cover, and how far it sits from the declared one.
+
+    The end is a RECORDED close where the producer wrote one. Where it did not, the cadence is
+    inferred from the bar openings and used only if it is regular - an interval guessed from an
+    irregular list is exactly what made the earlier P0-4 attempt unsafe, and a wrong duration
+    here would misreport the shift rather than leave it unknown.
+    """
+    if not path:
+        return {"observed_start_ms": None, "observed_end_ms": None, "window_shift_ms": None}
+    start = kline_open_ms(path[0])
+    last_open = kline_open_ms(path[-1])
+    end = None
+    try:
+        from kline_schema import close_ts_ms as _close_ts
+        end = _close_ts(path[-1])
+    except Exception:
+        end = None
+    if end is None and len(path) >= 3:
+        diffs = {kline_open_ms(path[i + 1]) - kline_open_ms(path[i])
+                 for i in range(len(path) - 1)}
+        if len(diffs) == 1:
+            end = last_open + diffs.pop()
+    if end is None:
+        # Unknown cadence: report the last OPEN and say the shift is unknown rather than
+        # inventing a duration.
+        return {"observed_start_ms": start, "observed_end_ms": None, "window_shift_ms": None}
+    return {"observed_start_ms": start, "observed_end_ms": int(end),
+            "window_shift_ms": int(end) - int(verify_ts)}
 
 
 def contracts_agree(entry: float, highs, lows, final: float, threshold: float) -> bool:

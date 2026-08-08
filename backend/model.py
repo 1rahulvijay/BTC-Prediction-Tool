@@ -2903,6 +2903,9 @@ class MultiModelEnsemble:
         last_price = data_state["klines"][-1]["close"] if data_state["klines"] else 0
         atr_val = self._compute_live_atr(data_state["klines"])
         exp_move = atr_val * np.sqrt(h) * 0.4  # ATR-based fallback
+        #: The magnitude head's SIGNED output, kept so the P0-9 coherence flag below can be
+        #: computed. None means the head did not run on this row.
+        _signed_move_frac = None
         # Prefer the learned magnitude regressor when available (predicts realized
         # move size as a fraction of price), clamped to a sane band around the ATR
         # estimate so a bad regressor output can't produce absurd targets.
@@ -2916,6 +2919,7 @@ class MultiModelEnsemble:
         if h in self.models_by_regime[mag_reg]["mag"] and last_price > 0:
             try:
                 frac = float(self.models_by_regime[mag_reg]["mag"][h].predict(_xflat)[0])
+                _signed_move_frac = frac
                 pred_move = abs(frac) * last_price
                 if exp_move > 0:
                     exp_move = float(np.clip(pred_move, 0.1 * exp_move, 8.0 * exp_move))
@@ -3013,6 +3017,16 @@ class MultiModelEnsemble:
             )
             quantile_spread = round(width / median, 4)
 
+        # P0-9. Direction and magnitude cannot CONTRADICT each other here - the target is
+        # derived from the direction and `exp_move` is made unsigned by `abs(frac)` on every
+        # path. What that `abs` discards is the magnitude head's own SIGN: a regressor saying
+        # -0.4% while the classifier says UP produces a target ABOVE spot, and the
+        # disagreement leaves no trace. The two heads are separately trained on the same
+        # rows, so their disagreeing is information about the row - recorded, not acted on,
+        # because acting on an unmeasured signal is how the last four gates got built.
+        _mag_sign = 0
+        if _signed_move_frac is not None:
+            _mag_sign = 1 if _signed_move_frac > 0 else (-1 if _signed_move_frac < 0 else 0)
         if direction == "UP":
             target_price = last_price + exp_move
         elif direction == "DOWN":
@@ -3036,6 +3050,11 @@ class MultiModelEnsemble:
             "probDown": round(prob_down, 4),
             "probNeutral": round(prob_neutral, 4),
             "targetPrice": round(target_price, 2),
+            # P0-9. None when the magnitude head did not run; True/False when it did and its
+            # sign agreed (or did not) with the direction actually served.
+            "magnitudeSignAgrees": (
+                None if _mag_sign == 0 or direction not in ("UP", "DOWN")
+                else ((_mag_sign > 0) == (direction == "UP"))),
             "expectedMove": round(exp_move, 2),
             "expectedMoveRange": move_range,
             "expectedMoveRangeSource": move_range_source,

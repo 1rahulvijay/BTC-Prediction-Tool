@@ -19,10 +19,24 @@ logger = logging.getLogger(__name__)
 class ModelVariant:
     """Wraps a MultiModelEnsemble with a configuration label for A/B tracking."""
 
-    def __init__(self, label: str, model, started_at: float = None):
+    def __init__(self, label: str, model, started_at: float = None,
+                 model_bundle_id: str = None):
         self.label = label
         self.model = model
         self.started_at = float(started_at or time.time())
+        #: The identity of the model under test. The LABEL is not that identity - two of
+        #: the three construction sites use fixed strings ("baseline_v9",
+        #: "challenger_cat_v1"), so a replaced model reusing a label would inherit its
+        #: predecessor's durable record.
+        self.model_bundle_id = str(
+            model_bundle_id
+            if model_bundle_id is not None
+            else (getattr(model, "model_bundle_id", "") or "")
+        )
+        #: How `started_at` was obtained. A promotion gate that requires 30 calendar days
+        #: must be able to tell a restored clock from one that started at this boot.
+        self.started_at_source = "process_start" if started_at is None else "caller"
+        self.evidence_scope = "none"
         self.predictions = []
         self.verified = []
         self.total_correct = 0
@@ -57,6 +71,9 @@ class ModelVariant:
             "accuracy": round(self.accuracy, 4),
             "started_at": self.started_at,
             "live_days": round(max(0.0, time.time() - self.started_at) / 86400.0, 3),
+            "model_bundle_id": self.model_bundle_id,
+            "started_at_source": self.started_at_source,
+            "evidence_scope": self.evidence_scope,
         }
 
 
@@ -88,20 +105,73 @@ class ABTestRunner:
         self.pending: dict = {}
         #: pred_id -> what was actually compared. Never assume policy parity.
         self.comparison_basis: dict = {}
+        #: The challenger's OWN cascade inputs, by horizon. See `predict`.
+        self.challenger_cascade: dict = {}
+        #: label -> {horizon: {lean_accuracy, lean_total}}, from that variant's own
+        #: resolved rows. The cascade gate is a skill test; each variant must sit it.
+        self.variant_accuracy: dict = {}
+        self.restore_report: dict = {}
+        self._last_cascade_obj = False   # sentinel: never equals a real dict or None
 
     def restore_from_db(self) -> int:
-        """Seed in-memory variant accuracy from DuckDB so promotion survives restarts."""
-        try:
-            stats = database.fetch_ab_variant_stats()
-        except Exception:
-            return 0
+        """Rebuild every piece of durable A/B state a restart would otherwise destroy.
+
+        Three separate losses, all of which made a promotion decision read the wrong
+        evidence:
+
+        counts        restored before, but keyed by LABEL, so a new challenger reusing
+                      a label inherited its predecessor's record.
+        the clock     `simulated_live_days` is measured from `started_at`, which was set
+                      to `time.time()` at construction. A `min_live_days: 30` gate could
+                      therefore never be reached by any process restarted more often than
+                      monthly - a permanently closed gate, the 5.21 shape again.
+        in flight     `pending` is the pred_id -> direction map that attributes an
+                      outcome to the variant that predicted it. It lived only in memory,
+                      so every prediction open at shutdown resolved in DuckDB while the
+                      in-memory counters never saw it.
+
+        The clock is only restored from a BUNDLE-SCOPED record. Unidentifiable evidence
+        does not earn calendar credit: crediting a fresh model with a predecessor's age
+        is worse than making it wait.
+        """
         restored = 0
+        self.restore_report = {}
         for variant in (self.primary, self.challenger):
-            if variant and variant.label in stats:
-                s = stats[variant.label]
-                variant.verified = [True] * s["hits"] + [False] * max(0, s["verified"] - s["hits"])
-                variant.total_correct = s["hits"]
-                restored += s["verified"]
+            if not variant:
+                continue
+            try:
+                ev = database.fetch_ab_variant_evidence(
+                    variant.label, variant.model_bundle_id)
+            except Exception:
+                continue
+            verified, hits = int(ev.get("verified") or 0), int(ev.get("hits") or 0)
+            variant.verified = [True] * hits + [False] * max(0, verified - hits)
+            variant.total_correct = hits
+            variant.evidence_scope = str(ev.get("scope_reason") or "none")
+            restored += verified
+
+            first_ts = ev.get("first_ts_ms")
+            if ev.get("bundle_scoped") and first_ts:
+                # Never move the clock FORWARD - a later restart must not shorten the
+                # evidence window a caller already established.
+                restored_start = float(first_ts) / 1000.0
+                if restored_start < variant.started_at:
+                    variant.started_at = restored_start
+                    variant.started_at_source = "db_first_prediction"
+
+            for pred_id, direction in ev.get("unresolved") or []:
+                self.pending.setdefault(pred_id, {})[variant.label] = direction
+
+            by_h = ev.get("by_horizon") or {}
+            if by_h:
+                self.variant_accuracy[variant.label] = by_h
+
+            self.restore_report[variant.label] = {
+                "verified": verified,
+                "scope": variant.evidence_scope,
+                "reopened_pending": len(ev.get("unresolved") or []),
+                "started_at_source": variant.started_at_source,
+            }
         return restored
 
     def predict(self, h: int, seq: np.ndarray, data_state: dict,
@@ -112,6 +182,16 @@ class ABTestRunner:
         """
         if not self.primary:
             return {}
+
+        # The server rebuilds `cascade_data = {}` once per prediction cycle and fills it
+        # horizon by horizon, so the primary can never read a stale lower horizon. The
+        # challenger's mirror must expire on exactly the same boundary or it would - a
+        # cycle where the challenger's 5m call failed would leave the previous cycle's 5m
+        # conditioning its 15m. Identity is the boundary, and the reference is RETAINED so
+        # `is` cannot be fooled by a recycled id.
+        if cascade_data is not self._last_cascade_obj:
+            self.challenger_cascade = {}
+            self._last_cascade_obj = cascade_data
 
         primary_pred = self.primary.predict(h, seq, data_state, acc_cache, cascade_data)
         # DEEP COPY, not the live reference. The dict returned here is handed to the server,
@@ -132,8 +212,37 @@ class ABTestRunner:
 
         if self.enabled and self.challenger and getattr(self.challenger.model, "is_trained", False):
             try:
-                challenger_pred = self.challenger.predict(h, seq, data_state, acc_cache, cascade_data)
+                # THE CHALLENGER IS CONDITIONED ON ITSELF, NOT ON THE INCUMBENT.
+                #
+                # `cascade_data` is built by the server as `cascade_data[h] = p` AFTER the
+                # full policy chain runs, and the same object was handed to both variants.
+                # The model's hierarchical cascade reads `cascade_data[5]["direction"]` to
+                # bias its 15m probabilities - so the challenger's 15m forecast was partly
+                # the incumbent's post-policy 5m call. A challenger cannot be evaluated on
+                # a forecast the incumbent partly made.
+                #
+                # `acc_cache` is the second, quieter half: it is the PRIMARY verifier's
+                # live record, and the cascade only fires when the lower horizon has
+                # demonstrated directional skill. The challenger was borrowing the
+                # incumbent's track record to decide whether to trust its own call.
+                #
+                # Each variant now sits its own skill test. A challenger with no resolved
+                # directional rows yet has no `lean_accuracy`, the gate reads absence as
+                # unknown, and its cascade stays inert - which is the true answer, not a
+                # defect. That asymmetry is RECORDED rather than papered over, because a
+                # promotion decision must know whether it compared cascade-active against
+                # cascade-inert.
+                challenger_acc = self.variant_accuracy.get(self.challenger.label)
+                # When the server passes no cascade at all, the challenger gets none
+                # either - the point is symmetry of KIND, not handing the challenger an
+                # input the incumbent did not have.
+                own_cascade = self.challenger_cascade if cascade_data is not None else None
+                challenger_pred = self.challenger.predict(
+                    h, seq, data_state, challenger_acc, own_cascade)
+                self.challenger_cascade[h] = copy.deepcopy(challenger_pred)
                 self.last_by_horizon[h]["challenger"] = copy.deepcopy(challenger_pred)
+                self.last_by_horizon[h]["challenger_evidence"] = (
+                    "own_record" if challenger_acc else "none_cascade_inert")
                 self.comparison_log.append({
                     "horizon": h,
                     "timestamp": int(time.time() * 1000),
@@ -310,10 +419,26 @@ class ABTestRunner:
             and passes_ev
         )
 
+        # What this comparison actually IS, carried beside the numbers. Every field here
+        # names a parity the test does NOT have; a promotion decision that reads the
+        # verdict without them is claiming an experiment that was never run.
+        evidence_integrity = {
+            "comparison_basis": RAW_MODEL_COMPARISON,
+            "challenger_cascade": "isolated_from_primary",
+            "challenger_cascade_evidence": (
+                "own_record" if self.variant_accuracy.get(self.challenger.label)
+                else "none_cascade_inert"),
+            "primary_evidence_scope": self.primary.evidence_scope if self.primary else "none",
+            "challenger_evidence_scope": self.challenger.evidence_scope,
+            "challenger_clock_source": self.challenger.started_at_source,
+            "restore": dict(self.restore_report),
+        }
+
         return {
             "enabled": True,
             "primary": self.primary.get_stats() if self.primary else {},
             "challenger": self.challenger.get_stats() if self.challenger else {},
+            "evidence_integrity": evidence_integrity,
             "total_comparisons": n,
             "paired_resolved": len(paired),
             "agreement_rate": round(agree_count / max(1, n), 4),
