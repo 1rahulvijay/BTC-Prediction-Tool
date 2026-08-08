@@ -243,3 +243,83 @@ test matching the fix's own description of the code it removed. `ast.get_docstri
 `ast.get_source_segment` per statement still carries every comment nested inside a compound
 statement, and the comment above a fix always quotes the line it replaced. The helper now
 uses `ast.unparse`, which emits code and nothing else.
+
+---
+
+# Third pass — "historical EV" was accuracy wearing a dollar sign
+
+Sweeps clean this round: **unit mixing** (`_bps` compared against a non-bps name — 2 hits,
+both genuine bps-vs-bps), **float equality on computed quantities** (all in test files),
+**mutation of a container during iteration** (none). Two defects found.
+
+## `expectancy_usd` — the 5.5/5.6/5.7 family, in a consumer that was named and not converted
+
+```python
+gross_profit = sum(abs(v.get("actual_move_usd", 0.0)) for v in dir_preds if v["hit"])
+gross_loss   = sum(abs(v.get("actual_move_usd", 0.0)) for v in dir_preds if not v["hit"])
+expectancy_usd = (gross_profit - gross_loss) / dir_total
+```
+
+`actual_move_usd` is `resolution_price - entry`, and under first touch `resolution_price` is
+the **barrier**. Its distance is `entry * threshold` — **identical on every touching row**.
+So the statistic collapses:
+
+```text
+accuracy 30%  ->  -$32.00   = barrier x (2*acc - 1)
+accuracy 50%  ->    $0.00
+accuracy 70%  ->  +$32.00
+```
+
+A linear rescaling of accuracy, displayed as *"historical EV"*. On timeout rows the same
+expression instead used the closing residual, so it was not even one quantity consistently.
+
+`prediction_verifier.py:334` — a comment written during the 5.5/5.6/5.7 work — **names this
+consumer**: *"the forward-EV ledger and the live gate's `expectancy_usd`, which the UI calls
+'historical EV'"*. The ledger was converted; this was not.
+
+It now averages the **endpoint move signed by the side actually served**, which is a realised
+per-trade return. The difference is not cosmetic:
+
+```text
+70% accurate, barrier +-80, endpoint +3 when right / -25 when wrong
+  old formula      +$32.00 per trade
+  endpoint truth    -$5.40 per trade      the same model is LOSING money
+```
+
+`expectancy_basis` and `expectancy_n` are carried beside it. Where no row has an endpoint
+observation the value is **None**, not 0.0 — reporting the barrier-derived number would be
+reporting accuracy in dollars again.
+
+### The consumer had to be fixed in the same change
+
+```python
+expectancy = float(acc.get("expectancy_usd", 0.0) or 0.0)   # float(None or 0.0) -> 0.0
+if expectancy <= 0: threshold += 0.03
+```
+
+`None` would have coerced to `0.0`, tripped the `<= 0` branch, and raised the safety bar
+citing a **negative EV that was never measured**. Unmeasurable and negative now take separate
+branches with separate messages, so a raised bar can always be traced to evidence.
+
+## The venue "median" was the upper middle
+
+```python
+consensus = sorted(valid)[len(valid) // 2]   # median
+```
+
+On an even count that is the upper of the two middles. With two venues reporting it returned
+the **higher price** and called it a consensus, biasing every per-venue `deviation_bps` and
+the `lead_venue` pick. Venues drop in and out on staleness, so even counts are routine.
+
+Display-only — nothing in the feature matrix or the decision path reads it — but it is
+labelled `# median` and now is one.
+
+## Tests
+
+```text
+backend/test_expectancy_and_consensus.py    17 checks   5/5 mutation
+```
+
+The median test initially **reimplemented** the median rather than calling
+`build_exchanges_block` — the same "test measures itself" error caught twice already this
+session. It now feeds crafted venue prices through the shipped function and reads its output.

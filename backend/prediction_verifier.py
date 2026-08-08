@@ -593,10 +593,45 @@ class PredictionVerifier:
 
             acc = round(hits / total, 4) if total > 0 else 0
             
-            # Calculate Expectancy (Expected Value)
-            gross_profit = sum(abs(v.get("actual_move_usd", 0.0)) for v in dir_preds if v["hit"])
-            gross_loss = sum(abs(v.get("actual_move_usd", 0.0)) for v in dir_preds if not v["hit"])
-            expectancy_usd = round((gross_profit - gross_loss) / dir_total, 2) if dir_total > 0 else 0.0
+            # EXPECTANCY, from ENDPOINT economics (the 5.5/5.6/5.7 family - this consumer
+            # was named in that work and not converted with the others).
+            #
+            # It averaged |actual_move_usd|, and under first touch `actual_move_usd` is
+            # `resolution_price - entry` where `resolution_price` is the BARRIER. That
+            # distance is entry * threshold - IDENTICAL on every touching row - so the whole
+            # statistic collapsed to
+            #
+            #     expectancy_usd = barrier_distance * (2 * accuracy - 1)
+            #
+            # a linear rescaling of accuracy wearing a dollar sign, displayed as "historical
+            # EV". On timeout rows the same expression instead used the closing residual, so
+            # it was not even one thing consistently.
+            #
+            # The real per-trade return is the ENDPOINT move signed by the side actually
+            # served, which `endpoint_move_usd` carries for exactly this purpose.
+            def _signed_endpoint_pnl(v):
+                mv = v.get("endpoint_move_usd")
+                if mv is None:
+                    return None
+                d = v.get("direction")
+                if d == "UP":
+                    return float(mv)
+                if d == "DOWN":
+                    return -float(mv)
+                return None
+
+            _pnls = [x for x in (_signed_endpoint_pnl(v) for v in dir_preds) if x is not None]
+            if _pnls:
+                expectancy_usd = round(sum(_pnls) / len(_pnls), 2)
+                expectancy_basis = "ENDPOINT_SIGNED_PNL"
+                expectancy_n = len(_pnls)
+            else:
+                # No row carries an endpoint observation - legacy rows, or a contract that
+                # never produced one. There is no expected value to report, and reporting the
+                # barrier-derived number would be reporting accuracy in dollars again.
+                expectancy_usd = None
+                expectancy_basis = "UNAVAILABLE_NO_ENDPOINT_ROWS"
+                expectancy_n = 0
             
             self.accuracy_cache[h] = {
                 "accuracy": acc,
@@ -604,6 +639,11 @@ class PredictionVerifier:
                 "hits": hits,
                 "misses": total - hits,
                 "expectancy_usd": expectancy_usd,
+                #: WHICH quantity the number above is, and over how many rows. A consumer
+                #: that cannot tell "negative EV" from "no EV was measurable" will treat the
+                #: second as the first.
+                "expectancy_basis": expectancy_basis,
+                "expectancy_n": expectancy_n,
                 "directional_accuracy": round(dir_hits / dir_total, 4) if dir_total > 0 else 0,
                 "directional_total": dir_total,
                 "up_accuracy": round(up_hits / up_total, 4) if up_total > 0 else 0,

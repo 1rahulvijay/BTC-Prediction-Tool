@@ -1911,7 +1911,14 @@ def build_exchanges_block(data_state: dict) -> dict:
     """Multi-venue BTC spot consensus + per-exchange deviation (lead/lag signal)."""
     venues = current_venue_prices(data_state)
     valid = [v for v in venues.values() if v and v > 0]
-    consensus = sorted(valid)[len(valid) // 2] if valid else None  # median
+    # A true median. `sorted(valid)[len(valid) // 2]` is the UPPER middle on an even count,
+    # so with two venues reporting it returned the HIGHER price and called it a median -
+    # biasing every per-venue `deviation_bps` and the `lead_venue` pick downward/upward
+    # respectively. Venues drop in and out, so even counts are routine.
+    _sv = sorted(valid)
+    consensus = (None if not _sv else
+                 (_sv[len(_sv) // 2] if len(_sv) % 2
+                  else (_sv[len(_sv) // 2 - 1] + _sv[len(_sv) // 2]) / 2.0))
     out = {"consensus": round(consensus, 2) if consensus else None, "venues": {}}
     best_dev = None
     best_venue = None
@@ -3889,17 +3896,35 @@ def apply_live_quality_filters(
     # ECONOMIC gate, on the DIRECTIONAL denominator. Abstentions cannot earn or lose, so they
     # cannot be evidence about expectancy.
     if directional_total >= 100:
-        expectancy = float(acc.get("expectancy_usd", 0.0) or 0.0)
-        if expectancy <= 0:
+        # UNMEASURABLE IS NOT NEGATIVE. `expectancy_usd` is None when no row carried an
+        # endpoint observation, and `float(None or 0.0)` would turn that into 0.0, which
+        # trips the `<= 0` branch below and raises the safety bar for a reason that was
+        # never measured. The two states get different messages so a raised bar can always
+        # be traced to evidence.
+        _exp_raw = acc.get("expectancy_usd")
+        if _exp_raw is None:
             threshold += 0.03
+            prediction["expectancyBasis"] = acc.get(
+                "expectancy_basis", "UNAVAILABLE_NO_ENDPOINT_ROWS")
             prediction["qualityMessage"] = (
-                f"This horizon has negative historical EV (${expectancy:.2f}). Safety bar raised."
+                "Historical EV is not measurable on this horizon yet (no endpoint "
+                "observations). Safety bar raised."
             )
-        elif expectancy > 5.0:
-            threshold = max(0.43, threshold - 0.02)
-            prediction["qualityMessage"] = (
-                f"This horizon has strong positive EV (${expectancy:.2f}). Easing safety bar."
-            )
+        else:
+            expectancy = float(_exp_raw)
+            prediction["expectancyBasis"] = acc.get("expectancy_basis", "")
+            if expectancy <= 0:
+                threshold += 0.03
+                prediction["qualityMessage"] = (
+                    f"This horizon has negative historical EV (${expectancy:.2f}). "
+                    f"Safety bar raised."
+                )
+            elif expectancy > 5.0:
+                threshold = max(0.43, threshold - 0.02)
+                prediction["qualityMessage"] = (
+                    f"This horizon has strong positive EV (${expectancy:.2f}). "
+                    f"Easing safety bar."
+                )
 
     regime_horizon = _safe_dict(verifier_state.get_regime_horizon_quality().get(h))
     regime_quality = regime_horizon.get(regime_name)
