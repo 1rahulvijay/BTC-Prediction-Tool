@@ -1747,3 +1747,46 @@ cross-venue repricing latency (a quote-timing question, not a forecasting one), 
 first-touch (different contract, different venue).
 
 Detail: `docs/active/POLY_FAIR_VALUE_VS_ASK_2026-08-08.md`.
+
+---
+
+## 17. No multi-second cross-venue repricing lag — `2026-08-08`
+
+The last lane the fair-value study left open, and a different kind of question: not "do we
+forecast better than the market" but "is the market's own price *late*". A lag needs no
+forecasting skill — the stale quote is simply executable.
+
+`research/cross_venue_repricing_lag.py` on 22,105 impulses across 548 rounds.
+
+**Absorption.** The quote takes 2.5% of the implied move contemporaneously and then **never
+catches up** (k=1 −1.9%, k=2 −1.2%, k=3 +0.6%; cumulative 0.1%). That is not a lag — a lag is
+small-at-k=0 followed by materially positive later.
+
+**Trading it** loses at every horizon: −2.01c to −2.06c net per share, round-clustered 5th
+percentile −2.06c to −2.14c.
+
+**The decisive, model-free check.** Sections 1–2 depend on a fair value §16 showed is worse
+than the ask, so low absorption is ambiguous. Removing the model entirely:
+
+```text
+corr(BTC log-return, next quote mid change)
+k=0  r= 0.0253   contemporaneous
+k=1  r= 0.0016   no predictive power
+k=2  r=-0.0058   no predictive power
+k=3  r= 0.0014   no predictive power
+```
+
+**An already-observed BTC move carries no information about the next quote change.** There is
+nothing to be early to. **FAIL_NO_EDGE at ≥2s resolution.**
+
+A trap avoided and recorded: the mean unabsorbed implied move (3.91c) exceeds the round-trip
+cost (2.57c), which reads as an opportunity and is not one — it is the size of the model's
+disagreement with the price, and trading it loses. An earlier draft printed "the leftover
+exceeds the cost" with no such note.
+
+**Blind below ~2s**, and the follow-up is more specific than expected: the Polymarket side of
+a sub-second test **already exists** (`pm_l2_raw_events`, 272k book events at a 32.5ms median
+gap, nanosecond timestamps, 449 BTC rounds). The blocker is the BTC reference at ~1,177ms.
+Sub-second lead/lag is blocked on a **fast BTC tick series**, not on Polymarket capture.
+
+Detail: `docs/active/CROSS_VENUE_REPRICING_LAG_2026-08-08.md`.

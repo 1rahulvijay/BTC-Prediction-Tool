@@ -58,6 +58,10 @@ FRONTIER = (
     # loss, and every claimed-edge bucket loses before fees.
     #   docs/active/POLY_FAIR_VALUE_VS_ASK_2026-08-08.md
     "poly_fair_value_vs_ask.py",
+    # Is the Polymarket quote SLOW? Model-free: a past BTC return has no predictive power
+    # over the next quote change (r=0.0016 at k=1). No multi-second lag; blind below ~2s.
+    #   docs/active/CROSS_VENUE_REPRICING_LAG_2026-08-08.md
+    "cross_venue_repricing_lag.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",
