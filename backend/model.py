@@ -781,6 +781,11 @@ class MultiModelEnsemble:
 
         # Configuration
         self.smoothing_alpha = self.config.get("smoothing_alpha", 0.12)
+        #: 5.20. PER-HORIZON smoothing. `apply_learning_feedback` looped over horizons and
+        #: mutated the single global `smoothing_alpha`, so 5m evidence changed 15m behaviour and
+        #: - when the horizons disagreed - the surviving value depended on ITERATION ORDER.
+        #: The scalar above remains the default and the seed for each horizon.
+        self.smoothing_alpha_by_h: dict[int, float] = {}
         # Hysteresis for flipping the locked direction. The 3-class model's confidence
         # tops out near ~0.5, so p_up/p_down rarely differ by 0.05 — at that margin the
         # lock almost never flips and holds a stale direction. 0.015 matches this model's
@@ -2109,9 +2114,17 @@ class MultiModelEnsemble:
         }
 
         # Regime-specific adjustments
-        regime = "RANGE"
-        if data_state and isinstance(data_state.get("regime_info"), dict):
-            regime = data_state["regime_info"].get("regime", "RANGE")
+        # 5.23. THE COARSE NAMESPACE, which is what model_accuracies is keyed by.
+        #
+        # regime_engine.detect_regime returns the RAW state names - TRENDING_UP,
+        # TRENDING_DOWN, HIGH_VOLATILITY, LOW_VOLATILITY, RANGE - and this read them straight
+        # out of regime_info. But `model_accuracies` is keyed by the COARSE routing names the
+        # training buckets use (TREND / RANGE / VOLATILE / GLOBAL), so every lookup for a
+        # trending or volatility state returned {} and the per-regime skill silently vanished.
+        # Only RANGE ever matched, by coincidence of sharing a name.
+        #
+        # _get_regime_from_state performs exactly this mapping and already existed.
+        regime = self._get_regime_from_state(data_state)
 
         accs = {}
         try:
@@ -2765,7 +2778,7 @@ class MultiModelEnsemble:
         if h not in self.smoothed_probs:
             self.smoothed_probs[h] = {"up": raw_prob_up, "down": raw_prob_down, "neutral": raw_prob_neutral}
         else:
-            a = self.smoothing_alpha
+            a = self.smoothing_alpha_by_h.get(h, self.smoothing_alpha)
             self.smoothed_probs[h]["up"] = self.smoothed_probs[h]["up"] * (1 - a) + raw_prob_up * a
             self.smoothed_probs[h]["down"] = self.smoothed_probs[h]["down"] * (1 - a) + raw_prob_down * a
             self.smoothed_probs[h]["neutral"] = self.smoothed_probs[h]["neutral"] * (1 - a) + raw_prob_neutral * a
@@ -3739,11 +3752,15 @@ class MultiModelEnsemble:
             # Adjust smoothing: if accuracy is low, increase smoothing (more conservative)
             acc = data.get("accuracy", 0.5)
             if acc < 0.4 and data.get("total", 0) >= 10:
-                self.smoothing_alpha = min(0.20, self.smoothing_alpha + 0.005)
-                logger.info(f"Auto-learning: increased smoothing to {self.smoothing_alpha:.3f} (low accuracy)")
+                _cur = self.smoothing_alpha_by_h.get(h, self.smoothing_alpha)
+                self.smoothing_alpha_by_h[h] = min(0.20, _cur + 0.005)
+                logger.info("Auto-learning: h=%sm increased smoothing to %.3f (low accuracy)",
+                            h, self.smoothing_alpha_by_h[h])
             elif acc > 0.6 and data.get("total", 0) >= 10:
-                self.smoothing_alpha = max(0.08, self.smoothing_alpha - 0.003)
-                logger.info(f"Auto-learning: decreased smoothing to {self.smoothing_alpha:.3f} (good accuracy)")
+                _cur = self.smoothing_alpha_by_h.get(h, self.smoothing_alpha)
+                self.smoothing_alpha_by_h[h] = max(0.08, _cur - 0.003)
+                logger.info("Auto-learning: h=%sm decreased smoothing to %.3f (good accuracy)",
+                            h, self.smoothing_alpha_by_h[h])
             
             # Adjust confidence threshold
             # If high-confidence predictions aren't doing well, raise the bar.
@@ -3757,6 +3774,7 @@ class MultiModelEnsemble:
         
         self.learning_adjustments = {
             "smoothing_alpha": self.smoothing_alpha,
+            "smoothing_alpha_by_horizon": dict(self.smoothing_alpha_by_h),
             "confidence_threshold": self.confidence_threshold,
             "retrain_flagged": retrain_horizons,
             "train_count": self.train_count,

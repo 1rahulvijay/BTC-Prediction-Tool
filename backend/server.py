@@ -747,6 +747,50 @@ def _conditional_path_block(ptb_latest: dict) -> dict:
     return out
 
 
+def _reset_adaptive_state_for_release(reason: str) -> dict:
+    """Clear every DERIVED adaptive map when the serving bundle changes (scan-5 item 5.12).
+
+    The model object is swapped on promotion; the verifier, the meta-models and the module-level
+    percentile windows are NOT. So on the very next cycle a freshly promoted model was handed the
+    INCUMBENT's accuracy cache, regime-model weights, regime calibration factors, confidence
+    calibrators and signal policy - every one of them measured on a different model's behaviour.
+    `_recent_conf` in particular is a module global that survived every swap, so the new model's
+    percentile gate was computed from the old model's confidence distribution.
+
+    The raw verified ROWS are kept: they are evidence, and 1.7 now stamps `release_id` on new
+    predictions so a future refit can select by release. What is discarded here is everything
+    DERIVED from them, because a map fitted on one model is not a prior for a different one -
+    the same argument `PrecisionEngine.bind_release` already makes for calibration.
+
+    Cleared, not recomputed: the honest state after a swap is "unavailable until refitted".
+    """
+    cleared = {}
+    try:
+        for h, window in (_recent_conf or {}).items():
+            cleared[f"recent_conf_{h}"] = len(window)
+            window.clear()
+    except Exception as exc:
+        logger.warning("[PROMOTION] percentile window reset failed: %s", exc)
+    for attr, label in (("accuracy_cache", "accuracy_cache"),
+                        ("regime_model_stats", "regime_model_stats"),
+                        ("conf_calibrators", "conf_calibrators")):
+        try:
+            current = getattr(verifier, attr, None)
+            if isinstance(current, dict):
+                cleared[label] = len(current)
+                current.clear()
+        except Exception as exc:
+            logger.warning("[PROMOTION] %s reset failed: %s", label, exc)
+    try:
+        precision_engine.bind_release(
+            str(getattr(model, "model_bundle_id", "") or ""))
+        cleared["precision_engine"] = "rebound"
+    except Exception as exc:
+        logger.warning("[PROMOTION] precision engine rebind failed: %s", exc)
+    logger.info("[PROMOTION] adaptive state reset (%s): %s", reason, cleared)
+    return cleared
+
+
 def _install_hmm_state(bundle, reason: str) -> bool:
     """Install a BUNDLE's regime parameters into the live engine. The only way they get there.
 
@@ -3143,6 +3187,10 @@ async def relearn_models_background(reason: str = "manual"):
                 # P0-1. Routing follows the BUNDLE, and changes only here - at promotion -
                 # never as a side effect of fitting a candidate that might be rejected.
                 _install_hmm_state(model, "bootstrap-promotion")
+                # 5.12. The model object is swapped here; the verifier, meta-models and
+                # module-level percentile windows are NOT - so the new bundle inherited the
+                # incumbent's derived adaptive maps on the very next cycle.
+                _reset_adaptive_state_for_release("bootstrap-promotion")
                 boundary_path = os.path.join(candidate_dir, "train_boundary.json")
                 boundary_ts = None
                 try:
@@ -3226,6 +3274,10 @@ async def relearn_models_background(reason: str = "manual"):
         model = candidate
         model.cascade_monitor = cascade_monitor
         _install_hmm_state(model, "retrain-swap")
+        # 5.12. The model object is swapped here; the verifier, meta-models and
+        # module-level percentile windows are NOT - so the new bundle inherited the
+        # incumbent's derived adaptive maps on the very next cycle.
+        _reset_adaptive_state_for_release("retrain-swap")
         ab_runner.primary = ModelVariant(f"baseline_{int(time.time())}", model)
         _write_retrain_completion_marker(model)
         _set_status(
@@ -5012,6 +5064,10 @@ async def main_loop():
                             model = promoted_variant.model
                             model.cascade_monitor = cascade_monitor
                             _install_hmm_state(model, "challenger-promotion")
+                            # 5.12. The model object is swapped here; the verifier, meta-models and
+                            # module-level percentile windows are NOT - so the new bundle inherited the
+                            # incumbent's derived adaptive maps on the very next cycle.
+                            _reset_adaptive_state_for_release("challenger-promotion")
                             previous_manifest = {}
                             try:
                                 with open(FULL_REFIT_SHADOW_MANIFEST, "r", encoding="utf-8") as handle:

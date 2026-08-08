@@ -198,6 +198,47 @@ def main() -> int:
         "with NO control present the comparison was never made, so it refuses - unknown is not "
         "a pass, however good the raw number looks")
 
+
+    print("5.20 smoothing alpha is PER HORIZON")
+    from model import MultiModelEnsemble as _M
+    mdl = (BACKEND / "model.py").read_text(encoding="utf-8")
+    m = _M.__new__(_M)
+    m.smoothing_alpha = 0.12
+    m.smoothing_alpha_by_h = {}
+    chk("smoothing_alpha_by_h" in mdl, "a per-horizon map exists")
+    m.smoothing_alpha_by_h[5] = 0.20
+    chk(m.smoothing_alpha_by_h.get(5) == 0.20
+        and m.smoothing_alpha_by_h.get(15, m.smoothing_alpha) == 0.12,
+        "5m can move without touching 15m - the global scalar meant 5m evidence changed 15m "
+        "behaviour, and when they disagreed the survivor depended on ITERATION ORDER")
+    chk("self.smoothing_alpha = min(0.20" not in mdl
+        and "self.smoothing_alpha = max(0.08" not in mdl,
+        "and the auto-learning loop no longer writes the global scalar")
+
+    print("5.23 regime skill is looked up in the COARSE namespace")
+    for raw, coarse in (("TRENDING_UP", "TREND"), ("TRENDING_DOWN", "TREND"),
+                        ("HIGH_VOLATILITY", "VOLATILE"), ("RANGE", "RANGE"),
+                        ("LOW_VOLATILITY", "RANGE")):
+        # LOW_VOLATILITY -> RANGE is DELIBERATE: a low-volatility market is a ranging one.
+        # Pinned so it cannot be "corrected" into a fourth bucket with no trained experts.
+        chk(m._get_regime_from_state({"regime_info": {"regime": raw}}) == coarse,
+            f"{raw} -> {coarse}")
+    chk("regime = self._get_regime_from_state(data_state)" in mdl,
+        "and _get_dynamic_weights uses that mapping - it read the RAW label from regime_info, "
+        "so every trending/volatility lookup returned {} against a coarse-keyed map")
+
+    print("5.12 a bundle swap clears the DERIVED adaptive state")
+    srv = (BACKEND / "server.py").read_text(encoding="utf-8")
+    chk("def _reset_adaptive_state_for_release(" in srv, "the reset exists")
+    chk(srv.count('_reset_adaptive_state_for_release("') >= 3,
+        "and is called at all three bundle swaps - bootstrap, retrain, challenger promotion")
+    block = srv[srv.index("def _reset_adaptive_state_for_release("):
+                srv.index("def _install_hmm_state(")]
+    for name in ("_recent_conf", "accuracy_cache", "conf_calibrators", "regime_model_stats"):
+        chk(name in block, f"{name} is cleared - it was measured on a DIFFERENT model")
+    chk("precision_engine.bind_release(" in block,
+        "and calibration is rebound to the new bundle")
+
     print("\nSCAN-5 BARRIER AND GATES:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

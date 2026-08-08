@@ -104,10 +104,16 @@ def main() -> int:
     print("it has no authority, and says so everywhere")
     chk(cph.AUTHORITY == "NONE" and block["authority"] == "NONE",
         "the head and the payload both declare NONE")
+    # THE ACTUAL FUNCTION, via the syntax tree. This used to slice
+    # src[_conditional_path_block : _install_hmm_state] - "everything between two names" - which
+    # silently widened the moment an unrelated function was added between them, and then failed
+    # on a word in THAT function's docstring. The subject of an assertion must be the thing
+    # being asserted about.
+    import ast as _ast
     src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
-    start = src.index("def _conditional_path_block(")
-    end = src.index("def _install_hmm_state(")
-    body = src[start:end]
+    _fn = next(n for n in _ast.walk(_ast.parse(src))
+               if isinstance(n, _ast.FunctionDef) and n.name == "_conditional_path_block")
+    body = _ast.unparse(_fn)
     for banned in ("signal", "direction =", "should_trade", "size", "order"):
         chk(banned not in body.replace("conditional path", ""),
             f"the builder contains no '{banned}' - it informs, it does not decide")
