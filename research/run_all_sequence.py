@@ -46,6 +46,13 @@ FRONTIER = (
     # v1 tests the lattice against anchor geometry; v2 adds paired day-block intervals, a
     # permuted-feature control and the init_score reconstruction guard. Both concluded the
     # model does not beat the geometry, so neither is wired to a decision.
+    # The venue's own question on live recorded rounds, rather than a training contract:
+    # 3,180 rounds over 22 days, no edge at either horizon, and the `lean_source` split
+    # refuted against its own 9.6-hour origin.
+    #   docs/active/LIVE_ROUND_EDGE_AUDIT_2026-08-08.md
+    # Read-only. Exits 2 when the analytics database is absent, which is a DATA problem and
+    # not a finding - the runner treats a non-zero exit as a failure, which is correct.
+    "live_round_edge_audit.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",

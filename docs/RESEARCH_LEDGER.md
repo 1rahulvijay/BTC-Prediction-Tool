@@ -1671,3 +1671,44 @@ versus act-now. Earlier Phase 5B outputs are superseded.
 
 Canonical detail and all 46 conclusions:
 `docs/active/PHASE5B_STANDALONE_RESEARCH_RESULTS_2026-08-02.md`.
+
+---
+
+## 15. The served lean has no edge on the venue's own question — `2026-08-08`
+
+Every other accuracy number here is graded under the *training* contract. `price_to_beat`
+records the **venue's** question live: anchor at the window open, settle at the close, UP if
+the end is at or above the anchor. Nothing to interpret.
+
+`research/live_round_edge_audit.py`, on 3,180 resolved rounds over 22 days:
+
+| horizon | n | win | 95% CI | p(shuffle ≥ obs) |
+|---|---:|---:|---|---:|
+| 5m | 2,404 | 0.4933 | [0.4734, 0.5133] | 0.818 |
+| 15m | 776 | 0.4858 | [0.4508, 0.5210] | 0.749 |
+
+Break-even after a 2c round trip is 0.52. Neither horizon reaches it, both intervals straddle
+0.50, and a label shuffle matches the observed rate 82% of the time at 5m. **FAIL_NO_EDGE.**
+
+Three findings beyond the headline:
+
+**The `lean_source` split is refuted.** The serving code cites a 9.6-hour measurement — model
+leans ~64%, fallback ~coin-flip — and the field exists because of it. On 22 days the two are
+0.4935 and 0.4932: three thousandths apart. The guidance it produced ("bet model leans, skip
+fallback leans") has no support. The field is kept (it is real provenance and it is what made
+the refutation measurable); the claim is annotated in place.
+
+**The lean is 68.8% UP against a market that settles UP 50.3%.** A bettor with that bias and
+zero information scores 0.5011 by arithmetic; observed is 0.4933, so the information component
+is **negative**.
+
+**The bias does not respond to the trend.** UP-lean is 78.0% in `TRENDING_UP` and 77.4% in
+`TRENDING_DOWN` — a 0.6-point gap. A lean that tracked the trend would differ sharply. So the
+bias is a property of the head, not a response to the market. The two trend cells are also the
+worst (0.467, 0.469); RANGE is the best (0.533, n=385).
+
+Consistent with the model bakeoff ceiling, the direction-dead microstructure result, and §4.5.
+Does **not** test `big_move` timing, the P(hold) keepers, or the frozen late-leader rule —
+different questions, untouched.
+
+Detail: `docs/active/LIVE_ROUND_EDGE_AUDIT_2026-08-08.md`.

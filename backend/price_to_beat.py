@@ -1796,6 +1796,20 @@ class PriceToBeatTracker:
                     # probability FALLBACK leans are ~coin-flip — mixing them dragged the
                     # mirror from 58.7% to 51.5%. Track separately so the betting guidance
                     # can say "bet model leans, skip fallback leans".
+                    #
+                    # REFUTED 2026-08-08 on 22 days instead of 9.6 hours. The original
+                    # measurement had a few hundred rounds; `research/live_round_edge_audit.py`
+                    # now has 2,404 resolved 5m rounds recorded live, and the two sources are
+                    # INDISTINGUISHABLE:
+                    #
+                    #     model    n=1228  win 0.4935  95% CI [0.4656, 0.5214]
+                    #     fallback n=1176  win 0.4932  95% CI [0.4647, 0.5217]
+                    #
+                    # Both straddle 0.50, both sit below the ~0.52 needed to clear a 2c round
+                    # trip, and a label shuffle reaches the observed rate 82% of the time. The
+                    # field is KEPT - it costs nothing, it is real provenance, and it is what
+                    # made the refutation measurable - but it is not a betting signal and the
+                    # guidance above must not be acted on.
                     "lean_source": ("model" if p.get("rawDirection") in ("UP", "DOWN")
                                     else "fallback"),
                     # Stage-3 setup grade computed server-side (model lean + regime +
