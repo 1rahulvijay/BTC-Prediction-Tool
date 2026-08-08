@@ -314,6 +314,11 @@ jobs:
       - name: Directional dead zone is not bypassed, and is not a remedy
         run: python backend/test_directional_tilt_contract.py
 
+      # Readiness said UNAVAILABLE with no cause, across four refusals needing four different
+      # actions - and one refusal path returned False with no log at all.
+      - name: A refused model load names its reason
+        run: python backend/test_model_load_refusal_reason.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -887,6 +892,7 @@ jobs:
           python backend/test_expectancy_and_consensus.py || exit /b 1
           python backend/test_fixed_stake_and_ruin.py || exit /b 1
           python backend/test_directional_tilt_contract.py || exit /b 1
+          python backend/test_model_load_refusal_reason.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

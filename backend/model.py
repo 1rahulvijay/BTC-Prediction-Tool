@@ -700,6 +700,9 @@ class MultiModelEnsemble:
         self.model_dir = os.path.abspath(model_dir or MODEL_DIR)
         self.enforce_quantile_skip = self.config.get("enforce_quantile_skip", False)
         self.model_bundle_id = self.config.get("model_bundle_id", f"bundle_{int(time.time())}")
+        #: Why the last load_models() refused, or None. Present before any load attempt
+        #: so a caller can never read a stale reason from a previous instance.
+        self.load_refusal = "not_attempted"
         self.full_refit = False
 
         # Per-horizon lock durations (each prediction changes at its own cadence)
@@ -3586,9 +3589,21 @@ class MultiModelEnsemble:
             return False
 
     def load_models(self) -> bool:
-        """Load persisted models from disk. Returns True if successful."""
+        """Load persisted models from disk. Returns True if successful.
+
+        Every refusal is RECORDED on `self.load_refusal`, not only logged. Readiness
+        reported `main_ensemble: UNAVAILABLE` with no cause, and the three refusals need
+        completely different responses - regenerate a manifest, retrain a bundle, or install
+        joblib. One of them returned False with no log at all, so a serving instance could be
+        dead with nothing in the record saying why.
+        """
         model_dir = self.model_dir
-        if not HAS_JOBLIB or not os.path.exists(model_dir):
+        self.load_refusal = None
+        if not HAS_JOBLIB:
+            self.load_refusal = "joblib_unavailable"
+            return False
+        if not os.path.exists(model_dir):
+            self.load_refusal = f"model_dir_absent:{model_dir}"
             return False
         try:
             strict_identity = os.environ.get(
@@ -3600,6 +3615,7 @@ class MultiModelEnsemble:
                     "[MODEL LOAD] Rejecting legacy bundle without identity manifest: %s",
                     model_dir,
                 )
+                self.load_refusal = "no_identity_manifest:provenance_unprovable"
                 return False
             expected_identity = current_training_identity(
                 requested_days=configured_model_training_days(),
@@ -3615,6 +3631,8 @@ class MultiModelEnsemble:
                     model_dir,
                     "; ".join(incompatibilities),
                 )
+                self.load_refusal = (
+                    "incompatible_bundle:" + "; ".join(incompatibilities))[:400]
                 return False
 
             loaded_any = False
@@ -3750,6 +3768,7 @@ class MultiModelEnsemble:
                         for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                             self.models_by_regime[r][n].clear()
                     self.is_trained = False
+                    self.load_refusal = "feature_schema_mismatch:bundle_cleared"
                     return False
 
                 # Verify feature dimension compatibility
@@ -3765,6 +3784,8 @@ class MultiModelEnsemble:
                                     for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
                                         self.models_by_regime[r][n].clear()
                                 self.is_trained = False
+                                self.load_refusal = (
+                                    "feature_dimension_mismatch:bundle_cleared")
                                 return False
                             break
                     else:
@@ -3781,6 +3802,7 @@ class MultiModelEnsemble:
             return loaded_any
         except Exception as e:
             logger.error(f"Failed to load models: {e}")
+            self.load_refusal = f"load_error:{type(e).__name__}: {e}"[:400]
             return False
 
     def apply_learning_feedback(self, feedback: dict):

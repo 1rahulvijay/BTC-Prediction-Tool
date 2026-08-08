@@ -1,11 +1,11 @@
 {
   "ci_steps_by_job": {
     "invariants": {
-      "python_invocations": 178,
-      "run_steps": 179
+      "python_invocations": 179,
+      "run_steps": 180
     },
     "startbat": {
-      "python_invocations": 161,
+      "python_invocations": 162,
       "run_steps": 3
     }
   },
@@ -188,15 +188,15 @@
     ]
   },
   "source_digests": {
-    ".github/workflows/invariants.yml": "d452f7ccc59f96c1c87bb4d03e48d8fef5d396f40aeaa1714fa8f8fe5a538b2e",
+    ".github/workflows/invariants.yml": "252a12a1396a87841acb198bb5470f3459dbf63410e640c81aedf6d54eee3296",
     "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
     "backend/auto_finetune.py": "8326f1e4ab48047d56c06090f853d8ef92dd70ea2d143907a340e50edb615040",
     "backend/features.py": "4d6bf2af478b7ee098510a4e333b70e6a840818a7b6e73906dc92655a3503a0b",
-    "backend/model.py": "9f7a84a001f4f7e865c07402f7183cc6adb27984258253804bf383df85ec9d45",
+    "backend/model.py": "b40dd110b18cf97ed892c2ce91fd065cba8a07e2d35f62439faaa643e44e1f0f",
     "backend/model_registry.py": "22ec0377c8c7f143c4dd0299eb3a16e8fe5bdd28762f70417e0b14700963b2ca",
     "backend/settlement_head.py": "4b0f1bbc448ca75d4401d36546a85f8d1f79ce6da9b0cbdf6fd576479274711d",
     "backend/target_contract.py": "30d3e1dcce1258d31c9db33a889c7f33dbdf2405d52a6fdc29cc2239323de22a",
-    "docs/active/OPEN_DEFECTS.md": "789448ae92e460f6b5ed7dc658b521c93d889e0b46eff50a723e95dcbac55e2e"
+    "docs/active/OPEN_DEFECTS.md": "8ed1993fb6ac952c4ef318dd9e7a80b4b5ee114aff4a5b04d005152b0b85ed1f"
   },
   "target_contracts": {
     "known": [

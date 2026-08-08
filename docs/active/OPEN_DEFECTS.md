@@ -288,3 +288,70 @@ Nothing in this repository is evidence of profitability. The complementarity stu
 current ensemble has algorithm count rather than information diversity: six of seven seats are
 near-duplicates whose errors are positively correlated, and `dl` — the only architecturally
 distinct seat — nets −17 once damage is counted against rescue.
+
+---
+
+## THE APP IS NOT SERVING PREDICTIONS, AND HAS NOT SINCE 2026-07-04 — `2026-08-08`
+
+Found by following a data anomaly, not by reading code. Every model-side table stops at the
+same instant while the round ticker kept running for another 35 days:
+
+```text
+predictions_5m      n=  2,514   last row 2026-07-04 10:44
+predictions_15m     n=    861   last row 2026-07-04 10:44
+model_predictions   n= 98,195   last row 2026-07-04 10:44
+ab_results          n= 14,692   last row 2026-07-04 10:44
+price_to_beat       n= 19,122   last row 2026-08-08 08:10   <- still recording
+```
+
+Of the 9 5m rounds recorded since, **zero** carry a directional lean.
+
+### Cause, reproduced
+
+```text
+$ MultiModelEnsemble(horizons=[5,15]).load_models()
+[MODEL LOAD] Rejecting legacy bundle without identity manifest: data/saved_models
+-> False        is_trained = False
+```
+
+**This is correct behaviour.** A bundle whose provenance cannot be proven must not serve —
+that is what `BTC_STRICT_ARTIFACT_IDENTITY` is for, and the refusal is the gate working. The
+defect is not the refusal.
+
+### The defect: the refusal had no cause attached
+
+Readiness reported `main_ensemble: UNAVAILABLE` and nothing more. That single word covers
+four situations needing four different actions:
+
+```text
+joblib_unavailable                    install a dependency
+model_dir_absent:<path>               fix configuration
+no_identity_manifest                  regenerate provenance   <- the live one
+incompatible_bundle:<what differs>    retrain
+feature_schema_mismatch               retrain
+```
+
+`load_models` computed the exact reason at every refusal and discarded it, and **one path
+returned False with no log at all** — a misconfigured directory was indistinguishable from an
+untrained model. Every path now records `self.load_refusal`, cleared at entry so a reload
+cannot report the previous attempt's cause, and readiness carries it beside the state.
+
+`backend/test_model_load_refusal_reason.py` — 8 checks, 5/5 mutation.
+
+### What to do about the underlying state
+
+The bundle in `data/saved_models` has no identity manifest, so it cannot be served under
+strict identity. Two options, and they are not equivalent:
+
+1. **Retrain a bundle.** Also required independently: `check_feature_contract` reports 12 of
+   12 artifacts UNKNOWN, and the VWAP formula changed from cumulative to trailing
+   time-anchored, so any v1-trained model is being fed a materially different column.
+2. **Regenerate a manifest for the existing bundle.** Cheaper, but it would attest provenance
+   for a bundle whose feature semantics are already known to be stale. That is signing a
+   claim that is not true.
+
+Option 1 is the only honest one, and it was already the standing requirement.
+
+**Read the research in this light.** `LIVE_ROUND_EDGE_AUDIT_2026-08-08.md` covers 2026-06-12
+to 2026-07-04 — which is not an arbitrary window, it is the model's entire live serving life.
+The finding stands and its span is now explained.

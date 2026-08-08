@@ -5777,6 +5777,13 @@ def _system_health_snapshot() -> dict:
         "evidence_collection": evidence_health,
         "model_readiness": {
             "main_ensemble": "READY" if getattr(model, "is_trained", False) else "UNAVAILABLE",
+            # WHY it is unavailable. "UNAVAILABLE" alone cannot distinguish a bundle whose
+            # manifest is missing (regenerate it) from one that is incompatible (retrain) or
+            # a missing dependency (install it) - three different actions behind one word.
+            # `load_models` computed the reason at every refusal and discarded it.
+            "main_ensemble_refusal": (
+                None if getattr(model, "is_trained", False)
+                else getattr(model, "load_refusal", None)),
             "p_hold": p_hold_status,
             "round_state": round_state_status,
         },
