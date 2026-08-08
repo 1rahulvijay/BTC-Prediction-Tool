@@ -145,6 +145,14 @@ def init_db():
             # fill-engine defect (fd46d51) in a different costume.
             "ADD COLUMN target_contract VARCHAR DEFAULT 'UNKNOWN_LEGACY'",
             "ADD COLUMN release_id VARCHAR DEFAULT 'UNKNOWN_LEGACY'",
+            # THE CONTRACT'S OWN OUTCOME. The verifier grades through `target_contract.grade()`
+            # and has held `actual_direction` all along; it simply never reached this table.
+            # Everything downstream therefore had to re-derive direction from `actual_move`,
+            # which is ENDPOINT SIGN - a different rule that disagrees with first touch on
+            # roughly a quarter of paths. `lean_hit` above is computed that way for the same
+            # reason. Rows written before this column carry '' and are excluded rather than
+            # reinterpreted.
+            "ADD COLUMN actual_direction VARCHAR DEFAULT ''",
             "ADD COLUMN resolution_basis VARCHAR DEFAULT ''",
             "ADD COLUMN resolution_event_ts BIGINT DEFAULT NULL",
             "ADD COLUMN resolution_price DOUBLE DEFAULT NULL",
@@ -3307,18 +3315,25 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
 
 def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move: float,
                    hit: bool, price_match: bool, move_error: float, avoid_success: bool = False,
-                   lean_hit: bool = None):
+                   lean_hit: bool = None, actual_direction: str = ""):
+    """Write one resolved outcome, INCLUDING the direction the contract actually produced.
+
+    `actual_direction` is the graded result, not the sign of `actual_move`. Under first
+    touch a lean can be right by the contract - it reached the upper barrier first - while
+    the endpoint closed lower. Consumers that re-derived direction from the move were
+    answering the endpoint question about a first-touch model.
+    """
     conn = None
     try:
         conn = _connect()
         conn.execute(f"""
             UPDATE predictions_{horizon}m
             SET actual_price = ?, actual_move = ?, hit = ?, price_match = ?, move_error = ?,
-                avoid_success = ?, lean_hit = ?, resolved = ?,
+                avoid_success = ?, lean_hit = ?, actual_direction = ?, resolved = ?,
                 resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
-              lean_hit, True, pred_id))
+              lean_hit, str(actual_direction or ""), True, pred_id))
         strict_direction = "UP" if float(actual_move or 0.0) >= 0.0 else "DOWN"
         conn.execute("""
             UPDATE model_predictions

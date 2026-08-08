@@ -5180,6 +5180,10 @@ async def main_loop():
                     move_error=v["move_error_usd"],
                     avoid_success=v.get("avoid_success", False),
                     lean_hit=v.get("lean_hit"),
+                    # The CONTRACT's outcome, which the verifier has always held. Without it
+                    # every consumer re-derived direction from the move sign - the endpoint
+                    # rule - and applied it to a first-touch model.
+                    actual_direction=v.get("actual_direction", ""),
                 )
                 try:
                     database.resolve_forward_ev_event(

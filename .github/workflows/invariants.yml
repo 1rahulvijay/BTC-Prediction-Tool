@@ -284,6 +284,11 @@ jobs:
       - name: Scan-5 / P0-15 / P0-9 observed window and restored state
         run: python backend/test_observed_window_and_restored_state.py
 
+      # P0-14 consumer half: the calibration map pooled contracts and graded a first-touch
+      # model by endpoint sign, because the column that could separate them did not exist yet.
+      - name: Calibration is fitted under ONE declared contract
+        run: python backend/test_calibration_contract_filter.py
+
       - name: P1-5 OOF stacker is trained on the seats it is served
         run: python backend/test_oof_serving_parity.py
 
@@ -851,6 +856,7 @@ jobs:
           python backend/test_ab_isolation_and_durability.py || exit /b 1
           python backend/test_grade_provenance_and_funding_moment.py || exit /b 1
           python backend/test_observed_window_and_restored_state.py || exit /b 1
+          python backend/test_calibration_contract_filter.py || exit /b 1
           python backend/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
           python backend/test_artifact_manifest_contract.py || exit /b 1

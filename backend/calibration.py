@@ -27,6 +27,7 @@ import time
 import numpy as np
 
 import database
+import target_contract as _tc
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,15 @@ class PrecisionEngine:
         self.active_bundle_id = (bundle_id or "").strip()
         if target_contract:
             self.fitted_under_contract = target_contract
+        # PROVENANCE IS CLEARED WITH THE MAPS IT DESCRIBES.
+        #
+        # This line only became necessary when a fit started EARNING "RECORDED": before
+        # that the flag was a constant and a swap could not stale it. Now a release change
+        # that cleared every calibrator would have left the engine still declaring RECORDED,
+        # so `is_admissible_for` would answer True about a map that no longer exists - the
+        # return value below already says `available: False`, and the flag must not
+        # contradict it.
+        self.contract_provenance = "UNRECORDED"
         # THE refresh timer. Zeroing it forces the next refresh_if_stale to actually refit
         # instead of waiting out the remainder of a six-hour window it never started.
         self._last_fit = 0.0
@@ -139,16 +149,24 @@ class PrecisionEngine:
     #: sign - while the ensemble trains on FIRST_TOUCH_TRIPLE_BARRIER_V1. So first-touch
     #: confidence is calibrated by a different rule than the model was trained on.
     #:
-    #: It cannot simply be filtered by contract: `predictions_{h}m` has NO target_contract
-    #: column. The provenance was never recorded, so no query can separate the rows. Adding
-    #: that column and backfilling it is the real fix (see OPEN_DEFECTS P0-14).
+    #: RESOLVED 2026-08-08. That column now exists, along with `release_id`, and
+    #: `log_prediction` REQUIRES both - so the rows CAN be separated and the fit no longer
+    #: has to guess which question it is answering. `fit_from_db` filters on it and grades
+    #: with the contract's own outcome (`raw_direction == actual_direction`) rather than the
+    #: endpoint sign of `actual_move`, which is a different rule that disagrees on roughly a
+    #: quarter of paths.
     #:
-    #: Until then the map DECLARES what it is rather than implying it answers the training
-    #: contract. A consumer that needs contract-correct calibration must check this and
-    #: abstain - an unlabelled calibration map is the same defect as an unlabelled
-    #: probability, which target_contract.assert_admissible exists to refuse.
+    #: These two attributes are now SET BY THE FIT rather than declared as constants. They
+    #: stay at the pessimistic values below until a fit actually succeeds, because a map that
+    #: has not been fitted must not claim provenance it has not earned - the refusal in
+    #: `is_admissible_for` is the point, not a placeholder.
     fitted_under_contract: str = "endpoint_move_sign"
     contract_provenance: str = "UNRECORDED"
+
+    #: Rows written before the column existed carry this sentinel. They are EXCLUDED rather
+    #: than pooled in: a row that cannot say which question it answers cannot calibrate an
+    #: answer to a specific one.
+    UNKNOWN_CONTRACT_SENTINEL = "UNKNOWN_LEGACY"
 
     @staticmethod
     def _model_era_ms() -> int:
@@ -183,31 +201,57 @@ class PrecisionEngine:
             return f"model_version = '{safe}'", f"bundle:{bundle}"
         return f"timestamp >= {int(self._model_era_ms())}", "mtime_fallback"
 
-    def fit_from_db(self):
+    def fit_from_db(self, target_contract: str | None = None):
+        """Fit the map on rows that answer ONE question, and record which.
+
+        Two things changed here when `target_contract` became a stored column.
+
+        SELECTION. Rows are filtered to the contract being fitted for. Pooling first-touch
+        and endpoint rows produced a map that answered neither: they disagree on roughly a
+        quarter of paths, and both are floats in [0, 1] so nothing about the value revealed
+        the mixture.
+
+        THE LABEL. Correctness is now the CONTRACT'S own outcome - `raw_direction ==
+        actual_direction`, written by the verifier through `target_contract.grade()`. It
+        used to be `actual_move > 0`, which is ENDPOINT SIGN: under first touch a lean can
+        be right by the contract (it touched the upper barrier first) while the endpoint
+        closed lower, and vice versa. A NEUTRAL outcome counts as a miss for a directional
+        lean, which is what the contract says and is the conservative direction.
+
+        `hit` is still not used, for the reason below - that part was right.
+        """
+        want_contract = str(target_contract or _tc.TRAINING_CONTRACT)
         era_clause, era_mode = self._era_clause()
         self.era_mode = era_mode
         conn = database._connect()
+        fitted_any = False
         try:
             for h in HORIZONS:
                 try:
-                    # LABEL = LEAN-CORRECTNESS by realized move sign — NOT the `hit` column.
-                    # `hit` is dual-semantic: for gated rows (signal NEUTRAL, raw lean
-                    # UP/DOWN — the majority) hit = avoid_success, which is TRUE when the
-                    # lean was WRONG. Fitting on `hit` would teach the calibrator an
-                    # inverted map on exactly the rows it must learn from. Sign-of-move vs
-                    # raw_direction is the unambiguous betting truth.
+                    # LABEL != the `hit` column. `hit` is dual-semantic: for gated rows
+                    # (signal NEUTRAL, raw lean UP/DOWN - the majority) hit = avoid_success,
+                    # which is TRUE when the lean was WRONG. Fitting on `hit` would teach the
+                    # calibrator an inverted map on exactly the rows it must learn from.
                     rows = conn.execute(f"""
                         SELECT confidence, regime, conviction,
-                               CASE WHEN (raw_direction='UP'   AND actual_move > 0)
-                                      OR (raw_direction='DOWN' AND actual_move < 0)
+                               CASE WHEN raw_direction = actual_direction
                                     THEN 1 ELSE 0 END
                         FROM predictions_{h}m
                         WHERE resolved AND raw_direction IN ('UP','DOWN')
-                          AND actual_move IS NOT NULL
+                          AND actual_direction IS NOT NULL AND actual_direction <> ''
                           AND confidence IS NOT NULL AND confidence > 0
+                          AND COALESCE(target_contract, ?) = ?
                           AND {era_clause}
-                    """).fetchall()
-                except Exception:
+                    """, (self.UNKNOWN_CONTRACT_SENTINEL, want_contract)).fetchall()
+                except Exception as exc:
+                    # A SWALLOWED QUERY FAILURE IS INDISTINGUISHABLE FROM NO EVIDENCE, and
+                    # that is not a hypothetical: this fix first shipped referencing a column
+                    # that did not exist yet, the exception was caught here, and the fit
+                    # reported "waiting for samples" on every horizon forever. Silence is the
+                    # one outcome a data-availability path must never produce.
+                    logger.error(
+                        "[PRECISION] %sm calibration query FAILED (not 'no rows'): %s",
+                        h, exc)
                     continue
                 if not rows:
                     continue
@@ -232,15 +276,23 @@ class PrecisionEngine:
                         iso.fit(conf, hit)
                         self.calibrators[h] = iso
                         self.calib_n[h] = len(rows)
+                        fitted_any = True
                         logger.info(f"[PRECISION] {h}m calibrator ACTIVE (n={len(rows)}, "
                                     f"base rate {hit.mean():.3f})")
                     except Exception as e:
                         logger.warning(f"[PRECISION] {h}m isotonic fit failed: {e}")
                 else:
                     logger.info(f"[PRECISION] {h}m calibrator waiting: "
-                                f"{len(rows)}/{MIN_CALIB_SAMPLES} resolved leans")
+                                f"{len(rows)}/{MIN_CALIB_SAMPLES} resolved leans "
+                                f"under {want_contract}")
         finally:
             conn.close()
+        # Provenance is EARNED by a fit that happened, not asserted by the code path that
+        # intended one. A run that selected no admissible rows leaves the map declaring
+        # UNRECORDED, and `is_admissible_for` keeps refusing - which is the correct answer.
+        if fitted_any:
+            self.fitted_under_contract = want_contract
+            self.contract_provenance = "RECORDED"
 
     # ── inference-time API (cheap, no DB) ────────────────────────────────
     def calibrated(self, h: int, raw_conf: float, *, required_contract: str | None = None):

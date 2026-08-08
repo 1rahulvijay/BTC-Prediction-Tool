@@ -50,12 +50,21 @@ def chk(cond: object, msg: str) -> None:
 
 
 def _insert(conn, pid, ts, bundle, correct):
-    """One resolved 5m row. `correct` decides whether the raw lean matched the move."""
+    """One resolved 5m row. `correct` decides whether the raw lean matched the OUTCOME.
+
+    `actual_direction` and `target_contract` are written because that is what a production
+    row carries: the calibrator grades by the contract's own outcome, not by the sign of
+    `actual_move`, and it selects rows whose contract it can name. The assertions below are
+    unchanged - this fixture is about BUNDLE selection, and it still proves exactly that.
+    """
+    import target_contract as _tc
     conn.execute(
         "INSERT INTO predictions_5m (id, timestamp, horizon, confidence, regime, "
-        " raw_direction, actual_move, resolved, model_version, conviction) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        [pid, ts, 5, 0.70, "RANGE", "UP", (12.0 if correct else -12.0), True, bundle, 0.5])
+        " raw_direction, actual_move, actual_direction, target_contract, resolved, "
+        " model_version, conviction) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [pid, ts, 5, 0.70, "RANGE", "UP", (12.0 if correct else -12.0),
+         ("UP" if correct else "DOWN"), _tc.TRAINING_CONTRACT, True, bundle, 0.5])
 
 
 def main() -> int:
