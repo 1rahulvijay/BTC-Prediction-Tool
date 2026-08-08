@@ -239,6 +239,44 @@ def main() -> int:
     chk("precision_engine.bind_release(" in block,
         "and calibration is rebound to the new bundle")
 
+
+    print("5.22 the economic gate counts DIRECTIONAL rows, not abstentions")
+    srv2 = (BACKEND / "server.py").read_text(encoding="utf-8")
+    chk('directional_total = int(acc.get("lean_total", 0) or 0)' in srv2,
+        "the directional denominator comes from lean_total, which the verifier already "
+        "publishes")
+    chk("if directional_total >= 100:" in srv2 and "if total >= 100:" not in srv2,
+        "and the expectancy gate uses it - `total` includes final abstentions, so 95 "
+        "abstentions plus 5 calls could move the safety bar on an EV computed from 5 rows")
+    chk('"not_enough_data" if directional_total < 100' in srv2,
+        "the usable/not_enough_data label uses it too, so the two cannot disagree")
+
+    print("5.27/5.28 entries are counted as entries, and open losses count")
+    pers = (BACKEND / "binance_paper" / "persistence.py").read_text(encoding="utf-8")
+    # DOCSTRING STRIPPED. The new docstring EXPLAINS the old exit_time_ms behaviour, so a
+    # whole-function scan matches the fix's own description of the defect. Fifth occurrence.
+    import ast as _a
+    _tree = _a.parse(pers)
+    _rtc_fn = next(n for n in _a.walk(_tree)
+                   if isinstance(n, _a.FunctionDef) and n.name == "recent_trade_count")
+    _rtc_body = [x for x in _rtc_fn.body
+                 if not (isinstance(x, _a.Expr) and isinstance(x.value, _a.Constant)
+                         and isinstance(x.value.value, str))]
+    _rtc = chr(10).join(_a.unparse(x) for x in _rtc_body)
+    chk("entry_time_ms >= ?" in _rtc and "exit_time_ms" not in _rtc,
+        "recent_trade_count's QUERIES count by ENTRY time with no reference to exit time - it "
+        "counted CLOSED trades by exit time, so several positions could open inside the hour "
+        "and hit no limit at all")
+    chk("status = 'OPEN'" in _rtc and "opened_at_ms >= ?" in _rtc,
+        "and includes positions still open - an entry is an entry whether or not it finished")
+
+    _npl = pers[pers.index("def net_pnl_since("):pers.index("def daily_net_pnl(")]
+    chk("exit_time_ms >= ? OR entry_time_ms >= ?" in _npl,
+        "period P&L counts trades entered OR exited in the window - a position spanning "
+        "midnight put its ENTIRE P&L on its exit day")
+    chk("unrealized_pnl_usd" in _npl and "status = 'OPEN'" in _npl,
+        "and adds unrealised P&L on positions opened in the window, so a daily loss limit "
+        "cannot be evaded by simply not closing the loser")
     print("\nSCAN-5 BARRIER AND GATES:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

@@ -3718,6 +3718,15 @@ def apply_live_quality_filters(
     regime_name = regime_info.get("regime", "UNKNOWN")
     acc = verifier_state.get_accuracy_summary().get(h, {})
     total = int(acc.get("total", 0) or 0)
+    # 5.22. DIRECTIONAL rows, not every resolved row.
+    #
+    # `total` counts every verified prediction INCLUDING final abstentions, and on a
+    # NEUTRAL-heavy horizon most rows are abstentions. So `total >= 100` could be satisfied by
+    # 95 abstentions and 5 committed calls, and the gate would then start moving the safety bar
+    # on an `expectancy_usd` computed from those 5. An economic claim needs the count of
+    # decisions that could actually earn or lose - which is what the verifier already publishes
+    # as `lean_total`.
+    directional_total = int(acc.get("lean_total", 0) or 0)
 
     # 1. Freshness Blocker — DISCONNECT-AWARE (§5bw, 2026-06-14). The old check used
     # `freshness_ms` = per-trade LATENCY, which is only set WHEN a trade arrives, so it FREEZES
@@ -3797,10 +3806,12 @@ def apply_live_quality_filters(
         threshold = max(0.40, min(0.76, learned_threshold))
         prediction["thresholdPolicy"] = policy
 
-    prediction["qualityStatus"] = "not_enough_data" if total < 100 else "usable"
+    prediction["qualityStatus"] = (
+        "not_enough_data" if directional_total < 100 else "usable")
     prediction["qualityMessage"] = (
-        f"Only {total}/100 verified {h}m predictions. Early read."
-        if total < 100
+        f"Only {directional_total}/100 DIRECTIONAL {h}m calls "
+        f"({total} resolved rows incl. abstentions). Early read."
+        if directional_total < 100
         else "Verified data is active."
     )
     prediction["requiredConfidence"] = round(threshold, 3)
@@ -3837,7 +3848,9 @@ def apply_live_quality_filters(
             )
 
     # 5. Expectancy over Accuracy
-    if total >= 100:
+    # ECONOMIC gate, on the DIRECTIONAL denominator. Abstentions cannot earn or lose, so they
+    # cannot be evidence about expectancy.
+    if directional_total >= 100:
         expectancy = float(acc.get("expectancy_usd", 0.0) or 0.0)
         if expectancy <= 0:
             threshold += 0.03

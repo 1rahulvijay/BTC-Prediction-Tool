@@ -1189,28 +1189,76 @@ class BinancePaperPersistence:
             )
 
     def recent_trade_count(self, strategy_id: str, since_ms: int) -> int:
+        """ENTRIES opened in the window - the quantity `maximum_trades_per_hour` names.
+
+        This counted CLOSED trades by `exit_time_ms`. Two errors in one query (scan-5 5.27):
+
+          - a strategy could open several positions inside the hour and hit no limit at all,
+            because none of them had closed yet;
+          - a long-held trade was attributed to the hour it EXITED, throttling an hour in which
+            no entry was made.
+
+        Entries are now counted by `entry_time_ms`, and positions still OPEN are included -
+        an entry is an entry whether or not it has finished.
+        """
         with self._lock:
-            return int(
+            closed = int(
                 self._conn.execute(
                     """
                     SELECT COUNT(*) FROM binance_paper_trades
-                    WHERE strategy_id = ? AND exit_time_ms >= ?
+                    WHERE strategy_id = ? AND entry_time_ms >= ?
                     """,
                     (strategy_id, int(since_ms)),
                 ).fetchone()[0]
+                or 0
+            )
+            still_open = int(
+                self._conn.execute(
+                    """
+                    SELECT COUNT(*) FROM binance_paper_positions
+                    WHERE strategy_id = ? AND opened_at_ms >= ? AND status = 'OPEN'
+                    """,
+                    (strategy_id, int(since_ms)),
+                ).fetchone()[0]
+                or 0
+            )
+            return int(closed + still_open
             )
 
     def net_pnl_since(self, strategy_id: str, since_ms: int) -> float:
+        """Period P&L for the LOSS LIMITS, including what is still open (scan-5 5.28).
+
+        This summed completed trades by `exit_time_ms` alone, so a position spanning midnight
+        put its entire P&L on its exit day - absent from the day it was actually losing, and
+        fully charged to a day it barely traded. Funding paid today likewise did not appear
+        until the position eventually closed.
+
+        A loss LIMIT asks "how far down am I over this period", and a large open loser is
+        exactly the thing it must not miss. Realised trades entered OR exited in the window are
+        counted once, and the unrealised P&L of positions opened in it is added.
+
+        The full remedy is a timestamped realised-cashflow ledger (entry fee, funding, exit).
+        This is the bounded version: it can no longer be evaded by simply not closing.
+        """
         with self._lock:
-            value = self._conn.execute(
+            realised = self._conn.execute(
                 """
                 SELECT COALESCE(SUM(net_pnl_usd), 0)
                 FROM binance_paper_trades
-                WHERE strategy_id = ? AND exit_time_ms >= ?
+                WHERE strategy_id = ?
+                  AND (exit_time_ms >= ? OR entry_time_ms >= ?)
+                """,
+                (strategy_id, int(since_ms), int(since_ms)),
+            ).fetchone()[0]
+            unrealised = self._conn.execute(
+                """
+                SELECT COALESCE(SUM(unrealized_pnl_usd), 0)
+                FROM binance_paper_positions
+                WHERE strategy_id = ? AND opened_at_ms >= ? AND status = 'OPEN'
                 """,
                 (strategy_id, int(since_ms)),
             ).fetchone()[0]
-        return float(value or 0.0)
+        return float(realised or 0.0) + float(unrealised or 0.0)
 
     def daily_net_pnl(self, strategy_id: str, day_start_ms: int) -> float:
         return self.net_pnl_since(strategy_id, day_start_ms)
