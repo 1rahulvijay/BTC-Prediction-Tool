@@ -277,6 +277,51 @@ def main() -> int:
     chk("unrealized_pnl_usd" in _npl and "status = 'OPEN'" in _npl,
         "and adds unrealised P&L on positions opened in the window, so a daily loss limit "
         "cannot be evaded by simply not closing the loser")
+
+    print("5.10 regime calibration is PER HORIZON")
+    from prediction_verifier import PredictionVerifier as _PV
+    v = _PV()
+    # 5m OVERCONFIDENT (states .8, hits 40%).  15m WELL CALIBRATED (states .6, hits 60%).
+    for i in range(60):
+        v.verified_by_horizon[5].append(
+            {"direction": "UP", "regime": "TREND", "confidence": 0.8, "hit": i % 10 < 4})
+    for i in range(60):
+        v.verified_by_horizon[15].append(
+            {"direction": "UP", "regime": "TREND", "confidence": 0.6, "hit": i % 10 < 6})
+    cal = v.get_regime_calibration()
+    f5, f15, fp = cal[5]["TREND"], cal[15]["TREND"], cal["_pooled"]["TREND"]
+    chk(f5 < 0.9,
+        f"the OVERCONFIDENT 5m horizon is demoted ({f5})")
+    chk(abs(f15 - 1.0) < 1e-9,
+        f"the WELL-CALIBRATED 15m horizon is left alone ({f15})")
+    chk(abs(fp - f15) > 0.05,
+        f"whereas the pooled factor is {fp} - under the old code the correctly-calibrated 15m "
+        f"model was demoted by ~{100*(1-fp/f15):.0f}% because of 5m's overconfidence, and 5m "
+        f"resolves three times as often so it dominates the bucket")
+    mdl2 = (BACKEND / "model.py").read_text(encoding="utf-8")
+    chk("_cal_h = _cal_all.get(h)" in mdl2,
+        "and the consumer selects THIS horizon's map")
+    chk("_cal_h = {}" in mdl2,
+        "a horizon with no calibration of its own gets the neutral 1.0 rather than borrowing "
+        "another horizon's - absent must not mean 'use someone else's'")
+
+    print("5.21 raw and calibrated thresholds have SEPARATE ceilings")
+    import server as _srv
+    chk(_srv.RAW_THRESHOLD_CEILING == 0.50,
+        "the RAW ceiling is unchanged - on a three-class head a bar above ~0.50 is "
+        "mathematically unpassable, and removing it (the proposed fix) would close the gate "
+        "permanently")
+    chk(_srv.CALIBRATED_THRESHOLD_CEILING > _srv.RAW_THRESHOLD_CEILING,
+        f"and the CALIBRATED ceiling is higher ({_srv.CALIBRATED_THRESHOLD_CEILING}) - an "
+        f"isotonic P(correct) does not inherit the head's structural range, so a learned bar "
+        f"above 0.50 is meaningful rather than impossible")
+    srv3 = (BACKEND / "server.py").read_text(encoding="utf-8")
+    chk("threshold = min(threshold, 0.50)" not in srv3,
+        "the single hard cap is gone")
+    chk('prediction["thresholdNamespace"] = "calibrated"' in srv3
+        and 'prediction["thresholdNamespace"] = "raw"' in srv3,
+        "and each prediction RECORDS which namespace its bar was drawn from, so the two can "
+        "never be compared against each other later")
     print("\nSCAN-5 BARRIER AND GATES:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

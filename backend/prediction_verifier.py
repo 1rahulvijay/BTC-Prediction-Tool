@@ -631,10 +631,34 @@ class PredictionVerifier:
         in a trend vs chop; multiplying conviction by this factor down-weights regimes
         where the model is *overconfident* (high confidence, low hit rate) and up-weights
         where it is underconfident — directly improving the win rate of actioned signals.
-        Returns {regime: factor in [0.6, 1.4]}.
+        Returns {horizon: {regime: factor in [0.6, 1.4]}}, plus a "_pooled" key holding the
+        old cross-horizon shape for any consumer that has not been updated.
+
+        5.10. THIS POOLED 5m AND 15m INTO ONE FACTOR PER REGIME.
+
+        The outer `for h in ALL_HORIZONS` accumulated both horizons into the same regime bucket,
+        so five-minute outcomes recalibrated fifteen-minute confidence and vice versa. That is
+        not a small mixing: 5m resolves three times as often, so its rows dominate the bucket,
+        and the factor a 15m prediction is multiplied by is mostly a statement about 5m.
+
+        Confidence "means something different in a trend vs chop" - the docstring's own
+        argument - and it means something different at 5m than at 15m for exactly the same
+        reason. The fix is to stop averaging across the axis the calibration exists to separate.
         """
-        buckets = {}
+        def _factor(bucket: dict) -> float:
+            n = bucket["n"]
+            if n < 10:
+                return 1.0
+            mean_conf = bucket["conf"] / n
+            mean_hit = bucket["hit"] / n
+            raw = (mean_hit / mean_conf) if mean_conf > 0 else 1.0
+            w = min(1.0, n / float(min_samples))  # shrink toward 1.0 when sparse
+            return round(max(0.6, min(1.4, (1.0 * (1 - w)) + (raw * w))), 3)
+
+        per_h: dict = {}
+        pooled: dict = {}
         for h in ALL_HORIZONS:
+            buckets = {}
             for v in self.verified_by_horizon[h]:
                 if v.get("direction") not in ("UP", "DOWN"):
                     continue
@@ -643,18 +667,13 @@ class PredictionVerifier:
                 b["conf"] += float(v.get("confidence", 0.0) or 0.0)
                 b["hit"] += 1.0 if v.get("hit") else 0.0
                 b["n"] += 1
-        out = {}
-        for reg, b in buckets.items():
-            n = b["n"]
-            if n < 10:
-                out[reg] = 1.0
-                continue
-            mean_conf = b["conf"] / n
-            mean_hit = b["hit"] / n
-            raw = (mean_hit / mean_conf) if mean_conf > 0 else 1.0
-            w = min(1.0, n / float(min_samples))  # shrink toward 1.0 when sparse
-            factor = (1.0 * (1 - w)) + (raw * w)
-            out[reg] = round(max(0.6, min(1.4, factor)), 3)
+                pb = pooled.setdefault(reg, {"conf": 0.0, "hit": 0.0, "n": 0})
+                pb["conf"] += float(v.get("confidence", 0.0) or 0.0)
+                pb["hit"] += 1.0 if v.get("hit") else 0.0
+                pb["n"] += 1
+            per_h[h] = {reg: _factor(b) for reg, b in buckets.items()}
+        out = per_h
+        out["_pooled"] = {reg: _factor(b) for reg, b in pooled.items()}
         return out
 
     def refit_confidence_calibrators(self, min_samples: int = 40):

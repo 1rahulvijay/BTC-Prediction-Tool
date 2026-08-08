@@ -1811,6 +1811,17 @@ def refresh_derivatives_from_rest() -> None:
 #: condition under which the old reconstruction was most misleading.
 COINBASE_MAX_STALE_MS = 60_000
 
+#: 5.21. Two DIFFERENT quantities are compared against `threshold`, so they need two ceilings.
+#:
+#:   RAW        the three-class head's own max confidence. With class priors it tops out around
+#:              0.50-0.55, so a bar above that is mathematically unpassable and guarantees 100%
+#:              NEUTRAL. This ceiling exists to stop a permanently closed gate.
+#:   CALIBRATED an isotonic P(correct) mapped onto the realised hit rate. It does not inherit
+#:              the head's structural range, and a learned requirement above 0.50 is meaningful
+#:              rather than impossible. Only a bar no probability could reach needs blocking.
+RAW_THRESHOLD_CEILING = 0.50
+CALIBRATED_THRESHOLD_CEILING = 0.95
+
 
 #: Max age of a per-venue REST observation before it stops counting toward consensus.
 VENUE_MAX_STALE_MS = 120_000
@@ -3923,7 +3934,27 @@ def apply_live_quality_filters(
     # cap above is None while the learned policy is allowed up to 0.76 — the DB showed
     # bars of 0.61-0.63, which are mathematically unpassable → guaranteed 100% NEUTRAL
     # until the rolling window refills. The bar must never exceed what the model can emit.
-    threshold = min(threshold, 0.50)
+    #
+    # 5.21. THAT CEILING BELONGS TO THE RAW SCORE, AND WAS APPLIED TO A CALIBRATED ONE.
+    #
+    # `eff_conf` below is `calibratedConfidence` whenever the isotonic map is active. That
+    # value is a P(correct) mapped onto the realised hit rate - it does NOT carry the
+    # three-class head's structural range, and 0.50 has no special meaning in it. Capping a
+    # calibrated bar at the raw head's ceiling silently discards a learned requirement above
+    # 0.50 for a reason that does not apply to the quantity being compared.
+    #
+    # Removing the cap outright was the proposed fix and would have been wrong: on the RAW
+    # score an unpassable bar means a permanently closed gate, which is what the cap exists to
+    # prevent. The two are different namespaces and now have different ceilings.
+    if _calv is not None:
+        # CALIBRATED namespace: a probability of being correct. A learned bar may legitimately
+        # sit above 0.50; the ceiling only has to stop a bar no probability could ever reach.
+        threshold = min(threshold, CALIBRATED_THRESHOLD_CEILING)
+        prediction["thresholdNamespace"] = "calibrated"
+    else:
+        # RAW namespace: bounded by what a three-class head can structurally emit.
+        threshold = min(threshold, RAW_THRESHOLD_CEILING)
+        prediction["thresholdNamespace"] = "raw"
 
     if prediction.get("direction") != "NEUTRAL" and eff_conf < threshold:
         _src = "calibrated " if _calv is not None else ""

@@ -2852,7 +2852,17 @@ class MultiModelEnsemble:
         # across regimes and overconfident regimes are demoted.
         conf_raw = conf
         regime_now = (data_state.get("regime_info") or {}).get("regime", "UNKNOWN")
-        cal_factor = float((data_state.get("regime_calibration") or {}).get(regime_now, 1.0) or 1.0)
+        # 5.10. THIS HORIZON's factor. The map used to be {regime: factor} pooled across 5m and
+        # 15m, so a 15m prediction was scaled by a number dominated by 5m rows - 5m resolves
+        # three times as often. It is now {horizon: {regime: factor}}; `_pooled` is retained
+        # only for consumers that have not been updated, and is NOT used here.
+        _cal_all = data_state.get("regime_calibration") or {}
+        _cal_h = _cal_all.get(h)
+        if not isinstance(_cal_h, dict):
+            # A horizon with no calibration of its own gets 1.0 - the neutral factor - rather
+            # than borrowing another horizon's. Absent must not mean "use someone else's".
+            _cal_h = {}
+        cal_factor = float(_cal_h.get(regime_now, 1.0) or 1.0)
         if direction in ("UP", "DOWN") and cal_factor != 1.0:
             conf = max(0.0, min(0.99, conf * cal_factor))
 
