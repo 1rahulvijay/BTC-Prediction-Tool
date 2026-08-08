@@ -195,7 +195,7 @@ class PerModelVerifier:
             result = tc.grade(
                 contract=p.get("target_contract") or tc.TRAINING_CONTRACT,
                 entry=float(p["ref_price"]),
-                threshold=float(p.get("neutral_band") or self.neutral_band),
+                threshold=tc.resolve_neutral_band(p.get("neutral_band"), self.neutral_band),
                 klines=klines,
                 entry_ts=int(p.get("ts") or 0),
                 verify_ts=int(p["verify_at"]),

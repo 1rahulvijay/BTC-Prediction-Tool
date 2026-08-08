@@ -31,6 +31,31 @@ REASON_LABELS = {
     "not_actionable": "did not clear the actionable gate",
 }
 
+#: WHICH REASONS DECIDE THE VERDICT, as opposed to annotating it.
+#:
+#: The module docstring above defines WEAK_LEAN as "a committed side but with caveats", so it
+#: has always declared that some reasons are caveats. The code did not implement the
+#: distinction: ANY entry in `no_trade_reasons` prevented TRADE, and one of them can never be
+#: cleared by the serving path.
+#:
+#: `grade_unproven` fires whenever a grade is displayed and `grade_validated` is unset. Nothing
+#: in production sets it - `grade_scorecard.py` is the tool that would decide to, and its
+#: verdict is a human one - while `_confluence` in server.py returns "A", "B" or "C"
+#: unconditionally and is attached to every prediction. So `trade_verdict` could never be
+#: TRADE, and `model_consensus`, whose entry condition is exactly `verdict == "TRADE"`, could
+#: never enter. A permanently closed gate, reached by accident rather than by measurement -
+#: and `_confluence` documents itself as "logged/displayed only - NOT a live gate; no
+#: bet/abstain/champion decision reads this", which was false.
+#:
+#: The measured fact behind `grade_unproven` is that the grade does NOT stratify (it is
+#: inverted, section 5br). A label carrying no information is not evidence in either
+#: direction, so it cannot be the thing that decides. It is still REPORTED - removing it as a
+#: reason was proposed once and refused, correctly - it simply no longer decides.
+#:
+#: Everything else keeps blocking, including `fallback_lean_only`, whose own comment calls it
+#: "a real skip".
+VERDICT_CAVEATS = frozenset({"grade_unproven"})
+
 
 def compute_no_trade_reasons(p: dict) -> dict:
     """Attach `no_trade_reasons` (codes), `no_trade_reason_text` (human), and `trade_verdict`
@@ -80,9 +105,15 @@ def compute_no_trade_reasons(p: dict) -> dict:
     p["no_trade_reasons"] = ordered
     p["no_trade_reason_text"] = [REASON_LABELS.get(r, r) for r in ordered]
 
+    # Recorded so the reason a verdict is not TRADE is never something a reader has to
+    # reconstruct by subtracting one list from another.
+    blocking = [r for r in ordered if r not in VERDICT_CAVEATS]
+    p["verdict_blocked_by"] = blocking
+    p["verdict_caveats"] = [r for r in ordered if r in VERDICT_CAVEATS]
+
     if p.get("direction") not in ("UP", "DOWN"):
         p["trade_verdict"] = "NO_TRADE"
-    elif p.get("actionable") and not ordered:
+    elif p.get("actionable") and not blocking:
         p["trade_verdict"] = "TRADE"
     else:
         p["trade_verdict"] = "WEAK_LEAN"
@@ -102,6 +133,20 @@ def _selftest():
     p = compute_no_trade_reasons({"direction": "UP", "rawDirection": "UP", "actionable": True,
                                   "confluence": {"grade": "B", "grade_validated": True}})
     assert p["trade_verdict"] == "TRADE" and not p["no_trade_reasons"]
+
+    # an UNPROVEN GRADE ALONE is a caveat, not the verdict: it can never be cleared by the
+    # serving path, so blocking on it made TRADE unreachable for every prediction.
+    p = compute_no_trade_reasons({"direction": "UP", "rawDirection": "UP", "actionable": True,
+                                  "confluence": {"grade": "A"}})
+    assert p["trade_verdict"] == "TRADE", p["trade_verdict"]
+    assert p["no_trade_reasons"] == ["grade_unproven"]      # still REPORTED
+    assert p["verdict_blocked_by"] == [] and p["verdict_caveats"] == ["grade_unproven"]
+
+    # but a caveat alongside a real blocker does not rescue it
+    p = compute_no_trade_reasons({"direction": "UP", "rawDirection": "NEUTRAL", "actionable": True,
+                                  "confluence": {"grade": "A"}})
+    assert p["trade_verdict"] == "WEAK_LEAN"
+    assert p["verdict_blocked_by"] == ["fallback_lean_only"]
 
     # capped + unproven grade -> WEAK_LEAN with BOTH reasons, human text present
     p = compute_no_trade_reasons({"direction": "DOWN", "rawDirection": "DOWN", "actionable": False,

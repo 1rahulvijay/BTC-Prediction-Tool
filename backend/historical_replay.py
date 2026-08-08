@@ -208,7 +208,11 @@ async def run_replay(args, progress_cb=None) -> dict:
             final_dir = pred.get("finalDirection") or pred.get("direction", "NEUTRAL")
             exit_price = float(closes[exit_idx])
             actual_move = exit_price - entry_price
-            neutral_band = float(pred.get("neutralBand", 0.0008) or 0.0008)
+            import target_contract as _tc_band
+            # A declared band of 0.0 is falsy; `or` replaced it with 8bps. Replay is what
+            # research reads, so grading it at a barrier the model never trained on is the
+            # same defect as doing it live, with a longer half-life.
+            neutral_band = _tc_band.resolve_neutral_band(pred.get("neutralBand"))
             # Graded under the CONTRACT THE MODEL WAS TRAINED ON, through the canonical
             # grader, using the intrabar window replay already had in `klines` and never used.
             actual_dir, _grade_status = _graded_direction(

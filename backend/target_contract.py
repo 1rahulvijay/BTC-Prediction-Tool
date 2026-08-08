@@ -691,6 +691,39 @@ def grade(*, contract: str, entry: float, threshold: float, klines,
                        endpoint_ts=endpoint_ts, **_observed)
 
 
+#: The band used when a prediction did not declare one. It is a FALLBACK for an absent
+#: value, never a substitute for a declared one - see `resolve_neutral_band`.
+DEFAULT_NEUTRAL_BAND = 0.0008
+
+
+def resolve_neutral_band(declared, default: float = DEFAULT_NEUTRAL_BAND) -> float:
+    """The band to grade at, distinguishing ABSENT from ZERO.
+
+    Every consumer wrote `float(pred.get("neutralBand", 0.0008) or 0.0008)`. A declared band
+    of 0.0 is falsy, so `or` replaced it with 8bps - and 0.0 is REACHABLE and legitimate:
+
+        BTC_LABEL_COST_FLOOR=0  ->  causal_neutral_band(...) == 0.0
+        training labels built at  0.0
+        the model declares        0.0
+        the verifier recorded     0.0008
+
+    which is precisely the train/serve barrier mismatch `causal_neutral_band` was written to
+    eliminate, reintroduced by an `or`. A zero-cost study would have been graded against an
+    8bps barrier the model was never trained on, and nothing would have said so.
+
+    Absent, non-numeric, negative and NaN all fall back. Zero does not.
+    """
+    if declared is None:
+        return float(default)
+    try:
+        value = float(declared)
+    except (TypeError, ValueError):
+        return float(default)
+    if value != value or value < 0.0:      # NaN or negative: not a width
+        return float(default)
+    return value
+
+
 def _observed_window(path, entry_ts, verify_ts) -> dict:
     """The interval the selected bars actually cover, and how far it sits from the declared one.
 

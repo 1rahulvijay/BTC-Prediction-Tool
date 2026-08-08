@@ -187,7 +187,7 @@ class PredictionVerifier:
             "model_dirs": prediction.get("modelDirs", {}),
             "regime": prediction.get("regime", "UNKNOWN"),
             # Grade with the SAME cost-floored adaptive band the model trained on.
-            "neutral_band": float(prediction.get("neutralBand", 0.0008) or 0.0008),
+            "neutral_band": _tc.resolve_neutral_band(prediction.get("neutralBand")),
         }
         self.pending_predictions.append(entry)
         self.last_record_time[h] = now_ms
@@ -269,7 +269,7 @@ class PredictionVerifier:
                 # Use the prediction's own neutral band (same cost-floored adaptive
                 # threshold as training) so we grade the model on its real target, not a
                 # hardcoded 0.01% that almost never classifies the outcome as NEUTRAL.
-                threshold = float(pred.get("neutral_band", 0.0008) or 0.0008)
+                threshold = _tc.resolve_neutral_band(pred.get("neutral_band"))
 
                 # P0-11 LATENESS. Record how late this resolution actually is and refuse to
                 # grade beyond the declared bound instead of pretending the delay did not

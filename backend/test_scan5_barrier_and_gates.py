@@ -96,11 +96,20 @@ def main() -> int:
         "record() accepts the parent band")
     chk('"neutral_band": band,' in mv_src,
         "and stamps it ON the vote, so it cannot be re-graded later at a different width")
-    chk('threshold=float(p.get("neutral_band") or self.neutral_band)' in mv_src,
-        "grading uses the stamped band, falling back to the class default only when absent")
+    # The rule, not the expression that happened to implement it on the day. This assertion
+    # used to quote `float(p.get("neutral_band") or self.neutral_band)` verbatim and broke
+    # when that `or` was replaced - correctly, because `or` ALSO discarded a stamped band of
+    # 0.0, which is exactly the defect 5.4 is about, surviving inside 5.4's own fix.
+    chk('tc.resolve_neutral_band(p.get("neutral_band"), self.neutral_band)' in mv_src,
+        "grading uses the stamped band, falling back to the class default only when ABSENT - "
+        "a stamped ZERO is a width and must survive")
+    import target_contract as _tc_chk
+    chk(_tc_chk.resolve_neutral_band(0.0, 0.0008) == 0.0
+        and _tc_chk.resolve_neutral_band(None, 0.0008) == 0.0008,
+        "proven on the resolver itself rather than on the shape of the call site")
     server_src = (BACKEND / "server.py").read_text(encoding="utf-8")
-    chk("neutral_band=float(p.get(\"neutralBand\", 0.0008) or 0.0008)," in server_src,
-        "and the caller supplies the parent's adaptive band")
+    chk("neutral_band=_target_contract.resolve_neutral_band(p.get(\"neutralBand\"))" in server_src,
+        "and the caller supplies the parent's adaptive band through the same one rule")
 
     print("5.16/5.17/5.19 degraded promotion evidence now REFUSES")
     import model_promotion as mp

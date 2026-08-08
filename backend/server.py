@@ -3652,8 +3652,15 @@ precision_engine = PrecisionEngine()
 
 
 def _confluence(p: dict, of: dict) -> dict:
-    """Stage 3 setup-quality LABEL (logged/displayed only — NOT a live gate; no bet/abstain/champion
-    decision reads this). Regime is the primary discriminator per live evidence
+    """Stage 3 setup-quality LABEL.
+
+    CORRECTION 2026-08-08: this said "logged/displayed only - NOT a live gate; no
+    bet/abstain/champion decision reads this". It WAS a gate. It returns "A", "B" or "C"
+    unconditionally, `decision_gate` raised `grade_unproven` for any displayed grade whose
+    `grade_validated` was unset - and nothing in production sets that - and the resulting
+    verdict was `model_consensus`'s entry condition. The grade decided every trade by never
+    permitting one. `VERDICT_CAVEATS` now separates reporting from deciding; this label is
+    reported. Regime is the primary discriminator per live evidence
     (DUCKDB_METRICS_ANALYSIS_2026-06-21 §F): RANGE/LOW_VOLATILITY are the only regimes above coin-flip
     (RANGE 59%, Wilson-LB 52%); TRENDING_UP/HIGH_VOLATILITY are the weakest (~46%). Order-flow agreement
     (CVD, large-trade flow, book imbalance) is a weak secondary confirmation. Grade A ≈ favorable regime
@@ -4829,7 +4836,7 @@ async def main_loop():
                             # graded at a fixed 8bps floor while the parent used the real
                             # EWMA-ATR width - so the two disagreed about the same market, and
                             # seat-complementarity research inherited the disagreement.
-                            neutral_band=float(p.get("neutralBand", 0.0008) or 0.0008),
+                            neutral_band=_target_contract.resolve_neutral_band(p.get("neutralBand")),
                         )
 
                         # A10 setup-fingerprint recorder — the per-prediction DECISION context
@@ -4937,7 +4944,7 @@ async def main_loop():
                             model_confluence=float(p.get("modelConfluenceScore", 0.0) or 0.0),
                             setup_score=float(setup_quality.get("score", 0.0) or 0.0),
                             setup_quality=setup_quality,
-                            neutral_band=float(p.get("neutralBand", 0.0008) or 0.0008),
+                            neutral_band=_target_contract.resolve_neutral_band(p.get("neutralBand")),
                             # P0-14 / 1.7. WHICH question this row answers and WHICH release
                             # answered it. Stamped from the prediction itself rather than
                             # assumed, so a future contract change cannot silently relabel
