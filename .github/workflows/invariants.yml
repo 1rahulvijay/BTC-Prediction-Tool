@@ -138,6 +138,9 @@ jobs:
       - name: Forward-EV resolves only from a genuine endpoint
         run: python backend/test_forward_ev_endpoint_contract.py
 
+      - name: Period loss boundaries (an overnight loser still counts today)
+        run: python -m backend.binance_paper.test_period_loss_boundaries
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -888,6 +891,7 @@ jobs:
           python backend/test_decision_price_race.py || exit /b 1
           python backend/test_endpoint_basis_economic_admissibility.py || exit /b 1
           python backend/test_forward_ev_endpoint_contract.py || exit /b 1
+          python -m backend.binance_paper.test_period_loss_boundaries || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

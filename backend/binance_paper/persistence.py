@@ -1325,13 +1325,30 @@ class BinancePaperPersistence:
                 """,
                 (strategy_id, int(since_ms), int(since_ms)),
             ).fetchone()[0]
+            # EVERY open position, not only those opened inside the window.
+            #
+            # `opened_at_ms >= since_ms` meant a position opened Sunday 23:55 and still open
+            # on Monday contributed ZERO to Monday's loss gate, however far it had fallen.
+            # The limit asks "how far down am I over this period", and the single largest
+            # thing it must not miss is a big open loser - which was exactly what it excluded.
+            # Holding through a boundary evaded the gate; the same hole existed weekly.
+            #
+            # This ERRS STRICT. A position opened before the window contributes its whole
+            # unrealised P&L, including the part accrued on earlier days, so the gate can
+            # trip slightly early. That direction is safe: a loss limit that fires too soon
+            # costs an opportunity, one that fires too late costs the limit's entire purpose.
+            #
+            # The exact remedy is equity-at-boundary: period P&L = equity_now -
+            # equity_at_period_start (no external cashflows in a paper account, so it is
+            # clean). That needs a timestamped equity/cashflow snapshot which does not exist
+            # yet - the same ledger this method's docstring already names as the full fix.
             unrealised = self._conn.execute(
                 """
                 SELECT COALESCE(SUM(unrealized_pnl_usd), 0)
                 FROM binance_paper_positions
-                WHERE strategy_id = ? AND opened_at_ms >= ? AND status = 'OPEN'
+                WHERE strategy_id = ? AND status = 'OPEN'
                 """,
-                (strategy_id, int(since_ms)),
+                (strategy_id,),
             ).fetchone()[0]
         return float(realised or 0.0) + float(unrealised or 0.0)
 
