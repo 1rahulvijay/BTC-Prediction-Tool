@@ -153,8 +153,13 @@ def probe(recorder: str, now_ms: float | None = None) -> dict:
     store, table, column, unit = RECORDER_CLOCKS[recorder]
     now_ms = now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000
     path = _resolve(store)
+    # `rows` starts as None, not 0. A count of zero is a MEASUREMENT ("the table is empty");
+    # every path that returns before the count runs - absent store, writer lock, schema drift -
+    # knows nothing about it, and reporting 0 there states a fact never established. The locked
+    # path is the one that bites: a healthy recorder mid-write returned ADVANCING with rows=0.
     out = {"recorder": recorder, "store": store, "table": table, "column": column,
-           "unit": unit, "rows": 0, "newest_ms": None, "status": "NEVER_RAN"}
+           "unit": unit, "rows": None, "rows_known": False, "newest_ms": None,
+           "status": "NEVER_RAN"}
     if path is None:
         out["detail"] = f"{store} does not exist"
         return out
@@ -178,6 +183,14 @@ def probe(recorder: str, now_ms: float | None = None) -> dict:
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema='main'").fetchall()}
         if table not in names:
+            # A DATABASE THAT EXISTS WITHOUT ITS TABLE IS SCHEMA DRIFT, NOT "NEVER RAN".
+            # `status` was left at its NEVER_RAN initial value here while the very next branch
+            # correctly calls a missing COLUMN drift - so the more severe fault reported the
+            # milder diagnosis. Live example: cross_window_recorder shows "table
+            # cross_window_heartbeats absent" against a database that is present on disk, which
+            # sends an operator looking for a process that never started instead of a schema
+            # that no longer matches.
+            out["status"] = "SCHEMA_DRIFT"
             out["detail"] = f"table {table} absent"
             return out
         columns = {c[0] for c in con.execute(f'DESCRIBE "{table}"').fetchall()}
@@ -189,7 +202,8 @@ def probe(recorder: str, now_ms: float | None = None) -> dict:
             f'SELECT count(*), max("{column}") FROM "{table}"').fetchone()
     finally:
         con.close()
-    out["rows"] = int(rows or 0)
+    out["rows"] = int(rows or 0)       # counted for real, so now it is known
+    out["rows_known"] = True
     if newest is None:
         out["detail"] = "no timestamped rows"
         return out
@@ -262,6 +276,31 @@ def selftest() -> int:
               "a held writer lock without DB/WAL progress eventually becomes STALLED")
         check(resumed["status"] == "ADVANCING",
               "new DB/WAL progress restores health after a stall")
+        check(all("rows" not in p for p in (first, stale, resumed)),
+              "and the locked-store fallback never reports a row COUNT - it reads file "
+              "progress, so the count stays unknown rather than becoming 0")
+
+        # A DATABASE PRESENT WITHOUT ITS TABLE IS DRIFT, NOT "NEVER RAN". Probed for real
+        # against a temporary registry entry rather than asserted on source text.
+        import duckdb
+        drifted = Path(tmp) / "drifted.duckdb"
+        con = duckdb.connect(str(drifted))
+        con.execute("CREATE TABLE something_else(x BIGINT)")
+        con.close()
+        _saved_dir = globals()["DATA_DIR"]
+        globals()["DATA_DIR"] = Path(tmp)
+        RECORDER_CLOCKS["__probe_selftest__"] = ("drifted.duckdb", "expected_table",
+                                                 "recv_ts_ns", "NANOS")
+        try:
+            drift = probe("__probe_selftest__")
+            check(drift["status"] == "SCHEMA_DRIFT",
+                  "a store that EXISTS but lacks its table is SCHEMA_DRIFT - reporting "
+                  "NEVER_RAN sends an operator hunting a process that did in fact run")
+            check(drift["rows"] is None and drift["rows_known"] is False,
+                  "and its row count is UNKNOWN, not 0 - nothing counted it")
+        finally:
+            RECORDER_CLOCKS.pop("__probe_selftest__", None)
+            globals()["DATA_DIR"] = _saved_dir
 
     # The registry must agree with the audit's store mapping - two registries that can drift
     # is a defect this repository has already had once.

@@ -75,6 +75,13 @@ REGISTRY_NAME = "settlement"
 #: a handful of rows is worse than no artifact, because its existence implies evidence.
 MIN_TRAIN_ROWS = 500
 
+#: Grouping semantics a caller may declare. ONLY the first establishes independence: units that
+#: do not share input history with their neighbours (real round ids, or blocks with an embargo
+#: between them). Fixed-width time blocks tile the clock without overlap, which is not the same
+#: property - rows either side of a block edge still share a lookback.
+DISJOINT_UNITS = "disjoint_units"
+TIME_BLOCKS = "time_blocks"
+
 #: Column order matches the rest of the model layer: [DOWN, NEUTRAL, UP].
 DOWN, NEUTRAL, UP = 0, 1, 2
 
@@ -213,7 +220,8 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
                           horizons=None, valid_mask: dict | None = None,
                           random_state: int = 0,
                           contract: str = TARGET_CONTRACT,
-                          groups=None, lookback: int = 0) -> dict:
+                          groups=None, lookback: int = 0,
+                          group_semantics: str | None = None) -> dict:
     """Fit one calibrated settlement classifier per horizon.
 
     `split_idx` is the SAME chronological boundary the ensemble uses, so the held-out metric
@@ -315,14 +323,32 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
         entry["holdout_rounds"] = n_hold_groups
         entry["purge_rows"] = purge
         entry["grouped"] = horizon_groups is not None
-        # Stated on every horizon's metrics, so a reader cannot mistake "the floor did not
-        # fire" for "the floor was satisfied".
-        entry["independence_validated"] = horizon_groups is not None
+        # SUPPLYING GROUPS IS NOT THE SAME AS ESTABLISHING INDEPENDENCE, and this flag used to
+        # equate them: any `groups` argument set it True. That mattered the moment the server
+        # started passing TIME-BLOCK groups (ts // ((lookback + horizon) * 60_000)), because
+        # those blocks tile time without overlap while two rows a minute apart on either side
+        # of a block edge still share almost their entire input history. The flag would have
+        # flipped to True on that change - and `model_consensus` GATES on it, so a claim the
+        # data does not support would have unlocked a strategy that is currently abstaining.
+        #
+        # The caller must therefore say what its groups MEAN. Only disjoint units (real rounds,
+        # or blocks separated by an embargo) establish independence; anything else is recorded
+        # as what it is - dependence blocking, which is a genuine improvement over treating
+        # every overlapping row as its own observation, but is not independence.
+        entry["dependence_blocking"] = (
+            "none" if horizon_groups is None else (group_semantics or "unspecified"))
+        entry["independence_validated"] = (
+            horizon_groups is not None and group_semantics == DISJOINT_UNITS)
         if horizon_groups is None:
             entry["independence_note"] = (
                 "no round grouping supplied: rows are NOT independent (overlapping lookbacks, "
                 "and multiple checkpoints per round once round-aligned labels exist). Row "
                 "counts overstate evidence; holdout metrics carry no independence guarantee.")
+        elif not entry["independence_validated"]:
+            entry["independence_note"] = (
+                f"grouped as '{entry['dependence_blocking']}', which blocks dependence but "
+                "does not establish independence: adjacent blocks share input history across "
+                "their boundary. Cluster bounds are tighter than iid but remain optimistic.")
         y_hold = labels[hold_idx]
         x_hold = X_flat[hold_idx]
         if len(y_hold) >= 100 and len(np.unique(y_hold)) >= 2:
@@ -478,12 +504,30 @@ def selftest() -> int:
     check(_m5.get("independence_validated") is False and _m5.get("independence_note"),
           "and each horizon states WHY, so 'the floor did not fire' cannot be read as 'the "
           "floor was satisfied'")
-    _grouped = train_settlement_head(
-        X, Ybinary, split, horizons=[5],
-        groups={5: np.repeat(np.arange(len(X) // 4 + 1), 4)[:len(X)]})
+    _units = {5: np.repeat(np.arange(len(X) // 4 + 1), 4)[:len(X)]}
+    _grouped = train_settlement_head(X, Ybinary, split, horizons=[5], groups=_units,
+                                     group_semantics=DISJOINT_UNITS)
     check(_grouped.get("independence_validated") is True,
-          "while a run given real round groups declares it True - the flag tracks the input, "
-          "not a constant")
+          "a run given DISJOINT units declares it True - the flag tracks the input, not a "
+          "constant")
+
+    # THE SAME GROUPS, DECLARED AS WHAT THE SERVER ACTUALLY PASSES, MUST NOT CLAIM IT.
+    # Fixed-width time blocks tile the clock without overlap, but rows either side of a block
+    # edge still share a lookback. `model_consensus` gates on this flag, so equating "groups
+    # were supplied" with "independence established" would unlock a strategy on a property the
+    # grouping does not have.
+    _blocked = train_settlement_head(X, Ybinary, split, horizons=[5], groups=_units,
+                                     group_semantics=TIME_BLOCKS)
+    check(_blocked.get("independence_validated") is False,
+          "while identical groups declared as TIME BLOCKS do not - supplying groups is not the "
+          "same as establishing independence")
+    _bm = _blocked["metrics"][5]
+    check(_bm.get("dependence_blocking") == TIME_BLOCKS and _bm.get("independence_note"),
+          "and the bundle records what WAS done (dependence blocking) plus why it falls short")
+    check(train_settlement_head(X, Ybinary, split, horizons=[5], groups=_units
+                                )["metrics"][5].get("dependence_blocking") == "unspecified",
+          "an undeclared grouping is 'unspecified' and still claims nothing - a caller that "
+          "does not say what its groups mean cannot be credited with independence")
     _intervals = _grouped["metrics"][5].get("confidence_intervals") or []
     check(_intervals and all(row["independent_groups"] >= 30 for row in _intervals),
           "grouped holdout confidence gets a cluster-bootstrap lower bound, and sparse bins "

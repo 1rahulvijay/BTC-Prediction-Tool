@@ -95,8 +95,13 @@ REM >=500 resolved predictions, PF>1.20 and positive expectancy all pass live.
 if not defined BTC_FULL_REFIT_AFTER_GATE set "BTC_FULL_REFIT_AFTER_GATE=1"
 if not defined BTC_PROMOTION_MIN_HOLDOUT_SAMPLES set "BTC_PROMOTION_MIN_HOLDOUT_SAMPLES=1000"
 if not defined BTC_PROMOTION_MIN_DIRECTIONAL_CALLS set "BTC_PROMOTION_MIN_DIRECTIONAL_CALLS=200"
-if not defined BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION set "BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION=0.48"
-if not defined BTC_PROMOTION_MAX_BRIER set "BTC_PROMOTION_MAX_BRIER=0.80"
+REM PRECISION AND BRIER ARE DELIBERATELY NOT SET HERE. They were 0.48 and 0.80 - the two
+REM values model_promotion.py names as admitting "models worse than no model": 0.48 is BELOW
+REM the 0.50 baseline a directional call has by construction, and 0.80 sits 0.133 above the
+REM 0.667 a uniform three-class guess scores. The Python defaults were repaired to 0.50 and
+REM UNIFORM_3CLASS_BRIER, and these two lines silently overrode the repair every launch, so the
+REM fixed values never ran. Leaving them unset makes model_promotion.promotion_gates the ONE
+REM source of truth; it also clamps any override that tries to weaken them.
 if not defined BTC_PROMOTION_MAX_ECE set "BTC_PROMOTION_MAX_ECE=0.20"
 if not defined BTC_PROMOTION_MAX_PRECISION_REGRESSION set "BTC_PROMOTION_MAX_PRECISION_REGRESSION=0.03"
 if not defined BTC_PROMOTION_MAX_BRIER_REGRESSION set "BTC_PROMOTION_MAX_BRIER_REGRESSION=0.03"

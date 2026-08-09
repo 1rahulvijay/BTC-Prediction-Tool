@@ -187,6 +187,111 @@ Expect the training window to read 1000d and artifacts to load.
 
 ---
 
+## External audit pass — validated item by item
+
+An external audit against `e58de906` raised 17 items. Verified against source; results below.
+
+### Confirmed and fixed
+
+**P0 — the launcher undid the repaired promotion thresholds.** `model_promotion.py` documents
+0.48 precision as *"BELOW a coin flip"* and 0.80 Brier as worse than a uniform guess, and
+repaired its defaults to 0.50 / `UNIFORM_3CLASS_BRIER`. `start.bat:98-99` then set **exactly
+those two condemned values** as environment overrides, which `env_float` prefers — so the
+repair never ran on the normal launcher. The selftest asserted only `> 0`, so 0.48 sailed
+through CI.
+
+Severity is asymmetric and the audit did not note this: Brier has a second, baseline-relative
+gate (`brier_not_better_than_class_prior`), so a bad-Brier model is still caught. **Directional
+precision has no baseline-relative equivalent** — that floor is the only thing between a
+sub-coin-flip model and promotion.
+
+Fixed as a *control, not a convention*: `env_float_no_weaker` lets an override tighten a gate
+but clamps any attempt to weaken it past the safety bound, and logs when it fires. Fixing only
+`start.bat` would leave the hole open for any other shell, service manager or CI job. Both were
+fixed anyway. Regression test covers all four directions.
+
+Also corrected: the comment credited a `_baseline_gate_failures` helper that **does not exist
+in the module** — the logic is real and inline, the name was not.
+
+**P0/P1 — `independence_validated` was an overclaim, and it gates money.** `entry["independence
+_validated"] = horizon_groups is not None`: supplying *any* groups set it True. The server now
+passes fixed-width time blocks, whose adjacent boundaries still share a lookback. Critically,
+`model_consensus.py:225` **gates on this flag** — so the change would have flipped it True and
+*unlocked a strategy that is currently abstaining*, on a property the grouping does not have.
+
+Fixed by making the caller declare its grouping semantics. Only `DISJOINT_UNITS` establishes
+independence; `TIME_BLOCKS` records `dependence_blocking="time_blocks"` with
+`independence_validated=False` plus a note. An undeclared grouping claims nothing. The server
+declares `TIME_BLOCKS`, so `model_consensus` continues to abstain — no new money authority.
+
+**P1 — the funding recorder manufactured zeros.** Correct, and it was my defect: `_f`/`_i`
+coerce any unparseable field to 0, and every critical field went through them. A malformed
+response would have stored `fundingTime=0` (an epoch-1970 settlement), `fundingRate=0` (a
+real-looking 0 bps observation) and `markPrice=0`, all indistinguishable downstream from
+measurements. Critical fields now validate or the payload is quarantined as a gap row.
+
+**But the audit's remedy, applied literally, would have destroyed 13% of the data.** Requiring
+a positive `markPrice` quarantines 460 of 3,500 settlements, because **Binance genuinely
+returns `markPrice: ""` for every BTCUSDT settlement before 2023-10-31** while `fundingRate` is
+perfectly good. Verified against the live API. The rule therefore splits by *role*, not type:
+`fundingTime` and `fundingRate` are the evidence and must validate; the mark is context and may
+be absent — recorded as **NULL**, the one value a study cannot mistake for a measured zero. The
+460 already-stored zeros were migrated to NULL; all 3,500 settlements intact, mean unchanged.
+
+**P1 — funding cadence hardcoded against a configurable symbol.** Correct. Now measured from
+the settlements themselves (modal spacing), falling back to the constant only while too few
+rows exist, and labelled `observed` vs `declared_default`. The audit's stated risk was
+fabricated gaps; the actual failure of an 8h constant on a 4h symbol is the **opposite** — a
+genuine 8h hole reads as normal and is *missed*. The test asserts on that behaviour.
+
+**P1 — missing recorder table reported `NEVER_RAN`.** Correct, and internally inconsistent: a
+missing *column* correctly set `SCHEMA_DRIFT` while a missing *table* — the more severe fault —
+fell through to the initial `NEVER_RAN`. Visible in live output: `cross_window_recorder` shows
+"table absent" against a database present on disk, sending an operator hunting a process that
+did in fact run. Fixed, with a negative selftest that probes a real drifted database.
+
+**P1 — locked DuckDB reported `rows=0`.** Correct. `rows` now starts as `None` with a
+`rows_known` flag; a count of zero is a measurement, and every path that returns before
+counting (absent store, writer lock, schema drift) now says unknown instead.
+
+### Refuted
+
+**P0 — "Polymarket exact-round discovery uses the wrong Gamma route."** Not correct. Tested
+both routes live against all four current slugs (5m/15m, current and next):
+
+```
+btc-updown-5m-1786287600   /markets -> list[1]   /events -> list[1]   same conditionId
+btc-updown-15m-1786287600  /markets -> list[1]   /events -> list[1]   same conditionId
+```
+
+`/markets?slug=<exact>` is **not** empty. The audit conflated the broad *listing*
+(`/markets?closed=false&limit=…`), which did surface only far-future rounds, with the *exact
+slug* lookup — and the exact-slug fetch is the fix for that, as the code comment at
+`live_btc_updown_recorder.py:318` states. The recorder's User-Agent was also checked against
+Gamma and returns HTTP 200. No change made.
+
+### Confirmed open, deliberately not fixed in this pass
+
+**P1 — A/B bootstrap resamples individual predictions** (`ab_testing.py:428`,
+`rng.integers(0, n_min, n_min)`). Real: consecutive BTC predictions share overlapping horizons
+and feature history, so 1,000 predictions are not 1,000 experiments and the lower bound is
+optimistic.
+
+**P1 — A/B durable evidence can diverge from memory** (`ab_testing.py:337`): `resolve()` catches
+a DB failure at DEBUG and still calls `record_outcome()` in memory, so a restart can lose
+resolved rows the running process counted.
+
+Both are real and both gate **challenger promotion**, which requires 30+ days of A/B — not the
+retrain. Fixing them means changing the bootstrap unit to day/week clusters and adding a
+dead-letter path, which is a larger change than belongs immediately before a long run. Fix
+before the paper competition, not before the retrain.
+
+**P2 — rolling endpoint head carries Polymarket rule metadata**, and **P2 — promotion baseline
+uses the holdout's own class prior** (an oracle baseline; conservative, it can only reject).
+Both accepted as stated, neither retrain-blocking.
+
+---
+
 ## Known, not fixed
 
 `start.bat` only runs `--selftest` on the recorders; `start_recorders_once.ps1` starts them.

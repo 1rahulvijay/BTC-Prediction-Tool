@@ -2440,6 +2440,7 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
             # answers a different question, carries no authority, and a failure here must not
             # take down the path ensemble that does serve.
             try:
+                import settlement_head as _settlement_head_mod
                 from settlement_head import (train_settlement_head,
                                              SettlementHeadUnavailable,
                                              TARGET_CONTRACT as _SETTLEMENT_CONTRACT)
@@ -2475,6 +2476,12 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         # That residual makes the floors slightly optimistic, but far less so
                         # than groups=None, which counts every overlapping row as independent.
                         groups=_settlement_groups,
+                        # Declared, not inferred. These are fixed-width time blocks, so the
+                        # head records dependence_blocking='time_blocks' and keeps
+                        # independence_validated=False - which is what model_consensus gates
+                        # on, so it continues to abstain rather than being unlocked by a
+                        # property the grouping does not actually establish.
+                        group_semantics=_settlement_head_mod.TIME_BLOCKS,
                         contract=_SETTLEMENT_CONTRACT))
                 _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
                 from verified_io import atomic_dump as _atomic_dump

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -110,7 +111,12 @@ def _http_json(url: str, timeout: float = 20.0):
         return json.load(response)
 
 
+class PayloadRejected(Exception):
+    """A response field that must be real was not. The payload is quarantined, never coerced."""
+
+
 def _f(value, default: float = 0.0) -> float:
+    """OPTIONAL numbers only. Anything a study will divide by must use `require_*` below."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -118,10 +124,74 @@ def _f(value, default: float = 0.0) -> float:
 
 
 def _i(value, default: int = 0) -> int:
+    """OPTIONAL integers only. See `_f`."""
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# MISSING IS NOT ZERO, AND THIS RECORDER BRIEFLY SAID IT WAS.
+#
+# `_f`/`_i` coerce any unparseable field to 0, and the settlement/basis writers fed every
+# critical field through them. A malformed or partial Binance response therefore stored
+#
+#     fundingTime = 0     an epoch-1970 settlement, becoming a fake ~20-year schedule hole
+#     fundingRate = 0     a real-looking 0 bps settlement diluting the mean
+#     markPrice   = 0     a zero price recorded as market evidence
+#     mark/index  = 0     basis_bps 0.00, reading as "no basis" instead of "unknown"
+#
+# and the carry study reads exactly these columns. A defaulted zero is indistinguishable
+# downstream from a measured zero, which is the whole reason this repository keeps finding
+# "absent read as pass". Critical fields now validate or the payload is quarantined as a gap.
+
+def require_timestamp(value, field: str) -> int:
+    ms = _i(value, default=0)
+    if ms <= 0 or not (1_262_304_000_000 <= ms <= 4_102_444_800_000):   # 2010-01-01 .. 2100
+        raise PayloadRejected(f"{field}={value!r} is not a plausible epoch-ms timestamp")
+    return ms
+
+
+def require_price(value, field: str) -> float:
+    price = _f(value, default=float("nan"))
+    if not (price > 0.0) or not math.isfinite(price):
+        raise PayloadRejected(f"{field}={value!r} is not a positive finite price")
+    return price
+
+
+def optional_price(value):
+    """A price that is legitimately ABSENT sometimes. Returns None, never 0.0.
+
+    Binance's funding history genuinely omits `markPrice` on older settlements - it comes back
+    as the empty string for every BTCUSDT row before 2023-10-31, 460 of the 3,500 recorded
+    here, while `fundingRate` is perfectly good. Requiring it would have quarantined 13% of the
+    dataset over a contextual field and destroyed real funding evidence.
+
+    So the rule splits by ROLE, not by type: `fundingTime` and `fundingRate` are the evidence
+    and must validate; the mark is context and may be missing. Missing is written as NULL,
+    which is the one representation a study cannot mistake for a measured zero.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    price = _f(value, default=float("nan"))
+    if not math.isfinite(price) or price <= 0.0:
+        return None
+    return price
+
+
+def require_rate(value, field: str) -> float:
+    """A funding rate MAY legitimately be zero or negative - only unparseable is rejected.
+
+    So this one cannot use a sentinel default: 0.0 is a real observation here, which is
+    precisely why it must not also be the failure value.
+    """
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        raise PayloadRejected(f"{field}={value!r} is not a number") from None
+    if not math.isfinite(rate) or abs(rate) > 0.1:      # +-10% per settlement is far past sane
+        raise PayloadRejected(f"{field}={value!r} is not a plausible funding rate")
+    return rate
 
 
 class FundingStore:
@@ -197,9 +267,10 @@ class FundingStore:
             "settlement instant and recv_ts_ns is when it was learned - two moments."])
 
     def settlement(self, row: dict, recv_ns: int, source: str) -> bool:
-        """Returns True when this settlement was new."""
-        ft = _i(row.get("fundingTime"))
-        rate = _f(row.get("fundingRate"))
+        """Returns True when this settlement was new. Raises PayloadRejected on a bad row."""
+        ft = require_timestamp(row.get("fundingTime"), "fundingTime")
+        rate = require_rate(row.get("fundingRate"), "fundingRate")
+        mark = optional_price(row.get("markPrice"))     # genuinely absent before 2023-10-31
         existing = self.conn.execute(
             "SELECT 1 FROM funding_settlements WHERE symbol = ? AND funding_time_ms = ?",
             [str(row.get("symbol", SYMBOL)), ft]).fetchone()
@@ -207,11 +278,14 @@ class FundingStore:
             return False
         self.conn.execute("INSERT INTO funding_settlements VALUES (?,?,?,?,?,?,?,?)", [
             str(row.get("symbol", SYMBOL)), ft, self.sequence(), recv_ns,
-            rate, rate * 10_000.0, _f(row.get("markPrice")), source])
+            rate, rate * 10_000.0, mark, source])
         return True
 
     def basis_sample(self, payload: dict, recv_ns: int) -> int:
-        mark, index = _f(payload.get("markPrice")), _f(payload.get("indexPrice"))
+        """Raises PayloadRejected rather than recording a zero mark, index or basis."""
+        mark = require_price(payload.get("markPrice"), "markPrice")
+        index = require_price(payload.get("indexPrice"), "indexPrice")
+        # These two are genuinely optional: absent stays absent rather than becoming a number.
         exch = _i(payload.get("time"))
         nxt = _i(payload.get("nextFundingTime"))
         seq = self.sequence()
@@ -241,28 +315,63 @@ class FundingStore:
         return seq
 
     # -- analysis the lane actually needs -------------------------------------------------
+    def observed_interval_ms(self) -> int | None:
+        """The settlement cadence THIS symbol actually publishes, or None if not yet knowable.
+
+        `FUNDING_INTERVAL_MS` is 8h because that is BTCUSDT's schedule, but `BTC_FUNDING_SYMBOL`
+        is configurable and Binance runs 4h funding on some contracts - and can change a
+        contract's interval. A frozen constant against a configurable symbol turns every normal
+        settlement into a "missing" one, which is a fabricated gap in an evidence table.
+
+        The recorded settlements already carry the answer, so it is measured rather than
+        declared: the modal spacing between consecutive settlements. Falls back to the constant
+        only while too few rows exist to measure anything.
+        """
+        rows = self.conn.execute(
+            "SELECT funding_time_ms FROM funding_settlements WHERE symbol = ? "
+            "ORDER BY funding_time_ms", [SYMBOL]).fetchall()
+        if len(rows) < 8:
+            return None
+        deltas = [b[0] - a[0] for a, b in zip(rows, rows[1:]) if b[0] > a[0]]
+        if not deltas:
+            return None
+        return max(set(deltas), key=deltas.count)
+
+    def schedule_interval_ms(self) -> tuple[int, str]:
+        observed = self.observed_interval_ms()
+        if observed and observed > 0:
+            return observed, "observed"
+        return FUNDING_INTERVAL_MS, "declared_default"
+
     def audit_schedule(self, recv_ns: int) -> int:
-        """Write a gap row for every hole in the fixed 8-hourly schedule.
+        """Write a gap row for every hole in the OBSERVED settlement schedule.
 
         There is no per-message counter on this stream, so TIME is the only honest detector.
         Using an id-continuity test here would repeat the bookTicker mistake the tick recorder
         already made once.
+
+        The cadence comes from `schedule_interval_ms`, measured from the settlements themselves
+        rather than assumed to be 8h - the symbol is configurable and not every contract funds
+        on the same clock. Judging a 4h symbol against an 8h constant would report a fabricated
+        hole at every single settlement.
         """
+        interval, source = self.schedule_interval_ms()
         rows = self.conn.execute(
             "SELECT funding_time_ms FROM funding_settlements WHERE symbol = ? "
             "ORDER BY funding_time_ms", [SYMBOL]).fetchall()
         written = 0
         for (prev,), (cur,) in zip(rows, rows[1:]):
             delta = cur - prev
-            if delta > FUNDING_INTERVAL_MS + SETTLEMENT_TOLERANCE_MS:
-                missing = max(1, round(delta / FUNDING_INTERVAL_MS) - 1)
+            if delta > interval + SETTLEMENT_TOLERANCE_MS:
+                missing = max(1, round(delta / interval) - 1)
                 exists = self.conn.execute(
                     "SELECT 1 FROM funding_gaps WHERE previous_time_ms = ? AND "
                     "current_time_ms = ? AND kind = 'missing_settlement'",
                     [prev, cur]).fetchone()
                 if not exists:
                     self.gap(recv_ns, "missing_settlement", prev, cur, missing,
-                             f"{delta / 3_600_000:.1f}h between settlements")
+                             f"{delta / 3_600_000:.1f}h between settlements; cadence "
+                             f"{interval / 3_600_000:.1f}h ({source})")
                     written += 1
         return written
 
@@ -307,10 +416,26 @@ def backfill(store: FundingStore, days: int, counters: dict) -> tuple[int, bool]
         for row in page:
             if _i(row.get("fundingTime")) < earliest:
                 continue
-            if store.settlement(row, recv, "fapi_v1_fundingRate"):
-                added += 1
-                counters["settlements"] += 1
-        oldest = min(_i(r.get("fundingTime")) for r in page)
+            try:
+                if store.settlement(row, recv, "fapi_v1_fundingRate"):
+                    added += 1
+                    counters["settlements"] += 1
+            except PayloadRejected as exc:
+                # Quarantined, not coerced, and not silent: a rejected row is a gap row.
+                store.gap(recv, "settlement_payload_rejected", 0,
+                          _i(row.get("fundingTime")), 0, str(exc)[:200])
+                counters["gaps"] += 1
+                ok = False
+        usable = [_i(r.get("fundingTime")) for r in page if _i(r.get("fundingTime")) > 0]
+        if not usable:
+            # Every row on this page was unreadable; walking back from a coerced 0 would
+            # restart the whole history at the epoch.
+            store.gap(recv, "history_page_unusable", 0, end_ms, 0,
+                      f"{len(page)} rows, no usable fundingTime")
+            counters["gaps"] += 1
+            ok = False
+            break
+        oldest = min(usable)
         if oldest >= end_ms:
             break
         end_ms = oldest - 1
@@ -327,7 +452,12 @@ def poll_once(store: FundingStore, counters: dict) -> bool:
                   f"{type(exc).__name__}: {exc}"[:200])
         counters["gaps"] += 1
         return False
-    store.basis_sample(payload, recv)
+    try:
+        store.basis_sample(payload, recv)
+    except PayloadRejected as exc:
+        store.gap(recv, "premium_index_payload_rejected", 0, 0, 0, str(exc)[:200])
+        counters["gaps"] += 1
+        return False
     counters["basis"] += 1
     return True
 
@@ -403,6 +533,78 @@ def _selftest() -> int:
             "a FAILING endpoint still writes a heartbeat, flagged unhealthy - liveness and "
             "endpoint health are two facts, and suppressing the beat made a live recorder "
             "read STALLED")
+        # MISSING IS NOT ZERO. Each of these previously became a stored 0.
+        for bad, field in (({"symbol": SYMBOL, "fundingTime": None, "fundingRate": 0.0001,
+                             "markPrice": 60000.0}, "fundingTime"),
+                           ({"symbol": SYMBOL, "fundingTime": base, "fundingRate": "n/a",
+                             "markPrice": 60000.0}, "fundingRate"),
+                           ({"symbol": SYMBOL, "fundingTime": "junk", "fundingRate": 0.0001,
+                             "markPrice": 60000.0}, "fundingTime (unparseable)")):
+            try:
+                store.settlement(bad, recv, "test")
+                chk(False, f"a malformed {field} must be REJECTED, not stored as 0")
+            except PayloadRejected:
+                chk(True, f"a malformed {field} raises instead of being coerced to 0 - a "
+                          f"defaulted zero is indistinguishable from a measured one")
+        try:
+            store.basis_sample({"symbol": SYMBOL, "markPrice": 0.0, "indexPrice": 60000.0}, recv)
+            chk(False, "a zero mark price must be REJECTED")
+        except PayloadRejected:
+            chk(True, "a zero mark price is rejected rather than recorded as basis_bps 0.00, "
+                      "which would read as 'no basis' instead of 'unknown'")
+        chk(require_rate(0.0, "r") == 0.0 and require_rate(-0.0002, "r") < 0,
+            "but a funding rate of exactly 0 or a negative one is a REAL observation and "
+            "survives - which is why it must not double as the failure value")
+
+        # REAL Binance behaviour, not a hypothetical: markPrice comes back as "" for every
+        # BTCUSDT settlement before 2023-10-31. Requiring it would quarantine 460 of the 3,500
+        # recorded settlements - good funding evidence thrown away over a contextual field.
+        store.settlement({"symbol": SYMBOL, "fundingTime": base + 20 * FUNDING_INTERVAL_MS,
+                          "fundingRate": 0.00002344, "markPrice": ""}, recv, "test")
+        got = store.conn.execute(
+            "SELECT mark_price, funding_rate_bps FROM funding_settlements "
+            "WHERE funding_time_ms = ?", [base + 20 * FUNDING_INTERVAL_MS]).fetchone()
+        chk(got is not None and got[0] is None and abs(got[1] - 0.2344) < 1e-6,
+            "an ABSENT markPrice is kept as NULL with its funding rate intact - not coerced "
+            "to 0 and not grounds for discarding a real settlement")
+        chk(optional_price("") is None and optional_price(0) is None
+            and optional_price("60000.5") == 60000.5,
+            "optional_price returns None for absent and zero alike - NULL is the one value a "
+            "study cannot mistake for a measurement")
+
+        # Cadence is measured, not assumed: the symbol is configurable and not every contract
+        # funds every 8h.
+        chk(store.schedule_interval_ms() == (FUNDING_INTERVAL_MS, "declared_default"),
+            "with too few rows the cadence falls back to the declared default, labelled so")
+        four_h = 4 * 60 * 60 * 1000
+        b2 = base + 50 * FUNDING_INTERVAL_MS
+        for i in range(10):
+            store.settlement({"symbol": SYMBOL, "fundingTime": b2 + i * four_h,
+                              "fundingRate": 0.0001, "markPrice": 60000.0}, recv, "test")
+        interval, src = store.schedule_interval_ms()
+        chk(interval == four_h and src == "observed",
+            f"a 4h-funding symbol is MEASURED at {interval / 3_600_000:.0f}h, so the cadence "
+            f"is not inherited from a constant that describes a different contract")
+
+        # And audit_schedule must USE it. Asserted on behaviour: a real hole in a 4h schedule
+        # is an 8h delta, which the hardcoded 8h threshold waves through - so the failure of a
+        # frozen constant here is a MISSED hole, not a fabricated one.
+        with tempfile.TemporaryDirectory(prefix="funding4h_") as t4:
+            s4 = FundingStore(Path(t4) / "f4.duckdb")
+            try:
+                stamps = [i for i in range(12) if i != 8]      # one settlement genuinely absent
+                for i in stamps:
+                    s4.settlement({"symbol": SYMBOL, "fundingTime": b2 + i * four_h,
+                                   "fundingRate": 0.0001, "markPrice": 60000.0}, recv, "test")
+                found = s4.audit_schedule(recv)
+                row = s4.conn.execute("SELECT missing_intervals, detail FROM funding_gaps "
+                                      "WHERE kind = 'missing_settlement'").fetchone()
+                chk(found == 1 and row and row[0] == 1 and "4.0h (observed)" in row[1],
+                    "a REAL hole in a 4h schedule is detected as 1 missing settlement - an "
+                    "8h constant would treat that same 8h delta as normal and miss it")
+            finally:
+                s4.close()
+
         chk(args_default_poll_interval() < STALL_MS_BUDGET,
             f"the default poll cadence ({args_default_poll_interval():.0f}s) stays inside "
             f"recorder_health.STALL_AFTER_MS ({STALL_MS_BUDGET:.0f}s), so ADVANCING means "

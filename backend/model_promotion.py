@@ -7,6 +7,7 @@ live A/B runner as a shadow challenger; it is never treated as independently tes
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import time
@@ -26,12 +27,48 @@ def promotion_required(enabled: bool, reason: str | None = None) -> bool:
     return bool(enabled)
 
 
+logger = logging.getLogger(__name__)
+
+#: A directional call has a 0.50 baseline BY CONSTRUCTION. No environment may license a model
+#: that loses money on every call it commits to.
+COIN_FLIP_PRECISION = 0.50
+
+
 def promotion_gates() -> dict:
     def env_float(name: str, default: float) -> float:
         try:
             return float(os.environ.get(name, default))
         except (TypeError, ValueError):
             return float(default)
+
+    def env_float_no_weaker(name: str, default: float, *, floor=None, ceiling=None) -> float:
+        """An override may make a gate STRICTER. It may not make it unsafe.
+
+        These defaults were repaired to 0.50 / uniform-Brier because the previous 0.48 / 0.80
+        "admitted models worse than no model" - and then `start.bat` set BTC_PROMOTION_MIN_
+        DIRECTIONAL_PRECISION=0.48 and BTC_PROMOTION_MAX_BRIER=0.80, reinstating both condemned
+        values through the environment. The repaired default never ran, because the normal
+        launcher overrode it.
+
+        Fixing only the launcher would leave the same hole for the next caller: any shell,
+        service manager or CI job that exports the old value re-opens it. That is the
+        `HISTORY_DAYS_ENV_ORDER` lesson - alignment that holds only when someone uses the right
+        launcher is a convention, not a control - so the bound is enforced HERE.
+
+        Brier has a second, baseline-relative gate below, but directional precision has no
+        equivalent: this floor is the ONLY thing standing between a sub-coin-flip model and
+        promotion.
+        """
+        value = env_float(name, default)
+        if floor is not None and value < floor:
+            logger.warning("[PROMOTION] %s=%s is weaker than the safety floor %s; using %s",
+                           name, value, floor, floor)
+            return float(floor)
+        if ceiling is not None and value > ceiling:
+            logger.warning("[PROMOTION] %s=%s is weaker than the safety ceiling %s; using %s",
+                           name, value, ceiling, ceiling)
+            return float(ceiling)
+        return value
 
     def env_int(name: str, default: int) -> int:
         try:
@@ -53,10 +90,19 @@ def promotion_gates() -> dict:
         #
         # An absolute floor cannot express "better than knowing nothing" for a problem whose
         # class balance moves: the honest bar is the CLASS-PRIOR baseline computed on the same
-        # holdout, which `_baseline_gate_failures` enforces. These remain as a coarse backstop
-        # and are now set where they cannot pass something the baseline gate would reject.
-        "min_directional_precision": env_float("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", 0.50),
-        "max_multiclass_brier": env_float("BTC_PROMOTION_MAX_BRIER", UNIFORM_3CLASS_BRIER),
+        # holdout, enforced inline below as `brier_not_better_than_class_prior`. (This comment
+        # previously credited a `_baseline_gate_failures` helper that does not exist in this
+        # module - the logic is real, the name was not.) These remain a coarse backstop, and an
+        # environment override can now only tighten them, never restore the condemned values.
+        #
+        # NOTE the asymmetry: Brier has that baseline-relative gate as a second line of defence.
+        # Directional precision has NO baseline-relative equivalent, so its floor is the only
+        # thing between a sub-coin-flip model and promotion.
+        "min_directional_precision": env_float_no_weaker(
+            "BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", COIN_FLIP_PRECISION,
+            floor=COIN_FLIP_PRECISION),
+        "max_multiclass_brier": env_float_no_weaker(
+            "BTC_PROMOTION_MAX_BRIER", UNIFORM_3CLASS_BRIER, ceiling=UNIFORM_3CLASS_BRIER),
         "max_ece": env_float("BTC_PROMOTION_MAX_ECE", 0.20),
         #: Margin the challenger must clear the prior baseline by, not merely tie it.
         "min_baseline_brier_margin": env_float("BTC_PROMOTION_MIN_BASELINE_BRIER_MARGIN", 0.0),
@@ -469,7 +515,52 @@ def selftest() -> None:
         assert promotion_required(True, reason)
         assert not promotion_required(False, reason)
     assert promotion_gates()["min_directional_calls"] > 0
-    assert promotion_gates()["min_directional_precision"] > 0
+
+    # ---- THE SAFETY FLOOR IS A CONTROL, NOT A CONVENTION ---------------------------------
+    # `> 0` was the whole assertion here, so 0.48 sailed through it - and start.bat set exactly
+    # 0.48 and 0.80, the two values the comment above calls "worse than no model". The repaired
+    # defaults never ran on the normal launcher, and CI could not see it.
+    _saved = {k: os.environ.get(k) for k in
+              ("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", "BTC_PROMOTION_MAX_BRIER")}
+    try:
+        for k in _saved:
+            os.environ.pop(k, None)
+        _g = promotion_gates()
+        assert _g["min_directional_precision"] >= COIN_FLIP_PRECISION, \
+            "a directional call has a 0.50 baseline by construction"
+        assert _g["max_multiclass_brier"] <= UNIFORM_3CLASS_BRIER, \
+            "uniform p=1/3 on three classes scores 2/3"
+
+        # The exact regression: the launcher's old values must not be able to reinstate.
+        os.environ["BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION"] = "0.48"
+        os.environ["BTC_PROMOTION_MAX_BRIER"] = "0.80"
+        _g = promotion_gates()
+        assert _g["min_directional_precision"] == COIN_FLIP_PRECISION, \
+            "0.48 is below coin flip and must be clamped, not honoured"
+        assert _g["max_multiclass_brier"] == UNIFORM_3CLASS_BRIER, \
+            "0.80 is worse than a uniform guess and must be clamped, not honoured"
+
+        # ...but an override that TIGHTENS a gate is still the operator's call.
+        os.environ["BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION"] = "0.55"
+        os.environ["BTC_PROMOTION_MAX_BRIER"] = "0.60"
+        _g = promotion_gates()
+        assert _g["min_directional_precision"] == 0.55 and _g["max_multiclass_brier"] == 0.60, \
+            "clamping must not flatten a stricter operator choice"
+    finally:
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # And the launcher must not be asserting the condemned values at all.
+    _startbat = Path(__file__).resolve().parents[1] / "start.bat"
+    if _startbat.is_file():
+        _txt = _startbat.read_text(encoding="utf-8", errors="replace")
+        for _var, _bad in (("BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION", "0.48"),
+                           ("BTC_PROMOTION_MAX_BRIER", "0.80")):
+            assert f'set "{_var}={_bad}"' not in _txt, \
+                f"start.bat sets {_var}={_bad}, the value this module calls worse than no model"
 
     # ---- P1-7: AMBIGUOUS rows must not enter the gate as NEUTRAL observations -------------
     class _FakeModel:
