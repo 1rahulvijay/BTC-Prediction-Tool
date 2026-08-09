@@ -924,6 +924,7 @@ jobs:
           python backend/datastore_identity.py --selftest || exit /b 1
           python backend/recorder_health.py --selftest || exit /b 1
           python backend/funding_recorder.py --selftest || exit /b 1
+          python backend/build_research_matrix.py --selftest || exit /b 1
           python research/algodesk_17_agents_v1.py --selftest || exit /b 1
           python research/algodesk_ml_rl_dl.py --selftest || exit /b 1
           python research/regime_labeler_v1.py --selftest || exit /b 1

@@ -104,6 +104,30 @@ def _load_manifest() -> dict:
         return {}
 
 
+def _manifest_describes_matrix(manifest: dict, matrix_path: str) -> bool:
+    """Does this manifest describe the parquet actually on disk?
+
+    The skip gate checked the requested window, coverage, source coverage and source mtimes -
+    everything EXCEPT the one property that makes a manifest worth trusting. On 2026-08-09 the
+    parquet had been rewritten (Aug 9, 360d, 518,400 rows) while the manifest still described a
+    different file (Jul 28, requested_days=60), and their hashes disagreed. The gate skipped
+    anyway, so `artifact_identity.current_training_identity` went on reading a training_data_hash
+    for a parquet that no longer existed - and would have stamped it onto a freshly trained
+    bundle as provenance.
+
+    `sources_older` cannot catch this: it compares SOURCE mtimes to the MATRIX mtime and says
+    nothing about whether the manifest was regenerated alongside the matrix. Hashing 147MB costs
+    ~0.1s, which is nothing next to certifying a model against data it was not trained on.
+    """
+    recorded = manifest.get("training_data_hash")
+    if not recorded or not os.path.exists(matrix_path):
+        return False        # absent is not "fine" - it is unproven, so rebuild
+    try:
+        return str(recorded) == hash_file(matrix_path)
+    except Exception:
+        return False
+
+
 def _default_days() -> int:
     raw = os.environ.get("BTC_HISTORICAL_DAYS") or os.environ.get("BTC_BACKFILL_DAYS") or "60"
     try:
@@ -459,11 +483,13 @@ def main(days=None, force=False):
             except (ValueError, OSError):
                 legacy_days = None
         manifest_days = int(manifest.get("requested_days", 0) or 0)
+        describes = _manifest_describes_matrix(manifest, out_path)
         if (
             (manifest_days == days or legacy_days == days)
             and _coverage_ok(summary, days)
             and _source_coverage_ok(manifest)
             and sources_older
+            and describes
         ):
             print(
                 f"Research matrix already built for {days}d "
@@ -474,7 +500,8 @@ def main(days=None, force=False):
         print(
             "Research matrix rebuild required: "
             f"days_match={manifest_days == days or legacy_days == days}, "
-            f"coverage_ok={_coverage_ok(summary, days)}, sources_older={sources_older}."
+            f"coverage_ok={_coverage_ok(summary, days)}, sources_older={sources_older}, "
+            f"manifest_describes_matrix={describes}."
         )
 
     print(f"Building unified research matrix for {days} days...")
@@ -737,6 +764,25 @@ def selftest():
             os.environ.pop("BTC_OFFICIAL_1M_PARITY_PATH", None)
         else:
             os.environ["BTC_OFFICIAL_1M_PARITY_PATH"] = previous_reference
+
+    # A manifest may only authorize a skip if it describes the parquet actually on disk.
+    # Found live on 2026-08-09: parquet rewritten Aug 9 (360d, 518,400 rows) while the manifest
+    # still described a Jul 28 build (requested_days=60), hashes disagreeing - and the skip gate
+    # fired anyway, because it checked days/coverage/source-mtimes and never checked THIS.
+    with tempfile.TemporaryDirectory() as tmp:
+        matrix = os.path.join(tmp, "m.parquet")
+        with open(matrix, "wb") as handle:
+            handle.write(b"matrix-bytes")
+        real = hash_file(matrix)
+        assert _manifest_describes_matrix({"training_data_hash": real}, matrix)
+        assert not _manifest_describes_matrix({"training_data_hash": "deadbeef"}, matrix), \
+            "a STALE hash must not authorize a skip - this is the case that occurred"
+        assert not _manifest_describes_matrix({}, matrix), \
+            "an ABSENT hash is unproven, not fine - absent must never read as pass"
+        assert not _manifest_describes_matrix({"training_data_hash": real},
+                                              os.path.join(tmp, "gone.parquet")), \
+            "and a missing parquet cannot be described by any manifest"
+
     print("build_research_matrix self-test: ALL PASS")
 
 
