@@ -50,12 +50,21 @@ EXPECTED_STORE = {
     "microstructure_recorder.py": ("microstructure.duckdb", "l2_snapshots"),
     "multi_venue_recorder.py": ("multi_venue.duckdb", "venue_events"),
     "binance_l2_recorder.py": ("binance_l2.duckdb", "l2_diffs"),
+    "btc_tick_recorder.py": ("btc_ticks.duckdb", "btc_tick_heartbeats"),
+    "crossing_recorder_hf.py": ("polymarket_crossings_hf.duckdb", "hf_heartbeats"),
+    "cross_window_recorder.py": ("cross_window.duckdb", "cross_window_heartbeats"),
+    "deribit_option_chain_recorder.py": ("deribit_options.duckdb",
+                                          "deribit_chain_batches"),
 }
+
+REQUIRED_LAUNCHER_RECORDERS = frozenset(EXPECTED_STORE)
 
 
 def wired_recorders(text: str) -> list[str]:
     """Every recorder script the launcher invokes."""
-    return sorted(set(re.findall(r"backend\\[\w\\]*?([\w]+_recorder\.py)", text)))
+    # Most names end in `_recorder.py`; `crossing_recorder_hf.py` intentionally carries a
+    # cadence suffix. Match the capability token, not one filename convention.
+    return sorted(set(re.findall(r"backend\\[\w\\]*?([\w]*recorder[\w]*\.py)", text)))
 
 
 def store_state(store: str, table: str) -> dict:
@@ -136,6 +145,10 @@ def selftest() -> int:
 
     rows = audit()
     check(rows, "the real launcher wires at least one recorder")
+    launcher_text = LAUNCHER.read_text(encoding="utf-8", errors="replace")
+    real_wired = set(wired_recorders(launcher_text))
+    check(REQUIRED_LAUNCHER_RECORDERS <= real_wired,
+          "the launcher includes every declared standalone forward recorder")
     declared = {"ADVANCING", "STALLED", "NEVER_RAN", "LOCKED_BY_WRITER", "UNREADABLE",
                 "SCHEMA_DRIFT", "UNIT_MISMATCH", "NO_DATA", "HAS_DATA"}
     check(all(row["status"] in declared for row in rows),

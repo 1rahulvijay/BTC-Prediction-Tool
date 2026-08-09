@@ -8,10 +8,10 @@ WHY THIS EXISTS ALONGSIDE recorder_evidence_check
         log file matched its name;
       - a store's mtime moves for reasons unrelated to a recorder writing rows.
 
-    This module asks the only question that cannot be faked: what is the newest TIMESTAMP IN THE
-    DATA, and how old is it? A recorder is healthy when its rows are advancing. "The process is
-    alive" is the question this repository already got wrong - binance_l2_recorder is wired, its
-    selftests pass, and it has produced nothing.
+    This module normally asks the strongest question: what is the newest TIMESTAMP IN THE DATA,
+    and how old is it? On Windows, DuckDB may deny a second process while the writer holds its
+    lock. In that case the explicitly labelled fallback tracks byte/mtime progress of that
+    recorder's isolated DB + WAL; a held lock without continuing writes becomes STALLED.
 
 THE UNIT TRAP, WHICH IS REAL HERE
     Four recorders use THREE different time units:
@@ -65,7 +65,18 @@ RECORDER_CLOCKS = {
     "multi_venue_recorder.py": ("multi_venue.duckdb", "venue_events",
                                 "recv_ts", "SECONDS"),
     "binance_l2_recorder.py": ("binance_l2.duckdb", "l2_diffs", "ts_ms", "MILLIS"),
+    "btc_tick_recorder.py": ("btc_ticks.duckdb", "btc_tick_heartbeats",
+                             "recv_ts_ns", "NANOS"),
+    "crossing_recorder_hf.py": ("polymarket_crossings_hf.duckdb", "hf_heartbeats",
+                                "beat_ts", "MILLIS"),
+    "cross_window_recorder.py": ("cross_window.duckdb", "cross_window_heartbeats",
+                                 "beat_ts_ms", "MILLIS"),
+    "deribit_option_chain_recorder.py": ("deribit_options.duckdb",
+                                         "deribit_chain_batches",
+                                         "response_receive_ns", "NANOS"),
 }
+
+_LOCKED_STORE_PROGRESS: dict[str, dict] = {}
 
 #: A recorder writing continuously should never be quiet this long.
 STALL_AFTER_MS = 15 * 60_000
@@ -93,6 +104,42 @@ def classify(newest_ms: float | None, now_ms: float, rows: int) -> str:
     return "ADVANCING" if (now_ms - newest_ms) <= STALL_AFTER_MS else "STALLED"
 
 
+def _locked_store_progress(path: Path, now_ms: float) -> dict:
+    """Progress fallback for an isolated DuckDB whose active writer denies read-only opens."""
+    components = [candidate for candidate in (path, Path(f"{path}.wal")) if candidate.exists()]
+    if not components:
+        return {"status": "LOCKED_BY_WRITER", "age_ms": None,
+                "detail": "writer lock observed but DB/WAL files are unavailable"}
+    signature = tuple(
+        (str(candidate), candidate.stat().st_size, candidate.stat().st_mtime_ns)
+        for candidate in components
+    )
+    key = str(path.resolve())
+    previous = _LOCKED_STORE_PROGRESS.get(key)
+    newest_file_ms = max(item[2] for item in signature) / 1_000_000.0
+    if previous is None:
+        last_progress_ms = newest_file_ms
+    elif previous["signature"] != signature:
+        last_progress_ms = now_ms
+    else:
+        last_progress_ms = float(previous["last_progress_ms"])
+    _LOCKED_STORE_PROGRESS[key] = {
+        "signature": signature,
+        "last_progress_ms": last_progress_ms,
+    }
+    age_ms = max(0.0, now_ms - last_progress_ms)
+    return {
+        "status": "ADVANCING" if age_ms <= STALL_AFTER_MS else "STALLED",
+        "age_ms": age_ms,
+        "newest_ms": last_progress_ms,
+        "newest_utc": datetime.fromtimestamp(
+            last_progress_ms / 1000.0, timezone.utc
+        ).isoformat()[:19],
+        "method": "locked_writer_db_wal_progress",
+        "detail": "DuckDB writer lock; freshness measured from isolated DB/WAL progress",
+    }
+
+
 def _resolve(store: str) -> Path | None:
     for candidate in (DATA_DIR / store, DATA_DIR / "btc_duckdbs" / store):
         if candidate.is_file():
@@ -114,11 +161,15 @@ def probe(recorder: str, now_ms: float | None = None) -> dict:
         import duckdb
         con = duckdb.connect(str(path), read_only=True)
     except Exception as exc:
-        # A held lock means a WRITER has it, which is evidence of running, not of failure.
+        # A lock proves a writer exists, but not that it is still advancing. Track the isolated
+        # DB/WAL across probes so a hung writer becomes STALLED instead of looking healthy.
         detail = str(exc)
         locked = "used by another process" in detail or "lock" in detail.lower()
-        out["status"] = "LOCKED_BY_WRITER" if locked else "UNREADABLE"
-        out["detail"] = detail[:120]
+        if locked:
+            out.update(_locked_store_progress(path, now_ms))
+        else:
+            out["status"] = "UNREADABLE"
+            out["detail"] = detail[:120]
         return out
     try:
         names = {r[0] for r in con.execute(
@@ -192,6 +243,23 @@ def selftest() -> int:
     check(classify(None, now, 0) == "NEVER_RAN", "no rows at all is NEVER_RAN")
     check(classify(now, now, 0) == "NEVER_RAN",
           "zero rows is NEVER_RAN even if a timestamp somehow exists")
+
+    import tempfile
+    import time
+    with tempfile.TemporaryDirectory(prefix="recorder_health_") as tmp:
+        locked = Path(tmp) / "locked.duckdb"
+        locked.write_bytes(b"first")
+        base_now = time.time() * 1000.0
+        first = _locked_store_progress(locked, base_now)
+        stale = _locked_store_progress(locked, base_now + STALL_AFTER_MS + 1)
+        locked.write_bytes(b"second-write")
+        resumed = _locked_store_progress(locked, base_now + STALL_AFTER_MS + 2)
+        check(first["status"] == "ADVANCING",
+              "a freshly changing locked DB is ADVANCING, not blindly trusted from its lock")
+        check(stale["status"] == "STALLED",
+              "a held writer lock without DB/WAL progress eventually becomes STALLED")
+        check(resumed["status"] == "ADVANCING",
+              "new DB/WAL progress restores health after a stall")
 
     # The registry must agree with the audit's store mapping - two registries that can drift
     # is a defect this repository has already had once.

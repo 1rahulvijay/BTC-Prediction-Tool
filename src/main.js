@@ -676,6 +676,7 @@ function renderSystemHealthStatus(payload) {
     value: item.age_ms == null ? '--' : `${Math.round(item.age_ms)} ms`,
     status: item.status,
   }));
+  const healthyRecorderStates = new Set(['HEALTHY', 'ADVANCING', 'OK', 'ACTIVE', 'RUNNING']);
   const recorderTiles = Object.entries(payload.recorders || {}).map(([name, item]) => ({
     name,
     value: item.summary || (item.age_s != null
@@ -683,7 +684,9 @@ function renderSystemHealthStatus(payload) {
       : item.age_ms != null
         ? `${Math.round(item.age_ms / 1000)} s since heartbeat${item.required === false ? ' · optional' : ''}`
         : `no evidence yet${item.required === false ? ' · optional' : ''}`),
-    status: item.required === false && item.status !== 'HEALTHY' ? 'INFO' : item.status,
+    status: item.required === false && !healthyRecorderStates.has(String(item.status || '').toUpperCase())
+      ? 'INFO'
+      : item.status,
   }));
   const protocols = payload.forward_protocols || {};
   const protocolRequirements = protocols.requirements || {};

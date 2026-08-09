@@ -372,6 +372,14 @@ CREATE TABLE IF NOT EXISTS cross_window_observations (
     issues           VARCHAR,
     ladder_json      VARCHAR
 );
+
+CREATE TABLE IF NOT EXISTS cross_window_heartbeats (
+    beat_ts_ms       BIGINT PRIMARY KEY,
+    ok               BOOLEAN NOT NULL,
+    observations     INTEGER NOT NULL,
+    admissible       INTEGER NOT NULL,
+    detail           VARCHAR
+);
 """
 
 
@@ -394,6 +402,20 @@ def persist(con, result: dict) -> None:
          json.dumps(result["ladder"])])
 
 
+def persist_heartbeat(con, *, ok: bool, observations: int = 0,
+                      admissible: int = 0, detail: str = "") -> None:
+    """Prove that a collection pass ran even when no synchronized pair existed.
+
+    Opportunity rows are event-driven. Without this separate clock, an empty but healthy
+    market interval is indistinguishable from a dead process in the system-health panel.
+    """
+    con.execute(
+        "INSERT OR REPLACE INTO cross_window_heartbeats VALUES (?,?,?,?,?)",
+        [time.time_ns() // 1_000_000, bool(ok), int(observations), int(admissible),
+         str(detail)[:240]],
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # Selftest
 
@@ -406,6 +428,20 @@ def selftest() -> int:
         assert cond, text
         checks += 1
         print(f"  PASS  {text}")
+
+    # Health must advance on an empty pass; candidate rows alone are not a liveness clock.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="cross_window_selftest_") as tmp:
+        test_con = connect(Path(tmp) / "cross_window.duckdb")
+        try:
+            persist_heartbeat(test_con, ok=True)
+            beat = test_con.execute(
+                "SELECT ok, observations, admissible FROM cross_window_heartbeats"
+            ).fetchone()
+        finally:
+            test_con.close()
+        check(beat == (True, 0, 0),
+              "an empty healthy pass writes a heartbeat instead of looking stalled")
 
     # --- THE PAIRING RULE ------------------------------------------------------------
     check(settlement_ts(1_000, 5) == 1_300 and settlement_ts(400, 15) == 1_300,
@@ -828,9 +864,20 @@ def main() -> int:
     try:
         while True:
             try:
-                collect_once(con)
+                results = collect_once(con)
+                persist_heartbeat(
+                    con,
+                    ok=True,
+                    observations=len(results),
+                    admissible=sum(bool(row.get("admissible")) for row in results),
+                )
             except Exception as exc:                     # never let one bad pass end collection
                 print(f"  pass failed: {type(exc).__name__}: {str(exc)[:160]}")
+                persist_heartbeat(
+                    con,
+                    ok=False,
+                    detail=f"{type(exc).__name__}: {str(exc)[:180]}",
+                )
             if args.once:
                 break
             time.sleep(max(1.0, args.interval))

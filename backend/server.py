@@ -5765,7 +5765,7 @@ def _recorder_row_status(recorder: str, stale_after_s: float = 120.0,
             "rows": result.get("rows", 0),
             "newest_row_utc": result.get("newest_utc"),
             "path": result.get("path") or result.get("store"),
-            "method": "row_progress",
+            "method": result.get("method", "row_progress"),
             "recorder": recorder,
         }
         if result.get("detail"):
@@ -5855,8 +5855,9 @@ def _system_health_snapshot() -> dict:
             float(pyth_ts) * 1000.0 if pyth_ts else None, 10_000.0
         ),
     }
-    # P0-6: the five recorders with a row-progress mapping are measured FROM THE DATA.
-    # The remaining three have no mapping and stay on mtime, explicitly labelled.
+    # Durable standalone recorders are measured from their own timestamped heartbeat/data rows.
+    # Research evidence streams are visible but optional: their outage cannot invalidate an
+    # otherwise independent Binance or Polymarket market-data decision.
     recorders = {
         "polymarket_quotes_settlements": _recorder_row_status(
             "live_btc_updown_recorder.py", 120.0
@@ -5865,9 +5866,18 @@ def _system_health_snapshot() -> dict:
         "microstructure": _recorder_row_status("microstructure_recorder.py", 120.0),
         "multi_venue": _recorder_row_status("multi_venue_recorder.py", 120.0),
         "binance_l2": _recorder_row_status("binance_l2_recorder.py", 120.0),
+        "btc_fast_ticks_optional": _recorder_row_status(
+            "btc_tick_recorder.py", 120.0
+        ),
+        "hf_crossings_optional": _recorder_row_status(
+            "crossing_recorder_hf.py", 120.0
+        ),
+        "cross_window_optional": _recorder_row_status(
+            "cross_window_recorder.py", 120.0
+        ),
         "polymarket_exact_settlement_truth": _polymarket_truth_status(),
-        "deribit_options_optional": _recorder_file_status(
-            os.path.join(DATA_DIR, "deribit_options.duckdb"), 180.0
+        "deribit_options_optional": _recorder_row_status(
+            "deribit_option_chain_recorder.py", 180.0
         ),
         "model_revisions": _recorder_file_status(
             MODEL_REVISION_DB, 120.0
@@ -5876,9 +5886,16 @@ def _system_health_snapshot() -> dict:
             os.path.join(DATA_DIR, "opportunity_ledger.duckdb"), 120.0
         ),
     }
+    optional_recorders = {
+        "btc_fast_ticks_optional",
+        "hf_crossings_optional",
+        "cross_window_optional",
+        "deribit_options_optional",
+        # Exact TWAP truth controls Polymarket authority, not independent Binance readiness.
+        "polymarket_exact_settlement_truth",
+    }
     for recorder_name, recorder_status in recorders.items():
-        recorder_status.setdefault(
-            "required", recorder_name != "deribit_options_optional")
+        recorder_status.setdefault("required", recorder_name not in optional_recorders)
     forward_readiness = _forward_readiness_snapshot()
     evidence_health = _evidence_health_snapshot()
     action_recorder = forward_readiness.get("recorder") or {}

@@ -3,8 +3,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $root "data"
 $python = (Get-Command python.exe -ErrorAction Stop).Source
+$null = New-Item -ItemType Directory -Path $data -Force
 $env:PYTHONPATH = "$root\backend;$root\backend\polymarket;$root"
 $env:BTC_DATA_DIR = $data
+$script:RecorderFailures = @()
 
 function Test-RecorderProcess([string]$pattern) {
     foreach ($process in Get-CimInstance Win32_Process -Filter "Name='python.exe'") {
@@ -26,11 +28,29 @@ function Start-Recorder(
         Write-Host "[recorder] $name already running; duplicate skipped."
         return
     }
-    $process = Start-Process -FilePath $python -ArgumentList $arguments `
-        -WorkingDirectory $root -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $data $stdoutName) `
-        -RedirectStandardError (Join-Path $data $stderrName) -PassThru
-    Write-Host "[recorder] $name started (PID $($process.Id))."
+    try {
+        $stderrPath = Join-Path $data $stderrName
+        $process = Start-Process -FilePath $python -ArgumentList $arguments `
+            -WorkingDirectory $root -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $data $stdoutName) `
+            -RedirectStandardError $stderrPath -PassThru
+        Start-Sleep -Milliseconds 500
+        $process.Refresh()
+        if ($process.HasExited) {
+            $detail = "exit=$($process.ExitCode)"
+            if (Test-Path -LiteralPath $stderrPath) {
+                $tail = (Get-Content -LiteralPath $stderrPath -Tail 2 -ErrorAction SilentlyContinue) -join " | "
+                if ($tail) { $detail = "$detail $tail" }
+            }
+            Write-Host "[recorder] ERROR $name failed during startup ($detail)."
+            $script:RecorderFailures += $name
+            return
+        }
+        Write-Host "[recorder] $name started (PID $($process.Id))."
+    } catch {
+        Write-Host "[recorder] ERROR $name could not start: $($_.Exception.Message)"
+        $script:RecorderFailures += $name
+    }
 }
 
 if ($env:BTC_SKIP_PM_RECORDER -eq "1") {
@@ -47,6 +67,17 @@ if ($env:BTC_SKIP_PM_L2_RECORDER -eq "1") {
     Start-Recorder "Polymarket exact L2 + VWAP" "polymarket\\l2_recorder\.py" `
         @("-u", "backend\polymarket\l2_recorder.py", "--max-db-gb", "10") `
         "pm_l2_recorder.stdout.log" "pm_l2_recorder.stderr.log"
+}
+
+# Sub-second Binance reference recorded on the SAME host clock as Polymarket L2. This is a
+# separate evidence stream from the slower multi-venue archive and keeps raw envelopes off by
+# default to limit storage growth (roughly 0.3 GB/day in the measured smoke run).
+if ($env:BTC_SKIP_BTC_TICK_RECORDER -eq "1") {
+    Write-Host "[recorder] Fast Binance BTC tick recorder skipped."
+} else {
+    Start-Recorder "Fast Binance BTC tick stream" "btc_tick_recorder\.py" `
+        @("-u", "backend\btc_tick_recorder.py") `
+        "btc_tick_recorder.stdout.log" "btc_tick_recorder.stderr.log"
 }
 
 if ($env:BTC_SKIP_MICROSTRUCTURE_RECORDER -eq "1") {
@@ -85,3 +116,40 @@ if ($env:BTC_SKIP_BINANCE_L2_RECORDER -eq "1") {
         @("-u", "backend\venues\binance_l2_recorder.py", "--max-db-gb", "10") `
         "binance_l2_recorder.stdout.log" "binance_l2_recorder.stderr.log"
 }
+
+# High-frequency anchor crossings. --forever implies the recorder's own bounded-backoff
+# supervisor, so transient websocket failures do not permanently stop forward evidence.
+if ($env:BTC_SKIP_HF_CROSSING_RECORDER -eq "1") {
+    Write-Host "[recorder] High-frequency crossing recorder skipped."
+} else {
+    Start-Recorder "High-frequency anchor crossings" "crossing_recorder_hf\.py" `
+        @("-u", "backend\crossing_recorder_hf.py", "--forever") `
+        "crossing_recorder_hf.stdout.log" "crossing_recorder_hf.stderr.log"
+}
+
+# Cross-window dominance observations are evidence only. The recorder proves liveness with a
+# heartbeat on every pass, including passes where no synchronized 5m/15m pair exists.
+if ($env:BTC_SKIP_CROSS_WINDOW_RECORDER -eq "1") {
+    Write-Host "[recorder] Cross-window recorder skipped."
+} else {
+    Start-Recorder "Polymarket cross-window observations" "cross_window_recorder\.py" `
+        @("-u", "backend\cross_window_recorder.py", "--forever", "--interval", "5") `
+        "cross_window_recorder.stdout.log" "cross_window_recorder.stderr.log"
+}
+
+# Public per-strike options surface. Optional for core decisions, but required to accumulate
+# honest implied-volatility/straddle evidence instead of reconstructing it after the fact.
+if ($env:BTC_SKIP_DERIBIT_CHAIN_RECORDER -eq "1") {
+    Write-Host "[recorder] Deribit option-chain recorder skipped."
+} else {
+    Start-Recorder "Deribit BTC option chain" "deribit_option_chain_recorder\.py" `
+        @("-u", "backend\venues\deribit_option_chain_recorder.py", "--interval", "30") `
+        "deribit_option_chain_recorder.stdout.log" "deribit_option_chain_recorder.stderr.log"
+}
+
+if ($script:RecorderFailures.Count -gt 0) {
+    Write-Host "[recorder] Startup failures: $($script:RecorderFailures -join ', ')"
+    exit 1
+}
+Write-Host "[recorder] All enabled standalone recorders are running or were already active."
+exit 0

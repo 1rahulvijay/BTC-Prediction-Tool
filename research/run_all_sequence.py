@@ -88,6 +88,11 @@ FRONTIER = (
     # shuffle of pure noise produced a better one (-11.53).
     #   docs/active/CONDITIONAL_ENTRY_2026-08-08.md
     "conditional_first_touch_entry.py",
+    # The one lane that does not predict direction. TWO verdicts: basis convergence CLOSED by
+    # arithmetic (2.89 bps of range against a 24 bps four-leg round trip), funding UNMEASURED
+    # because the cashflow was never recorded - a data blocker, not an economic one.
+    #   docs/active/MARKET_NEUTRAL_CARRY_2026-08-09.md
+    "market_neutral_carry_lane.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",

@@ -2007,3 +2007,39 @@ be meaningless while looking identical.
 required; `pm_l2`'s existing window (2026-07-02..07-04) does not overlap this.
 
 Detail: `docs/active/BTC_TICK_RECORDER_2026-08-09.md`.
+
+---
+
+## 24. Market-neutral carry — basis closed, funding unmeasured — `2026-08-09`
+
+The one lane that does not predict direction, so it cannot inherit the martingale finding that
+closed the Binance barrier lanes. **Two P&L terms, two verdicts** — conflating them would answer
+a question that was never asked.
+
+**Basis convergence: CLOSED by arithmetic.** `perp_spot_basis_bps` is a real series (49,883
+distinct values, 518,381 finite observations, monthly means drifting −3.93 → −5.41). Its entire
+p05→p99 range is **2.89–4.31 bps** against a **24.0 bps** hedged round trip. A perfect oracle
+entering at p05 and exiting at p95 every time captures 2.89 bps and pays 24.0 — a shortfall of
+21.1 bps, factor 8.3. No entry rule changes that. The basis also drifts rather than reverting to
+a fixed level, so there is nothing to converge *to*.
+
+**The cost is FOUR legs**, not two: buy spot *and* sell perp to open, then unwind both. Costing
+a hedged position as a single round trip halves the true cost and is the easiest way to make
+this lane look viable.
+
+**Funding: UNMEASURED.** `funding_velocity` is 90% zeros (a derivative, not a rate) and
+`binance_paper_funding_events` has **0 rows**. The 8-hourly cashflow is the dominant term in a
+real carry book, so this study does **not** conclude on carry as a whole. The bar, from published
+rates and explicitly not a measurement: at ~1 bp/8h it takes **8 days** of holding just to clear
+the 24 bps entry+exit. Not absurd — which is exactly why it must be measured.
+
+**This lane is different from the other seven.** Every previous closure was economic and no data
+collection would change it. This one is blocked on **data collection**, which is cheap: a
+scheduled REST poll recording the realised funding cashflow, the basis at entry and each
+settlement, and how often funding flips sign while a hedge is on. Same shape as the BTC tick
+recorder, and smaller.
+
+Not modelled: spot borrow/margin cost, and maker execution on any leg (which would lower the
+24 bps — unlike the Polymarket book, Binance has room to improve the quote).
+
+Detail: `docs/active/MARKET_NEUTRAL_CARRY_2026-08-09.md`.

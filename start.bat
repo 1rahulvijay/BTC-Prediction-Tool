@@ -112,6 +112,11 @@ if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=0"
 REM This launcher starts forward recorders, so stale/missing evidence must be visible as a
 REM DO_NOT_TRUST blocker in the UI. This does not enable real orders.
 if not defined BTC_EVIDENCE_MODE set "BTC_EVIDENCE_MODE=1"
+REM All nine standalone forward recorders are enabled by default and started exactly once by
+REM backend\start_recorders_once.ps1. To disable one deliberately, set its BTC_SKIP_* flag to 1
+REM before launch: PM_RECORDER, PM_L2_RECORDER, MICROSTRUCTURE_RECORDER, VENUE_COLLECTOR,
+REM BINANCE_L2_RECORDER, BTC_TICK_RECORDER, HF_CROSSING_RECORDER, CROSS_WINDOW_RECORDER,
+REM or DERIBIT_CHAIN_RECORDER. Recorders have no credentials and cannot submit orders.
 REM Backtest window: recent N rows (faster) or 0 = full historical replay (heavy on a laptop).
 if not defined BTC_BACKTEST_MAX_ROWS set "BTC_BACKTEST_MAX_ROWS=12000"
 REM Specialist-head move buckets in dollars (big-move/up/down/drop/activity). Each horizon has
@@ -423,6 +428,18 @@ python backend\venues\venue_admissibility.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
 python backend\venues\binance_l2_recorder.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
+python backend\btc_tick_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+python backend\crossing_recorder_hf.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+python backend\cross_window_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+python backend\venues\deribit_option_chain_recorder.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+python backend\recorder_health.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
+python backend\audit\recorder_evidence_check.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_f
 python backend\venues\rl_data_readiness.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_f
 echo [selftest] g. Collector evidence integrity - D1-D5:
@@ -537,7 +554,7 @@ exit /b 1
 
 echo Starting BTC Quantum Trader...
 
-REM Start all record-forward collectors once. The PowerShell helper detects existing
+REM Start all nine standalone forward collectors once. The PowerShell helper detects existing
 REM Python writers, skips duplicates, runs missing collectors hidden, and redirects
 REM stdout/stderr to data\*.log. Individual BTC_SKIP_* flags remain supported.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%backend\start_recorders_once.ps1"
