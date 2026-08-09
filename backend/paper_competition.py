@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any, Callable
@@ -20,6 +22,22 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("BTC_DATA_DIR", str(ROOT / "data"))).resolve()
+STATE_VERSION = 2
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_hashes(paths: tuple[Path, ...]) -> dict[str, str]:
+    return {
+        str(path.relative_to(ROOT)).replace("\\", "/"): _file_sha256(path)
+        for path in paths
+    }
 
 
 def _env_float(name: str, default: float, low: float, high: float) -> float:
@@ -72,7 +90,7 @@ class CompetitionConfig:
             state_path=Path(
                 os.getenv(
                     "BTC_PAPER_COMPETITION_STATE",
-                    str(DATA_DIR / "paper_competition_500.json"),
+                    str(DATA_DIR / "paper_competition_500_v2.json"),
                 )
             ).resolve(),
         )
@@ -81,6 +99,84 @@ class CompetitionConfig:
         value = asdict(self)
         value.pop("state_path", None)
         return value
+
+
+def _polymarket_contract(config: CompetitionConfig) -> dict[str, Any]:
+    source = ROOT / "backend" / "polymarket" / "model_dynamic_paper.py"
+    source_files = _source_hashes((
+        source,
+        ROOT / "backend" / "price_to_beat.py",
+        ROOT / "backend" / "polymarket_fair_value.py",
+        ROOT / "backend" / "database.py",
+        ROOT / "backend" / "target_contract.py",
+    ))
+    return {
+        "rule_id": config.polymarket_rule,
+        "source_path": str(source.relative_to(ROOT)),
+        "source_sha256": _file_sha256(source),
+        "source_files": source_files,
+        "settlement_policy": "official_for_settlement_live_bid_for_early_exit_v1",
+    }
+
+
+def _binance_contract(service: Any, config: CompetitionConfig) -> dict[str, Any]:
+    strategies = {
+        item["strategy_id"]: item for item in service.strategy_statuses()
+    }
+    strategy = strategies.get(config.binance_strategy) or {}
+    engine = service.config
+    source = ROOT / "backend" / "binance_paper" / "strategies" / "model_consensus.py"
+    source_files = _source_hashes((
+        source,
+        ROOT / "backend" / "binance_endpoint_serving.py",
+        ROOT / "backend" / "target_contract.py",
+        ROOT / "backend" / "binance_paper" / "market_adapter.py",
+        ROOT / "backend" / "binance_paper" / "service.py",
+        ROOT / "backend" / "binance_paper" / "execution.py",
+        ROOT / "backend" / "binance_paper" / "fill_simulator.py",
+        ROOT / "backend" / "binance_paper" / "risk_engine.py",
+        ROOT / "backend" / "binance_paper" / "portfolio.py",
+        ROOT / "backend" / "binance_paper" / "persistence.py",
+    ))
+    return {
+        "strategy_id": config.binance_strategy,
+        "strategy_version": str(strategy.get("version") or ""),
+        "strategy_config_hash": str(strategy.get("config_hash") or ""),
+        "source_path": str(source.relative_to(ROOT)),
+        "source_sha256": _file_sha256(source),
+        "source_files": source_files,
+        "database_path": str(engine.db_path.resolve()),
+        "starting_cash_usd": float(engine.starting_cash_usd),
+        "fee_rate_bps": float(engine.fee_rate_bps),
+        "slippage_bps": float(engine.slippage_bps),
+        "latency_ms": int(engine.latency_ms),
+        "quote_stale_ms": int(engine.quote_stale_ms),
+        "source_stale_ms": int(engine.source_stale_ms),
+        "max_transport_lag_ms": int(engine.max_transport_lag_ms),
+        "allow_heuristic_ev": os.getenv(
+            "BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV", "0"
+        ).strip().lower() in ("1", "true", "yes"),
+        "allow_ungrouped_endpoint_head": os.getenv(
+            "BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD", "0"
+        ).strip().lower() in ("1", "true", "yes"),
+    }
+
+
+def _state_error(state: Any) -> str | None:
+    if not isinstance(state, dict):
+        return "race state is not an object"
+    if int(state.get("version") or 0) != STATE_VERSION:
+        return f"race state version must be {STATE_VERSION}"
+    if state.get("paper_only") is not True:
+        return "race state is not explicitly paper-only"
+    if not str(state.get("race_id") or "").strip():
+        return "race id is missing"
+    if int(state.get("started_at_ms") or 0) <= 0:
+        return "race start timestamp is invalid"
+    for field in ("configuration", "polymarket_contract", "binance_contract"):
+        if not isinstance(state.get(field), dict) or not state[field]:
+            return f"race state is missing {field}"
+    return None
 
 
 def _finite(value: Any, default: float = 0.0) -> float:
@@ -138,6 +234,53 @@ def _display_profit_factor(pnls: list[float]) -> float | str | None:
     return "INF" if math.isinf(value) else round(value, 4)
 
 
+def _verified_polymarket_close(row: dict[str, Any]) -> bool:
+    """Only executable bid exits or official settlements become realized PnL."""
+    source = str(row.get("settlement_source") or "")
+    reason = str(row.get("exit_reason") or "")
+    if reason == "SETTLED":
+        return source.startswith("official:")
+    return (
+        row.get("exit_gross") is not None
+        and source == "live_bid"
+        and reason not in ("", "SETTLED")
+    )
+
+
+def _polymarket_release_fingerprint(row: dict[str, Any]) -> tuple[str, str] | None:
+    """Combined main-model + specialist-head identity, or None when incomplete."""
+    model_bundle = str(row.get("model_bundle_id") or "").strip()
+    target_contract = str(row.get("target_contract") or "").strip()
+    raw_heads = row.get("head_identity_json")
+    try:
+        heads = json.loads(raw_heads) if isinstance(raw_heads, str) else raw_heads
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not model_bundle or not target_contract or not isinstance(heads, dict) or not heads:
+        return None
+    canonical_heads: dict[str, dict[str, str]] = {}
+    for name, identity in sorted(heads.items()):
+        if not isinstance(identity, dict) or identity.get("error"):
+            return None
+        sha256 = str(identity.get("sha256") or "").strip().lower()
+        if len(sha256) != 64 or any(ch not in "0123456789abcdef" for ch in sha256):
+            return None
+        canonical_heads[str(name)] = {
+            "sha256": sha256,
+            "version": str(identity.get("version") or ""),
+            "label_basis": str(identity.get("label_basis") or ""),
+        }
+    if "p_hold" not in canonical_heads:
+        return None
+    release = {
+        "model_bundle_id": model_bundle,
+        "target_contract": target_contract,
+        "heads": canonical_heads,
+    }
+    encoded = json.dumps(release, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest(), model_bundle
+
+
 def summarize_polymarket(
     rows: list[dict[str, Any]], config: CompetitionConfig
 ) -> dict[str, Any]:
@@ -150,14 +293,31 @@ def summarize_polymarket(
     maximum_drawdown = bankroll * float(config.maximum_drawdown_fraction)
 
     events: list[tuple[int, int, str, dict[str, Any]]] = []
+    provisional_settlements = 0
+    entered_release_identities: set[str] = set()
+    entered_model_bundles: set[str] = set()
+    missing_provenance = 0
     for row in rows:
         round_id = str(row.get("round_id") or "")
         entry_ts = int(row.get("ts") or 0)
         if not round_id or entry_ts <= 0:
             continue
         events.append((entry_ts, 1, round_id, row))
-        if row.get("settled_ts") is not None and row.get("pnl") is not None:
+        release = _polymarket_release_fingerprint(row)
+        if release is not None:
+            release_fingerprint, model_bundle = release
+            entered_release_identities.add(release_fingerprint)
+            entered_model_bundles.add(model_bundle)
+        else:
+            missing_provenance += 1
+        if (
+            row.get("settled_ts") is not None
+            and row.get("pnl") is not None
+            and _verified_polymarket_close(row)
+        ):
             events.append((int(row["settled_ts"]), 0, round_id, row))
+        elif row.get("settled_ts") is not None and row.get("pnl") is not None:
+            provisional_settlements += 1
     # A close releases capital before another entry at the same timestamp.
     events.sort(key=lambda item: (item[0], item[1], item[2]))
 
@@ -254,10 +414,17 @@ def summarize_polymarket(
     wins = sum(1 for value in closed_pnls if value > 0)
     open_exposure = sum(item["entry_cost"] for item in open_positions.values())
     settled_equity = bankroll + realized
+    release_count = len(entered_release_identities)
+    if missing_provenance:
+        trust_state = "BLOCKED_MODEL_PROVENANCE_MISSING"
+    elif release_count > 1:
+        trust_state = "BLOCKED_MIXED_MODEL_RELEASES"
+    else:
+        trust_state = "PAPER_ACCOUNTING_ONLY"
     return {
         "venue": "POLYMARKET",
         "model": config.polymarket_rule,
-        "trust_state": "PAPER_ACCOUNTING_ONLY",
+        "trust_state": trust_state,
         "sample_status": _sample_status(len(closed_pnls)),
         "starting_bankroll_usd": round(bankroll, 6),
         "settled_equity_usd": round(settled_equity, 6),
@@ -285,10 +452,14 @@ def summarize_polymarket(
         ),
         "fees_usd": round(fees, 6),
         "depth_limited_entries": depth_limited,
+        "provisional_settlements": provisional_settlements,
+        "model_release_count": release_count,
+        "model_bundle_ids": sorted(entered_model_bundles),
+        "missing_provenance_entries": missing_provenance,
         "unrealized_mark_available": False,
         "accounting_note": (
-            "Open Polymarket positions stay at cost until an executable exit or "
-            "settlement; ranking uses realized PnL only."
+            "Open Polymarket positions stay at cost until an executable bid exit or "
+            "official settlement; proxy settlements never enter ranked realized PnL."
         ),
     }
 
@@ -329,8 +500,11 @@ def summarize_binance(
         expected_exposure_cap = bankroll * float(config.exposure_fraction)
         expected_daily_limit = bankroll * float(config.daily_loss_fraction)
         expected_weekly_limit = bankroll * float(config.weekly_loss_fraction)
+        current_contract = _binance_contract(service, config)
+        contract_match = state.get("binance_contract") == current_contract
         config_ok = (
             state.get("binance_clean_start") is True
+            and contract_match
             and abs(configured_cash - bankroll) <= 1e-6 and active_db == expected_db
             and abs(
                 _finite(risk.get("max_position_notional_usd"), -1.0)
@@ -357,6 +531,17 @@ def summarize_binance(
         trades = service.persistence.competition_trades_since(
             config.binance_strategy, since_ms
         )
+        model_bundle_ids = sorted({
+            str(row.get("model_bundle_id") or "").strip()
+            for row in trades
+            if str(row.get("model_bundle_id") or "").strip()
+        })
+        missing_provenance = sum(
+            1 for row in trades
+            if not str(row.get("model_bundle_id") or "").strip()
+            or not str(row.get("entry_strategy_config_hash") or "").strip()
+        )
+        mixed_releases = len(model_bundle_ids) > 1
         pnls = [_finite(row.get("net_pnl_usd")) for row in trades]
         realized = sum(pnls)
         wins = sum(1 for value in pnls if value > 0)
@@ -380,11 +565,14 @@ def summarize_binance(
             if position_in_race
             else 0.0
         )
-        trust = (
-            "PAPER_ACCOUNTING_ONLY"
-            if config_ok
-            else "BLOCKED_CONFIGURATION_MISMATCH"
-        )
+        if not config_ok:
+            trust = "BLOCKED_CONFIGURATION_MISMATCH"
+        elif missing_provenance:
+            trust = "BLOCKED_MODEL_PROVENANCE_MISSING"
+        elif mixed_releases:
+            trust = "BLOCKED_MIXED_MODEL_RELEASES"
+        else:
+            trust = "PAPER_ACCOUNTING_ONLY"
         return {
             **base,
             "trust_state": trust,
@@ -392,6 +580,7 @@ def summarize_binance(
             "runtime_state": status.get("runtime_state"),
             "strategy_enabled": bool(strategy.get("enabled")),
             "configuration_ok": config_ok,
+            "execution_contract_match": contract_match,
             "configured_starting_cash_usd": configured_cash,
             "database_path": active_db,
             "settled_equity_usd": round(bankroll + realized, 6),
@@ -428,6 +617,9 @@ def summarize_binance(
             "fees_usd": round(fees, 6),
             "funding_usd": round(funding, 6),
             "slippage_usd": round(slippage, 6),
+            "model_release_count": len(model_bundle_ids),
+            "model_bundle_ids": model_bundle_ids,
+            "missing_provenance_trades": missing_provenance,
             "latest_decision": strategy.get("latest_decision"),
             "inactive_reason": strategy.get("inactive_reason"),
             "unrealized_mark_available": True,
@@ -457,62 +649,100 @@ class PaperCompetition:
         self.binance_service = binance_service
         self.polymarket_rows = polymarket_rows
         self.config = config or CompetitionConfig.from_env()
+        self._state_lock = threading.RLock()
 
     def ensure_started(self) -> dict[str, Any]:
-        path = self.config.state_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
-        state = {
-            "version": 1,
-            "race_id": str(uuid.uuid4()),
-            "started_at_ms": int(time.time() * 1000),
-            "created_by": "paper_competition_v1",
-            "paper_only": True,
-            "configuration": self.config.identity(),
-            "binance_db_path": str(
-                self.binance_service.config.db_path.resolve()
-            ),
-        }
-        strategies = {
-            item["strategy_id"]: item
-            for item in self.binance_service.strategy_statuses()
-        }
-        strategy = strategies.get(self.config.binance_strategy) or {}
-        account = strategy.get("account") or {}
-        prior_trades = self.binance_service.persistence.trades(
-            1, self.config.binance_strategy
-        )
-        state["binance_clean_start"] = bool(
-            not prior_trades
-            and not strategy.get("position")
-            and abs(
-                _finite(account.get("starting_cash_usd"), -1.0)
-                - self.config.bankroll_usd
-            ) <= 1e-6
-            and abs(_finite(account.get("realized_pnl_usd"))) <= 1e-9
-            and abs(_finite(account.get("trading_fees_usd"))) <= 1e-9
-            and abs(_finite(account.get("funding_usd"))) <= 1e-9
-        )
-        fd, temporary = tempfile.mkstemp(
-            prefix=path.name, suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(state, handle, indent=2, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        return state
+        with self._state_lock:
+            path = self.config.state_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                with path.open("r", encoding="utf-8") as handle:
+                    state = json.load(handle)
+                error = _state_error(state)
+                if error:
+                    raise RuntimeError(f"invalid paper-competition state: {error}")
+                return state
+            strategies = {
+                item["strategy_id"]: item
+                for item in self.binance_service.strategy_statuses()
+            }
+            strategy = strategies.get(self.config.binance_strategy) or {}
+            account = strategy.get("account") or {}
+            prior_trades = self.binance_service.persistence.trades(
+                1, self.config.binance_strategy
+            )
+            state = {
+                "version": STATE_VERSION,
+                "race_id": str(uuid.uuid4()),
+                "started_at_ms": int(time.time() * 1000),
+                "created_by": "paper_competition_v2",
+                "paper_only": True,
+                "configuration": self.config.identity(),
+                "polymarket_contract": _polymarket_contract(self.config),
+                "binance_contract": _binance_contract(
+                    self.binance_service, self.config
+                ),
+                "binance_db_path": str(
+                    self.binance_service.config.db_path.resolve()
+                ),
+            }
+            state["binance_clean_start"] = bool(
+                not prior_trades
+                and not strategy.get("position")
+                and abs(
+                    _finite(account.get("starting_cash_usd"), -1.0)
+                    - self.config.bankroll_usd
+                ) <= 1e-6
+                and abs(_finite(account.get("realized_pnl_usd"))) <= 1e-9
+                and abs(_finite(account.get("trading_fees_usd"))) <= 1e-9
+                and abs(_finite(account.get("funding_usd"))) <= 1e-9
+            )
+            fd, temporary = tempfile.mkstemp(
+                prefix=path.name, suffix=".tmp", dir=str(path.parent)
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(state, handle, indent=2, sort_keys=True)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            return state
 
     def summary(self) -> dict[str, Any]:
-        state = self.ensure_started()
+        try:
+            state = self.ensure_started()
+        except Exception as exc:
+            blocked = {
+                "trust_state": "ACCOUNTING_UNAVAILABLE",
+                "sample_status": "NO_RESOLVED_TRADES",
+                "starting_bankroll_usd": self.config.bankroll_usd,
+                "error": str(exc),
+            }
+            return {
+                "paper_only": True,
+                "real_orders_disabled": True,
+                "comparable": False,
+                "leader": "NOT_COMPARABLE",
+                "polymarket": {
+                    **blocked,
+                    "venue": "POLYMARKET",
+                    "model": self.config.polymarket_rule,
+                },
+                "binance": {
+                    **blocked,
+                    "venue": "BINANCE",
+                    "model": self.config.binance_strategy,
+                },
+                "warning": "Race state is invalid; no score is trusted or displayed.",
+            }
         config_match = state.get("configuration") == self.config.identity()
-        if config_match:
+        polymarket_contract_match = (
+            state.get("polymarket_contract") == _polymarket_contract(self.config)
+        )
+        if config_match and polymarket_contract_match:
             rows = self.polymarket_rows(
                 self.config.polymarket_rule, int(state["started_at_ms"])
             )
@@ -566,6 +796,11 @@ class PaperCompetition:
             "total_paper_capital_usd": self.config.bankroll_usd * 2.0,
             "ranking_basis": "REALIZED_AFTER_COST_PNL_ONLY",
             "configuration_match": config_match,
+            "polymarket_contract_match": polymarket_contract_match,
+            "binance_contract_match": (
+                state.get("binance_contract")
+                == _binance_contract(self.binance_service, self.config)
+            ),
             "comparable": comparable,
             "leader": leader,
             "leader_margin_usd": (
@@ -605,6 +840,11 @@ def selftest() -> int:
             "exit_gross": 1.0,
             "exit_fee": 0.0,
             "pnl": 0.50,
+            "exit_reason": "SETTLED",
+            "settlement_source": "official:test",
+            "model_bundle_id": "main-one",
+            "target_contract": "first_touch_triple_barrier_v1",
+            "head_identity_json": json.dumps({"p_hold": {"sha256": "1" * 64}}),
         },
         {
             "round_id": "loss",
@@ -616,6 +856,11 @@ def selftest() -> int:
             "exit_gross": 0.0,
             "exit_fee": 0.0,
             "pnl": -0.60,
+            "exit_reason": "SETTLED",
+            "settlement_source": "official:test",
+            "model_bundle_id": "main-one",
+            "target_contract": "first_touch_triple_barrier_v1",
+            "head_identity_json": json.dumps({"p_hold": {"sha256": "1" * 64}}),
         },
     ]
     summary = summarize_polymarket(rows, config)
@@ -625,6 +870,26 @@ def selftest() -> int:
     assert abs(summary["realized_net_pnl_usd"] - 49.4) < 1e-9
     assert abs(summary["settled_equity_usd"] - 549.4) < 1e-9
     assert summary["open_positions"] == 0
+
+    proxy_row = {
+        **rows[0],
+        "round_id": "proxy",
+        "settlement_source": "pyth_proxy",
+    }
+    proxy = summarize_polymarket([proxy_row], config)
+    assert proxy["closed_trades"] == 0
+    assert proxy["open_positions"] == 1
+    assert proxy["provisional_settlements"] == 1
+
+    mixed = summarize_polymarket([
+        rows[0],
+        {
+            **rows[1],
+            "round_id": "other-release",
+            "head_identity_json": json.dumps({"p_hold": {"sha256": "2" * 64}}),
+        },
+    ], config)
+    assert mixed["trust_state"] == "BLOCKED_MIXED_MODEL_RELEASES"
 
     class FakePersistence:
         @staticmethod
@@ -640,6 +905,8 @@ def selftest() -> int:
                     "exit_fee_usd": 0.10,
                     "funding_usd": -0.05,
                     "slippage_usd": 0.15,
+                    "model_bundle_id": "bundle-1",
+                    "entry_strategy_config_hash": "config-1",
                 },
                 {
                     "trade_id": "b2",
@@ -650,6 +917,8 @@ def selftest() -> int:
                     "exit_fee_usd": 0.10,
                     "funding_usd": 0.02,
                     "slippage_usd": 0.15,
+                    "model_bundle_id": "bundle-1",
+                    "entry_strategy_config_hash": "config-1",
                 },
             ]
 
@@ -662,7 +931,16 @@ def selftest() -> int:
     }
 
     class FakeService:
-        config = type("Config", (), {"db_path": Path("fake.duckdb").resolve()})()
+        config = type("Config", (), {
+            "db_path": Path("fake.duckdb").resolve(),
+            "starting_cash_usd": 500.0,
+            "fee_rate_bps": 5.0,
+            "slippage_bps": 1.0,
+            "latency_ms": 500,
+            "quote_stale_ms": 2_000,
+            "source_stale_ms": 3_000,
+            "max_transport_lag_ms": 2_000,
+        })()
         persistence = FakePersistence()
 
         @staticmethod
@@ -673,6 +951,8 @@ def selftest() -> int:
         def strategy_statuses():
             return [{
                 "strategy_id": "model_consensus",
+                "version": "1",
+                "config_hash": "config-1",
                 "enabled": True,
                 "risk": risk,
                 "account": {
@@ -690,6 +970,7 @@ def selftest() -> int:
         "started_at_ms": 900,
         "binance_db_path": str(FakeService.config.db_path),
         "binance_clean_start": True,
+        "binance_contract": _binance_contract(FakeService(), config),
     }
     binance = summarize_binance(FakeService(), race_state, config)
     assert binance["trust_state"] == "PAPER_ACCOUNTING_ONLY"

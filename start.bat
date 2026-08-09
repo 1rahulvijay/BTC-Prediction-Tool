@@ -20,6 +20,12 @@ REM Only the model seat and its zero-information benchmark run in this dedicated
 if not defined BTC_BINANCE_COMPETITION_ONLY set "BTC_BINANCE_COMPETITION_ONLY=1"
 if not defined BTC_ENABLE_BINANCE_PAPER set "BTC_ENABLE_BINANCE_PAPER=1"
 if not defined BTC_BINANCE_PAPER_AUTO_START set "BTC_BINANCE_PAPER_AUTO_START=1"
+REM Explicit PAPER-ONLY research opt-ins. They allow the $500 Binance lane to collect
+REM evidence while clearly recording that uncertainty is a fixed haircut and the endpoint
+REM head's overlapping holdout rows are not independent rounds. Neither flag authorizes live
+REM orders (no live-order route exists).
+if not defined BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV set "BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=1"
+if not defined BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD set "BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD=1"
 REM === 5m UP-TILT FIX (serving, no retrain) =============================
 REM Symmetric up-vs-down dead-zone applied to 5m ONLY (15m is already balanced: tilt -0.0pt).
 REM Neutralizes the measured +34pt 5m UP-lean skew by sending marginal coin-flip calls to

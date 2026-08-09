@@ -8,6 +8,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import price_to_beat
+import binance_endpoint_serving
 
 from backend.binance_paper.schemas import Action, DataQuality, MarketSnapshot
 from backend.binance_paper.service import BinancePaperService
@@ -25,22 +26,21 @@ def _prediction(**overrides):
         "horizon": 5,
         "direction": "UP",
         "finalDirection": "UP",
-        "trade_verdict": "TRADE",
-        "finalAction": "TRADE",
-        "actionable": True,
-        "no_trade_reasons": [],
+        "endpointHeadReady": True,
         "calibratedConfidence": 0.72,
-        "agreement": 0.80,
-        "metaTrust": 0.70,
+        "probUp": 0.72,
+        "probDown": 0.28,
         "expectedMove": 420.0,
         "expectedMoveRange": {"low": 400.0, "median": 430.0, "high": 500.0},
         "stopLoss": MARK * 0.998,
         "model_bundle_id": "bundle-v14-test",
-        "regime": "TRENDING_UP",
+        "research_only": True,
+        "independence_validated": True,
+        "holdout_metrics": {"beats_prior": True},
         # The EV this strategy computes is an ENDPOINT question, so the fixture
         # supplies a settlement-contract probability. Omitting it is now itself a
         # refusal, which the dedicated test below pins.
-        "targetContract": _tc.ENDPOINT_SETTLEMENT_V1,
+        "targetContract": _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
     }
     value.update(overrides)
     return value
@@ -69,11 +69,11 @@ def _snapshot(prediction=None, *, updated_at_ms=NOW, bid=None, ask=None):
         agg_trade_message_count=1_000,
         agg_trade_count_60s=800,
         last_completed_perp_cvd_bar_ts_ms=NOW - 60_000,
-        feature_availability={"ensemble_prediction": bool(prediction)},
+        feature_availability={"endpoint_direction_head": bool(prediction)},
         model_context={
             "updated_at_ms": updated_at_ms,
             "model_trained": True,
-            "predictions": {5: prediction} if prediction else {},
+            "endpoint_prediction": prediction if prediction else None,
         },
     )
 
@@ -105,7 +105,7 @@ def test_binance_model_consensus_refuses_a_path_probability():
     # state of the mismatch, not a test artefact.
     assert _tc.TRAINING_CONTRACT in _tc.PATH_CONTRACTS
     try:
-        _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_EV, _tc.TRAINING_CONTRACT)
+        _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_PAPER_EV, _tc.TRAINING_CONTRACT)
         raise AssertionError("the current training contract was accepted for an endpoint EV")
     except _tc.ContractMisuse:
         pass
@@ -133,7 +133,7 @@ def test_binance_model_consensus_ev_path_still_computes(monkeypatch):
     Keeps the coverage the old test provided - the EV, target and stop are still built and
     still sane - while the abstention above owns the authority question.
     """
-    monkeypatch.setenv("BTC_ALLOW_HEURISTIC_EV", "1")
+    monkeypatch.setenv("BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV", "1")
     strategy = ModelConsensusStrategy()
     decision = strategy.decide(_snapshot(_prediction()))
     assert decision.action is Action.OPEN_LONG
@@ -150,14 +150,127 @@ def test_binance_model_consensus_ev_path_still_computes(monkeypatch):
     assert decision.features["ev_payoff_assumption"] == "symmetric_magnitude"
 
 
+def test_binance_model_consensus_ungrouped_head_requires_explicit_paper_opt_in(
+    monkeypatch,
+):
+    monkeypatch.setenv("BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV", "1")
+    strategy = ModelConsensusStrategy()
+    prediction = _prediction(independence_validated=False)
+    refused = strategy.decide(_snapshot(prediction))
+    assert refused.action is Action.NO_EDGE
+    assert any("endpoint_holdout_not_independent" in code for code in refused.reason_codes)
+
+    monkeypatch.setenv("BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD", "1")
+    admitted = strategy.decide(_snapshot(prediction))
+    assert admitted.action is Action.OPEN_LONG
+    assert admitted.features["independence_validated"] is False
+
+
+def test_binance_endpoint_serving_uses_gated_endpoint_probability(monkeypatch):
+    bundle = {
+        "metrics": {5: {"beats_prior": True, "holdout_rows": 200}},
+        "independence_validated": False,
+    }
+    monkeypatch.setattr(
+        binance_endpoint_serving,
+        "_load",
+        lambda model_dir: (bundle, {"status": "READY", "artifact_sha256": "abc"}),
+    )
+    monkeypatch.setattr(
+        binance_endpoint_serving,
+        "settlement_probability",
+        lambda loaded, row, horizon: {
+            "p_up": 0.68,
+            "p_down": 0.32,
+            "target_contract": _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+        },
+    )
+    prediction, status = binance_endpoint_serving.predict(
+        ".",
+        sequence=[[1.0, 2.0], [3.0, 4.0]],
+        feature_selector=lambda value: value,
+        magnitude_prediction={
+            "expectedMove": 120.0,
+            "expectedMoveRange": {"low": 80.0, "median": 120.0, "high": 180.0},
+            "stopLoss": MARK - 100.0,
+        },
+    )
+    assert status["status"] == "READY"
+    assert prediction is not None
+    assert prediction["finalDirection"] == "UP"
+    assert prediction["calibratedConfidence"] == 0.68
+    assert prediction["targetContract"] == _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1
+    assert prediction["independence_validated"] is False
+
+    monkeypatch.setattr(
+        binance_endpoint_serving,
+        "settlement_probability",
+        lambda loaded, row, horizon: {
+            "p_up": 0.70,
+            "p_down": 0.40,
+            "target_contract": _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+        },
+    )
+    prediction, invalid_mass = binance_endpoint_serving.predict(
+        ".", [[1.0]], lambda value: value,
+        {"expectedMove": 10.0, "expectedMoveRange": {"low": 5.0}},
+    )
+    assert prediction is None
+    assert invalid_mass["status"] == "PROBABILITY_MASS_INVALID"
+
+    blocked = {"metrics": {5: {"beats_prior": False}}}
+    monkeypatch.setattr(
+        binance_endpoint_serving,
+        "_load",
+        lambda model_dir: (blocked, {"status": "READY"}),
+    )
+    prediction, status = binance_endpoint_serving.predict(
+        ".", [[1.0]], lambda value: value,
+        {"expectedMove": 10.0, "expectedMoveRange": {"low": 5.0}},
+    )
+    assert prediction is None
+    assert status["status"] == "HOLDOUT_GATE_FAILED"
+
+
+def test_binance_endpoint_serving_reloads_replaced_artifact(tmp_path, monkeypatch):
+    artifact = tmp_path / "settlement_head.pkl"
+    artifact.write_bytes(b"one")
+    loads = []
+
+    def fake_load(path):
+        loads.append(path.read_bytes())
+        return {
+            "target_contract": _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+            "metrics": {5: {"beats_prior": True}},
+        }
+
+    monkeypatch.setattr(
+        binance_endpoint_serving,
+        "artifact_matches_current_training",
+        lambda path: (True, []),
+    )
+    monkeypatch.setattr(binance_endpoint_serving, "verified_load", fake_load)
+    binance_endpoint_serving.reset_cache_for_tests()
+    first, _ = binance_endpoint_serving._load(tmp_path)
+    cached, _ = binance_endpoint_serving._load(tmp_path)
+    assert first is cached
+    assert loads == [b"one"]
+
+    artifact.write_bytes(b"replacement")
+    replaced, _ = binance_endpoint_serving._load(tmp_path)
+    assert replaced is not cached
+    assert loads == [b"one", b"replacement"]
+    binance_endpoint_serving.reset_cache_for_tests()
+
+
 def test_binance_model_consensus_rejects_bad_inputs(monkeypatch):
-    monkeypatch.setenv("BTC_ALLOW_HEURISTIC_EV", "1")
+    monkeypatch.setenv("BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV", "1")
     strategy = ModelConsensusStrategy()
 
     uncalibrated = _prediction(calibratedConfidence=None)
     assert strategy.decide(_snapshot(uncalibrated)).action is Action.NO_DATA
-    rejected = _prediction(finalAction="NO_TRADE", trade_verdict="NO_TRADE", actionable=False)
-    assert strategy.decide(_snapshot(rejected)).action is Action.NO_EDGE
+    unavailable = _prediction(endpointHeadReady=False)
+    assert strategy.decide(_snapshot(unavailable)).action is Action.NO_DATA
     stale = strategy.decide(
         _snapshot(_prediction(), updated_at_ms=NOW - strategy.maximum_model_age_ms - 1)
     )
@@ -169,8 +282,8 @@ def test_binance_model_consensus_rejects_bad_inputs(monkeypatch):
         _snapshot(_prediction(calibratedConfidence="not-a-number"))
     )
     assert malformed.action is Action.NO_DATA
-    invalid_agreement = strategy.decide(_snapshot(_prediction(agreement=float("nan"))))
-    assert invalid_agreement.action is Action.NO_EDGE
+    ungrouped = strategy.decide(_snapshot(_prediction(independence_validated=False)))
+    assert ungrouped.action is Action.NO_EDGE
 
 
 def test_binance_model_consensus_dynamic_exits_are_causal_and_fail_closed():
@@ -180,9 +293,9 @@ def test_binance_model_consensus_dynamic_exits_are_causal_and_fail_closed():
     assert strategy.position_exit_reason(position, _snapshot(flipped)) == "MODEL_DIRECTION_FLIP"
 
     decayed = _prediction(
-        finalAction="NO_TRADE",
-        trade_verdict="NO_TRADE",
-        actionable=False,
+        calibratedConfidence=0.54,
+        probUp=0.54,
+        probDown=0.46,
     )
     profitable = _snapshot(decayed, bid=MARK * 1.002, ask=MARK * 1.0021)
     assert (
@@ -246,7 +359,7 @@ def test_binance_market_status_reports_all_model_inputs_available():
         model_context_provider=lambda: {
             "updated_at_ms": NOW,
             "model_trained": True,
-            "predictions": {5: prediction},
+            "endpoint_prediction": prediction,
         },
     )
     service.adapter.ingest_book(
@@ -262,9 +375,10 @@ def test_binance_market_status_reports_all_model_inputs_available():
         }
     )
     availability = service.adapter.snapshot(NOW).feature_availability
-    assert availability["ensemble_prediction"] is True
-    assert availability["live_probability_calibration"] is True
-    assert availability["model_bundle_identity"] is True
+    assert availability["endpoint_direction_head"] is True
+    assert availability["endpoint_probability_calibration"] is True
+    assert availability["endpoint_model_bundle_identity"] is True
+    assert availability["magnitude_forecast"] is True
 
 
 def _pm_round(**overrides):

@@ -1194,16 +1194,29 @@ class BinancePaperPersistence:
     def competition_trades_since(
         self, strategy_id: str, since_ms: int
     ) -> list[dict[str, Any]]:
-        """Return the complete chronological race ledger without a UI row cap."""
+        """Return the complete race ledger with the entry decision provenance."""
         with self._lock:
             return _rows(
                 self._conn.execute(
                     """
-                    SELECT * FROM binance_paper_trades
-                    WHERE strategy_id = ?
-                      AND entry_time_ms >= ?
-                      AND exit_time_ms >= ?
-                    ORDER BY exit_time_ms ASC, trade_id ASC
+                    SELECT t.*,
+                           s.strategy_config_hash AS entry_strategy_config_hash,
+                           s.feature_schema_hash AS entry_feature_schema_hash,
+                           json_extract_string(
+                               s.feature_snapshot_json, '$.model_bundle_id'
+                           ) AS model_bundle_id,
+                           json_extract_string(
+                               s.feature_snapshot_json, '$.target_contract'
+                           ) AS target_contract
+                    FROM binance_paper_trades AS t
+                    LEFT JOIN binance_paper_positions AS p
+                      ON p.position_id = t.position_id
+                    LEFT JOIN binance_paper_signals AS s
+                      ON s.signal_id = p.entry_signal_id
+                    WHERE t.strategy_id = ?
+                      AND t.entry_time_ms >= ?
+                      AND t.exit_time_ms >= ?
+                    ORDER BY t.exit_time_ms ASC, t.trade_id ASC
                     """,
                     (str(strategy_id), int(since_ms), int(since_ms)),
                 )

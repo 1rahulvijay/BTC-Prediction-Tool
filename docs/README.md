@@ -2,7 +2,7 @@
 
 ## Production
 
-- **[PAPER_COMPETITION_500_V1_2026-08-09.md](active/PAPER_COMPETITION_500_V1_2026-08-09.md)** -
+- **[PAPER_COMPETITION_500_V2_2026-08-09.md](active/PAPER_COMPETITION_500_V2_2026-08-09.md)** -
   equal-capital Polymarket Champion versus Binance model-consensus paper experiment; isolated
   ledgers, exact risk/accounting contract, realized-after-cost ranking, UI/API semantics and
   executable validation. Real orders remain disabled.

@@ -1841,6 +1841,7 @@ class PriceToBeatTracker:
                     "actionable": bool(p.get("actionable", False)),
                     "kronos_direction": (kronos_dir_by_h or {}).get(h) or "NONE",
                     "target_price": p.get("targetPrice"),
+                    "model_bundle_id": str(p.get("model_bundle_id") or ""),
                     "verify_at": win_end,
                     "window_start": win_start,
                     "window_end": win_end,
@@ -2610,6 +2611,15 @@ class PriceToBeatTracker:
                             float(_champ_quote["fee_in"]), float(_champ_quote["spread"]),
                             float(_champ_quote["ask_size"]), "ENTER",
                             btc_entry=rnd.get("current_price"), state=_state,
+                            model_bundle_id=rnd.get("model_bundle_id", ""),
+                            target_contract=rnd.get("pred_contract", ""),
+                            head_identity=(
+                                rnd.get("head_identity") or _active_head_identity()
+                            ),
+                            decision={
+                                "champion": rnd.get("champion") or {},
+                                "entry": _entry,
+                            },
                         )
                 _champ_state = _sh.get("champdyn")
                 if _champ_state and _champ_state.get("open"):

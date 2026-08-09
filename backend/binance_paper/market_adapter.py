@@ -144,13 +144,7 @@ class BinancePaperMarketAdapter:
         spread = ask - bid
         funding_rate, funding_time_ms = self._funding()
         model_context = self._model_context()
-        model_predictions = model_context.get("predictions") or {}
-        if isinstance(model_predictions, dict):
-            model_prediction = (
-                model_predictions.get(5) or model_predictions.get("5") or {}
-            )
-        else:
-            model_prediction = {}
+        model_prediction = model_context.get("endpoint_prediction") or {}
         model_prediction = model_prediction if isinstance(model_prediction, dict) else {}
         # #4: `agg_trade_count_60s` used to be published whenever TWO samples fell inside the
         # last minute, with no requirement that they SPAN it. Two samples a second apart at
@@ -227,20 +221,23 @@ class BinancePaperMarketAdapter:
                 "perpetual_mid_history": len(samples) >= 2 and history_usable,
                 "perpetual_trade_intensity": bool(agg_available),
                 "funding_rate": funding_rate is not None,
-                "ensemble_prediction": bool(model_prediction),
-                "live_probability_calibration": (
+                "endpoint_direction_head": bool(model_prediction),
+                "endpoint_probability_calibration": (
                     model_prediction.get("calibratedConfidence") is not None
                 ),
-                "model_bundle_identity": bool(
-                    model_context.get("model_trained")
-                    and model_prediction.get("model_bundle_id")
+                "endpoint_model_bundle_identity": bool(
+                    model_prediction.get("model_bundle_id")
+                ),
+                "magnitude_forecast": (
+                    model_prediction.get("expectedMove") is not None
+                    and isinstance(model_prediction.get("expectedMoveRange"), dict)
                 ),
             },
             source_identifiers={
                 "book": "binance_futures_ws_bookTicker",
                 "trade_activity": "binance_futures_ws_aggTrade",
                 "funding": "binance_futures_public_rest",
-                "model_context": "main_ensemble_final_decision",
+                "model_context": "verified_binance_endpoint_head",
             },
             model_context=model_context,
         )

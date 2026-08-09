@@ -90,6 +90,7 @@ from binance_paper.routes import (
     router as binance_paper_router,
 )
 from paper_competition import PaperCompetition
+import binance_endpoint_serving
 from historical_replay import run_replay as run_historical_replay
 from control_auth import (
     allowed_origins as _allowed_origins,
@@ -5126,10 +5127,22 @@ async def main_loop():
                 # not copied across the boundary.
                 "targetContract",
             )
+            _endpoint_prediction = None
+            _endpoint_status = {"status": "MAIN_MODEL_UNAVAILABLE"}
+            if _paper_prediction:
+                _endpoint_prediction, _endpoint_status = binance_endpoint_serving.predict(
+                    MODEL_DIR,
+                    seq,
+                    model._select_model_features,
+                    _paper_prediction,
+                    horizon=5,
+                )
             data_state["_binance_paper_context"] = {
                 "updated_at_ms": int(now_ms if _paper_prediction else 0),
                 "model_trained": bool(model.is_trained),
                 "model_arch_version": MODEL_ARCH_VERSION,
+                "endpoint_prediction": copy.deepcopy(_endpoint_prediction),
+                "endpoint_head_status": copy.deepcopy(_endpoint_status),
                 "predictions": {
                     5: {key: copy.deepcopy(_paper_prediction.get(key)) for key in _paper_fields}
                 } if _paper_prediction else {},

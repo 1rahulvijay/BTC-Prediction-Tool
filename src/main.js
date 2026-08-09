@@ -4822,6 +4822,17 @@ function competitionCard(account, isLeader) {
   const activity = account?.venue === 'BINANCE'
     ? (account?.latest_decision?.action || account?.inactive_reason || account?.runtime_state || 'Waiting')
     : `${Number(account?.accepted_entries || 0)} accepted / ${Number(account?.entry_signals || 0)} signals`;
+  const provenance = Number(account?.model_release_count || 0) === 1
+    ? '1 verified release'
+    : Number(account?.model_release_count || 0) > 1
+      ? `${Number(account.model_release_count)} mixed releases`
+      : 'Waiting for first model trade';
+  const provisional = account?.venue === 'POLYMARKET'
+    ? competitionMetric(
+        'Awaiting official result',
+        bpNumber(account?.provisional_settlements || 0, 0),
+      )
+    : '';
 
   return `<article class="competition-card ${isLeader ? 'is-leading' : ''}">
     <header class="competition-card-header">
@@ -4847,6 +4858,8 @@ function competitionCard(account, isLeader) {
       ${competitionMetric('Open exposure', bpUsd(account?.open_exposure_at_cost_usd))}
       ${competitionMetric('Recorded costs', bpUsd(costs))}
       ${markedEquity}
+      ${competitionMetric('Model evidence', bpEscape(provenance))}
+      ${provisional}
     </div>
     <div class="competition-sample">
       <div><span>Evidence progress</span><strong>${closed} / ${minimum} closed trades</strong></div>
@@ -4891,7 +4904,7 @@ function renderPaperCompetition(data) {
     </div>
     <div class="competition-explainer">
       <strong>How to read this race</strong>
-      <p>Green profit means closed trades made money after recorded venue costs. Red means they lost money. Open Polymarket positions are not guessed at a live value, so only closed-trade P/L determines the leader.</p>
+      <p>Green profit means closed trades made money after recorded venue costs. Red means they lost money. Polymarket proxy outcomes stay pending until the official result arrives, and a mixed model release blocks comparison.</p>
       <p>${bpEscape(data?.warning || 'Paper results do not prove future profitability.')}</p>
     </div>`;
 }

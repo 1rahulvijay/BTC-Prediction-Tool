@@ -29,6 +29,7 @@ NOT here, deliberately, because they go stale on their own schedules:
 | --- | --- |
 | `binance_direction_confirmation` | `rolling_exchange_return_sign_v1` |
 | `binance_directional_ev` | `endpoint_settlement_v1` |
+| `binance_directional_paper_ev` | `rolling_exchange_return_sign_v1` |
 | `cross_venue_propagation_research` | `rolling_exchange_return_sign_v1` |
 | `path_continuation_research` | `rolling_exchange_return_sign_v1` |
 | `path_excursion_forecast` | `first_touch_triple_barrier_v1` |
@@ -76,5 +77,5 @@ read as though it checks three things. Both numbers are reported.
 
 | job | run steps | python invocations |
 | --- | --- | --- |
-| `invariants` | 182 | 181 |
-| `startbat` | 3 | 164 |
+| `invariants` | 183 | 182 |
+| `startbat` | 3 | 165 |

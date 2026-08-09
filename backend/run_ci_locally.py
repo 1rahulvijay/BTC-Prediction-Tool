@@ -102,8 +102,17 @@ def every_step() -> list[tuple[str, list[str]]]:
                 continue
             kept = []
             for command in commands:
+                guarded_on_windows = "|| exit /b 1" in command.lower()
                 # cmd-shell guards are noise under sh; the return code gates either way.
                 command = command.replace("|| exit /b 1", "").strip()
+                # The Windows job intentionally leaves reporting-only commands unguarded.
+                # When the workflow runs them as one cmd block, a non-zero result is replaced
+                # by the next command's result and does not fail the step. This runner splits
+                # the block into subprocesses, so treating an unguarded line as a gate silently
+                # strengthens CI and makes the documented artifact-readiness report fail before
+                # a required retrain. Preserve the workflow's actual semantics explicitly.
+                if job == "startbat" and not guarded_on_windows:
+                    command = f"{command} || true"
                 # Dedupe per COMMAND, not per step: startbat packs 99 commands into a single
                 # step while invariants lists them individually, so a step-level key would
                 # never match and the whole Windows block would re-run.

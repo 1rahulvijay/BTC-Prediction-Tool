@@ -250,6 +250,7 @@ POLYMARKET_HOLD_EXIT_EV = "polymarket_hold_exit_ev"
 #: is a Polymarket settlement question, and none carries pricing authority today.
 PROXY_SETTLEMENT_RESEARCH = "proxy_settlement_research"
 BINANCE_DIRECTION_CONFIRMATION = "binance_direction_confirmation"
+BINANCE_DIRECTIONAL_PAPER_EV = "binance_directional_paper_ev"
 QUOTE_REVISION_RESEARCH = "quote_revision_research"
 CROSS_VENUE_PROPAGATION_RESEARCH = "cross_venue_propagation_research"
 PATH_CONTINUATION_RESEARCH = "path_continuation_research"
@@ -268,6 +269,11 @@ PURPOSE_REQUIREMENTS: dict[str, frozenset] = {
     # Polymarket purpose above, and admitted here, because the QUESTION matches.
     PROXY_SETTLEMENT_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
     BINANCE_DIRECTION_CONFIRMATION: PROXY_SETTLEMENT_CONTRACTS,
+    # Paper research only. The rolling exchange-return head asks exactly whether the Binance
+    # price ends above/below its decision-time price. It is still barred from every Polymarket
+    # EV purpose and from any real-order authority; this purpose exists so the isolated paper
+    # engine can measure its after-cost value without relabelling it as the venue oracle.
+    BINANCE_DIRECTIONAL_PAPER_EV: PROXY_SETTLEMENT_CONTRACTS,
     QUOTE_REVISION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
     CROSS_VENUE_PROPAGATION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
     PATH_CONTINUATION_RESEARCH: PROXY_SETTLEMENT_CONTRACTS,
@@ -847,6 +853,11 @@ def selftest() -> int:
           == ENDPOINT_SETTLEMENT_V1,
           "and the perp lane still accepts the banded endpoint probability, where the band is "
           "the region the trade does not clear its costs")
+    check(assert_admissible(BINANCE_DIRECTIONAL_PAPER_EV,
+                            ROLLING_EXCHANGE_RETURN_SIGN_V1)
+          == ROLLING_EXCHANGE_RETURN_SIGN_V1,
+          "the isolated Binance PAPER lane accepts the rolling exchange-return head whose "
+          "question matches its endpoint P/L, without widening real-order authority")
     check(assert_admissible(STOP_TARGET_PLANNING, FIRST_TOUCH_TRIPLE_BARRIER_V1)
           == FIRST_TOUCH_TRIPLE_BARRIER_V1, "stop/target planning accepts a PATH probability")
 

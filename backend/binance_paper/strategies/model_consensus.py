@@ -1,10 +1,9 @@
-"""Cost-aware paper strategy driven by the final main-ensemble decision.
+"""Cost-aware paper strategy driven by the Binance endpoint-direction head.
 
-This strategy does not reinterpret raw model votes. It consumes the same final decision shown
-by the app after meta filtering, live-quality filtering, expectancy filtering and the do-not-
-trade reason engine. Missing live calibration, stale context or any blocking reason produces
-NO_DATA/NO_EDGE. The lane is paper-only and exists to measure whether the full model stack adds
-economic value over the zero-information control.
+The broad ensemble predicts first barrier touched and is inadmissible for endpoint EV. This
+strategy consumes only the separately calibrated rolling exchange-return head, plus the
+existing magnitude forecast. The lane is paper-only and exists to measure whether that exact
+endpoint question adds economic value over the zero-information control.
 """
 from __future__ import annotations
 
@@ -31,7 +30,17 @@ from ..strategy_base import StrategyBase
 def _allow_heuristic_ev() -> bool:
     """Deliberate research opt-in. Absent, a heuristic haircut may not authorise capital."""
     import os
-    return os.environ.get("BTC_ALLOW_HEURISTIC_EV", "0").strip().lower() in ("1", "true", "yes")
+    return os.environ.get(
+        "BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV", "0"
+    ).strip().lower() in ("1", "true", "yes")
+
+
+def _allow_ungrouped_head() -> bool:
+    """Research-only opt-in for a head whose holdout rows are not independent rounds."""
+    import os
+    return os.environ.get(
+        "BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD", "0"
+    ).strip().lower() in ("1", "true", "yes")
 
 
 class ModelConsensusStrategy(StrategyBase):
@@ -41,16 +50,15 @@ class ModelConsensusStrategy(StrategyBase):
     timeframe = "5m ensemble / max 5m hold"
     required_inputs = (
         "perpetual_book",
-        "ensemble_prediction",
-        "live_probability_calibration",
-        "model_bundle_identity",
+        "endpoint_direction_head",
+        "endpoint_probability_calibration",
+        "endpoint_model_bundle_identity",
+        "magnitude_forecast",
     )
 
     horizon = 5
     maximum_model_age_ms = 90_000
     minimum_calibrated_probability = 0.58
-    minimum_agreement = 0.67
-    minimum_meta_trust = 0.55
     conservative_probability_haircut = 0.05
     target_capture_fraction = 0.80
     minimum_stop_bps = 8.0
@@ -62,7 +70,8 @@ class ModelConsensusStrategy(StrategyBase):
     #: A fixed 5pp haircut is NOT a confidence interval, a conformal bound, a bootstrap bound or
     #: any empirically justified uncertainty estimate. Until a measured interval exists this
     #: strategy may compute and report its EV but MAY NOT authorise an entry on it. Opt in
-    #: deliberately with BTC_ALLOW_HEURISTIC_EV=1 for research; it is not a default anyone gets.
+    #: deliberately with BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=1 for research; it is not a
+    #: default any other engine gets.
     uncertainty_method = "fixed_haircut"
     profit_lock_buffer_bps = 2.0
 
@@ -72,8 +81,6 @@ class ModelConsensusStrategy(StrategyBase):
             "horizon": self.horizon,
             "maximum_model_age_ms": self.maximum_model_age_ms,
             "minimum_calibrated_probability": self.minimum_calibrated_probability,
-            "minimum_agreement": self.minimum_agreement,
-            "minimum_meta_trust": self.minimum_meta_trust,
             "conservative_probability_haircut": self.conservative_probability_haircut,
             "target_capture_fraction": self.target_capture_fraction,
             "minimum_stop_bps": self.minimum_stop_bps,
@@ -83,6 +90,8 @@ class ModelConsensusStrategy(StrategyBase):
             "maximum_holding_seconds": self.maximum_holding_seconds,
             "minimum_heuristic_haircut_ev_bps": self.minimum_heuristic_haircut_ev_bps,
             "uncertainty_method": self.uncertainty_method,
+            "allow_heuristic_ev": _allow_heuristic_ev(),
+            "allow_ungrouped_head": _allow_ungrouped_head(),
             "profit_lock_buffer_bps": self.profit_lock_buffer_bps,
         }
 
@@ -92,15 +101,7 @@ class ModelConsensusStrategy(StrategyBase):
             updated_at_ms = int(context.get("updated_at_ms") or 0)
         except (TypeError, ValueError, OverflowError):
             updated_at_ms = 0
-        predictions = context.get("predictions") or {}
-        if isinstance(predictions, dict):
-            prediction = (
-                predictions.get(self.horizon)
-                or predictions.get(str(self.horizon))
-                or {}
-            )
-        else:
-            prediction = {}
+        prediction = context.get("endpoint_prediction") or {}
         return (prediction if isinstance(prediction, dict) else {}, updated_at_ms)
 
     @staticmethod
@@ -125,17 +126,17 @@ class ModelConsensusStrategy(StrategyBase):
             "direction": str(
                 prediction.get("finalDirection", prediction.get("direction")) or ""
             ),
-            "trade_verdict": str(
-                prediction.get("finalAction", prediction.get("trade_verdict")) or ""
-            ),
             "calibrated_confidence": self._finite_float(
                 prediction.get("calibratedConfidence")
             ),
-            "agreement": self._finite_float(prediction.get("agreement")),
-            "meta_trust": self._finite_float(prediction.get("metaTrust")),
+            "prob_up": self._finite_float(prediction.get("probUp")),
+            "prob_down": self._finite_float(prediction.get("probDown")),
             "expected_move": self._finite_float(prediction.get("expectedMove")),
             "expected_move_range": safe_range,
-            "regime": str(prediction.get("regime") or ""),
+            "target_contract": str(prediction.get("targetContract") or ""),
+            "holdout_metrics": dict(prediction.get("holdout_metrics") or {}),
+            "independence_validated": bool(prediction.get("independence_validated")),
+            "research_only": bool(prediction.get("research_only")),
         }
 
     def _no_edge(self, snapshot: MarketSnapshot, features: dict, *reasons: str):
@@ -157,17 +158,18 @@ class ModelConsensusStrategy(StrategyBase):
         prediction, updated_at_ms = self._prediction(snapshot)
         age_ms = max(0, snapshot.received_at_ms - updated_at_ms) if updated_at_ms else 2**31
         features = self._base_features(snapshot, prediction, age_ms)
-        context = snapshot.model_context or {}
         missing = []
         if snapshot.feed_health is not DataQuality.HEALTHY:
             missing.append("perpetual_book")
-        if not prediction:
-            missing.append("ensemble_prediction")
+        if not prediction or prediction.get("endpointHeadReady") is not True:
+            missing.append("endpoint_direction_head")
         calibrated = self._finite_float(prediction.get("calibratedConfidence"))
         if calibrated is None:
-            missing.append("live_probability_calibration")
-        if not prediction.get("model_bundle_id") or context.get("model_trained") is not True:
-            missing.append("model_bundle_identity")
+            missing.append("endpoint_probability_calibration")
+        if not prediction.get("model_bundle_id"):
+            missing.append("endpoint_model_bundle_identity")
+        if self._finite_float(prediction.get("expectedMove")) is None:
+            missing.append("magnitude_forecast")
         if missing:
             return self.no_data(
                 snapshot,
@@ -178,23 +180,19 @@ class ModelConsensusStrategy(StrategyBase):
         if updated_at_ms > snapshot.received_at_ms:
             return self.no_data(
                 snapshot,
-                ("ensemble_prediction",),
+                ("endpoint_direction_head",),
                 features,
                 "model_context_newer_than_market_snapshot",
             )
         if age_ms > self.maximum_model_age_ms:
             return self.no_data(
                 snapshot,
-                ("ensemble_prediction",),
+                ("endpoint_direction_head",),
                 features,
                 "model_context_stale",
             )
 
         direction = str(prediction.get("finalDirection") or prediction.get("direction") or "")
-        verdict = str(prediction.get("finalAction") or prediction.get("trade_verdict") or "")
-        blocking = tuple(prediction.get("no_trade_reasons") or ())
-        if verdict != "TRADE" or prediction.get("actionable") is not True or blocking:
-            return self._no_edge(snapshot, features, "final_model_gate_rejected")
         if direction not in ("UP", "DOWN"):
             return self._no_edge(snapshot, features, "model_direction_unavailable")
 
@@ -204,7 +202,7 @@ class ModelConsensusStrategy(StrategyBase):
         # that disagrees on roughly a quarter of paths. Both are floats in [0, 1], so nothing
         # about the value would have revealed the substitution.
         try:
-            _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_EV,
+            _tc.assert_admissible(_tc.BINANCE_DIRECTIONAL_PAPER_EV,
                                   prediction.get("targetContract"))
         except _tc.ContractMisuse as exc:
             features["target_contract"] = prediction.get("targetContract")
@@ -212,18 +210,19 @@ class ModelConsensusStrategy(StrategyBase):
             return self._no_edge(snapshot, features, "target_contract_inadmissible")
 
         probability = calibrated
-        agreement = self._finite_float(prediction.get("agreement"))
-        meta_trust = self._finite_float(prediction.get("metaTrust"))
-        if agreement is None or meta_trust is None:
-            return self._no_edge(snapshot, features, "non_finite_model_evidence")
-        if not 0.0 <= probability <= 1.0 or not 0.0 <= agreement <= 1.0 or not 0.0 <= meta_trust <= 1.0:
+        if not 0.0 <= probability <= 1.0:
             return self._no_edge(snapshot, features, "model_evidence_out_of_range")
         if probability < self.minimum_calibrated_probability:
             return self._no_edge(snapshot, features, "calibrated_probability_below_gate")
-        if agreement < self.minimum_agreement:
-            return self._no_edge(snapshot, features, "ensemble_agreement_below_gate")
-        if meta_trust < self.minimum_meta_trust:
-            return self._no_edge(snapshot, features, "meta_trust_below_gate")
+
+        if prediction.get("research_only") is not True:
+            return self._no_edge(snapshot, features, "endpoint_head_not_research_scoped")
+        if prediction.get("independence_validated") is not True and not _allow_ungrouped_head():
+            return self._no_edge(
+                snapshot, features,
+                "endpoint_holdout_not_independent: enable only the isolated paper research "
+                "opt-in after accepting that overlapping rows overstate evidence",
+            )
 
         expected_move_raw = self._finite_float(prediction.get("expectedMove"))
         move_range = prediction.get("expectedMoveRange") or {}
@@ -318,7 +317,7 @@ class ModelConsensusStrategy(StrategyBase):
             take_profit_price=target_price,
             maximum_holding_seconds=self.maximum_holding_seconds,
             features=features,
-            reason_codes=("final_ensemble_trade", "positive_conservative_net_ev"),
+            reason_codes=("endpoint_head_trade", "positive_conservative_net_ev"),
             probability_calibrated=True,
             # "LIVE_CALIBRATED" read like an empirical uncertainty method. The probability
             # is calibrated; the UNCERTAINTY is a hand-chosen constant, and the
@@ -333,25 +332,39 @@ class ModelConsensusStrategy(StrategyBase):
     ) -> str | None:
         prediction, updated_at_ms = self._prediction(snapshot)
         if updated_at_ms > snapshot.received_at_ms:
-            return None
+            return "MODEL_CONTEXT_INVALID"
         age_ms = max(0, snapshot.received_at_ms - updated_at_ms) if updated_at_ms else 2**31
-        if not prediction or age_ms > self.maximum_model_age_ms:
+        if (
+            not prediction
+            or prediction.get("endpointHeadReady") is not True
+            or not prediction.get("model_bundle_id")
+            or age_ms > self.maximum_model_age_ms
+        ):
             return "MODEL_CONTEXT_STALE"
+        try:
+            _tc.assert_admissible(
+                _tc.BINANCE_DIRECTIONAL_PAPER_EV,
+                prediction.get("targetContract"),
+            )
+        except _tc.ContractMisuse:
+            return "MODEL_CONTEXT_INVALID"
         side = PositionSide(position["side"])
         expected_direction = "UP" if side is PositionSide.LONG else "DOWN"
         direction = str(prediction.get("finalDirection") or prediction.get("direction") or "")
-        verdict = str(prediction.get("finalAction") or prediction.get("trade_verdict") or "")
-        if direction in ("UP", "DOWN") and direction != expected_direction and verdict == "TRADE":
+        if direction in ("UP", "DOWN") and direction != expected_direction:
             return "MODEL_DIRECTION_FLIP"
 
         executable = snapshot.best_bid if side is PositionSide.LONG else snapshot.best_ask
         sign = 1.0 if side is PositionSide.LONG else -1.0
         gross_bps = sign * (executable - float(position["entry_price"])) / float(position["entry_price"]) * 10_000.0
-        calibrated = self._finite_float(prediction.get("calibratedConfidence"))
-        if calibrated is not None and calibrated < 0.45:
+        side_probability = self._finite_float(
+            prediction.get("probUp" if side is PositionSide.LONG else "probDown")
+        )
+        if side_probability is None:
+            return "MODEL_CONTEXT_INVALID"
+        if side_probability < 0.45:
             return "MODEL_CONFIDENCE_COLLAPSE"
-        blocking = tuple(prediction.get("no_trade_reasons") or ())
-        if (verdict != "TRADE" or blocking) and gross_bps >= (
+        if side_probability < self.minimum_calibrated_probability and gross_bps >= (
             self.assumed_round_trip_bps + self.profit_lock_buffer_bps
         ):
             return "MODEL_EDGE_DECAY_PROFIT_LOCK"

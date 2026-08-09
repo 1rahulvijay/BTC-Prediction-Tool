@@ -351,6 +351,10 @@ def init_db():
             exit_fee DOUBLE,       -- fee charged on an early exit (zero at settlement)
             exit_reason VARCHAR,   -- TP / SL / TIME / SETTLED
             state_json VARCHAR,    -- crash-safe state for multi-leg/early-exit shadows
+            model_bundle_id VARCHAR DEFAULT '',
+            target_contract VARCHAR DEFAULT '',
+            head_identity_json VARCHAR DEFAULT '{}',
+            decision_json VARCHAR DEFAULT '{}',
             PRIMARY KEY (round_id, rule)
         )
     """)
@@ -362,6 +366,10 @@ def init_db():
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR")
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS state_json VARCHAR")
     conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS settlement_source VARCHAR")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS model_bundle_id VARCHAR DEFAULT ''")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS target_contract VARCHAR DEFAULT ''")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS head_identity_json VARCHAR DEFAULT '{}'")
+    conn.execute("ALTER TABLE rule_paper_trades ADD COLUMN IF NOT EXISTS decision_json VARCHAR DEFAULT '{}'")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS analysis_snapshots (
             timestamp BIGINT PRIMARY KEY,
@@ -929,7 +937,9 @@ DISABLED_PAPER_RULES = frozenset(
 def log_rule_paper_trade(round_id: str, rule: str, ts: int, horizon: int, side: str,
                          ask: float, bid: float, fee: float, spread: float, depth: float,
                          action: str, pnl=None, outcome=None, settled_ts=None, btc_entry=None,
-                         state=None):
+                         state=None, model_bundle_id: str = "",
+                         target_contract: str = "", head_identity=None,
+                         decision=None):
     """FORWARD PAPER LEDGER for a frozen/shadow rule: one row per round the rule EVALUATED,
     including SKIP/NO_QUOTE rows so denominators stay honest. INSERT OR IGNORE: the first
     evaluation of a round wins (one entry per round). Rows may arrive PRE-SETTLED (pnl +
@@ -943,15 +953,20 @@ def log_rule_paper_trade(round_id: str, rule: str, ts: int, horizon: int, side: 
         conn.execute("""
             INSERT OR IGNORE INTO rule_paper_trades
             (round_id, rule, ts, horizon, side, ask, bid, fee, spread, depth, action,
-             outcome, pnl, settled_ts, btc_entry, btc_exit, state_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+             outcome, pnl, settled_ts, btc_entry, btc_exit, state_json,
+             model_bundle_id, target_contract, head_identity_json, decision_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         """, (str(round_id), rule, int(ts), int(horizon), side or "", float(ask or 0.0),
               float(bid or 0.0), float(fee or 0.0), float(spread or 0.0), float(depth or 0.0),
               action, outcome,
               float(pnl) if pnl is not None else None,
               int(settled_ts) if settled_ts is not None else None,
               float(btc_entry) if btc_entry is not None else None,
-              json.dumps(state, separators=(",", ":")) if state is not None else None))
+              json.dumps(state, separators=(",", ":"), sort_keys=True)
+              if state is not None else None,
+              str(model_bundle_id or ""), str(target_contract or ""),
+              json.dumps(head_identity or {}, separators=(",", ":"), sort_keys=True),
+              json.dumps(decision or {}, separators=(",", ":"), sort_keys=True)))
     except Exception as e:
         print(f"DuckDB rule-paper-trade insert error: {e}")
     finally:
@@ -1082,7 +1097,8 @@ def rule_paper_competition_rows(rule: str, since_ms: int):
         rows = conn.execute("""
             SELECT round_id, rule, ts, horizon, side, ask, bid, fee, spread, depth,
                    action, outcome, pnl, settled_ts, exit_gross, exit_fee,
-                   exit_reason, settlement_source
+                   exit_reason, settlement_source, model_bundle_id, target_contract,
+                   head_identity_json, decision_json
             FROM rule_paper_trades
             WHERE rule = ? AND ts >= ? AND action = 'ENTER'
             ORDER BY ts ASC, round_id ASC
@@ -1091,6 +1107,8 @@ def rule_paper_competition_rows(rule: str, since_ms: int):
             "round_id", "rule", "ts", "horizon", "side", "ask", "bid", "fee",
             "spread", "depth", "action", "outcome", "pnl", "settled_ts",
             "exit_gross", "exit_fee", "exit_reason", "settlement_source",
+            "model_bundle_id", "target_contract", "head_identity_json",
+            "decision_json",
         )
         return [dict(zip(keys, row)) for row in rows]
     except Exception as exc:
