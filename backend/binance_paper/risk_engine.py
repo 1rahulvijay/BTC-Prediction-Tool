@@ -176,7 +176,22 @@ class BinancePaperRiskEngine:
             else:
                 stop_fraction = stop_distance / reference_price
                 risk_budget = float(account["equity_usd"]) * risk.risk_per_trade_fraction
-                risk_notional = risk_budget / max(1e-9, stop_fraction)
+                # THE EXIT LEG THIS SIZE IS SIZING FOR.
+                #
+                # `risk_budget / stop_fraction` solves from the PRICE distance alone, so the
+                # loss actually realised at the stop - which also pays the exit fee and
+                # slippage - exceeded the budget on EVERY trade, before any adverse fill.
+                # Measured: $33.58 against a $30 budget on a 50bps stop at 12bps round trip,
+                # ~12% over. The limit was quietly not the limit.
+                #
+                # Only the EXIT leg belongs here. Entry cost is already paid out of cash at
+                # fill and is not part of the loss incurred by the stop triggering; charging
+                # the full round trip would under-size by the same reasoning that over-sized
+                # before.
+                exit_cost_fraction = (
+                    self.engine_config.fee_rate_bps + self.engine_config.slippage_bps
+                ) / 10_000.0
+                risk_notional = risk_budget / max(1e-9, stop_fraction + exit_cost_fraction)
             approved_notional = min(requested, risk_notional)
         quantity = approved_notional / reference_price if reference_price > 0 else 0.0
         visible_size = (

@@ -147,6 +147,9 @@ jobs:
       - name: Probability namespace (exit compares what entry admitted on)
         run: python -m backend.binance_paper.test_model_consensus_probability_namespace
 
+      - name: Sizing includes the exit cost it sizes for
+        run: python -m backend.binance_paper.test_sizing_exit_cost
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -900,6 +903,7 @@ jobs:
           python -m backend.binance_paper.test_period_loss_boundaries || exit /b 1
           python -m backend.binance_paper.test_post_fill_risk_budget || exit /b 1
           python -m backend.binance_paper.test_model_consensus_probability_namespace || exit /b 1
+          python -m backend.binance_paper.test_sizing_exit_cost || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

@@ -393,18 +393,22 @@ Each mutation-tested and registered in CI.
 | Post-fill risk — a worse fill exceeded approved budget | `9150001` | 4/0 |
 | Probability namespace — exit compared RAW against a CALIBRATED bound | pending | 3/0 |
 
-### NEW — VERIFIED OPEN: position sizing omits the exit cost it sizes for
+### NEW — FIXED: position sizing omitted the exit cost it sizes for
 
 Found while writing the post-fill risk check, not from any audit. `qty = risk_budget /
 stop_fraction` solves from the PRICE distance alone, so even a flawless fill breaches the
 budget once exit fees and slippage are charged: **$33.58 against a $30 budget** on a 50bps stop
 at 12bps round trip — ~12% over, on every trade, before any slippage.
 
-Not fixed here: rejecting on it in `post_fill_geometry` would block flawless fills, and the
-formula lives in the sizing policy. `geometry()` now REPORTS `decided_stop_loss_usd` vs
-`approved_risk_usd` so the sizing layer can see it.
+**FIXED** in `risk_engine`: `risk_budget / (stop_fraction + exit_cost_fraction)`, where the
+exit fraction is ONE leg of `fee_rate_bps + slippage_bps` from `engine_config`. Entry cost is
+paid at fill and is not part of the loss the stop causes, so charging the round trip would
+under-size by the same reasoning that over-sized before. Measured: qty 0.10000 -> 0.08929,
+loss at stop $33.58 -> $29.98 against a $30 budget. 3/0 mutation, including a round-trip
+variant and a hardcoded-cost variant.
 
-*Fix:* solve `qty` including the exit leg, i.e. `stop_fraction + round_trip_bps/2`.
+`geometry()` still reports `decided_stop_loss_usd` vs `approved_risk_usd`, which is now the
+detector for any future regression of this kind.
 
 ### Known gap left in place
 
