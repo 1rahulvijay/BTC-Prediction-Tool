@@ -204,16 +204,44 @@ def selftest() -> int:
     # The committed declaration must be what the APP writes to, or the decision is
     # decorative: declaring one store canonical while database.DB_PATH resolves to another
     # is the same divergence under a new name.
+    # It must hold UNDER THE LAUNCHER'S OWN ENVIRONMENT, not merely a bare one. This
+    # assertion used to skip itself whenever BTC_DATA_DIR was set - which is precisely the
+    # condition start.bat creates on every launch - so it reported PASS while the running
+    # server resolved to the OTHER store. A check that excuses itself under production's
+    # environment is not evidence about production. Set the launcher's variable and assert.
     import os as _os
-    if CANONICAL_RELATIVE_PATH and not _os.environ.get("BTC_DATA_DIR"):
+    import importlib
+    if CANONICAL_RELATIVE_PATH:
         sys.path.insert(0, str(BACKEND))
         import database as _db
         want = (REPO / CANONICAL_RELATIVE_PATH).resolve()
-        check(Path(_db.DB_PATH).resolve() == want,
-              f"database.DB_PATH resolves to the DECLARED store ({want.name}) - a declaration "
-              f"the app does not follow is the same divergence under a new name")
-        check(Path(_db.DB_PATH).resolve() != (REPO / "data" / "analytics.duckdb").resolve(),
-              "and no longer to the bare default, which had three fewer weeks of model rows")
+        prior = _os.environ.get("BTC_DATA_DIR")
+        try:
+            _os.environ["BTC_DATA_DIR"] = str(REPO / "data")  # start.bat line 8, verbatim
+            _db = importlib.reload(_db)
+            check(Path(_db.DB_PATH).resolve() == want,
+                  f"under start.bat's own BTC_DATA_DIR=<repo>\\data, database.DB_PATH resolves "
+                  f"to the DECLARED store ({want.name}) - naming the normal data dir restates "
+                  f"the default, it does not override the declaration")
+            check(Path(_db.DB_PATH).resolve() != (REPO / "data" / "analytics.duckdb").resolve(),
+                  "and NOT to the bare default the launcher used to get, which holds three "
+                  "fewer weeks of model rows than the store training reads")
+            check(Path(_db.DB_PATH).resolve() == Path(resolve()["path"]).resolve(),
+                  "and the SERVER's DB_PATH is the same file resolve() hands TRAINING and "
+                  "AUDIT - one history, not two agreeing only when nobody sets a variable")
+
+            with tempfile.TemporaryDirectory() as tmp2:
+                _os.environ["BTC_DATA_DIR"] = tmp2
+                _db = importlib.reload(_db)
+                check(Path(_db.DB_PATH).resolve() == (Path(tmp2) / "analytics.duckdb").resolve(),
+                      "while a data dir pointing ELSEWHERE still redirects, so an isolated "
+                      "fixture cannot silently read or write the production store")
+        finally:
+            if prior is None:
+                _os.environ.pop("BTC_DATA_DIR", None)
+            else:
+                _os.environ["BTC_DATA_DIR"] = prior
+            importlib.reload(_db)
 
     print(f"\nDATASTORE IDENTITY SELFTEST: PASS ({checks} checks)")
     return 0

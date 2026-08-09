@@ -20,15 +20,30 @@ _DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
 # `audit.datastore_identity.CANONICAL_RELATIVE_PATH` - in code, reviewable in a diff, and it
 # raises if several stores exist with none declared rather than silently picking one.
 #
-# Precedence is unchanged for deliberate overrides: BTC_DB_PATH still wins, then BTC_DATA_DIR
-# (which is how the tests and every temp-dir fixture get an isolated store), then the
-# declaration, then the historical default. The fallback chain never guesses between rivals -
-# it only applies when the resolver cannot answer at all.
+# Precedence: BTC_DB_PATH (names a file outright) wins, then a REDIRECTED BTC_DATA_DIR, then
+# the declaration, then the historical default.
+#
+# "Redirected" is the load-bearing word, and getting it wrong made this declaration decorative
+# once already. BTC_DATA_DIR was originally honoured whenever it was merely SET, justified by
+# its use in tests, where a temp dir must not inherit production's store. But start.bat sets
+# `BTC_DATA_DIR=%PROJECT_ROOT%data` on EVERY launch - not to override anything, only to name
+# the normal location. So under the real launcher this returned the bare default and the
+# canonical branch below was unreachable: training and audit read btc_duckdbs while the server
+# read and wrote data/analytics.duckdb. Exactly the divergence the declaration exists to end,
+# reintroduced by the fix for it.
+#
+# A data dir equal to the repo's own data/ is a RESTATEMENT of the default and must not
+# suppress the declaration. Only a data dir pointing somewhere ELSE - a temp fixture, a
+# snapshot - is a redirect, and those still get their isolated store.
 def _resolve_db_path() -> str:
     explicit = os.environ.get("BTC_DB_PATH")
     if explicit:
         return explicit
-    if os.environ.get("BTC_DATA_DIR"):
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    redirected = bool(os.environ.get("BTC_DATA_DIR")) and (
+        os.path.normcase(os.path.abspath(_DATA_DIR))
+        != os.path.normcase(os.path.join(repo, "data")))
+    if redirected:
         return os.path.join(_DATA_DIR, "analytics.duckdb")
     try:
         from audit.datastore_identity import CANONICAL_RELATIVE_PATH as _canon
