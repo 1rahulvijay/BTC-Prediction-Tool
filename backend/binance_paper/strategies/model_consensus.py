@@ -398,11 +398,30 @@ class ModelConsensusStrategy(StrategyBase):
         executable = snapshot.best_bid if side is PositionSide.LONG else snapshot.best_ask
         sign = 1.0 if side is PositionSide.LONG else -1.0
         gross_bps = sign * (executable - float(position["entry_price"])) / float(position["entry_price"]) * 10_000.0
-        side_probability = self._finite_float(
+        # PROBABILITY NAMESPACE. Entry admits on `calibratedConfidence` against
+        # `minimum_calibrated_probability`. This path read RAW probUp/probDown and compared
+        # them to that same calibrated threshold - two different quantities against one
+        # number. Calibration exists precisely because raw and calibrated disagree, so a
+        # position could be opened at calibrated .61 and closed on raw .54 that calibrates to
+        # .60, or held on raw .59 that calibrates to .52. Neither direction is intended.
+        #
+        # The direction-flip check above has already returned if the model no longer favours
+        # the held side, so `calibratedConfidence` here IS the calibrated probability for that
+        # side. Raw values are kept only for reporting, never compared to a calibrated bound.
+        #
+        # Fail-closed on absence, matching the entry gate: it refuses to open without a
+        # calibration, so exiting on an uncalibrated number would apply a stricter standard to
+        # entry than to the capital already at risk.
+        side_probability = self._finite_float(prediction.get("calibratedConfidence"))
+        raw_side_probability = self._finite_float(
             prediction.get("probUp" if side is PositionSide.LONG else "probDown")
         )
         if side_probability is None:
+            return "MODEL_CALIBRATION_UNAVAILABLE"
+        if raw_side_probability is None:
             return "MODEL_CONTEXT_INVALID"
+        # The collapse floor is a CALIBRATED bound too - mixing namespaces on one of the two
+        # comparisons would leave the same defect, halved.
         if side_probability < 0.45:
             return "MODEL_CONFIDENCE_COLLAPSE"
         if side_probability < self.minimum_calibrated_probability and gross_bps >= (

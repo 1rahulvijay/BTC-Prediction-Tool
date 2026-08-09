@@ -377,3 +377,37 @@ Option 1 is the only honest one, and it was already the standing requirement.
 **Read the research in this light.** `LIVE_ROUND_EDGE_AUDIT_2026-08-08.md` covers 2026-06-12
 to 2026-07-04 — which is not an arbitrary window, it is the model's entire live serving life.
 The finding stands and its span is now explained.
+
+---
+
+## 2026-08-09 money-path batch (six fixed, one NEW defect found)
+
+Each mutation-tested and registered in CI.
+
+| defect | commit | mutation |
+|---|---|---|
+| Decision price race — recording re-read the live global after two awaits | `667dca9` | 2/0 |
+| BARRIER_FALLBACK reached economic expectancy | `0342e18` | 3/0 |
+| Forward-EV resolved barrier substitutions as realised returns | `ddbdf27` | 3/0 |
+| Period loss — an overnight loser evaded today's gate | `dfdcbbf` | 2/2 |
+| Post-fill risk — a worse fill exceeded approved budget | `9150001` | 4/0 |
+| Probability namespace — exit compared RAW against a CALIBRATED bound | pending | 3/0 |
+
+### NEW — VERIFIED OPEN: position sizing omits the exit cost it sizes for
+
+Found while writing the post-fill risk check, not from any audit. `qty = risk_budget /
+stop_fraction` solves from the PRICE distance alone, so even a flawless fill breaches the
+budget once exit fees and slippage are charged: **$33.58 against a $30 budget** on a 50bps stop
+at 12bps round trip — ~12% over, on every trade, before any slippage.
+
+Not fixed here: rejecting on it in `post_fill_geometry` would block flawless fills, and the
+formula lives in the sizing policy. `geometry()` now REPORTS `decided_stop_loss_usd` vs
+`approved_risk_usd` so the sizing layer can see it.
+
+*Fix:* solve `qty` including the exit leg, i.e. `stop_fraction + round_trip_bps/2`.
+
+### Known gap left in place
+
+`forward_ev_ledger` has no `outcome_status` column, so a skipped economic resolution cannot be
+marked `ECONOMIC_OUTCOME_UNAVAILABLE` and is indistinguishable from not-yet-resolved. Skips are
+counted in `backend_state` and logged at WARNING meanwhile. Needs a migration.
