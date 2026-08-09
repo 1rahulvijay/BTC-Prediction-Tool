@@ -63,7 +63,7 @@ def main():
         rel = rel_bps(np.abs(delta), close)
         mask = np.isfinite(rel)
         y = (rel[mask] >= threshold).astype(int)
-        model = fit_binary_head(X_all[mask], y)
+        model = fit_binary_head(X_all[mask], y, horizon_bars=h)
         if model:
             models[int(h)] = model
         print(f"big_move_{h}m >= {threshold:.1f}bps (~${threshold*px_now/1e4:.0f} now): {model_summary(model)}")

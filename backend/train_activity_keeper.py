@@ -63,7 +63,7 @@ def main():
         range_rel = rel_bps(future_high - future_low, close)
         mask = np.isfinite(range_rel)
         y = (range_rel[mask] >= threshold).astype(int)
-        model = fit_binary_head(X_all[mask], y)
+        model = fit_binary_head(X_all[mask], y, horizon_bars=h)
         if model:
             models[int(h)] = model
         print(f"activity_range_{h}m >= {threshold:.1f}bps (~${threshold*px_now/1e4:.0f} now): {model_summary(model)}")

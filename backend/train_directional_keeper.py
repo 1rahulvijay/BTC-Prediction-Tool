@@ -58,8 +58,10 @@ def main():
         threshold = buckets[h][0]            # bps
         delta_rel = rel_bps(future_close_delta(close, h), close)   # signed bps of the row's own price
         mask = np.isfinite(delta_rel)
-        up = fit_binary_head(X_all[mask], (delta_rel[mask] >= threshold).astype(int))
-        down = fit_binary_head(X_all[mask], (delta_rel[mask] <= -threshold).astype(int))
+        up = fit_binary_head(X_all[mask], (delta_rel[mask] >= threshold).astype(int),
+                             horizon_bars=h)
+        down = fit_binary_head(X_all[mask], (delta_rel[mask] <= -threshold).astype(int),
+                               horizon_bars=h)
         row = {}
         if up:
             row["big_up"] = up

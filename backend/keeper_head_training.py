@@ -278,32 +278,50 @@ def top_n_precision(y, p, frac=0.05):
     return float(y[idx].mean())
 
 
-def fit_binary_head(X, y, split_frac=None):
-    """Fit one calibrated keeper head with a TEMPORAL 98/2 train/test split.
+def fit_binary_head(X, y, split_frac=None, *, horizon_bars):
+    """Fit one calibrated keeper head with a PURGED temporal train/test split.
 
-    The first `split_frac` of rows (oldest) FIT the model; the final tail is a held-out test
-    set that is never seen during fitting, isotonic calibration, or tier construction — so
-    `test_auc` / `test_top5` are honest out-of-sample. The served model is the train-only fit,
-    consistent with the main ensemble (which also caps at 0.98 and keeps a 2% tail).
+    `horizon_bars` is REQUIRED and keyword-only, deliberately. Every caller labels rows from
+    a FUTURE h-minute move, so a row at index i encodes prices through i+h. Chronological
+    ordering alone does not make the sides independent: without a gap the last h training
+    rows of every fold, and the last h rows before the 98/2 cut, are built from prices that
+    live inside the very set used to score them. Enforcing the purge HERE rather than in each
+    caller is the point - four keeper trainers share this function, and a per-caller rule is
+    one a new head can silently omit. (Rows are 1-minute bars, so horizon_bars == horizon.)
+
+    The gap was previously absent at BOTH TimeSeriesSplit sites while the comment below the
+    refit branch already described the OOF as "purged". It now is.
+
+    The first `split_frac` of rows FIT the model, minus a purge; the final tail is held out
+    from fitting, isotonic calibration and tier construction, so `test_auc` / `test_top5` are
+    out-of-sample.
     """
     X = np.asarray(X)
     y = np.asarray(y).astype(int)
+    horizon_bars = int(horizon_bars)
+    if horizon_bars < 1:
+        raise ValueError("horizon_bars must be >= 1; labels look forward and need a purge")
     if len(y) < 1000 or len(np.unique(y)) < 2:
         return None
 
     if split_frac is None:
         split_frac = train_split_frac()
     cut = int(len(y) * split_frac)
-    X_tr, y_tr, X_te, y_te = X[:cut], y[:cut], X[cut:], y[cut:]
-    # Degenerate-tail guard: only score a holdout if it is big enough and two-class; otherwise
-    # fall back to fitting on all rows (no test report) rather than emit a meaningless test_auc.
+    # PURGE the boundary: rows in [cut-horizon_bars, cut) are labelled from prices at or past
+    # `cut`, i.e. from inside the test set. They are dropped from TRAIN; TEST keeps every row,
+    # because shrinking the scored side is how a purge turns into a better-looking number.
+    tr_end = max(1, cut - horizon_bars)
+    X_tr, y_tr, X_te, y_te = X[:tr_end], y[:tr_end], X[cut:], y[cut:]
     holdout = (len(y_te) >= 200 and len(np.unique(y_te)) == 2 and len(np.unique(y_tr)) == 2)
     if not holdout:
+        # No valid holdout means NO EVIDENCE, which must not read as a normal head. The head
+        # is still fit (it can be useful once forward outcomes accumulate) but is marked
+        # SHADOW below and carries test_auc=None rather than looking merely unreported.
         X_tr, y_tr = X, y
 
     oof = np.zeros(len(y_tr))
     seen = np.zeros(len(y_tr), dtype=bool)
-    for tr, te in TimeSeriesSplit(n_splits=5).split(X_tr):
+    for tr, te in TimeSeriesSplit(n_splits=5, gap=horizon_bars).split(X_tr):
         clf = ensemble()
         clf.fit(X_tr[tr], y_tr[tr])
         oof[te] = clf.predict_proba(X_tr[te])[:, 1]
@@ -318,11 +336,15 @@ def fit_binary_head(X, y, split_frac=None):
 
     pipe = ensemble()
     pipe.fit(X_tr, y_tr)
-    score = iso.predict(pipe.predict_proba(X_tr)[:, 1])
+    # TIERS FROM OUT-OF-SAMPLE SCORES. These were quantiles of pipe.predict_proba(X_tr) -
+    # scores the model produced on rows it had just been fit on. An in-sample score
+    # distribution is sharper than the one the head produces live, so T1/T2/T3 sat at
+    # optimistic cut-points and the tiers over-covered in production. cal_oof is the same
+    # calibrated score computed out-of-fold, which is what live scoring resembles.
     tiers = {
-        "t1": float(np.quantile(score, 0.60)),
-        "t2": float(np.quantile(score, 0.80)),
-        "t3": float(np.quantile(score, 0.90)),
+        "t1": float(np.quantile(cal_oof, 0.60)),
+        "t2": float(np.quantile(cal_oof, 0.80)),
+        "t3": float(np.quantile(cal_oof, 0.90)),
     }
 
     test_auc = test_top5 = None
@@ -345,7 +367,7 @@ def fit_binary_head(X, y, split_frac=None):
     if refit_on_all:
         oof_f = np.zeros(len(y))
         seen_f = np.zeros(len(y), dtype=bool)
-        for tr, te in TimeSeriesSplit(n_splits=5).split(X):
+        for tr, te in TimeSeriesSplit(n_splits=5, gap=horizon_bars).split(X):
             clf = ensemble()
             clf.fit(X[tr], y[tr])
             oof_f[te] = clf.predict_proba(X[te])[:, 1]
@@ -354,11 +376,11 @@ def fit_binary_head(X, y, split_frac=None):
         iso.fit(oof_f[seen_f], y[seen_f])
         pipe = ensemble()
         pipe.fit(X, y)
-        score = iso.predict(pipe.predict_proba(X)[:, 1])
+        # Out-of-fold again, for the same reason as the candidate branch above.
         tiers = {
-            "t1": float(np.quantile(score, 0.60)),
-            "t2": float(np.quantile(score, 0.80)),
-            "t3": float(np.quantile(score, 0.90)),
+            "t1": float(np.quantile(iso.predict(oof_f[seen_f]), 0.60)),
+            "t2": float(np.quantile(iso.predict(oof_f[seen_f]), 0.80)),
+            "t3": float(np.quantile(iso.predict(oof_f[seen_f]), 0.90)),
         }
 
     return {
@@ -370,6 +392,13 @@ def fit_binary_head(X, y, split_frac=None):
         "top5_prec": top5,
         "test_auc": test_auc,
         "test_top5_prec": test_top5,
+        # "No valid holdout" is not the same as "not reported yet". A head fit without an
+        # untouched test has no out-of-sample evidence at all, and must be distinguishable
+        # from one that earned its numbers - otherwise it becomes an artifact that looks
+        # normal. Consumers gate on this rather than inferring from test_auc being None.
+        "evidence_status": "MEASURED" if holdout else "SHADOW_NO_VALID_HOLDOUT",
+        "purge_bars": horizon_bars,
+        "tier_basis": "out_of_fold",
         "base_rate": float(y.mean()),
         "tiers": tiers,
         "n_train": int(len(y) if refit_on_all else len(y_tr)),
