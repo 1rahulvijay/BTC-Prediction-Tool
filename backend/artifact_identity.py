@@ -126,7 +126,22 @@ def atomic_write_json(path: str | os.PathLike[str], value: dict[str, Any]) -> No
 
 
 def feature_schema_hash(feature_names: Iterable[str] | None) -> str:
-    return hash_json(list(feature_names or []))
+    """Schema hash from an iterable of column names.
+
+    `feature_names or []` raised on the real caller. `build_research_matrix` passes
+    `merged.columns`, a pandas Index, and `or` evaluates truthiness - which an Index with more
+    than one element refuses to answer:
+
+        ValueError: The truth value of a Index is ambiguous.
+
+    It killed a 1,000-day rebuild at the manifest write, AFTER every day had been downloaded
+    and 1,440,000 rows built. The idiom is only safe for containers whose emptiness is a bool;
+    an explicit None check works for any iterable, including generators, where `or` would also
+    consume nothing and silently hash an empty list.
+    """
+    if feature_names is None:
+        return hash_json([])
+    return hash_json([str(name) for name in feature_names])
 
 
 def configured_model_training_days() -> int | None:
