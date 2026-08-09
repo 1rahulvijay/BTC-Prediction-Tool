@@ -83,6 +83,11 @@ FRONTIER = (
     # horizons returns ~-12 bps = exactly the shipped round-trip cost.
     #   docs/active/BINANCE_FIRST_TOUCH_LANE_2026-08-08.md
     "binance_first_touch_lane.py",
+    # Does any observable state break the first-touch martingale? 285 cells searched, priced
+    # by a max-statistic permutation null. Best cell -11.74 bps: a reliable LOSS, and a
+    # shuffle of pure noise produced a better one (-11.53).
+    #   docs/active/CONDITIONAL_ENTRY_2026-08-08.md
+    "conditional_first_touch_entry.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",

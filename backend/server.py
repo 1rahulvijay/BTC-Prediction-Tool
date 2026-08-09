@@ -89,6 +89,7 @@ from binance_paper.routes import (
     configure_service as configure_binance_paper_service,
     router as binance_paper_router,
 )
+from paper_competition import PaperCompetition
 from historical_replay import run_replay as run_historical_replay
 from control_auth import (
     allowed_origins as _allowed_origins,
@@ -447,6 +448,12 @@ async def lifespan(app: FastAPI):
     FEED_WRITER.start()
     logger.info("Feed writer started (bounded, non-blocking persistence queue)")
     binance_paper_service.initialize()
+    _competition_state = paper_competition.ensure_started()
+    logger.info(
+        "Paper competition ready: race=%s bankroll=$%.2f per model",
+        _competition_state.get("race_id"),
+        paper_competition.config.bankroll_usd,
+    )
     loaded_signals = signal_buffer.load(SIGNAL_HISTORY_PATH)
     logger.info(f"Loaded {loaded_signals} persisted signal-history snapshots")
     _pending_predictions = database.fetch_unresolved_predictions()
@@ -987,6 +994,10 @@ binance_paper_service = BinancePaperService(
 )
 configure_binance_paper_service(binance_paper_service)
 app.include_router(binance_paper_router)
+paper_competition = PaperCompetition(
+    binance_paper_service,
+    database.rule_paper_competition_rows,
+)
 
 
 async def fast_price_broadcaster():
@@ -5911,6 +5922,12 @@ async def api_paper_ledger():
     exit, per-trade P/L, plus per-rule + overall win rates and totals. Read-only aggregate."""
     import database as _db
     return _db.rule_paper_ledger(300)
+
+
+@app.get("/api/paper-competition")
+async def api_paper_competition():
+    """Read-only $500-vs-$500 paper race. This endpoint has no order authority."""
+    return paper_competition.summary()
 
 
 @app.get("/api/round-state")

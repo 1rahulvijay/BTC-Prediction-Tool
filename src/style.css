@@ -1683,8 +1683,222 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
   font-size: 0.78rem;
 }
 
+.competition-view {
+  padding: 0.8rem;
+}
+
+.competition-status-band {
+  min-height: 480px;
+}
+
+.competition-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.8rem;
+  padding: 0.8rem;
+  border-left: 4px solid var(--green);
+  background: rgba(0, 230, 118, 0.04);
+}
+
+.competition-summary.is-blocked {
+  border-color: var(--gold);
+  background: rgba(255, 215, 0, 0.04);
+}
+
+.competition-summary > div > span,
+.competition-summary small {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+}
+
+.competition-summary > div > strong {
+  display: block;
+  margin: 0.2rem 0;
+  font-size: 1rem;
+}
+
+.competition-summary dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(100px, 1fr));
+  min-width: min(100%, 480px);
+  margin: 0;
+}
+
+.competition-summary dl > div {
+  padding: 0.2rem 0.7rem;
+  border-left: 1px solid var(--border-primary);
+}
+
+.competition-summary dt {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  text-transform: uppercase;
+}
+
+.competition-summary dd {
+  margin: 0.15rem 0 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.competition-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.competition-card {
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.competition-card.is-leading {
+  border-color: rgba(0, 230, 118, 0.7);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.competition-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.competition-card-header h3 {
+  margin: 0.18rem 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+}
+
+.competition-venue,
+.competition-rank {
+  color: var(--text-tertiary);
+  font-size: 0.65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.competition-card.is-leading .competition-rank {
+  color: var(--green);
+}
+
+.competition-pnl {
+  margin: 0.8rem 0;
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.competition-pnl span,
+.competition-pnl small {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+}
+
+.competition-pnl strong {
+  display: block;
+  margin: 0.2rem 0;
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+}
+
+.competition-positive {
+  color: var(--green) !important;
+}
+
+.competition-negative {
+  color: var(--red) !important;
+}
+
+.competition-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.competition-stat-grid > div {
+  min-width: 0;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.competition-stat-grid span,
+.competition-stat-grid strong {
+  display: block;
+}
+
+.competition-stat-grid span {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.competition-stat-grid strong {
+  margin-top: 0.12rem;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.competition-sample {
+  margin-top: 0.8rem;
+}
+
+.competition-sample > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--text-tertiary);
+  font-size: 0.67rem;
+}
+
+.competition-progress {
+  height: 6px;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.competition-progress i {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.competition-sample p,
+.competition-explainer p,
+.competition-error p {
+  margin: 0.45rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.competition-explainer,
+.competition-error {
+  margin-top: 0.8rem;
+  padding: 0.75rem;
+  border-left: 3px solid var(--gold);
+  background: rgba(255, 215, 0, 0.035);
+}
+
+.competition-error {
+  border-color: var(--red);
+  background: rgba(255, 23, 68, 0.04);
+}
+
 @media (max-width: 1050px) {
   .bp-strategy-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .competition-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1700,5 +1914,20 @@ body { font-family: var(--font-body); background: var(--bg-primary); color: var(
 
   .bp-stat-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .competition-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .competition-summary dl {
+    grid-template-columns: 1fr;
+  }
+
+  .competition-summary dl > div {
+    padding: 0.35rem 0;
+    border-left: 0;
+    border-top: 1px solid var(--border-primary);
   }
 }

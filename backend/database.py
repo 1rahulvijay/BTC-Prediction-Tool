@@ -1069,6 +1069,38 @@ def rule_paper_ledger(limit: int = 300):
             conn.close()
 
 
+def rule_paper_competition_rows(rule: str, since_ms: int):
+    """Chronological executable rows for one paper rule after a race epoch.
+
+    The paper competition deliberately does not use ``rule_paper_ledger`` because that
+    UI helper is newest-first and capped. A bankroll replay must see every entry and
+    exit in event order or it can spend capital that was still committed elsewhere.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        rows = conn.execute("""
+            SELECT round_id, rule, ts, horizon, side, ask, bid, fee, spread, depth,
+                   action, outcome, pnl, settled_ts, exit_gross, exit_fee,
+                   exit_reason, settlement_source
+            FROM rule_paper_trades
+            WHERE rule = ? AND ts >= ? AND action = 'ENTER'
+            ORDER BY ts ASC, round_id ASC
+        """, (str(rule), int(since_ms))).fetchall()
+        keys = (
+            "round_id", "rule", "ts", "horizon", "side", "ask", "bid", "fee",
+            "spread", "depth", "action", "outcome", "pnl", "settled_ts",
+            "exit_gross", "exit_fee", "exit_reason", "settlement_source",
+        )
+        return [dict(zip(keys, row)) for row in rows]
+    except Exception as exc:
+        logger.warning("DuckDB paper-competition read failed: %s", exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
 def close_rule_paper_trade(round_id: str, rule: str, pnl: float, settled_ts: int,
                            outcome: str = "EARLY_EXIT", btc_exit=None,
                            exit_gross=None, exit_fee: float = 0.0, state=None,

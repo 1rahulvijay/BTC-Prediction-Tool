@@ -1191,6 +1191,24 @@ class BinancePaperPersistence:
         with self._lock:
             return _rows(self._conn.execute(sql, tuple(params)))
 
+    def competition_trades_since(
+        self, strategy_id: str, since_ms: int
+    ) -> list[dict[str, Any]]:
+        """Return the complete chronological race ledger without a UI row cap."""
+        with self._lock:
+            return _rows(
+                self._conn.execute(
+                    """
+                    SELECT * FROM binance_paper_trades
+                    WHERE strategy_id = ?
+                      AND entry_time_ms >= ?
+                      AND exit_time_ms >= ?
+                    ORDER BY exit_time_ms ASC, trade_id ASC
+                    """,
+                    (str(strategy_id), int(since_ms), int(since_ms)),
+                )
+            )
+
     def equity_snapshots(
         self, limit: int = 1000, strategy_id: str | None = None
     ) -> list[dict[str, Any]]:

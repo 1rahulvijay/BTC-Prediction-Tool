@@ -1921,3 +1921,43 @@ approximately break-even, not to profit.
 gross edge is zero rather than small.
 
 Detail: `docs/active/BINANCE_FIRST_TOUCH_LANE_2026-08-08.md`.
+
+---
+
+## 22. No conditional entry state breaks the martingale — `2026-08-08`
+
+The last untested question. `binance_first_touch_lane.py` showed the *unconditional* process is
+a martingale; this asks whether any observable state changes that.
+
+**Two guards, both necessary.** *Leakage*: the matrix carries `future_*`, `ret_5m` and `*_label`
+columns — outcomes beside the features. The feature list is an explicit **allow-list** of 19
+causal columns (a deny-list would silently admit every future column added later), asserted
+against leak markers before the file is read. *Multiple testing*: 19 features × 5 buckets × 3
+barrier pairs = **285 cells**, so the null is a **max-statistic permutation** — shuffle outcomes
+against buckets, re-run the entire search, take its best, ×300. That prices the search itself.
+
+```text
+best cell   funding_velocity q5, barriers 15/30, n=5,194   -11.74 bps
+shuffled    median -11.84   95th pct -11.75   max -11.53 bps
+p(shuffled best >= real best) = 0.043
+```
+
+The best conditioning state in 285 cells is **0.26 bps less bad** than trading blind and still
+an 11.74 bps loss. **A shuffle of pure noise produced a better best cell (−11.53) than the real
+data did.** **FAIL_NO_EDGE.**
+
+**A defect in this study's own verdict, caught and fixed.** The first version branched on the
+p-value alone and printed *"a CANDIDATE for a pre-registered forward test"* for a cell losing
+11.74 bps. A p<0.05 on a loss says the loss is *reliable*, not that the cell is tradeable — a
+check passing while the property it guarantees is false, committed by the tool written to avoid
+it. The verdict now requires significance **and** profitability.
+
+**SWEEP COMPLETE: seven questions, seven closed.** Five by execution economics (fee curve,
+spread crossed twice, queue, adverse selection); two by absence of information (the barrier
+geometry is a martingale, and no state in the matrix changes it).
+
+Genuinely untested: sub-second cross-venue (blocked on a fast BTC tick series, not on
+Polymarket capture), posting deeper than the touch, two-sided maker quoting, feature families
+absent from the matrix, and horizons beyond 5m/15m.
+
+Detail: `docs/active/CONDITIONAL_ENTRY_2026-08-08.md`.

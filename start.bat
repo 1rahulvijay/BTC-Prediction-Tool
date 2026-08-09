@@ -6,9 +6,19 @@ REM All app-generated files (DuckDB, signal_history.pkl, saved_models, cache) li
 REM this project's data\ folder. IMPORTANT: keep OneDrive sync OFF for the Documents folder
 REM so its sync service / IDE indexers cannot lock these files mid-write.
 set "BTC_DATA_DIR=%PROJECT_ROOT%data"
-REM Binance perpetual paper trading is a separate research engine. It cannot start
-REM from the UI unless this environment hard gate was enabled before launch.
-if not defined BTC_ENABLE_BINANCE_PAPER set "BTC_ENABLE_BINANCE_PAPER=0"
+REM === $500 vs $500 PAPER COMPETITION ===================================
+REM One Polymarket Champion account competes with the Binance model-consensus account.
+REM Both are PAPER ONLY. Real order routing remains absent and disabled.
+if not defined BTC_PAPER_COMPETITION_BANKROLL_USD set "BTC_PAPER_COMPETITION_BANKROLL_USD=500"
+if not defined BTC_PAPER_COMPETITION_POSITION_FRACTION set "BTC_PAPER_COMPETITION_POSITION_FRACTION=0.10"
+if not defined BTC_PAPER_COMPETITION_EXPOSURE_FRACTION set "BTC_PAPER_COMPETITION_EXPOSURE_FRACTION=0.20"
+if not defined BTC_PAPER_COMPETITION_POLY_RULE set "BTC_PAPER_COMPETITION_POLY_RULE=CHAMPION_DYNAMIC_PAPER_V1"
+if not defined BTC_PAPER_COMPETITION_BINANCE_STRATEGY set "BTC_PAPER_COMPETITION_BINANCE_STRATEGY=model_consensus"
+if not defined BTC_BINANCE_PAPER_STARTING_CASH set "BTC_BINANCE_PAPER_STARTING_CASH=%BTC_PAPER_COMPETITION_BANKROLL_USD%"
+if not defined BTC_BINANCE_PAPER_DB set "BTC_BINANCE_PAPER_DB=%BTC_DATA_DIR%\binance_paper_competition_500.duckdb"
+REM Only the model seat and its zero-information benchmark run in this dedicated DB.
+if not defined BTC_BINANCE_COMPETITION_ONLY set "BTC_BINANCE_COMPETITION_ONLY=1"
+if not defined BTC_ENABLE_BINANCE_PAPER set "BTC_ENABLE_BINANCE_PAPER=1"
 REM === 5m UP-TILT FIX (serving, no retrain) =============================
 REM Symmetric up-vs-down dead-zone applied to 5m ONLY (15m is already balanced: tilt -0.0pt).
 REM Neutralizes the measured +34pt 5m UP-lean skew by sending marginal coin-flip calls to
@@ -438,6 +448,8 @@ if errorlevel 1 goto :selftest_failed_m
 python backend\test_paper_trading_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\test_model_metrics_integrity.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_m
+python backend\paper_competition.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 echo [selftest] All invariant selftests passed.
 if "%BTC_SELFTEST_ONLY%"=="1" exit /b 0

@@ -46,6 +46,7 @@ let replayPollTimer = null;
 let connectionFailureCount = 0;
 let backendMessageSeen = false;
 let binancePaperPollTimer = null;
+let paperCompetitionPollTimer = null;
 let binancePaperEquityChart = null;
 let binancePaperEquitySeries = null;
 
@@ -273,12 +274,14 @@ function init() {
       const pv = document.getElementById('polymarket-view');
       const bpv = document.getElementById('binancepm-view');
       const paperView = document.getElementById('binance-paper-view');
+      const competitionView = document.getElementById('competition-view');
       const tav = document.getElementById('tanalysis-view');
       const healthView = document.getElementById('system-health-view');
       if (bv) bv.classList.toggle('hidden', currentAppTab !== 'binance');
       if (pv) pv.classList.toggle('hidden', currentAppTab !== 'polymarket');
       if (bpv) bpv.classList.toggle('hidden', !isDiag);
       if (paperView) paperView.classList.toggle('hidden', currentAppTab !== 'binance-paper');
+      if (competitionView) competitionView.classList.toggle('hidden', currentAppTab !== 'competition');
       if (tav) tav.classList.toggle('hidden', currentAppTab !== 'tanalysis');
       if (healthView) healthView.classList.toggle('hidden', currentAppTab !== 'system-health');
       const trv = document.getElementById('trades-view');
@@ -295,6 +298,8 @@ function init() {
       if (currentAppTab === 'tanalysis' && lastPlainData) renderTAView(lastPlainData);
       if (currentAppTab === 'binance-paper') startBinancePaperPolling();
       else stopBinancePaperPolling();
+      if (currentAppTab === 'competition') startPaperCompetitionPolling();
+      else stopPaperCompetitionPolling();
       if (currentAppTab === 'system-health') fetchPlatformStatus();
       if (isDiag && lastPlainData) {
         renderModelsView(lastPlainData);
@@ -4782,6 +4787,139 @@ function bpAge(value) {
   if (!Number.isFinite(ageMs)) return '--';
   if (ageMs < 1000) return `${Math.max(0, Math.round(ageMs))}ms`;
   return `${(ageMs / 1000).toFixed(1)}s`;
+}
+
+function competitionSignedUsd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  const absolute = bpUsd(Math.abs(number));
+  if (number > 0) return `+${absolute}`;
+  if (number < 0) return `-${absolute}`;
+  return bpUsd(0);
+}
+
+function competitionMetric(label, value, className = '') {
+  return `<div><span>${bpEscape(label)}</span><strong class="${bpEscape(className)}">${value}</strong></div>`;
+}
+
+function competitionCard(account, isLeader) {
+  const pnl = Number(account?.realized_net_pnl_usd);
+  const pnlClass = pnl > 0 ? 'competition-positive' : pnl < 0 ? 'competition-negative' : '';
+  const status = account?.sample_status || account?.trust_state || 'UNAVAILABLE';
+  const trustOk = account?.trust_state === 'PAPER_ACCOUNTING_ONLY';
+  const closed = Number(account?.closed_trades || 0);
+  const minimum = 30;
+  const progress = Math.min(100, Math.max(0, closed / minimum * 100));
+  const profitFactor = account?.profit_factor === 'INF'
+    ? 'No losing trade yet'
+    : bpNumber(account?.profit_factor, 2);
+  const costs = Number(account?.fees_usd || 0)
+    + Number(account?.slippage_usd || 0)
+    - Number(account?.funding_usd || 0);
+  const markedEquity = account?.unrealized_mark_available
+    ? competitionMetric('Marked equity', bpUsd(account.current_marked_equity_usd))
+    : competitionMetric('Marked equity', 'Unavailable until exit');
+  const activity = account?.venue === 'BINANCE'
+    ? (account?.latest_decision?.action || account?.inactive_reason || account?.runtime_state || 'Waiting')
+    : `${Number(account?.accepted_entries || 0)} accepted / ${Number(account?.entry_signals || 0)} signals`;
+
+  return `<article class="competition-card ${isLeader ? 'is-leading' : ''}">
+    <header class="competition-card-header">
+      <div>
+        <span class="competition-venue">${bpEscape(account?.venue || 'Unknown venue')}</span>
+        <h3>${bpEscape(account?.model || 'Model unavailable')}</h3>
+      </div>
+      <span class="competition-rank">${isLeader ? 'PROVISIONAL LEADER' : bpEscape(status.replaceAll('_', ' '))}</span>
+    </header>
+    <div class="competition-pnl ${pnlClass}">
+      <span>Realized after-cost P/L</span>
+      <strong>${competitionSignedUsd(account?.realized_net_pnl_usd)}</strong>
+      <small>Settled account ${bpUsd(account?.settled_equity_usd)}</small>
+    </div>
+    <div class="competition-stat-grid">
+      ${competitionMetric('Return', `${bpNumber(account?.roi_pct, 2)}%`, pnlClass)}
+      ${competitionMetric('Closed trades', bpNumber(closed, 0))}
+      ${competitionMetric('Win rate', account?.win_rate_pct == null ? '--' : `${bpNumber(account.win_rate_pct, 1)}%`)}
+      ${competitionMetric('Profit factor', profitFactor)}
+      ${competitionMetric('Average/trade', competitionSignedUsd(account?.average_net_pnl_usd))}
+      ${competitionMetric('Realized max loss from peak', bpUsd(account?.maximum_realized_drawdown_usd))}
+      ${competitionMetric('Open positions', bpNumber(account?.open_positions || 0, 0))}
+      ${competitionMetric('Open exposure', bpUsd(account?.open_exposure_at_cost_usd))}
+      ${competitionMetric('Recorded costs', bpUsd(costs))}
+      ${markedEquity}
+    </div>
+    <div class="competition-sample">
+      <div><span>Evidence progress</span><strong>${closed} / ${minimum} closed trades</strong></div>
+      <div class="competition-progress" role="progressbar" aria-valuemin="0" aria-valuemax="30" aria-valuenow="${Math.min(minimum, closed)}"><i style="width:${progress.toFixed(1)}%"></i></div>
+      <p>${trustOk ? bpEscape(activity) : `Not comparable: ${bpEscape(account?.trust_state || 'account unavailable')}`}</p>
+    </div>
+  </article>`;
+}
+
+function renderPaperCompetition(data) {
+  const container = document.getElementById('paper-competition-dashboard');
+  if (!container) return;
+  const leader = data?.leader || 'NOT_COMPARABLE';
+  const leaderLabel = leader === 'NO_LEADER_YET'
+    ? 'No settled result yet'
+    : leader === 'NOT_COMPARABLE'
+      ? 'Accounts are not comparable'
+      : leader === 'TIE'
+        ? 'The race is tied'
+        : `${leader} leads by ${bpUsd(data?.leader_margin_usd)}`;
+  const evidenceLabel = data?.evidence_sufficient_for_comparison
+    ? 'Minimum sample reached for both accounts'
+    : 'Early experiment: wait for 30 closed trades from each account';
+  const polyLeading = leader === 'POLYMARKET';
+  const binanceLeading = leader === 'BINANCE';
+
+  container.innerHTML = `<div class="competition-summary ${data?.comparable ? '' : 'is-blocked'}">
+      <div>
+        <span>Current result</span>
+        <strong>${bpEscape(leaderLabel)}</strong>
+        <small>${bpEscape(evidenceLabel)}</small>
+      </div>
+      <dl>
+        <div><dt>Started</dt><dd>${bpEscape(bpTime(data?.started_at_ms))}</dd></div>
+        <div><dt>Capital</dt><dd>${bpUsd(data?.bankroll_per_model_usd)} each</dd></div>
+        <div><dt>Ranking</dt><dd>Realized P/L only</dd></div>
+      </dl>
+    </div>
+    <div class="competition-grid">
+      ${competitionCard(data?.polymarket || {}, polyLeading)}
+      ${competitionCard(data?.binance || {}, binanceLeading)}
+    </div>
+    <div class="competition-explainer">
+      <strong>How to read this race</strong>
+      <p>Green profit means closed trades made money after recorded venue costs. Red means they lost money. Open Polymarket positions are not guessed at a live value, so only closed-trade P/L determines the leader.</p>
+      <p>${bpEscape(data?.warning || 'Paper results do not prove future profitability.')}</p>
+    </div>`;
+}
+
+function startPaperCompetitionPolling() {
+  stopPaperCompetitionPolling();
+  fetchPaperCompetition();
+  paperCompetitionPollTimer = setInterval(fetchPaperCompetition, 5000);
+}
+
+function stopPaperCompetitionPolling() {
+  if (paperCompetitionPollTimer) clearInterval(paperCompetitionPollTimer);
+  paperCompetitionPollTimer = null;
+}
+
+async function fetchPaperCompetition() {
+  if (currentAppTab !== 'competition') return;
+  const container = document.getElementById('paper-competition-dashboard');
+  try {
+    const response = await fetch(`${HTTP_API_BASE}/api/paper-competition`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `${response.status} ${response.statusText}`);
+    renderPaperCompetition(payload);
+  } catch (error) {
+    if (container) {
+      container.innerHTML = `<div class="competition-error"><strong>Race data unavailable</strong><p>${bpEscape(error.message)}</p><p>No leader is shown until both paper ledgers can be read safely.</p></div>`;
+    }
+  }
 }
 
 async function bpRequest(path, options = {}) {

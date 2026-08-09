@@ -114,6 +114,7 @@
              render code so nothing is lost; restore a tab button here to bring one back. -->
         <button class="app-tab active" data-view="polymarket">🎯 Polymarket</button>
         <button class="app-tab" data-view="trades" title="Every paper trade from all rules and shadows: buys, exits, P/L, win rates, totals">📒 Trades</button>
+        <button class="app-tab" data-view="competition" title="$500 paper bankroll per model; realized after-cost P/L decides the leader">$500 Race</button>
         <button class="app-tab" data-view="binance">₿ Bitcoin</button>
         <button class="app-tab" data-view="binance-paper">Binance Paper</button>
         <button class="app-tab" data-view="tanalysis">📊 Analysis</button>
@@ -125,6 +126,25 @@
       <!-- 📒 TRADES: full paper-trade blotter (all rules + shadows) — rendered by renderTradesBlotter() -->
       <main class="hidden" id="trades-view" style="padding:0 .8rem .8rem">
         <div id="trades-blotter" aria-live="polite">Loading trade ledger…</div>
+      </main>
+
+      <!-- Equal-capital, paper-only comparison of one model seat per venue. -->
+      <main class="models-view hidden competition-view" id="competition-view">
+        <section class="analysis-section competition-status-band">
+          <div class="bp-title-row">
+            <div>
+              <h2>Polymarket vs Binance: $500 Paper Race</h2>
+              <p>Same starting capital. Realized P/L after venue costs decides the provisional leader.</p>
+            </div>
+            <div class="bp-badges">
+              <span class="bp-badge">PAPER ONLY</span>
+              <span class="bp-badge bp-badge-danger">REAL ORDERS DISABLED</span>
+            </div>
+          </div>
+          <div id="paper-competition-dashboard" aria-live="polite">
+            Loading the paper competition...
+          </div>
+        </section>
       </main>
 
       <!-- Dashboard Grid -->
@@ -948,6 +968,8 @@
             <label class="bp-equity-filter">Account
               <select id="bp-equity-strategy">
                 <option value="">Combined diagnostic</option>
+                <option value="model_consensus">Model Consensus</option>
+                <option value="random_control">Random Control</option>
                 <option value="trend_following">Trend Following</option>
                 <option value="breakout">Breakout</option>
               </select>

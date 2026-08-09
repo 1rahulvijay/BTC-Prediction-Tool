@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 import json
+import os
 from typing import Any
 
 from .config import StrategyRiskConfig
@@ -35,7 +36,14 @@ class StrategyRegistry:
             "model_consensus": ModelConsensusStrategy(),
             CONTROL_STRATEGY_ID: RandomControlStrategy(),
         }
-        self._enabled = {strategy_id: True for strategy_id in self._strategies}
+        competition_only = os.getenv("BTC_BINANCE_COMPETITION_ONLY", "0") == "1"
+        self._enabled = {
+            strategy_id: (
+                strategy_id in {"model_consensus", CONTROL_STRATEGY_ID}
+                if competition_only else True
+            )
+            for strategy_id in self._strategies
+        }
 
     def all(self):
         return tuple(self._strategies.values())
@@ -74,7 +82,7 @@ class StrategyRegistry:
                 strategy.strategy_id,
                 strategy.strategy_name,
                 strategy.strategy_version,
-                True,
+                self._enabled[strategy.strategy_id],
                 json.dumps(config, sort_keys=True),
                 canonical_hash(config),
                 starting_cash_usd,

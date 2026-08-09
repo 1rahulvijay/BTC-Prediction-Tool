@@ -665,6 +665,9 @@ jobs:
       - name: Paper trading restart and official settlement integrity
         run: python backend/test_paper_trading_integrity.py
 
+      - name: Equal-capital Polymarket versus Binance paper accounting
+        run: python backend/paper_competition.py
+
       # Pins ENTER versus WAIT economics and the no-asof-join export contract used by the
       # candidate-dependent Phase 5 tests.
       - name: Candidate evidence builder (exact decision and counterfactual separation)
@@ -948,6 +951,7 @@ jobs:
           python backend/model_promotion.py || exit /b 1
           python backend/polymarket/model_dynamic_paper.py || exit /b 1
           python backend/test_paper_trading_integrity.py || exit /b 1
+          python backend/paper_competition.py || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1
           python -m compileall -q backend || exit /b 1
