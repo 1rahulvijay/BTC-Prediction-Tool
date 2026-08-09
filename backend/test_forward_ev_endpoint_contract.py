@@ -86,18 +86,29 @@ def main() -> int:
         and tgt.value.id == "backend_state"
     }
     check("'forward_ev_economic_skips'" in written,
-          f"skipped rows are COUNTED into backend_state under that exact key - asserted by "
-          f"parsing the assignment target, so a renamed write cannot pass on a leftover read")
+          "skipped rows are COUNTED into backend_state under that exact key - asserted by "
+          "parsing the assignment target, so a renamed write cannot pass on a leftover read")
     idx = src.find("NOT resolved economically")
     check(idx > 0 and "logger.warning" in src[max(0, idx - 300):idx],
           "and logged at WARNING, not DEBUG - a silently skipped economic outcome is how this "
           "class of defect stays invisible for weeks")
 
     # The known remaining gap must be recorded where the next reader will hit it.
-    check("outcome_status" in src,
-          "the missing outcome_status column is named in-place as the follow-up, so 'stays "
-          "unresolved' is a recorded limitation rather than an accident: the ledger cannot "
-          "yet distinguish ECONOMIC_OUTCOME_UNAVAILABLE from not-yet-resolved")
+    # The skip must reach a TERMINAL state, not linger as PENDING forever.
+    check("mark_forward_ev_economic_unavailable" in src,
+          "a skipped row is closed as ECONOMIC_OUTCOME_UNAVAILABLE rather than left PENDING - "
+          "'no endpoint ever existed' and 'not resolved yet' are different facts, and a "
+          "promotion study must tell them apart")
+    import database as _db
+    check(_db.FORWARD_EV_UNAVAILABLE == "ECONOMIC_OUTCOME_UNAVAILABLE"
+          and _db.FORWARD_EV_RESOLVED == "RESOLVED"
+          and _db.FORWARD_EV_PENDING == "PENDING",
+          "the three terminal states are named constants, so a consumer filters on a shared "
+          "vocabulary instead of a string literal it might spell differently")
+    db_src = (BACKEND / "database.py").read_text(encoding="utf-8")
+    check("outcome_status = ?" in db_src and "outcome_status = 'RESOLVED'" in db_src,
+          "and BOTH paths set it - an economic resolve marks RESOLVED, so a row can never be "
+          "resolved while still reading PENDING")
 
     print(f"\nFORWARD-EV ENDPOINT CONTRACT: PASS ({CHECKS} checks)")
     return 0

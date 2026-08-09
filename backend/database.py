@@ -261,9 +261,16 @@ def init_db():
             net_pnl_usd DOUBLE DEFAULT NULL,
             avoided_loss_usd DOUBLE DEFAULT NULL,
             opportunity_cost_usd DOUBLE DEFAULT NULL,
-            resolved_at BIGINT DEFAULT NULL
+            resolved_at BIGINT DEFAULT NULL,
+            outcome_status VARCHAR DEFAULT 'PENDING'
         )
     """)
+    # Idempotent for databases created before the column existed.
+    try:
+        conn.execute(
+            "ALTER TABLE forward_ev_ledger ADD COLUMN outcome_status VARCHAR DEFAULT 'PENDING'")
+    except Exception:
+        pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS polymarket_markets (
             market_id VARCHAR PRIMARY KEY,
@@ -2188,6 +2195,49 @@ def log_forward_ev_event(entry: dict):
             conn.close()
 
 
+#: Terminal states for a forward-EV row. A row is PENDING, economically RESOLVED, or
+#: permanently UNAVAILABLE - never silently stuck. "No genuine endpoint ever existed" and
+#: "not resolved yet" are different facts and a promotion study must be able to tell them
+#: apart: the first is a denominator the evidence never had, the second is one it may still get.
+FORWARD_EV_PENDING = "PENDING"
+FORWARD_EV_RESOLVED = "RESOLVED"
+FORWARD_EV_UNAVAILABLE = "ECONOMIC_OUTCOME_UNAVAILABLE"
+
+
+def mark_forward_ev_economic_unavailable(prediction_id: str, reason: str,
+                                         resolved_at: int = None) -> int:
+    """Close a forward-EV row that can never have economic outcome.
+
+    A BARRIER_FALLBACK substitution is classification evidence: the first-touch barrier stood
+    in for a horizon endpoint that was never observed. Resolving it economically would put a
+    barrier distance into net_pnl_usd, which is the defect `ddbdf27` removed. Leaving it
+    PENDING forever is only marginally better - it inflates the "awaiting resolution" backlog
+    and hides how much evidence the ledger will never have.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        cur = conn.execute("""
+            UPDATE forward_ev_ledger
+            SET resolved = TRUE,
+                outcome_status = ?,
+                actual_direction = ?,
+                resolved_at = ?
+            WHERE prediction_id = ? AND resolved = FALSE
+        """, (FORWARD_EV_UNAVAILABLE, str(reason or "")[:120],
+              int(resolved_at or time.time() * 1000), prediction_id))
+        return int(getattr(cur, "rowcount", 0) or 0)
+    except Exception as exc:
+        logger.debug(f"forward-EV unavailable mark skipped: {exc}")
+        return 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def resolve_forward_ev_event(prediction_id: str, exit_price: float, actual_move: float,
                              actual_direction: str, direction_hit: bool,
                              resolved_at: int = None):
@@ -2235,7 +2285,8 @@ def resolve_forward_ev_event(prediction_id: str, exit_price: float, actual_move:
 
             conn.execute("""
                 UPDATE forward_ev_ledger
-                SET resolved = TRUE, exit_price = ?, actual_move = ?, actual_direction = ?,
+                SET resolved = TRUE, outcome_status = 'RESOLVED',
+                    exit_price = ?, actual_move = ?, actual_direction = ?,
                     direction_hit = ?, gross_pnl_usd = ?, fees_usd = ?, slippage_usd = ?,
                     net_pnl_usd = ?, avoided_loss_usd = ?, opportunity_cost_usd = ?,
                     resolved_at = ?

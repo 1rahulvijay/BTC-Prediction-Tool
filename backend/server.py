@@ -5432,6 +5432,19 @@ async def main_loop():
                         pred_id, _ep_basis or "<missing>")
                     backend_state["forward_ev_economic_skips"] = int(
                         backend_state.get("forward_ev_economic_skips", 0)) + 1
+                    # Close it as permanently UNAVAILABLE rather than leaving it PENDING.
+                    # "No genuine endpoint ever existed" and "not resolved yet" are different
+                    # facts: the first is a denominator this evidence will never have, the
+                    # second is one it may still get, and a promotion study must tell them
+                    # apart. Leaving it pending forever inflates the backlog and hides how
+                    # much of the ledger can never resolve.
+                    try:
+                        database.mark_forward_ev_economic_unavailable(
+                            pred_id,
+                            f"endpoint_price_basis={_ep_basis or 'missing'}",
+                            int(v.get("verified_at") or now_ms))
+                    except Exception as _mu:
+                        logger.debug(f"Forward-EV unavailable mark skipped: {_mu}")
                 else:
                     try:
                         database.resolve_forward_ev_event(
