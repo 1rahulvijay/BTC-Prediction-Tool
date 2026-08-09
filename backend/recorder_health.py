@@ -74,6 +74,8 @@ RECORDER_CLOCKS = {
     "deribit_option_chain_recorder.py": ("deribit_options.duckdb",
                                          "deribit_chain_batches",
                                          "response_receive_ns", "NANOS"),
+    "funding_recorder.py": ("funding.duckdb", "funding_heartbeats",
+                            "recv_ts_ns", "NANOS"),
 }
 
 _LOCKED_STORE_PROGRESS: dict[str, dict] = {}

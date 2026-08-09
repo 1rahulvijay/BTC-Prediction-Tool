@@ -2010,7 +2010,7 @@ Detail: `docs/active/BTC_TICK_RECORDER_2026-08-09.md`.
 
 ---
 
-## 24. Market-neutral carry — basis closed, funding unmeasured — `2026-08-09`
+## 24. Market-neutral carry — basis closed, funding open/bounded — `2026-08-09`
 
 The one lane that does not predict direction, so it cannot inherit the martingale finding that
 closed the Binance barrier lanes. **Two P&L terms, two verdicts** — conflating them would answer
@@ -2027,19 +2027,28 @@ a fixed level, so there is nothing to converge *to*.
 a hedged position as a single round trip halves the true cost and is the easiest way to make
 this lane look viable.
 
-**Funding: UNMEASURED.** `funding_velocity` is 90% zeros (a derivative, not a rate) and
-`binance_paper_funding_events` has **0 rows**. The 8-hourly cashflow is the dominant term in a
-real carry book, so this study does **not** conclude on carry as a whole. The bar, from published
-rates and explicitly not a measurement: at ~1 bp/8h it takes **8 days** of holding just to clear
-the 24 bps entry+exit. Not absurd — which is exactly why it must be measured.
+**Funding: OPEN/BOUNDED.** The public backfill contains 3,500 official settlements from
+2023-05-31 through 2026-08-09. Mean funding is +0.6637 bps/8h (+7.27% annualized on notional),
+85.2% of settlements are positive and the sign flips 486 times. After a fixed 24 bps four-leg
+cost, 30-day windows average +35.96 bps and are profitable 77.6% of the time over the full
+sample. The recent regime is weaker: +1.76% annualized over 180 days, with 30-day windows
+averaging -11.52 bps and only 39.6% profitable.
 
-**This lane is different from the other seven.** Every previous closure was economic and no data
-collection would change it. This one is blocked on **data collection**, which is cheap: a
-scheduled REST poll recording the realised funding cashflow, the basis at entry and each
-settlement, and how often funding flips sign while a hedge is on. Same shape as the BTC tick
-recorder, and smaller.
+Dollar scale uses the configured $500 Binance paper allocation conservatively: $250 spot plus
+$250 perp collateral creates $250 of matched notional. That is about $18.17/year at the full
+sample mean and $4.41/year in the recent regime, before basis change and omitted costs.
+
+**This lane is different from the other seven.** Its long-run sign and magnitude can clear the
+estimated execution cost over long holding periods. It is not promoted: regime variation,
+negative funding periods, two-leg capital, omitted borrow/margin cost and very small dollars at
+the configured capital keep it an open but bounded research lane.
 
 Not modelled: spot borrow/margin cost, and maker execution on any leg (which would lower the
 24 bps — unlike the Polymarket book, Binance has room to improve the quote).
 
 Detail: `docs/active/MARKET_NEUTRAL_CARRY_2026-08-09.md`.
+
+**Collection update (2026-08-09):** `backend/funding_recorder.py` is now wired into
+`start.bat`. It backfills official Binance settlement rows and continuously records new funding,
+mark/index basis, schedule gaps, sign flips and heartbeats in `data/funding.duckdb`. The first
+backfill and rerun produced the measured result above; collection does not itself promote carry.

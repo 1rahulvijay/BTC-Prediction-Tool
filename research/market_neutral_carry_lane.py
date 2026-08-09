@@ -20,13 +20,14 @@ confident answer to a question that was never asked. So:
   1. BASIS. `perp_spot_basis_bps` is a real series in the research matrix - 49,883 distinct
      values, monthly means drifting -3.93 -> -5.41 bps. Testable, and tested here.
 
-  2. FUNDING. NOT IN THE DATA. `funding_velocity` is 90% zeros and is a derivative rather than
-     a rate; `binance_paper_funding_events` has zero rows. The funding cashflow is the
-     DOMINANT term in a real carry book, so this study cannot conclude on carry as a whole and
-     does not try. What it can do is state the cost floor that any funding claim must clear.
+  2. FUNDING. NOW MEASURED, as of 2026-08-09. This study previously reported it UNMEASURED and
+     said so plainly: `funding_velocity` is 90% zeros and is a derivative rather than a rate,
+     and `binance_paper_funding_events` had zero rows. `backend/funding_recorder.py` closed
+     that hole by backfilling 3,500 real settlements from Binance, 2023-05-31 to 2026-08-09.
 
 The distinction matters because the two halves get different verdicts, and reporting one
-verdict for both would be the defect this repository keeps finding.
+verdict for both would be the defect this repository keeps finding. They still do, and the
+funding verdict is not the one the basis verdict would have predicted.
 
 Read-only. Exits non-zero only on a data problem.
 
@@ -52,6 +53,9 @@ MATRIX = os.environ.get("BTC_RESEARCH_MATRIX", str(ROOT / "data" / "research_mat
 LEGS_PER_ROUND_TRIP = 4
 
 
+FUNDING_DB = os.environ.get("BTC_FUNDING_DB", str(ROOT / "data" / "funding.duckdb"))
+
+
 def round_trip_cost_bps() -> float:
     try:
         from binance_paper.config import EngineConfig
@@ -59,6 +63,42 @@ def round_trip_cost_bps() -> float:
         return LEGS_PER_ROUND_TRIP * (cfg.fee_rate_bps + cfg.slippage_bps)
     except Exception:
         return 24.0
+
+
+def starting_cash() -> float:
+    """Total capital assigned to the Binance paper lane, not hedge notional."""
+    raw = os.environ.get(
+        "BTC_BINANCE_PAPER_STARTING_CASH",
+        os.environ.get("BTC_PAPER_COMPETITION_BANKROLL_USD", "500"),
+    )
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 500.0
+
+
+def load_funding():
+    """Real settlements recorded by backend/funding_recorder.py, or (None, None)."""
+    if not Path(FUNDING_DB).exists():
+        return None, None
+    try:
+        import duckdb
+        conn = duckdb.connect(FUNDING_DB, read_only=True)
+        rows = conn.execute("SELECT funding_time_ms, funding_rate_bps FROM "
+                            "funding_settlements ORDER BY funding_time_ms").fetchall()
+        conn.close()
+    except Exception:
+        return None, None
+    if len(rows) < 400:  # too short to say anything about regime
+        return None, None
+    return (np.asarray([r[0] for r in rows], dtype=np.int64),
+            np.asarray([r[1] for r in rows], dtype=float))
+
+
+def sign_flips(rate: np.ndarray) -> int:
+    """How often funding turns against a hedge that is already on."""
+    s = np.sign(rate)
+    return int((s[1:] != s[:-1]).sum())
 
 
 def main() -> int:
@@ -111,48 +151,85 @@ def main() -> int:
               f"std {sel.std():.3f}")
     print("   A convergence trade needs a level to converge TO. This one moves.")
 
-    print("\n2. FUNDING - the dominant term, and it is NOT IN THE DATA")
+    print("\n2. FUNDING - the dominant term, now MEASURED")
     print("-" * 78)
     print(f"   funding_velocity      {(fv == 0).mean():.1%} zeros, "
-          f"{len(np.unique(fv)):,} distinct - a derivative, not a rate")
-    try:
-        import duckdb
-        c = duckdb.connect(str(ROOT / "data" / "binance_paper.duckdb"), read_only=True)
-        n = c.execute("SELECT COUNT(*) FROM binance_paper_funding_events").fetchone()[0]
-        c.close()
-    except Exception:
-        n = 0
-    print(f"   funding_events rows   {n:,}")
-    print()
-    print("   The 8-hourly funding cashflow is the dominant P&L term in a real carry book, and")
-    print("   this repository has never recorded it. THIS STUDY THEREFORE DOES NOT CONCLUDE ON")
-    print("   CARRY. Reporting the basis verdict as a carry verdict would answer a question")
-    print("   that was never asked.")
-    print()
-    print("   What CAN be stated is the bar. Published Binance BTCUSDT funding is typically")
-    print("   ~0.01% per 8h - an ORDER OF MAGNITUDE from documentation, not a measurement:")
-    for rate_bps_8h in (0.5, 1.0, 2.0):
-        per_day = rate_bps_8h * 3.0
-        days = cost / per_day
-        print(f"     {rate_bps_8h:.1f} bps/8h -> {per_day:.1f} bps/day -> "
-              f"{days:.1f} days of holding just to clear the {cost:.0f} bps entry+exit")
-    print()
-    print("   So the funding half is NOT closed. It is UNMEASURED, and unlike every other")
-    print("   lane in this sweep the blocker is data collection rather than economics.")
+          f"{len(np.unique(fv)):,} distinct - a derivative, not a rate. Never usable here.")
 
-    print("\n3. WHAT WOULD SETTLE IT")
+    ts_f, rate = load_funding()
+    if ts_f is None:
+        print(f"   no funding database at {FUNDING_DB}")
+        print("   Run: python backend/funding_recorder.py --backfill-days 1100")
+        print("   Until then the funding half is UNMEASURED and this study does not conclude")
+        print("   on carry as a whole. Reporting the basis verdict as a carry verdict would")
+        print("   answer a question that was never asked.")
+        return 0
+
+    import datetime
+    fmt = lambda ms: datetime.datetime.fromtimestamp(  # noqa: E731
+        ms / 1000, datetime.UTC).strftime("%Y-%m-%d")
+    ann = rate.mean() * 3 * 365 / 100
+    print(f"   real settlements      {rate.size:,}   {fmt(ts_f[0])} .. {fmt(ts_f[-1])}")
+    print(f"     mean {rate.mean():+.4f} bps/8h -> {rate.mean() * 3:+.3f} bps/day -> "
+          f"{ann:+.2f}% annualized on notional")
+    print(f"     positive {(rate > 0).mean():.1%} of settlements, so the short-perp leg of a "
+          f"hedge is paid most of the time")
+    print()
+    print("   THE SIGN IS RIGHT AND THE MAGNITUDE CLEARS THE COST. That is a different result")
+    print("   from every other lane in this sweep, so it gets checked properly rather than")
+    print("   celebrated. Net of the four-leg round trip, by holding period:")
+    cum = np.cumsum(np.insert(rate, 0, 0.0))
+    for days in (5, 15, 30, 60, 90):
+        k = days * 3
+        if k >= rate.size:
+            continue
+        net = (cum[k:] - cum[:-k]) - cost
+        print(f"     hold {days:>3}d   mean net {net.mean():+8.2f} bps   "
+              f"median {np.median(net):+8.2f}   profitable {(net > 0).mean():5.1%}")
+
+    print("\n3. THE TWO THINGS THAT DECIDE IT - regime and scale")
     print("-" * 78)
-    print("   Record the actual funding rate and mark, every 8h, for a few months:")
-    print("     - the realised funding cashflow per unit of notional")
-    print("     - the basis at entry and at each settlement")
-    print("     - how often funding flips sign while a hedge is on")
-    print("   Then carry P&L = sum(funding) +/- basis change - 24 bps, measured rather than")
-    print("   assumed. The recorder for it is a REST poll on a schedule, not a model.")
+    print("   REGIME. The rate is not a constant, and a mean over three years hides that.")
+    k = 270  # 90 days of 8-hourly settlements
+    roll = (cum[k:] - cum[:-k]) / k * 3 * 365 / 100
+    print(f"     rolling 90d annualized   min {roll.min():+.2f}%   median "
+          f"{np.median(roll):+.2f}%   max {roll.max():+.2f}%")
+    print(f"     latest {roll[-1]:+.2f}%")
+    recent = rate[ts_f >= ts_f[-1] - 180 * 86_400_000]
+    r_ann = recent.mean() * 3 * 365 / 100
+    print(f"     last 180d   {recent.mean():+.4f} bps/8h -> {r_ann:+.2f}% annualized, "
+          f"{(recent < 0).mean():.1%} of settlements NEGATIVE")
+    net30 = (np.cumsum(np.insert(recent, 0, 0.0))[90:]
+             - np.cumsum(np.insert(recent, 0, 0.0))[:-90]) - cost
+    print(f"     a 30-day hold in THAT regime nets {net30.mean():+.2f} bps "
+          f"({(net30 > 0).mean():.1%} profitable)")
+    print("   The spread between the best and worst 90-day windows is more than an order of")
+    print("   magnitude. This is a risk premium that varies with leverage demand, not a")
+    print("   constant yield, and it is negative often enough that a hedge left on unattended")
+    print(f"   pays instead of collects. It flipped sign {sign_flips(rate):,} times.")
+
+    print()
+    capital = starting_cash()
+    hedge_notional = capital / 2.0
+    print(f"   SCALE. The configured Binance paper allocation is ${capital:.0f}. An unlevered")
+    print(f"   hedge needs capital on BOTH legs, so matched notional is ${hedge_notional:.0f}:")
+    for label, a in (("3.2y mean", ann), ("last 180d", r_ann)):
+        yr_usd = hedge_notional * a / 100
+        print(f"     {label:<10}  {a:+.2f}%/yr  ->  ${yr_usd:+.2f}/yr  "
+              f"->  ${yr_usd / 365:+.3f}/day")
+    print("   That is the whole finding. The funding term is REAL, it is POSITIVE, and it")
+    print("   clears its execution cost at a long enough holding period - the first thing in")
+    print("   this sweep that does. It is also single- to low-double-digit dollars per year at")
+    print("   this capital, and it is compensation for holding a position through")
+    print("   leverage-demand shocks rather than a mispricing anyone is missing.")
 
     print("\n" + "=" * 78)
-    print("Two halves, two verdicts. The basis half is closed by arithmetic - a 2.9 bps")
-    print("spread cannot pay a 24 bps round trip. The funding half is untested because the")
-    print("cashflow was never recorded, and saying otherwise would be inventing a result.")
+    print("Two halves, two verdicts, and the second one changed once it was measured.")
+    print("The basis half is CLOSED by arithmetic: a 2.9 bps spread cannot pay a 24 bps round")
+    print("trip. The funding half is OPEN but bounded - a real, positive, well-known risk")
+    print("premium that pays in years and in dollars, not in a trading edge over a venue.")
+    print("It is the only lane of the eight not closed, and it is not closed because the")
+    print("arithmetic works. It is small, not absent.")
     print("=" * 78)
     return 0
 

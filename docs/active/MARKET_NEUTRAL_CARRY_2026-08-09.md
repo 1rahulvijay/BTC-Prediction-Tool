@@ -13,7 +13,7 @@ question that was never asked.
 
 ```text
 basis convergence   CLOSED     by arithmetic, before any model
-funding             UNMEASURED the cashflow was never recorded
+funding             OPEN/BOUNDED measured positive risk premium, small at this capital
 ```
 
 ---
@@ -50,54 +50,72 @@ block 682   n=43,200   mean -4.553   std 0.813
 
 A convergence trade needs a level to converge *to*. This one moves.
 
-## 2. Funding — not in the data, and it is the dominant term
+## 2. Funding — now measured
 
 ```text
-funding_velocity              90.0% zeros, 36,986 distinct - a derivative, not a rate
-binance_paper_funding_events  0 rows
+official settlements    3,500 from 2023-05-31 through 2026-08-09
+mean funding            +0.6637 bps / 8h
+mean annualized         +7.27% on notional before omitted costs
+positive settlements    85.2%
+funding sign flips       486
 ```
 
-The 8-hourly funding cashflow is the dominant P&L term in a real carry book, and this
-repository has never recorded it. **This study therefore does not conclude on carry as a
-whole.**
-
-What can be stated is the bar. Published Binance BTCUSDT funding is typically ~0.01% per 8h —
-an order of magnitude from documentation, **not a measurement here**:
+The historical mean clears the four-leg 24 bps execution estimate only when held long enough:
 
 ```text
-0.5 bps/8h -> 1.5 bps/day -> 16.0 days of holding to clear the 24 bps entry+exit
-1.0 bps/8h -> 3.0 bps/day ->  8.0 days
-2.0 bps/8h -> 6.0 bps/day ->  4.0 days
+holding period    mean net funding after 24 bps    profitable windows
+5 days                         -14.04 bps                 6.6%
+15 days                         +5.92 bps                50.7%
+30 days                        +35.96 bps                77.6%
+60 days                        +96.19 bps                90.4%
+90 days                       +157.35 bps                92.0%
 ```
 
-Those holding periods are not absurd. At the typical rate a hedge held a month would clear its
-entry cost several times over — which is precisely why this must be **measured rather than
-assumed**, and why quoting the published rate as a result would be inventing one.
+This is a measured risk premium, not a guaranteed trade. The regime varies materially:
 
-## 3. Why this lane is different from the other seven
+```text
+rolling 90-day annualized    -1.58% minimum, +5.47% median, +23.28% maximum
+latest rolling 90-day        +4.76%
+last 180 days                +1.76% annualized
+last-180d 30-day windows     -11.52 bps mean net; 39.6% profitable
+```
+
+At the configured $500 Binance paper allocation, an unlevered two-leg hedge has about $250 of
+matched notional. The 3.2-year mean is therefore about $18.17/year and the recent 180-day regime
+about $4.41/year before basis change, borrow, margin, tax, slippage variance and operational
+risk. The arithmetic works, but the dollar value is small.
+
+## 3. Why this lane remains open but bounded
 
 Every previous closure was economic: the fee curve, the spread crossed twice, the queue,
 adverse selection, or an absence of information. Those are properties of the market and no
 amount of data collection changes them.
 
-**This one is blocked on data collection**, which is cheap and mechanical:
-
-```text
-record every 8h    the realised funding cashflow per unit of notional
-                   the basis at entry and at each settlement
-                   how often funding flips sign while a hedge is on
-then               carry P&L = sum(funding) +/- basis change - 24 bps, measured
-```
-
-The recorder is a REST poll on a schedule, not a model. It is the same shape as the BTC tick
-recorder built for the sub-second lane, and smaller.
+Funding is the only tested lane whose sign and magnitude can clear its estimated execution
+cost over long holding periods. It remains bounded because the premium changes regime, can turn
+negative, requires capital on both legs, and is not large enough at the configured bankroll to
+support an income claim.
 
 ## Standing caveats
 
 - Spot borrow / margin cost is not modelled and is a real term for the short-perp side.
-- Funding flipping negative while a hedge is on is the main risk and is exactly what the
-  proposed recording would quantify.
+- Funding flipping negative while a hedge is on remains a measured risk: the series changed sign
+  486 times, and recent funding is much weaker than the long-run mean.
 - 24 bps assumes the shipped taker model on all four legs. Maker execution on any leg lowers
   it, and unlike the Polymarket book there is room to improve the quote on Binance.
 
 `research/market_neutral_carry_lane.py` — read-only, standalone.
+
+## Implementation update — 2026-08-09
+
+`backend/funding_recorder.py` is now implemented and enabled by `start.bat`. On first launch it
+backfills the configured historical window from Binance's public `fundingRate` endpoint, then
+continues recording official settlements and mark/index basis into `data/funding.duckdb`.
+It records funding in raw and basis-point units, settlement-time versus receive-time separately,
+fixed-schedule gaps, sign flips, basis samples and independent heartbeats.
+
+The initial backfill completed with 3,500 official settlements and
+`research/market_neutral_carry_lane.py` was rerun. That closes the previous `UNMEASURED`
+classification and yields the `OPEN/BOUNDED` result above. It does not promote carry into the
+paper engine or prove live profitability. The recorder is public-data, read-only and has no
+order path.

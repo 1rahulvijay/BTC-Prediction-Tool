@@ -51,6 +51,7 @@ wire a live Binance futures aggTrade stream computing the same per-bar CVD, then
 | **A10** | `setup_fingerprint(ts, horizon, regime, raw_direction, conviction, agreement, confidence, grade, cvd_1m, gex, expected_move)` | per-prediction decision context; joins `predictions_{h}m` for outcome | next restart | *(derivable from B1 too)* |
 | **GEX** | `gex_live(ts, gex, total_gamma, spot, pcr, atm_iv)` | live dealer gamma (Deribit) | next restart | *(live-only; no archive)* |
 | **Deribit chain** | `deribit_options.duckdb` (`deribit_chain_batches`, `deribit_chain_snapshots`) | per-expiry/strike BTC call/put bid, ask, mark, IV, OI and receive/exchange time | standalone public recorder | *(forward-only)* |
+| **Binance funding + basis** | `funding.duckdb` (`funding_settlements`, `funding_basis_samples`, `funding_gaps`, `funding_heartbeats`) | official 8-hour funding publications plus mark/index basis and schedule integrity | standalone public recorder | public REST backfill |
 | outcomes | `predictions_{h}m`, `price_to_beat`, `model_predictions`, `ab_results` | predictions + resolved outcomes (labels) | live | — |
 
 ### Open-position Protocol B/C recorder (2026-08-03)
@@ -177,3 +178,15 @@ python backend\venues\deribit_option_chain_recorder.py --selftest
 The first public smoke stored 942 rows across 13 expiries with zero parser
 drops. This starts a forward dataset; it is not yet evidence that buying a
 straddle beats executable implied volatility, spread, fees or hedge cost.
+
+## Binance Funding And Basis Recorder (2026-08-09)
+
+`backend/funding_recorder.py` uses public Binance REST endpoints only. It backfills exact
+BTCUSDT `fundingTime` cashflow publications, then continuously samples mark/index basis and
+refreshes settled funding. It preserves exchange settlement time separately from local receive
+time, audits the fixed 8-hour schedule for holes, counts sign changes and writes independent
+heartbeats to `data/funding.duckdb`.
+
+`start.bat` enables it by default through `backend/start_recorders_once.ps1`. Set
+`BTC_SKIP_BINANCE_FUNDING_RECORDER=1` only for a deliberate opt-out. The recorder has no
+credentials or order route, and collected rows do not prove a profitable carry strategy.

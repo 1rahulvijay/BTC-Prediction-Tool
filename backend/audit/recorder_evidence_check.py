@@ -55,6 +55,7 @@ EXPECTED_STORE = {
     "cross_window_recorder.py": ("cross_window.duckdb", "cross_window_heartbeats"),
     "deribit_option_chain_recorder.py": ("deribit_options.duckdb",
                                           "deribit_chain_batches"),
+    "funding_recorder.py": ("funding.duckdb", "funding_heartbeats"),
 }
 
 REQUIRED_LAUNCHER_RECORDERS = frozenset(EXPECTED_STORE)
@@ -92,8 +93,11 @@ def store_state(store: str, table: str) -> dict:
 
 
 def logs_exist(script: str) -> bool:
-    stem = script.replace("_recorder.py", "").replace("live_btc_updown", "pm_live")
-    return any(DATA_DIR.glob(f"*{stem}*recorder*.log")) or any(DATA_DIR.glob(f"*{stem}*.log"))
+    stem = Path(script).stem
+    aliases = {stem, stem.replace("_recorder", "")}
+    if stem == "live_btc_updown_recorder":
+        aliases.add("pm_live_recorder")
+    return any(any(DATA_DIR.glob(f"*{alias}*.log")) for alias in aliases if alias)
 
 
 def audit() -> list[dict]:

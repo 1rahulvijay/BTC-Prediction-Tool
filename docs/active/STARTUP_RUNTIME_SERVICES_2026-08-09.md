@@ -19,6 +19,7 @@ and stderr logs under `data/`.
 | Binance fast BTC ticks | `btc_ticks.duckdb` | on | same-host sub-second reference for Polymarket repricing research |
 | Cross-exchange microstructure | `microstructure.duckdb` | on | synchronized order-flow snapshots |
 | Multi-venue event time | `multi_venue.duckdb` | on | Binance/Coinbase/Bybit event-time evidence and liquidations |
+| Binance funding + basis | `funding.duckdb` | on | immutable 8-hour funding publications plus mark/index basis samples |
 | Binance sequenced L2 | `binance_l2.duckdb` | on | replayable USD-M snapshot + diff-depth book, capped at 10 GB |
 | High-frequency anchor crossings | `polymarket_crossings_hf.duckdb` | on | 1-second crossing/reversion labels with supervised reconnects |
 | Polymarket cross-window | `cross_window.duckdb` | on | same-expiry 5m/15m dominance observations and heartbeat |
@@ -32,6 +33,7 @@ BTC_SKIP_PM_L2_RECORDER
 BTC_SKIP_BTC_TICK_RECORDER
 BTC_SKIP_MICROSTRUCTURE_RECORDER
 BTC_SKIP_VENUE_COLLECTOR
+BTC_SKIP_BINANCE_FUNDING_RECORDER
 BTC_SKIP_BINANCE_L2_RECORDER
 BTC_SKIP_HF_CROSSING_RECORDER
 BTC_SKIP_CROSS_WINDOW_RECORDER
@@ -54,12 +56,21 @@ the requested research matrix, trains version-incompatible/missing heads transac
 quality checks, starts Vite, and then starts Uvicorn. Browser refresh only reconnects the UI; it
 does not invoke the batch launcher or restart training.
 
+To run the complete offline startup invariant suite without launching recorders, backfills,
+training, Vite or Uvicorn:
+
+```powershell
+$env:BTC_SELFTEST_ONLY = "1"
+$env:BTC_AUTO_STOP_EXISTING_APP = "0"
+.\start.bat
+```
+
 ## Health semantics
 
-All nine standalone services are registered in `recorder_health.py` and the recorder evidence
+All ten standalone services are registered in `recorder_health.py` and the recorder evidence
 audit. The system-health tab shows each one. Core decision dependencies remain required;
-research-only streams (fast ticks, high-frequency crossings, cross-window and Deribit) are
-visible but optional and cannot globally invalidate an independent market decision.
+research-only streams (fast ticks, high-frequency crossings, cross-window, Deribit and settled
+funding) are visible but optional and cannot globally invalidate an independent market decision.
 
 On Windows, an active DuckDB writer can deny a second read-only connection. Health then tracks
 actual DB/WAL progress and labels the method `locked_writer_db_wal_progress`; a held lock whose
@@ -70,4 +81,3 @@ files stop advancing becomes `STALLED`. A lock alone is never treated as proof o
 Every standalone recorder is public-data and read-only. None accepts exchange credentials or
 submits orders. Starting every collector improves future evidence coverage; it does not improve
 today's model automatically and does not prove accuracy, precision, expectancy or profit.
-

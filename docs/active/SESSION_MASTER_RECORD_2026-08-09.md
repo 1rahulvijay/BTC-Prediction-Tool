@@ -1,12 +1,14 @@
 # Master record — audit and lane sweep — `2026-08-08` → `2026-08-09`
 
-One document for the whole session. Twenty-six commits, six audit scans, nine research studies,
-one new recorder. Everything below is measured, and every claim has a script that reproduces it.
+One document for the whole session. It consolidates the audit scans, research studies and
+standalone evidence recorders. Everything below is measured, and every claim has a script that
+reproduces it.
 
-**Runtime recorder wiring closeout:** one `start.bat` launch now starts all nine standalone
+**Runtime recorder wiring closeout:** one `start.bat` launch now starts all ten standalone
 forward recorders through the single-instance PowerShell helper. Fast Binance ticks,
 high-frequency anchor crossings, cross-window 5m/15m observations and the Deribit option chain
-were added to the five existing services. Cross-window liveness has an independent heartbeat;
+plus immutable Binance settled funding were added to the five existing services. Cross-window
+liveness has an independent heartbeat;
 all stores are visible in system health; and Windows DuckDB writer locks use a labelled
 DB/WAL-progress fallback. See `STARTUP_RUNTIME_SERVICES_2026-08-09.md`.
 

@@ -106,6 +106,25 @@ if ($env:BTC_SKIP_VENUE_COLLECTOR -eq "1") {
         "multi_venue_recorder.stdout.log" "multi_venue_recorder.stderr.log"
 }
 
+# Immutable settled 8-hour funding publications. premiumIndex snapshots are useful features,
+# but they are not a cashflow ledger; this small REST recorder backfills and then deduplicates
+# Binance's official fundingTime rows for carry research and paper accounting validation.
+if ($env:BTC_SKIP_BINANCE_FUNDING_RECORDER -eq "1") {
+    Write-Host "[recorder] Binance settled-funding recorder skipped."
+} else {
+    $fundingDays = if ($env:BTC_FUNDING_BACKFILL_DAYS) {
+        $env:BTC_FUNDING_BACKFILL_DAYS
+    } elseif ($env:BTC_HISTORICAL_DAYS) {
+        $env:BTC_HISTORICAL_DAYS
+    } else {
+        "1000"
+    }
+    Start-Recorder "Binance funding + basis" "funding_recorder\.py" `
+        @("-u", "backend\funding_recorder.py", "--backfill-days", $fundingDays,
+          "--forever", "--poll-interval", "60", "--funding-refresh-interval", "300") `
+        "binance_funding_recorder.stdout.log" "binance_funding_recorder.stderr.log"
+}
+
 # Full sequenced Binance USD-M book. This is intentionally isolated from the
 # main app and from the top-of-book multi-venue archive. It records raw
 # snapshot+diff evidence only and has no credentials or order path.

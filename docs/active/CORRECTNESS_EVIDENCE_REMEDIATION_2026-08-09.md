@@ -86,13 +86,14 @@ audit delegates to canonical timestamp-based health and preserves distinct failu
 
 ### 9. One launcher starts the complete forward evidence set
 
-`backend/start_recorders_once.ps1` now starts nine single-instance standalone services. The four
+`backend/start_recorders_once.ps1` now starts ten single-instance standalone services. The five
 previously manual streams are Binance fast ticks, high-frequency Polymarket crossings,
-cross-window observations and the Deribit per-strike option chain. Startup detects immediate
+cross-window observations, the Deribit per-strike option chain and immutable Binance settled
+funding publications. Startup detects immediate
 process failure, keeps separate logs, and supports one explicit skip flag per recorder.
 
 `cross_window_recorder.py` now writes a heartbeat on every collection pass, including a healthy
-pass with no candidate pair. All nine stores are registered in timestamp-based health and in the
+pass with no candidate pair. All ten stores are registered in timestamp-based health and in the
 wiring audit. On Windows writer-lock conflicts use labelled DB/WAL progress and become `STALLED`
 when writes stop. Research-only recorders are optional health tiles, not global market-data
 blockers. See `STARTUP_RUNTIME_SERVICES_2026-08-09.md`.

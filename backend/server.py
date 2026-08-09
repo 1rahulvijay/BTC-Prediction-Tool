@@ -5879,6 +5879,9 @@ def _system_health_snapshot() -> dict:
         "deribit_options_optional": _recorder_row_status(
             "deribit_option_chain_recorder.py", 180.0
         ),
+        "binance_settled_funding_optional": _recorder_row_status(
+            "funding_recorder.py", 900.0
+        ),
         "model_revisions": _recorder_file_status(
             MODEL_REVISION_DB, 120.0
         ),
@@ -5891,6 +5894,7 @@ def _system_health_snapshot() -> dict:
         "hf_crossings_optional",
         "cross_window_optional",
         "deribit_options_optional",
+        "binance_settled_funding_optional",
         # Exact TWAP truth controls Polymarket authority, not independent Binance readiness.
         "polymarket_exact_settlement_truth",
     }
