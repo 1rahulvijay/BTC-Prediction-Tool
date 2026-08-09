@@ -45,7 +45,9 @@ LONG, SHORT = "LONG", "SHORT"
 
 def geometry(*, side: str, fill_price: float, decided_entry: float,
              stop_price: float | None, target_price: float | None,
-             round_trip_bps: float) -> dict:
+             round_trip_bps: float,
+             quantity: float | None = None,
+             approved_risk_usd: float | None = None) -> dict:
     """Distances as DECIDED versus as FILLED, plus whether the target still pays."""
     if not fill_price or fill_price <= 0 or not decided_entry or decided_entry <= 0:
         return {"admissible": False, "reason": "non_positive_price"}
@@ -100,6 +102,56 @@ def geometry(*, side: str, fill_price: float, decided_entry: float,
         # The stop sits on the wrong side of the actual entry: it would trigger immediately.
         out["admissible"] = False
         out["reason"] = f"stop_through_fill: stop is {filled_stop_bps:.1f}bps favourable"
+        return out
+
+    # THE RISK BUDGET, REVALIDATED AGAINST THE ACTUAL FILL.
+    #
+    # Size is chosen before the fill: qty = risk_budget / stop_fraction, using the decided
+    # entry. A worse fill moves the entry without moving the stop, so the REAL distance to
+    # the stop grows and the position now risks more than was ever approved:
+    #
+    #     approved entry 60,000  stop 59,700   ->  50 bps, sized for that
+    #     actual fill    60,120  stop 59,700   ->  70 bps, same qty  = 40% over budget
+    #
+    # This function already computed filled_stop_bps and used it only to detect a stop on the
+    # wrong side. The magnitude - the thing the risk limit is actually about - was measured
+    # and discarded.
+    #
+    # Exit cost is charged too: a stop-out pays fees and slippage on the way out, so the loss
+    # realised at the stop exceeds the price distance alone. Half the round trip is the exit
+    # leg, which is the conservative direction for a risk check.
+    if (quantity is not None and approved_risk_usd is not None
+            and stop_price is not None and quantity > 0 and approved_risk_usd > 0):
+        price_loss = abs(fill_price - stop_price) * quantity
+        exit_cost = abs(stop_price) * quantity * (round_trip_bps / 2.0) / 10_000.0
+        stop_loss_usd = price_loss + exit_cost
+        # The SAME formula at the decided entry, so the two are comparable.
+        decided_loss_usd = abs(decided_entry - stop_price) * quantity + exit_cost
+        out["filled_stop_loss_usd"] = stop_loss_usd
+        out["decided_stop_loss_usd"] = decided_loss_usd
+        out["approved_risk_usd"] = approved_risk_usd
+        out["risk_budget_overrun_usd"] = stop_loss_usd - approved_risk_usd
+        # TWO DIFFERENT PROBLEMS, and only one belongs to this function.
+        #
+        # Sizing solves qty = budget / stop_fraction from the PRICE distance alone, so even a
+        # perfect fill exceeds the budget once exit fees and slippage are charged - measured
+        # at $33.58 against a $30 budget on a 50bps stop at 12bps round trip. That is a
+        # SIZING defect: the formula omits the cost of the exit it is sizing for. Rejecting on
+        # it here would block every trade including flawless fills, so it is REPORTED
+        # (decided_stop_loss_usd vs approved_risk_usd) and left to the sizing policy.
+        #
+        # What this function can decide is whether the FILL made it worse. A fill at or better
+        # than the decided entry carries exactly the risk that was approved, whatever the
+        # sizing formula's own shortfall. Only slippage-induced growth is rejected.
+        if stop_loss_usd > approved_risk_usd and stop_loss_usd > decided_loss_usd:
+            out["admissible"] = False
+            out["reason"] = (
+                f"stop_risk_exceeds_approved_budget: ${stop_loss_usd:.2f} at the stop "
+                f"(incl. ${exit_cost:.2f} exit cost) vs ${approved_risk_usd:.2f} approved - "
+                f"the fill moved {entry_slippage_bps:.1f}bps against us and the position was "
+                f"sized before that (decided geometry would have risked "
+                f"${decided_loss_usd:.2f})")
+            return out
     return out
 
 
