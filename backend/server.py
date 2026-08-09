@@ -5406,23 +5406,50 @@ async def main_loop():
                     endpoint_move=v.get("endpoint_move_usd"),
                     endpoint_price_basis=v.get("endpoint_price_basis", ""),
                 )
-                try:
-                    database.resolve_forward_ev_event(
-                        pred_id,
+                # ECONOMIC ADMISSIBILITY, same contract the expectancy path now enforces.
+                #
+                # On a BARRIER_FALLBACK row `endpoint_move_usd` IS present - computed from the
+                # first-touch barrier price - so the `.get(..., default)` fallbacks below never
+                # fire and the barrier value flows straight into net_pnl_usd,
+                # avoided_loss_usd and opportunity_cost_usd. This is the ledger intended to
+                # answer whether a strategy makes money, so a classification distance entering
+                # it as a realised return is the worst place for this defect to live.
+                #
+                # The classification row above already records the basis; this consumer simply
+                # never read it. Rows without a genuine endpoint stay UNRESOLVED rather than
+                # resolving with barrier economics.
+                #
+                # FOLLOW-UP: `forward_ev_ledger` has no `outcome_status` column, so this cannot
+                # yet mark the row ECONOMIC_OUTCOME_UNAVAILABLE and distinguish "no endpoint
+                # ever existed" from "not resolved yet". That needs a migration; logged at
+                # WARNING so the skips are visible rather than silent in the meantime.
+                _ep_basis = str(v.get("endpoint_price_basis") or "")
+                if _ep_basis != "ENDPOINT":
+                    logger.warning(
+                        "[FORWARD-EV] %s NOT resolved economically: endpoint_price_basis=%r. "
+                        "A barrier substitution is classification evidence, not a realised "
+                        "return, and must not enter the economic ledger.",
+                        pred_id, _ep_basis or "<missing>")
+                    backend_state["forward_ev_economic_skips"] = int(
+                        backend_state.get("forward_ev_economic_skips", 0)) + 1
+                else:
+                    try:
+                        database.resolve_forward_ev_event(
+                            pred_id,
                         # ENDPOINT economics (scan-5 5.5). This ledger computes notional
                         # trading return, and `actual_price` is the first-touch BARRIER - under
                         # that contract |move| is a constant by construction, so net_pnl_usd,
                         # avoided_loss_usd and opportunity_cost_usd were not horizon-end trade
                         # economics at all. The classification row keeps the barrier; this
                         # consumer takes the endpoint.
-                        v.get("endpoint_price", v.get("actual_price", current_price)),
-                        v.get("endpoint_move_usd", v.get("actual_move_usd", 0.0)),
-                        v.get("actual_direction", "NEUTRAL"),
-                        v.get("hit", False),
-                        int(v.get("verified_at") or now_ms),
-                    )
-                except Exception as _evr:
-                    logger.debug(f"Forward-EV ledger resolve skipped: {_evr}")
+                            v.get("endpoint_price", v.get("actual_price", current_price)),
+                            v.get("endpoint_move_usd", v.get("actual_move_usd", 0.0)),
+                            v.get("actual_direction", "NEUTRAL"),
+                            v.get("hit", False),
+                            int(v.get("verified_at") or now_ms),
+                        )
+                    except Exception as _evr:
+                        logger.debug(f"Forward-EV ledger resolve skipped: {_evr}")
 
             # Auto-learning feedback loop (every 10 seconds approx).
             # Skip entirely while a (re)train is in progress — otherwise it thrashes:
