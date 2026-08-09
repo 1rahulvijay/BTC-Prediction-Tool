@@ -1851,3 +1851,38 @@ decisive. Its blocker is adverse selection, invisible here and visible in the 32
 store.
 
 Detail: `docs/active/EARLY_EXIT_LANE_2026-08-08.md`.
+
+---
+
+## 20. The maker lane is closed by adverse selection — `2026-08-08`
+
+The last lane. Queue-aware simulation on the nanosecond `pm_l2` store: 838 BTC round assets,
+321,279 valid book snapshots, 16,303 aggressive sells.
+
+**Structure first, before any simulation.** 87.5% of valid books sit at a **one-cent spread on
+a one-cent tick**, so a maker cannot price-improve — you join the back of the queue at the
+touch. Median queue ahead is 186 shares against a median aggressive sell of 6.66, so ~28
+consecutive sells are needed to reach your order, and only ~18 exist per asset for the entire
+life of a round.
+
+**Fill rate 6.46%** (857 fills from 13,263 posts within 30s). Median queue ahead on *filled*
+orders is **18** against **186** on all posts — fills happen where the queue was ten times
+thinner than usual, a selection effect on the state rather than a strategy choice. A backtest
+that assumes a fill whenever a trade prints at your price would have reported ~100% here.
+
+**The fills are toxic.** Markout is negative at every horizon with a negative lower bound:
+−2.15c at 1s, −2.38c at 5s, −2.74c at 30s. Decomposed: half-spread **+0.77c** against adverse
+selection **−2.93c**, net **−2.15c**. The markout *deepens* with horizon, which is real
+information in the taking flow — bounce would decay toward zero.
+
+**The rebate cannot close it.** The pool is funded from taker fees which peak at 1.75c/share;
+a full rebate leaves −0.40c and a 20% share leaves ~−1.80c. **FAIL_NO_EDGE.**
+
+Untested: posting deeper than the touch, two-sided quoting with inventory, and anything beyond
+the ~2 days of L2 capture.
+
+**Sweep complete: five lanes measured, five closed** — and every one was closed by *execution
+economics* (fee curve, spread crossed twice, queue, adverse selection) rather than by
+forecasting skill. On this venue at this size the constraint has not once been the model.
+
+Detail: `docs/active/MAKER_LANE_2026-08-08.md`.

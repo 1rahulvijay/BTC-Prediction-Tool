@@ -73,6 +73,11 @@ FRONTIER = (
     # asymmetric against it before any forecasting.
     #   docs/active/EARLY_EXIT_LANE_2026-08-08.md
     "early_exit_lane.py",
+    # The last lane. Queue-aware maker simulation on nanosecond L2: fill rate 6.46%, and the
+    # fills that happen are toxic - half-spread +0.77c against adverse selection -2.93c, net
+    # -2.15c, deepening with horizon. The maker rebate cannot close a 2.15c gap.
+    #   docs/active/MAKER_LANE_2026-08-08.md
+    "maker_lane.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",
