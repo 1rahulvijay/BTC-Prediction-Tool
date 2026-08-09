@@ -1886,3 +1886,38 @@ economics* (fee curve, spread crossed twice, queue, adverse selection) rather th
 forecasting skill. On this venue at this size the constraint has not once been the model.
 
 Detail: `docs/active/MAKER_LANE_2026-08-08.md`.
+
+---
+
+## 21. Binance first-touch is a martingale — `2026-08-08`
+
+The last open lane. 518,400 one-minute bars (360 days), disjoint windows, ambiguous bars
+refused, shipped cost model (12.0 bps round trip).
+
+**The competitor is the martingale, not a coin flip.** Under a driftless walk
+`P(+X before -Y) = Y/(X+Y)` and `EV = p·X − (1−p)·Y = 0` **exactly**, for every barrier pair.
+Widening the target and tightening the stop trades hit rate for win size by precisely the
+amount that keeps EV at zero.
+
+**Eighteen cells across 5m and 15m. Every EV within 0.4 bps of −12.0, every lower bound
+negative.** −12 bps against a 12 bps cost means the gross edge is ≈ 0.0 bps.
+
+**The trap, now printed inline.** `observed p` deviates from the martingale by up to 17 points
+(0.8315 vs 0.6667 at target 20 / stop 40) and it is **not** edge. `Y/(X+Y)` is the
+unbounded-time formula; these windows expire, and 82–89% of them time out at the wide pairs. So
+`observed p` is conditioned on the decided minority, which is dominated by whichever barrier is
+nearer. `EV bps` includes timeouts at their realised exit, which is why it sits at −cost while
+the p-column swings 17 points.
+
+Extends §10.5 test 106 (8,639 disjoint 60m windows, no cell cleared costs) to the horizons the
+app serves, on 12× the windows, with the null stated correctly.
+
+Untested: conditional entry (the unconditional process has no barrier edge; a conditioning
+signal is a separate question already answered negatively by the bakeoff and the microstructure
+probe), and Binance maker execution — at a gross edge of ≈0.0 bps a rebate moves this to
+approximately break-even, not to profit.
+
+**SWEEP COMPLETE: six lanes, six closed.** Five by execution economics; this one because the
+gross edge is zero rather than small.
+
+Detail: `docs/active/BINANCE_FIRST_TOUCH_LANE_2026-08-08.md`.

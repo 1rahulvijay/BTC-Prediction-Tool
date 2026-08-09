@@ -78,6 +78,11 @@ FRONTIER = (
     # -2.15c, deepening with horizon. The maker rebate cannot close a 2.15c gap.
     #   docs/active/MAKER_LANE_2026-08-08.md
     "maker_lane.py",
+    # The last lane. First-touch barriers on 518,400 1m bars, measured against the MARTINGALE
+    # (P = Y/(X+Y), EV exactly zero before costs) rather than a coin flip. Every pair at both
+    # horizons returns ~-12 bps = exactly the shipped round-trip cost.
+    #   docs/active/BINANCE_FIRST_TOUCH_LANE_2026-08-08.md
+    "binance_first_touch_lane.py",
     "conditional_path_forecast_v1.py",
     "conditional_offset_v2.py",
     "path_information_test.py",
