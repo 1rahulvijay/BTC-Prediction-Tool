@@ -156,6 +156,12 @@ jobs:
       - name: Feature schema hash accepts any iterable container
         run: python backend/test_feature_schema_hash_containers.py
 
+      - name: Champion meta splits by round with a purge, not by snapshot row
+        run: python backend/test_champion_meta_split.py
+
+      - name: Keeper heads purge the label horizon in the shared trainer
+        run: python backend/test_keeper_head_purge.py
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -912,6 +918,8 @@ jobs:
           python -m backend.binance_paper.test_sizing_exit_cost || exit /b 1
           python backend/audit/datastore_identity.py --selftest || exit /b 1
           python backend/test_feature_schema_hash_containers.py || exit /b 1
+          python backend/test_champion_meta_split.py || exit /b 1
+          python backend/test_keeper_head_purge.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

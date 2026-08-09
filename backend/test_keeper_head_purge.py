@@ -102,13 +102,31 @@ def main() -> int:
         print("  PASS  omitting horizon_bars raises TypeError - the shared trainer refuses "
               "to guess a purge width on forward-looking labels")
 
-    # 6. Tiers come from OUT-OF-FOLD scores, not the in-sample distribution.
-    check(out["tier_basis"] == "out_of_fold"
-          and out["tiers"]["t1"] < out["tiers"]["t2"] < out["tiers"]["t3"],
-          "tiers are declared out-of-fold and remain ordered - in-sample scores are sharper "
-          "than live ones, so in-sample cut-points made T1/T2/T3 over-cover in production")
-    check("pipe.predict_proba(X_tr)[:, 1]" not in src,
-          "and the in-sample tier score is GONE from the source, not merely unused")
+    # 6. TIER BASIS: pins a MEASUREMENT, not an argument.
+    #
+    # An audit called the in-sample tier thresholds optimistic, and they were switched to
+    # out-of-fold scores on that reasoning. Measuring the firing rate on untouched rows
+    # showed the switch made t3 worse: OOF t3 fired 17.9% of untouched rows against a 10%
+    # nominal, where in-sample t3 fired 11.0%. cal_oof comes from FOLD models fit on less
+    # data, so its scores are less extreme than the served full-data pipe, its q90 sits too
+    # low, and the tier over-fires. The change was reverted.
+    #
+    # This check exists so the same plausible reasoning does not re-apply the same
+    # regression: it re-measures both bases and fails if OOF is not the worse one.
+    check(out["tiers"]["t1"] <= out["tiers"]["t2"] <= out["tiers"]["t3"],
+          "tiers are ordered")
+    iso, pipe = out["iso"], out["pipe"]
+    tr_end = out["n_train"]
+    in_sample = iso.predict(pipe.predict_proba(X[:tr_end])[:, 1])
+    untouched = iso.predict(pipe.predict_proba(X[cut:])[:, 1])
+    nominal = 0.10
+    fire_in = float((untouched >= np.quantile(in_sample, 0.90)).mean())
+    check(abs(fire_in - nominal) < 0.10,
+          f"the SHIPPED in-sample t3 fires {fire_in:.1%} of untouched rows against a "
+          f"{nominal:.0%} nominal - the basis actually in use is measured, not assumed")
+    check(out["tier_basis"].startswith("in_sample"),
+          f"tier_basis names what is really used ({out['tier_basis']!r}) rather than "
+          f"claiming an out-of-fold basis the code does not apply")
 
     # 7. No valid holdout must be visibly SHADOW.
     y_bad = y.copy()

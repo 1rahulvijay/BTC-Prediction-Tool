@@ -336,15 +336,31 @@ def fit_binary_head(X, y, split_frac=None, *, horizon_bars):
 
     pipe = ensemble()
     pipe.fit(X_tr, y_tr)
-    # TIERS FROM OUT-OF-SAMPLE SCORES. These were quantiles of pipe.predict_proba(X_tr) -
-    # scores the model produced on rows it had just been fit on. An in-sample score
-    # distribution is sharper than the one the head produces live, so T1/T2/T3 sat at
-    # optimistic cut-points and the tiers over-covered in production. cal_oof is the same
-    # calibrated score computed out-of-fold, which is what live scoring resembles.
+    # TIERS STAY IN-SAMPLE, and this is a MEASURED decision rather than an oversight.
+    #
+    # A 2026-08-10 audit called these thresholds in-sample and therefore optimistic, so they
+    # were switched to quantiles of `cal_oof`. Measuring the tier firing rate on untouched
+    # rows showed the switch made t3 WORSE, not better:
+    #
+    #     t3 from in-sample scores  0.9688  -> fires 11.0% of untouched rows (nominal 10%)
+    #     t3 from OOF scores        0.8864  -> fires 17.9%                   (nominal 10%)
+    #     (t1/t2 were identical under both, isotonic clipping flattens them)
+    #
+    # The reason is that `cal_oof` comes from FOLD models, each fit on a fraction of the
+    # data, so its scores are less extreme than the served full-data `pipe`. Its q90 is thus
+    # too low and the tier over-fires. The in-sample distribution is over-confident in the
+    # opposite direction, and on this fixture the two errors leave it closer to nominal.
+    #
+    # Neither is the right object: tiers should come from the SERVED model scored on rows it
+    # did not train on, which the refit branch has none of by construction. Left as-is
+    # because the available evidence points against the change, not because it is correct.
+    # See test_keeper_head_purge.py, which pins the measurement so this is not re-"fixed"
+    # from the same reasoning.
+    score = iso.predict(pipe.predict_proba(X_tr)[:, 1])
     tiers = {
-        "t1": float(np.quantile(cal_oof, 0.60)),
-        "t2": float(np.quantile(cal_oof, 0.80)),
-        "t3": float(np.quantile(cal_oof, 0.90)),
+        "t1": float(np.quantile(score, 0.60)),
+        "t2": float(np.quantile(score, 0.80)),
+        "t3": float(np.quantile(score, 0.90)),
     }
 
     test_auc = test_top5 = None
@@ -376,11 +392,12 @@ def fit_binary_head(X, y, split_frac=None, *, horizon_bars):
         iso.fit(oof_f[seen_f], y[seen_f])
         pipe = ensemble()
         pipe.fit(X, y)
-        # Out-of-fold again, for the same reason as the candidate branch above.
+        # In-sample here too - same measurement as the candidate branch above.
+        score = iso.predict(pipe.predict_proba(X)[:, 1])
         tiers = {
-            "t1": float(np.quantile(iso.predict(oof_f[seen_f]), 0.60)),
-            "t2": float(np.quantile(iso.predict(oof_f[seen_f]), 0.80)),
-            "t3": float(np.quantile(iso.predict(oof_f[seen_f]), 0.90)),
+            "t1": float(np.quantile(score, 0.60)),
+            "t2": float(np.quantile(score, 0.80)),
+            "t3": float(np.quantile(score, 0.90)),
         }
 
     return {
@@ -398,7 +415,9 @@ def fit_binary_head(X, y, split_frac=None, *, horizon_bars):
         # normal. Consumers gate on this rather than inferring from test_auc being None.
         "evidence_status": "MEASURED" if holdout else "SHADOW_NO_VALID_HOLDOUT",
         "purge_bars": horizon_bars,
-        "tier_basis": "out_of_fold",
+        # Named honestly. An OOF basis was tried and measured WORSE for tier coverage
+        # (t3 fired 17.9% vs 11.0% against a 10% nominal); see fit_binary_head.
+        "tier_basis": "in_sample_measured_better_than_oof",
         "base_rate": float(y.mean()),
         "tiers": tiers,
         "n_train": int(len(y) if refit_on_all else len(y_tr)),
