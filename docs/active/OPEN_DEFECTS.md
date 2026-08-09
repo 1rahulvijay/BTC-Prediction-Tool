@@ -415,3 +415,27 @@ detector for any future regression of this kind.
 `forward_ev_ledger` has no `outcome_status` column, so a skipped economic resolution cannot be
 marked `ECONOMIC_OUTCOME_UNAVAILABLE` and is indistinguishable from not-yet-resolved. Skips are
 counted in `backend_state` and logged at WARNING meanwhile. Needs a migration.
+
+### NEW — VERIFIED OPEN: two analytics stores disagree about history
+
+Measured 2026-08-09. `DB_PATH` defaults to `<data>/analytics.duckdb`; two such files exist and
+NEITHER is a superset:
+
+    data/analytics.duckdb              predictions_5m 07-04 (2,514)   price_to_beat 08-08 (19,122)
+    data/btc_duckdbs/analytics.duckdb  predictions_5m 07-25 (5,836)   price_to_beat 07-25 (14,372)
+
+The archive has three more weeks of MODEL rows; the default has two more weeks of PRICE rows.
+Different components wrote to different files, so a study taking the default sees a different
+past from one naming the archive — and neither is wrong on its own terms.
+
+**Partially addressed:** `backend/audit/datastore_identity.py` makes the ambiguity RAISE
+instead of resolving to a default, and emits an identity (path, size, mtime, per-table rows and
+spans) so a run records which history it consumed. 3/0 mutation.
+
+**Still OPEN — an operator decision, not a code one.** Which store owns the write path must be
+declared via `BTC_CANONICAL_DB`; the resolver deliberately does not choose. Until it is
+declared, `resolve()` refuses. `database.DB_PATH` is NOT yet routed through it — doing so
+would change which store the running app writes to, which must be a deliberate act.
+
+**Do not start the 1,000-day retrain until this is declared.** A retrain reads whichever the
+default resolves to; 12–30 hours against an unstated history is an anecdote, not an experiment.
