@@ -1961,3 +1961,37 @@ Polymarket capture), posting deeper than the touch, two-sided maker quoting, fea
 absent from the matrix, and horizons beyond 5m/15m.
 
 Detail: `docs/active/CONDITIONAL_ENTRY_2026-08-08.md`.
+
+---
+
+## 23. The fast BTC tick recorder — the sub-second blocker is removed — `2026-08-09`
+
+`backend/btc_tick_recorder.py`. §17 found no repricing lag at ≥2s and could not look below it;
+chasing that limit showed the blocker was the **BTC reference series**, not Polymarket capture
+(`pm_l2` 32.5ms vs microstructure 1,177ms, and lead/lag is limited by the slower one).
+
+Records `btcusdt@bookTicker` and `btcusdt@aggTrade` — public streams, no credentials, no
+orders. Schema mirrors `polymarket/l2_recorder.py` (`seq` resumed from `max()`, `recv_ts_ns`,
+`exchange_ts_ms`) so the two stores interleave without translation.
+
+Measured on a 60s live capture: **74.2ms median book cadence**, 0 gaps, 0 drops, ~290 MB/day.
+Joint resolution moves from ~1,177ms to ~74ms — BTC is still the slower side, but the
+**50–500ms band where latency arbitrage lives is now measurable**, which 1,177ms could not
+resolve at all.
+
+**A defect the first live run exposed.** Id-continuity gap detection applied to both streams
+reported **366 gaps and 3,549 lost messages that never existed**: `bookTicker`'s `u` is the
+order-book update id across *all* price levels (measured step min 1, median 4, max 66), not a
+per-message counter. `aggTrade`'s `a` is (step min/median/max all 1). So id-continuity is kept
+for trades and `bookTicker` coverage is measured by silence instead; the corrected run reports
+0 gaps. Same defect class as the rest of the series — **a detector firing on a property it does
+not measure** — and worse than no detector, because coverage claims get built on it.
+
+Also stamps `host`, `platform` and `clock_source` per run: the sub-second join is valid **only**
+because both recorders share `time.time_ns()` on one machine, and on different hosts it would
+be meaningless while looking identical.
+
+**Does not answer the sub-second question** — makes it answerable. New simultaneous capture is
+required; `pm_l2`'s existing window (2026-07-02..07-04) does not overlap this.
+
+Detail: `docs/active/BTC_TICK_RECORDER_2026-08-09.md`.
