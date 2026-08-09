@@ -122,20 +122,19 @@ BTC_BINANCE_PAPER_DB=data\binance_paper_competition_500.duckdb
 BTC_BINANCE_COMPETITION_ONLY=1
 BTC_ENABLE_BINANCE_PAPER=1
 BTC_BINANCE_PAPER_AUTO_START=1
-BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=1
-BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD=1
+BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=0
+BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD=0
 ```
 
 Competition mode enables `model_consensus` and `random_control`; the older Binance strategy
 accounts stay disabled by default in the dedicated race database. Auto-start only starts this
 paper engine; it does not create or authorize any real exchange order route.
 
-The two `ALLOW` variables are narrowly scoped to this isolated paper account. They acknowledge
-two known evidence limitations: the conservative probability haircut is fixed rather than an
-empirical uncertainty interval, and the endpoint head's current holdout rows overlap rather than
-representing independent rounds. Both facts are written into each decision and frozen in the
-race contract. Removing either opt-in makes the strategy abstain. These flags do not enable real
-orders and are not promotion gates.
+The two `ALLOW` variables now default to zero. A fixed probability haircut is not an empirical
+uncertainty interval, and overlapping endpoint rows are not independent evidence. The strict
+race therefore abstains until those contracts are satisfied. An operator can set either flag to
+one only for a separately labelled exploratory paper run; such a run is not promotion evidence
+and does not enable real orders.
 
 ## Binance Target Separation
 

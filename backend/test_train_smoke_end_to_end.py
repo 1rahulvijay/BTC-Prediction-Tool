@@ -99,6 +99,19 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         ensemble = m.MultiModelEnsemble(horizons=[horizon], model_dir=tmp)
+        # Production binds a fitted MarketRegime state before train(). The smoke test supplies
+        # the same persistence contract explicitly so bundle-completeness validation is tested
+        # rather than bypassed (the numeric values are not used by this model-only test).
+        ensemble.hmm_state = {
+            "hmm_ready": True,
+            "_means": [[0.0]],
+            "_inv_covs": [[[1.0]]],
+            "_logdets": [0.0],
+            "_transmat": [[1.0]],
+            "_k": 1,
+            "_median_volume": 1.0,
+            "state_labels": {0: "RANGE"},
+        }
 
         # ---- THE THING THAT HAD NEVER RUN --------------------------------------------
         ensemble.train(X, Y, Ymag=Ymag, valid_mask=valid_mask,

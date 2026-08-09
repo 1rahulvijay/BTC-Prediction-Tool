@@ -114,7 +114,7 @@ Net: once the analyzer warms (~1 h continuous), vpin now flows all the way to th
 |---|---|---|---|
 | 1 | **Microstructure live-overlay (CVD/large-trade + VPIN)** | `server.py` (~2870), `features.py:1146` | the headline fix above — un-deads cvd/large_trade live; vpin added to the pop set + its hardcoded-0.0 snapshot replaced with `of.get("vpin")` so a warm vpin lands (analyzer warmup ~1 h, §3) |
 | 2 | **Trade-freshness guard + loud warning** | `server.py` `handle_trade` (`last_trade_ms`) + feature-log gate | feature-log now keys off TRADE freshness, not depth; `[feed] TRADE stream stale` warning so a trade outage can't go silent |
-| 3 | **5m UP-tilt dead-zone** | `model.py:1986` (`BTC_DIR_MARGIN_{h}`), `start.bat`, `start_instant.bat` (`BTC_DIR_MARGIN_5=0.015`) | symmetric up-vs-down margin; neutralizes the measured +34pt 5m UP-lean skew. 15m untouched (balanced) |
+| 3 | **5m UP-tilt experiment (retracted)** | `model.py` (`BTC_DIR_MARGIN_{h}`), `start.bat`, `start_instant.bat` (`BTC_DIR_MARGIN_5=0`) | measurement showed wider margins selected a more UP-skewed subset; bias must be repaired in training/calibration, not by this dead zone |
 | 4 | **auto_finetune 360d window** | `auto_finetune.py` | the nightly recalibration's matrix step now uses `BTC_HISTORICAL_DAYS or 360` (was silently 60d) |
 | 5 | **A/B/C grade demoted to experimental** | `src/main.js` (rounds panel) | the grade can't stratify direction; demoted to a dim labeled sub-line, Model-vs-Fallback promoted; precision = T3 P(Hold) |
 | 6 | **Diagnostics (temporary)** | `data_ingestion.py` (`[ws-rx]`, elevated parse-error WARNING), `server.py` (`[trade-diag]`, `[feat-diag]`) | the instrumentation that localized the bug — **remove after verifying** (see §6) |

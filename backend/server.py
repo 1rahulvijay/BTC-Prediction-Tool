@@ -2295,11 +2295,17 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
         logger.info("[TRAIN] Fitting market regime engine on the training slice "
                     "(%s of %s bars; validation and test are filtered with FROZEN parameters)...",
                     _hmm_cut, len(closes))
-        candidate_regime.fit_hmm(closes[:_hmm_cut], volumes[:_hmm_cut])
+        if not candidate_regime.fit_hmm(closes[:_hmm_cut], volumes[:_hmm_cut]):
+            raise RuntimeError("fit_hmm returned false")
         candidate_regime.hmm_fit_rows = _hmm_cut
         target_model.hmm_state = candidate_regime.state_dict()
+        if not target_model.hmm_state:
+            raise RuntimeError("fitted regime engine emitted an empty state")
     except Exception as e:
-        logger.warning(f"HMM regime fit skipped: {e}")
+        raise RuntimeError(
+            "HMM regime fit failed; refusing to train experts that cannot be routed by the "
+            "same partition at serving time"
+        ) from e
 
     # Train every horizon the model serves (was defaulting to [1,5,10,15],
     # leaving 3m and 7m with no trained model). Pass true highs/lows so the
@@ -2369,8 +2375,8 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     # P4.3 regime alignment: label every training row with the SAME HMM that routes at
     # serving time, so the regime experts train on the partition they answer for. X rows
     # correspond to build_sequences' loop range(LOOKBACK, feature_row_count-max_h) with decision
-    # close index == i, so the label list aligns 1:1 with X. Defensive: any failure → None
-    # → train() falls back to the legacy threshold clustering (no crash, no behaviour change).
+    # close index == i, so the label list aligns 1:1 with X. A partial/malformed partition is
+    # fatal: switching to a different regime definition would create train/serve skew.
     regime_labels = None
     try:
         _max_h = max(target_model.horizons)
@@ -2384,16 +2390,18 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
             for i in range(LOOKBACK, feature_row_count - _max_h)
         ]
         if hasattr(X, "shape") and len(regime_labels) != X.shape[0]:
-            logger.warning("[TRAIN] P4.3 label/X length mismatch (%s vs %s) — disabling alignment.",
-                           len(regime_labels), X.shape[0])
-            regime_labels = None
+            raise RuntimeError(
+                f"HMM regime label/X length mismatch: {len(regime_labels)} vs {X.shape[0]}"
+            )
         else:
             from collections import Counter as _Counter
             logger.info("[TRAIN] P4.3 regime label distribution: %s",
                         dict(_Counter(regime_labels)))
     except Exception as _re:
-        logger.warning(f"[TRAIN] P4.3 regime labelling skipped: {_re}")
-        regime_labels = None
+        raise RuntimeError(
+            "HMM regime labelling failed; refusing to fall back to a different training "
+            "partition"
+        ) from _re
 
     horizon_counts = {h: int(len(Y.get(h, []))) for h in target_model.horizons}
     label_counts = {}
@@ -3155,7 +3163,11 @@ async def relearn_models_background(reason: str = "manual"):
         # required recorders dark there is none, so a "promotion" would be scored on history the
         # candidate was fitted against - fitting the past twice and calling it learning. The
         # training run still proceeds; only the PROMOTION is withheld.
-        if promotion_pipeline:
+        # A machine with no incumbent must still run the offline holdout/refit pipeline and
+        # commit a restart-safe bootstrap bundle. Forward evidence governs replacement of an
+        # incumbent; it cannot make first boot train into a temporary in-memory object that
+        # disappears on restart.
+        if promotion_pipeline and had_trained_incumbent:
             try:
                 from forward_evidence_gate import may_adapt as _may_adapt
                 _allowed, _why = _may_adapt("promote_challenger")
@@ -3334,6 +3346,13 @@ async def relearn_models_background(reason: str = "manual"):
             message="Bootstrap: no trained incumbent exists. Activating first model...",
             progress=0.90,
         )
+        promotion = model_promotion.promote_model_bundle(
+            candidate.model_dir,
+            MODEL_DIR,
+            os.path.join(DATA_DIR, "model_bundle_backups"),
+        )
+        logger.info("[PROMOTION] Bootstrap bundle committed with rollback: %s", promotion)
+        candidate.model_dir = MODEL_DIR
         backend_state["last_candidate_activated"] = True
         model = candidate
         model.cascade_monitor = cascade_monitor
@@ -3373,6 +3392,19 @@ async def relearn_models_background(reason: str = "manual"):
 def schedule_relearn(reason: str = "manual") -> bool:
     """Queue a full model relearn if one is not already running."""
     global relearn_task
+    if (
+        reason in ("scheduled", "auto-learning")
+        and os.environ.get("BTC_EVIDENCE_MODE", "0") == "1"
+    ):
+        try:
+            from forward_evidence_gate import may_adapt as _may_adapt
+
+            allowed, why = _may_adapt("online_relearn")
+        except Exception as exc:
+            allowed, why = False, f"forward-evidence gate unavailable: {exc}"
+        if not allowed:
+            logger.info("[RELEARN] %s", why)
+            return False
     if relearn_task and not relearn_task.done():
         logger.info("[RELEARN] Already running; skip schedule request: %s", reason)
         return False
@@ -4307,15 +4339,45 @@ async def main_loop():
     await broadcast({"type": "status", "step": "step-connect", "msg": "Ready"})
     logger.info("[BOOT 7/7] Ready in %.1fs", time.time() - boot_started)
 
-    # Periodic polling loop
-    tick_count = 0
+    # Periodic work is scheduled from monotonic wall time, not loop counts. Network calls and
+    # inference make a nominal 2-second loop variable; `% tick_count` therefore caused the
+    # advertised 30s/5m/30m jobs to drift and occasionally starve after a slow request.
+    _mono = time.monotonic()
+    _next_derivatives = _mono + 30.0
+    _next_slow = _mono + 300.0
+    _next_precision = _mono + 10.0
+    _next_maintenance = _mono + 1800.0
+    _next_feedback = _mono + 10.0
+    _forward_cache = {"at": 0.0, "status": None}
+
+    def _current_forward_evidence_status(now_mono: float) -> dict | None:
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") != "1":
+            return None
+        if (
+            _forward_cache["status"] is None
+            or now_mono - float(_forward_cache["at"]) >= 30.0
+        ):
+            try:
+                from forward_evidence_gate import evidence_status
+
+                _forward_cache["status"] = evidence_status()
+            except Exception as exc:
+                _forward_cache["status"] = {
+                    "forward_evidence": "DARK",
+                    "banner": f"forward-evidence probe failed: {exc}",
+                }
+            _forward_cache["at"] = now_mono
+        return _forward_cache["status"]
+
     while True:
         try:
             await asyncio.sleep(MAIN_LOOP_SEC)  # configurable; live feed is on separate fast tickers
-            tick_count += 1
+            _mono = time.monotonic()
+            _forward_status = _current_forward_evidence_status(_mono)
 
             # Fetch slow data every 30s (derivatives, Bybit, options, basis)
-            if tick_count % 15 == 0:
+            if _mono >= _next_derivatives:
+                _next_derivatives = _mono + 30.0
                 spot_price = (
                     data_state["klines"][-1]["close"] if data_state["klines"] else 0
                 )
@@ -4339,7 +4401,8 @@ async def main_loop():
                     data_state["chainlink_price"] = chainlink_client.data["btc_usd"]
 
             # Fetch very slow data every 5 min (sentiment, stablecoin flows, exchange flows)
-            if tick_count % 150 == 0:
+            if _mono >= _next_slow:
+                _next_slow = _mono + 300.0
                 await asyncio.gather(
                     _best_effort("sentiment poll", sentiment_client.fetch_all(), 5.0),
                     _best_effort("stablecoin flow poll", stablecoin_client.fetch_stablecoin_data(), 5.0),
@@ -4354,11 +4417,12 @@ async def main_loop():
             # emitted noise that we maintained a verifier + UI for. See §5ar / R1.)
 
             # Precision-engine refresh (cheap aggregate query, off the event loop). Runs
-            # shortly after boot (tick 5) then re-checks every ~5 min; the engine itself
+            # shortly after boot, then re-checks every ~5 min; the engine itself
             # no-ops unless its 6h staleness window has elapsed. NOT gated by MODEL_FROZEN:
             # calibration is post-processing fitted on live outcomes, not model weights —
             # and it is the fix for the proven anti-selecting gate at 5m+.
-            if tick_count % 100 == 5:
+            if _mono >= _next_precision:
+                _next_precision = _mono + 300.0
                 # P1-9. Bind calibration to the bundle that is actually SERVING, so it selects
                 # outcomes by exact model identity rather than by the artifact file's
                 # modification time. A challenger trained Monday and promoted Friday keeps
@@ -4378,15 +4442,22 @@ async def main_loop():
                     _bind = precision_engine.bind_release(_live_bundle)
                     logger.info("[PRECISION] release changed -> %s; cleared %s",
                                 _live_bundle or "(none)", _bind.get("cleared"))
+                from functools import partial
                 asyncio.get_event_loop().run_in_executor(
-                    None, precision_engine.refresh_if_stale)
+                    None,
+                    partial(
+                        precision_engine.refresh_if_stale,
+                        forward_status=_forward_status,
+                    ),
+                )
 
             # Periodic maintenance (~every 30 min). The heavy ENSEMBLE relearn is
             # gated behind a real cooldown so the box isn't perpetually retraining —
             # a full retrain takes tens of minutes, and firing one every 30 min starves
             # live predictions and never lets signal-history coverage accumulate. The
             # cheap meta-model + poor-regime refreshes still run every cycle.
-            if tick_count % 900 == 0 and not backend_state["is_training"]:
+            if _mono >= _next_maintenance and not backend_state["is_training"]:
+                _next_maintenance = _mono + 1800.0
                 # Heavy ensemble relearn — only when the cooldown has elapsed since the
                 # last relearn (auto OR scheduled). Default 6h; tune via env.
                 sched_cooldown = float(os.environ.get("BTC_SCHEDULED_RELEARN_SEC", "21600"))
@@ -4404,7 +4475,13 @@ async def main_loop():
                 # Attempt to (re)train the meta-model trust filters from accumulated
                 # DuckDB outcomes. Pass-through until each horizon has >=200 verified.
                 for h in model.horizons:
-                    msg = meta_models[h].train(database.DB_PATH, h)
+                    msg = meta_models[h].train(
+                        database.DB_PATH,
+                        h,
+                        release_id=str(getattr(model, "model_bundle_id", "") or ""),
+                        target_contract=_target_contract.TRAINING_CONTRACT,
+                        forward_status=_forward_status,
+                    )
                     logger.info(f"Meta-model {h}m: {msg}")
 
                 # Update poor regimes
@@ -4584,9 +4661,14 @@ async def main_loop():
                 now_ms_pred = int(time.time() * 1000)
                 # Learned regime-specific model weights (from per-model live accuracy
                 # in the current regime); empty until enough outcomes accumulate.
-                data_state["regime_model_weights"] = verifier.get_regime_model_weights(
-                    regime.get("regime", "UNKNOWN")
-                )
+                data_state["regime_model_weights_by_horizon"] = {
+                    int(h): verifier.get_regime_model_weights(
+                        int(h),
+                        regime.get("regime", "UNKNOWN"),
+                        forward_status=_forward_status,
+                    )
+                    for h in model.horizons
+                }
                 # Per-regime confidence calibration (honest confidence per regime).
                 data_state["regime_calibration"] = verifier.get_regime_calibration()
                 # (kronos_accuracy no longer populated — model.py's Kronos hooks are
@@ -4597,7 +4679,8 @@ async def main_loop():
                 # the gate permit more BUY/SELL calls where live evidence supports it
                 # and tighten where a horizon/regime has been wrong.
                 data_state["signal_policy"] = verifier.get_signal_policy(
-                    regime.get("regime", "UNKNOWN")
+                    regime.get("regime", "UNKNOWN"),
+                    forward_status=_forward_status,
                 )
                 # P0-12 IMMUTABLE DECISION VIEW. Inference runs in a worker thread while
                 # WebSocket callbacks keep mutating data_state, so passing the live global let a
@@ -5263,6 +5346,9 @@ async def main_loop():
                     # every consumer re-derived direction from the move sign - the endpoint
                     # rule - and applied it to a first-touch model.
                     actual_direction=v.get("actual_direction", ""),
+                    endpoint_price=v.get("endpoint_price"),
+                    endpoint_move=v.get("endpoint_move_usd"),
+                    endpoint_price_basis=v.get("endpoint_price_basis", ""),
                 )
                 try:
                     database.resolve_forward_ev_event(
@@ -5292,11 +5378,12 @@ async def main_loop():
             # weights AND the post-processing — so the baseline is reproducible. (This is
             # why the log showed "Auto-learning: decreased smoothing" on a frozen model.)
             if (
-                tick_count % 5 == 0
+                _mono >= _next_feedback
                 and model.is_trained
                 and not backend_state["is_training"]
                 and not MODEL_FROZEN
             ):
+                _next_feedback = _mono + 10.0
                 feedback = verifier.get_learning_feedback()
                 retrain_horizons = model.apply_learning_feedback(feedback)
 
@@ -5331,7 +5418,8 @@ async def main_loop():
             action_summary = verifier.get_action_accuracy_summary()
             data_quality = verifier.get_data_quality_summary()
             signal_policy = data_state.get("signal_policy") or verifier.get_signal_policy(
-                regime.get("regime", "UNKNOWN")
+                regime.get("regime", "UNKNOWN"),
+                forward_status=_forward_status,
             )
             neutral_summary = verifier.get_neutral_reason_summary()
             _candle_ts = [k["time"] for k in data_state["klines"]]

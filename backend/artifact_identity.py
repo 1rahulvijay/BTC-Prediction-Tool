@@ -652,6 +652,7 @@ def selftest() -> None:
             "feature_schema_hash": "schema",
             "code_hash": "code-v1",
             "runtime_dependency_hash": "runtime-v1",
+            "executed_identity_recorded": True,
         }
         write_artifact_manifest(artifact, identity, artifact_type="selftest")
         ok, reasons = artifact_compatibility(artifact, identity)

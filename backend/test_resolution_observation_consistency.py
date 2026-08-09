@@ -205,10 +205,12 @@ def main() -> int:
         "the reported percentage change carries the same sign as the direction")
 
     print("the learned regime weights use the graded outcome")
-    chk(list(v.regime_model_stats["RANGE"]["xgb"]) == [1],
+    chk(list(v.regime_model_stats[5]["RANGE"]["xgb"]) == [1],
         "a DOWN vote on a DOWN resolution is credited - the loop-time sign scored it a miss")
-    chk(list(v.regime_model_stats["RANGE"]["lgb"]) == [0],
+    chk(list(v.regime_model_stats[5]["RANGE"]["lgb"]) == [0],
         "and an UP vote is not")
+    chk(not v.regime_model_stats.get(15),
+        "the 5m outcome does not leak into the 15m expert-weight history")
 
     print("the loop price cannot influence the row at all")
     v2 = PredictionVerifier()

@@ -38,8 +38,10 @@ def resolve_model_feature_schema() -> tuple[list[int], list[str], str]:
             raise ValueError(f"pruned feature set too small: {len(indices)}")
         return indices, [FEATURE_NAMES[index] for index in indices], ",".join(sorted(allowed))
     except Exception as exc:
-        logger.warning("Feature pruning disabled; falling back to full feature schema: %s", exc)
-        return list(range(NUM_FEATURES)), list(FEATURE_NAMES), "fallback-full"
+        raise RuntimeError(
+            "SAFE feature pruning could not resolve its declared schema; refusing to train "
+            "a different full-feature architecture under the same configuration"
+        ) from exc
 
 
 MODEL_FEATURE_INDICES, MODEL_FEATURE_NAMES, MODEL_FEATURE_PRUNING = resolve_model_feature_schema()

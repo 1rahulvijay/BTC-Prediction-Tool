@@ -202,14 +202,15 @@ feature families absent   depth imbalance, options surface, liquidation cascades
 horizons beyond 5m/15m    everything measured is at the horizons the app serves
 ```
 
-**Architecture tracked and not started:** atomic release directory (2.14/3.14),
+**Architecture tracked and not started:** atomic release-directory pointer swapping (2.14/3.14),
 `DecisionEnvelope` threading (3.15), one action vocabulary and one risk engine (3.11/3.12),
-forecast-vs-agreement populations (4.9), regime weights pooling horizons (4.10), call-count
-timebases (4.11–4.13).
+and forecast-vs-agreement populations (4.9). Regime expert accuracy is now isolated by horizon,
+and recurring server work uses monotonic deadlines instead of call-count timebases.
 
-**Scan 6 residue:** 26 of 34 claims not yet investigated, including D4 (release-scoped
-adaptation), D7 (HMM label fail-open), D8/D9 (paper close/reversal lifecycle), D10
-(ForwardEvidenceGate wiring), D13 (meta-model profitability target).
+**Scan 6 residue (closed in the 2026-08-09 follow-up):** D4 (release-scoped adaptation), D7
+(HMM fail-open), D8/D9 (paper close/reversal), D10 (ForwardEvidenceGate wiring) and D13
+(meta target) are now fixed. The meta label is explicitly counterfactual endpoint economics,
+not realized fill P/L. Remaining uninvestigated claims retain `CLAIMED` status.
 
 ---
 
@@ -247,5 +248,6 @@ docs/active/MAKER_LANE_2026-08-08.md                   §20
 docs/active/BINANCE_FIRST_TOUCH_LANE_2026-08-08.md     §21
 docs/active/CONDITIONAL_ENTRY_2026-08-08.md            §22
 docs/active/BTC_TICK_RECORDER_2026-08-09.md            §23
+docs/active/CORRECTNESS_AND_MONEY_PATH_FIXES_2026-08-09.md  pre-1000d correctness closeout
 docs/RESEARCH_LEDGER.md                                §15–§23
 ```

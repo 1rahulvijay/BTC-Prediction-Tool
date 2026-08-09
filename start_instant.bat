@@ -25,11 +25,13 @@ REM     a few hours of trailing bars, so loading 3 days (instead of 100-150) is 
 REM     near-instant. A tiny one-time kline fetch (~a few seconds) is still needed to have live
 REM     data to serve - that is unavoidable for a live feed, but it is small, not the big backfill.
 set "BTC_HISTORICAL_DAYS=3"
-REM --- 5m UP-tilt fix: symmetric up-vs-down dead-zone, 5m ONLY (15m is already balanced). ---
-REM     Neutralizes the measured +33.8pt 5m UP-lean skew by sending marginal coin-flip calls
-REM     to NEUTRAL instead of the slightly-higher side. Set to 0 to revert. Verify after a day
-REM     with: python backend\probe_direction_tilt.py
-set "BTC_DIR_MARGIN_5=0.015"
+REM --- Artifact identity remains the full training window. BTC_HISTORICAL_DAYS above controls
+REM     only the small live candle warm-up in this launcher; using 3 for BOTH values made the
+REM     strict preflight reject a valid 1000-day model as a window mismatch.
+if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=1000"
+REM --- The measured 5m margin experiment increased UP skew as the margin widened. Keep the
+REM     serving distribution unchanged; correct persistent bias in training/calibration.
+set "BTC_DIR_MARGIN_5=0"
 REM --- Keep the live feed responsive (price/predictions). ---
 set "BTC_MAIN_LOOP_SEC=3"
 

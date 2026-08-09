@@ -7,6 +7,7 @@ Feeds accuracy data back into model for auto-learning.
 
 import time
 import logging
+import os
 from collections import deque, defaultdict
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,12 @@ class PredictionVerifier:
         self.conf_calibrators: dict[int, dict] = {}
         self._calib_dirty = 0
 
-        # Per-model, per-regime rolling correctness (for learned regime-specific
-        # ensemble weights). Structure: regime -> model -> deque[0/1].
-        self.regime_model_stats: dict = defaultdict(lambda: defaultdict(lambda: deque(maxlen=200)))
+        # Per-horizon, per-regime, per-model rolling correctness. Five-minute outcomes
+        # arrive three times as often as 15-minute outcomes; pooling them made the 5m model
+        # silently control both horizons' expert weights.
+        self.regime_model_stats: dict = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: deque(maxlen=200)))
+        )
         # map internal model-direction keys to the ensemble weight keys
         self._model_key_map = {
             "xgb": "xgboost",
@@ -119,7 +123,11 @@ class PredictionVerifier:
 
             model_dirs = row.get("model_dirs") or {}
             regime = row.get("regime", "UNKNOWN")
-            actual_strict = "UP" if float(row.get("actual_move_usd") or 0.0) >= 0 else "DOWN"
+            actual_strict = str(row.get("actual_direction") or "")
+            if actual_strict not in ("UP", "DOWN", "NEUTRAL"):
+                # Legacy rows without a persisted contract grade are not valid expert
+                # feedback. Re-deriving from move sign would answer a different target.
+                continue
             labels = {0: "DOWN", 1: "NEUTRAL", 2: "UP"}
             for model_key, direction in model_dirs.items():
                 try:
@@ -127,7 +135,7 @@ class PredictionVerifier:
                 except (TypeError, ValueError):
                     predicted = None
                 if predicted in ("UP", "DOWN"):
-                    self.regime_model_stats[regime][model_key].append(
+                    self.regime_model_stats[horizon][regime][model_key].append(
                         1 if predicted == actual_strict else 0
                     )
 
@@ -444,15 +452,17 @@ class PredictionVerifier:
                 # what model_verifier's panel uses, so the weights and the panel cannot
                 # disagree about whether a seat was right.
                 _actual_strict = actual_direction
+                h = pred["horizon"]
                 for mkey, d in model_dirs.items():
                     try:
                         pred_lbl = _lbl.get(int(d)) if d is not None else None
                     except Exception:
                         pred_lbl = None
                     if pred_lbl in ("UP", "DOWN"):           # committed votes only; NEUTRAL excluded
-                        self.regime_model_stats[regime][mkey].append(1 if pred_lbl == _actual_strict else 0)
+                        self.regime_model_stats[h][regime][mkey].append(
+                            1 if pred_lbl == _actual_strict else 0
+                        )
 
-                h = pred["horizon"]
                 self.verified_by_horizon[h].append(verified)
                 self.all_verified.append(verified)
                 newly_verified.append(verified)
@@ -704,14 +714,29 @@ class PredictionVerifier:
             if len(self.accuracy_history[h]) > 100:
                 self.accuracy_history[h] = self.accuracy_history[h][-100:]
 
-    def get_regime_model_weights(self, regime: str, min_samples: int = 20) -> dict:
+    def get_regime_model_weights(
+        self,
+        horizon: int,
+        regime: str,
+        min_samples: int = 20,
+        forward_status: dict | None = None,
+    ) -> dict:
         """
         Learned regime-specific model weights from live per-model accuracy in this
         regime. Returns weights keyed by the ensemble's model names (xgboost,
         lightgbm, rf, lr), normalized to sum to 1; or {} if there isn't enough data
         yet (caller then keeps its default/heuristic weights).
         """
-        stats = self.regime_model_stats.get(regime, {})
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, _ = may_adapt("regime_weight_update", forward_status)
+            except Exception:
+                return {}
+            if not allowed:
+                return {}
+        stats = self.regime_model_stats.get(int(horizon), {}).get(regime, {})
         accs = {}
         for mkey, dq in stats.items():
             if len(dq) >= min_samples:
@@ -776,7 +801,11 @@ class PredictionVerifier:
         out["_pooled"] = {reg: _factor(b) for reg, b in pooled.items()}
         return out
 
-    def refit_confidence_calibrators(self, min_samples: int = 40):
+    def refit_confidence_calibrators(
+        self,
+        min_samples: int = 40,
+        forward_status: dict | None = None,
+    ):
         """
         Refit per-horizon isotonic calibrators mapping the model's raw confidence to
         the realized hit rate. Isotonic enforces monotonicity (higher confidence ⇒
@@ -804,10 +833,19 @@ class PredictionVerifier:
         shrinks toward its own confidence when none is supplied. Logged below rather than left
         to look like a silently idle component.
         """
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, _ = may_adapt("confidence_recalibration", forward_status)
+            except Exception:
+                return False
+            if not allowed:
+                return False
         try:
             from sklearn.isotonic import IsotonicRegression
         except Exception:
-            return
+            return False
         for h in ALL_HORIZONS:
             confs, hits = [], []
             for v in self.verified_by_horizon[h]:
@@ -844,22 +882,25 @@ class PredictionVerifier:
                 self.conf_calibrators[h] = {"iso": iso, "n": n}
             except Exception:
                 continue
+        return True
 
     def get_confidence_calibrators(self) -> dict:
         """Per-horizon {iso, n} calibrators for the model to apply at inference."""
         return self.conf_calibrators
 
     def get_regime_model_accuracy(self) -> dict:
-        """Per-regime, per-model live accuracy (for monitoring/UI)."""
+        """Per-horizon, per-regime, per-model live accuracy for monitoring/UI."""
         out = {}
-        for regime, models in self.regime_model_stats.items():
-            out[regime] = {
-                self._model_key_map.get(m, m): {
-                    "accuracy": round(sum(dq) / len(dq), 3) if dq else 0.0,
-                    "n": len(dq),
+        for horizon, regimes in self.regime_model_stats.items():
+            out[int(horizon)] = {}
+            for regime, models in regimes.items():
+                out[int(horizon)][regime] = {
+                    self._model_key_map.get(m, m): {
+                        "accuracy": round(sum(dq) / len(dq), 3) if dq else 0.0,
+                        "n": len(dq),
+                    }
+                    for m, dq in models.items() if len(dq) > 0
                 }
-                for m, dq in models.items() if len(dq) > 0
-            }
         return out
 
     def get_accuracy_summary(self) -> dict:
@@ -871,6 +912,7 @@ class PredictionVerifier:
         regime: str = "UNKNOWN",
         min_samples: int = 25,
         target_precision: float = 0.57,
+        forward_status: dict | None = None,
     ) -> dict:
         """
         Learn an adaptive confidence threshold from resolved raw UP/DOWN leans.
@@ -880,6 +922,22 @@ class PredictionVerifier:
         have worked. The policy is precision-first but keeps an action-rate term so
         it does not become "accurate" by trading only one sample.
         """
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, reason = may_adapt("threshold_adaptation", forward_status)
+            except Exception as exc:
+                allowed, reason = False, f"forward gate unavailable: {exc}"
+            if not allowed:
+                return {
+                    "regime": regime,
+                    "by_horizon": {},
+                    "by_regime": {},
+                    "ready": False,
+                    "message": reason,
+                }
+
         def build_policy(rows: list[dict], label: str) -> dict:
             cand = [
                 r for r in rows

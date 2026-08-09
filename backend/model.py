@@ -9,6 +9,7 @@ Includes direction locking, hysteresis, prediction cooldown, and persistence.
 import time
 import os
 import copy
+import json
 import logging
 import numpy as np
 import warnings
@@ -848,8 +849,8 @@ class MultiModelEnsemble:
         regime_labels (P4.3): per-training-row coarse regime ("TREND"/"RANGE"/"VOLATILE")
         from the SAME HMM that routes at serving time. When provided, regime buckets are
         built from these labels so the regime experts train and serve on the IDENTICAL
-        partition. When None, falls back to the legacy ADX/vol threshold clustering (which
-        trained a different partition than serving used — the mismatch P4.3 fixes).
+        partition. `None` is an explicit GLOBAL_ONLY research mode; it never silently changes
+        the architecture to the legacy ADX/volatility partition.
         """
         train_started = time.time()
         # ONE resolver. This read used to be HISTORICAL-then-BACKFILL defaulting to 0, while the
@@ -950,33 +951,28 @@ class MultiModelEnsemble:
             ],
         )
 
-        # Cluster training indices by regime. P4.3: prefer the HMM labels (same partition
-        # serving routes by); fall back to the legacy ADX/vol thresholds only if labels
-        # are absent or misaligned.
+        # HMM labels must cover the complete sequence matrix. `None` explicitly means
+        # GLOBAL_ONLY; a partial list is malformed and must never silently change the
+        # architecture to legacy ADX/volatility clustering.
         regime_indices = {reg: [] for reg in self.regimes}
-        _use_hmm = (regime_labels is not None and len(regime_labels) >= split_idx)
+        if regime_labels is not None and len(regime_labels) != n_samples:
+            raise ValueError(
+                f"regime_labels must cover every sequence row: {len(regime_labels)} != "
+                f"{n_samples}"
+            )
+        _use_hmm = regime_labels is not None
         if _use_hmm:
             logger.info("[TRAIN] P4.3 regime alignment ACTIVE — bucketing by HMM labels.")
             for i in range(split_idx):
                 regime_indices["GLOBAL"].append(i)
                 c = regime_labels[i]
-                regime_indices[c if c in ("TREND", "RANGE", "VOLATILE") else "RANGE"].append(i)
+                if c not in ("TREND", "RANGE", "VOLATILE"):
+                    raise ValueError(f"unknown HMM regime label at row {i}: {c!r}")
+                regime_indices[c].append(i)
         else:
-            if regime_labels is not None:
-                logger.warning("[TRAIN] regime_labels length %s < split_idx %s — using "
-                               "legacy threshold clustering.", len(regime_labels), split_idx)
+            logger.info("[TRAIN] regime labels absent - explicit GLOBAL_ONLY training.")
             for i in range(split_idx):
                 regime_indices["GLOBAL"].append(i)
-                adx_idx = self.model_feature_names.index("adx_norm")
-                vol_idx = self.model_feature_names.index("ewma_vol")
-                adx_val = X_model[i, -1, adx_idx]
-                vol_val = X_model[i, -1, vol_idx]
-                if vol_val > 0.6:
-                    regime_indices["VOLATILE"].append(i)
-                elif adx_val > 0.25:
-                    regime_indices["TREND"].append(i)
-                else:
-                    regime_indices["RANGE"].append(i)
 
         self._build_move_size_stats(Ymag, regime_indices, split_idx)
 
@@ -2177,7 +2173,11 @@ class MultiModelEnsemble:
         # Learned regime-specific weights (from per-model-per-regime live accuracy).
         # When available these replace the hand-coded TREND/RANGE heuristic above with
         # weights derived from what each model has actually gotten right in this regime.
-        rmw = (data_state or {}).get("regime_model_weights") if data_state else None
+        rmw_by_horizon = (
+            (data_state or {}).get("regime_model_weights_by_horizon")
+            if data_state else None
+        ) or {}
+        rmw = rmw_by_horizon.get(horizon) or rmw_by_horizon.get(str(horizon))
         if rmw:
             for k in weights:
                 if k in rmw and rmw[k] is not None:
@@ -3433,8 +3433,45 @@ class MultiModelEnsemble:
         """Persist trained models atomically. Return True only after the version commits."""
         if not HAS_JOBLIB:
             return False
+
         target_dir = os.path.abspath(model_dir or self.model_dir)
         try:
+            required_hmm = {
+                "hmm_ready", "_means", "_inv_covs", "_logdets", "_transmat", "_k",
+                "_median_volume", "state_labels",
+            }
+            hmm_state = getattr(self, "hmm_state", None)
+            if (
+                not isinstance(hmm_state, dict)
+                or hmm_state.get("hmm_ready") is not True
+                or not required_hmm.issubset(hmm_state)
+            ):
+                raise RuntimeError(
+                    "bundle completeness failed: fitted HMM state is absent or incomplete"
+                )
+            from regime import MarketRegime
+            if not MarketRegime().load_state_dict(hmm_state):
+                raise RuntimeError(
+                    "bundle completeness failed: HMM state cannot be restored"
+                )
+            for horizon in self.horizons:
+                missing = [
+                    name for name in ("xgb", "histgb", "lr", "rf", "mag")
+                    if int(horizon) not in self.models_by_regime["GLOBAL"][name]
+                ]
+                if missing:
+                    raise RuntimeError(
+                        f"bundle completeness failed for {horizon}m GLOBAL: missing "
+                        + ", ".join(missing)
+                    )
+                if int(horizon) not in self.class_priors:
+                    raise RuntimeError(
+                        f"bundle completeness failed for {horizon}m: class prior missing"
+                    )
+                if int(horizon) not in self.move_size_stats.get("GLOBAL", {}):
+                    raise RuntimeError(
+                        f"bundle completeness failed for {horizon}m: move-size state missing"
+                    )
             # Same resolver as train(), so what is SAVED describes the window that was TRAINED.
             # These two reads previously disagreed on both precedence and default.
             requested_days = resolve_history_days()
@@ -3588,6 +3625,22 @@ class MultiModelEnsemble:
             logger.error(f"Failed to save models: {e}")
             return False
 
+    def _clear_loaded_bundle(self) -> None:
+        """Remove every component that could otherwise survive a failed reload attempt."""
+        for regime in self.regimes:
+            for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
+                self.models_by_regime[regime][name].clear()
+        self.model_accuracies = {}
+        self.conformal_residuals = {regime: {} for regime in self.regimes}
+        self.hmm_state = None
+        self.feature_reference = {}
+        self.feature_reference_names = list(self.model_feature_names)
+        self.class_priors = {}
+        self.move_size_stats = {regime: {} for regime in self.regimes}
+        self.stackers_by_regime = {regime: {} for regime in self.regimes}
+        self.calibration_provenance = {}
+        self.is_trained = False
+
     def load_models(self) -> bool:
         """Load persisted models from disk. Returns True if successful.
 
@@ -3598,6 +3651,10 @@ class MultiModelEnsemble:
         dead with nothing in the record saying why.
         """
         model_dir = self.model_dir
+        # Reload is a replacement operation, not an overlay. Clear BEFORE any early refusal
+        # (missing manifest, incompatible identity, unavailable dependency) so a caller cannot
+        # receive False while an older in-memory generation remains marked as trained.
+        self._clear_loaded_bundle()
         self.load_refusal = None
         if not HAS_JOBLIB:
             self.load_refusal = "joblib_unavailable"
@@ -3635,172 +3692,143 @@ class MultiModelEnsemble:
                     "incompatible_bundle:" + "; ".join(incompatibilities))[:400]
                 return False
 
-            loaded_any = False
-            loaded_count = 0
-            for reg in self.regimes:
-                reg_dir = os.path.join(model_dir, reg)
-                if not os.path.exists(reg_dir):
-                    continue
-                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
-                    for h in self.horizons:
-                        path = os.path.join(reg_dir, f"{name}_{h}.pkl")
-                        if os.path.exists(path):
-                            self.models_by_regime[reg][name][h] = _verified_joblib_load(path)
-                            loaded_any = True
-                            loaded_count += 1
-
-            acc_path = os.path.join(model_dir, "accuracies.pkl")
-            if os.path.exists(acc_path):
-                self.model_accuracies = _verified_joblib_load(acc_path)
-            
-            res_path = os.path.join(model_dir, "conformal_residuals.pkl")
-            if os.path.exists(res_path):
-                try:
-                    self.conformal_residuals = _verified_joblib_load(res_path)
-                except Exception:
-                    self.conformal_residuals = {reg: {} for reg in self.regimes}
-
-            # P0-1. Restored onto the bundle; the SERVER installs it into the live regime
-            # engine after load_models(). Absent (an older bundle) stays None rather than
-            # becoming an empty dict, so "this bundle carries no HMM" is distinguishable from
-            # "this bundle carries an HMM that failed to fit".
-            hmm_path = os.path.join(model_dir, "hmm_state.pkl")
-            self.hmm_state = None
-            if os.path.exists(hmm_path):
-                try:
-                    self.hmm_state = _verified_joblib_load(hmm_path)
-                except Exception:
-                    self.hmm_state = None
-
-            ref_path = os.path.join(model_dir, "feature_reference.pkl")
-            if os.path.exists(ref_path):
-                try:
-                    self.feature_reference = _verified_joblib_load(ref_path)
-                except Exception:
-                    self.feature_reference = {}
-
-            ref_names_path = os.path.join(model_dir, "feature_reference_names.pkl")
-            if os.path.exists(ref_names_path):
-                try:
-                    loaded_names = _verified_joblib_load(ref_names_path)
-                    if isinstance(loaded_names, list):
-                        self.feature_reference_names = loaded_names
-                except Exception:
-                    self.feature_reference_names = list(self.model_feature_names)
-
-            priors_path = os.path.join(model_dir, "class_priors.pkl")
-            if os.path.exists(priors_path):
-                try:
-                    self.class_priors = _verified_joblib_load(priors_path)
-                except Exception:
-                    self.class_priors = {}
-
-            stats_path = os.path.join(model_dir, "move_size_stats.pkl")
-            if os.path.exists(stats_path):
-                try:
-                    self.move_size_stats = _verified_joblib_load(stats_path)
-                except Exception:
-                    self.move_size_stats = {reg: {} for reg in self.regimes}
-
-            stackers_path = os.path.join(model_dir, "stackers.pkl")
-            if os.path.exists(stackers_path):
-                try:
-                    loaded_stackers = _verified_joblib_load(stackers_path)
-                    if isinstance(loaded_stackers, dict):
-                        self.stackers_by_regime = {
-                            reg: loaded_stackers.get(reg, {})
-                            for reg in self.regimes
-                        }
-                        logger.info(
-                            "[MODEL LOAD] Loaded OOF stackers for regimes: %s",
-                            {
-                                reg: sorted(list((self.stackers_by_regime.get(reg) or {}).keys()))
-                                for reg in self.regimes
-                                if self.stackers_by_regime.get(reg)
-                            },
-                        )
-                except Exception as e:
-                    logger.warning("[MODEL LOAD] Stacker load skipped: %s", e)
-                    self.stackers_by_regime = {reg: {} for reg in self.regimes}
-
-            provenance_path = os.path.join(model_dir, "calibration_provenance.pkl")
-            if os.path.exists(provenance_path):
-                try:
-                    loaded_provenance = _verified_joblib_load(provenance_path)
-                    if isinstance(loaded_provenance, dict):
-                        self.calibration_provenance = loaded_provenance
-                except Exception:
-                    self.calibration_provenance = {}
-
-            metadata_path = os.path.join(model_dir, "bundle_metadata.pkl")
-            if os.path.exists(metadata_path):
-                try:
-                    metadata = _verified_joblib_load(metadata_path)
-                    if isinstance(metadata, dict):
-                        self.model_bundle_id = str(
-                            metadata.get("model_bundle_id") or self.model_bundle_id
-                        )
-                        self.train_split_frac = float(
-                            metadata.get("train_split_frac", self.train_split_frac)
-                        )
-                        self.train_split_idx = int(
-                            metadata.get("train_split_idx", self.train_split_idx)
-                        )
-                        self.full_refit = bool(metadata.get("full_refit", False))
-                except Exception as exc:
-                    logger.warning("[MODEL LOAD] Bundle metadata load skipped: %s", exc)
-
-            if loaded_any:
-                version_path = os.path.join(model_dir, "architecture_version.pkl")
-                saved_version = None
-                if os.path.exists(version_path):
-                    try:
-                        saved_version = _verified_joblib_load(version_path)
-                    except Exception:
-                        saved_version = None
-                if saved_version != MODEL_ARCH_VERSION:
-                    logger.warning(
-                        "[MODEL LOAD] Saved model architecture is stale (%s != %s). Retraining once for current ensemble.",
-                        saved_version,
-                        MODEL_ARCH_VERSION,
-                    )
-                    for r in self.regimes:
-                        for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
-                            self.models_by_regime[r][n].clear()
-                    self.is_trained = False
-                    self.load_refusal = "feature_schema_mismatch:bundle_cleared"
-                    return False
-
-                # Verify feature dimension compatibility
-                dummy_input = np.zeros((1, LOOKBACK * self.model_num_features))
-                for reg in self.regimes:
-                    for h in self.horizons:
-                        if h in self.models_by_regime[reg]["xgb"]:
-                            try:
-                                self.models_by_regime[reg]["xgb"][h].predict(dummy_input)
-                            except Exception as e:
-                                logger.warning(f"Saved models are incompatible with current features count: {e}. Purging saved models to trigger retraining.")
-                                for r in self.regimes:
-                                    for n in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]:
-                                        self.models_by_regime[r][n].clear()
-                                self.is_trained = False
-                                self.load_refusal = (
-                                    "feature_dimension_mismatch:bundle_cleared")
-                                return False
-                            break
-                    else:
-                        continue
-                    break
-
-                self.is_trained = True
-                logger.info(
-                    "[MODEL LOAD] Loaded and validated %s model components from %s",
-                    loaded_count,
-                    model_dir,
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            declared_original = [str(item) for item in manifest.get("artifact_files") or []]
+            declared = {item.replace("\\", "/"): item for item in declared_original}
+            required_support = {
+                "accuracies.pkl", "conformal_residuals.pkl", "hmm_state.pkl",
+                "feature_reference.pkl", "feature_reference_names.pkl",
+                "model_feature_schema.pkl", "move_size_stats.pkl", "class_priors.pkl",
+                "stackers.pkl", "calibration_provenance.pkl", "bundle_metadata.pkl",
+                "architecture_version.pkl",
+            }
+            missing_support = sorted(required_support - set(declared))
+            if missing_support:
+                raise RuntimeError(
+                    "bundle manifest omits required support artifacts: "
+                    + ", ".join(missing_support)
                 )
 
-            return loaded_any
+            expected_model_paths = {
+                f"{reg}/{name}_{int(h)}.pkl"
+                for reg in self.regimes
+                for name in ["xgb", "lgb", "cat", "histgb", "dl", "lr", "rf", "mag"]
+                for h in self.horizons
+            }
+            declared_model_paths = set(declared) & expected_model_paths
+            unknown_regime_artifacts = sorted(
+                rel for rel in declared
+                if "/" in rel and rel.endswith(".pkl") and rel not in expected_model_paths
+            )
+            if unknown_regime_artifacts:
+                raise RuntimeError(
+                    "bundle declares unknown model components: "
+                    + ", ".join(unknown_regime_artifacts)
+                )
+            for horizon in self.horizons:
+                core = {
+                    f"GLOBAL/{name}_{int(horizon)}.pkl"
+                    for name in ("xgb", "histgb", "lr", "rf", "mag")
+                }
+                missing_core = sorted(core - declared_model_paths)
+                if missing_core:
+                    raise RuntimeError(
+                        f"bundle is incomplete for {horizon}m GLOBAL: "
+                        + ", ".join(missing_core)
+                    )
+
+            # Deserialize only the files committed by THIS manifest. Stale files left in the
+            # directory by an older architecture are ignored instead of joining the release.
+            values = {
+                rel: _verified_joblib_load(os.path.join(model_dir, original))
+                for rel, original in declared.items()
+                if rel.endswith(".pkl")
+            }
+            saved_version = values["architecture_version.pkl"]
+            if saved_version != MODEL_ARCH_VERSION:
+                raise RuntimeError(
+                    f"saved architecture is stale ({saved_version} != {MODEL_ARCH_VERSION})"
+                )
+
+            schema = values["model_feature_schema.pkl"]
+            if not isinstance(schema, dict):
+                raise RuntimeError("model feature schema is not a mapping")
+            if (
+                schema.get("hash") != self.model_feature_schema_hash
+                or list(schema.get("names") or []) != list(self.model_feature_names)
+                or int(schema.get("model_count") or 0) != int(self.model_num_features)
+            ):
+                raise RuntimeError("model feature schema does not match the serving schema")
+
+            hmm_state = values["hmm_state.pkl"]
+            required_hmm = {
+                "hmm_ready", "_means", "_inv_covs", "_logdets", "_transmat", "_k",
+                "_median_volume", "state_labels",
+            }
+            if (
+                not isinstance(hmm_state, dict)
+                or hmm_state.get("hmm_ready") is not True
+                or not required_hmm.issubset(hmm_state)
+            ):
+                raise RuntimeError("bundle HMM state is absent or incomplete")
+            from regime import MarketRegime
+            if not MarketRegime().load_state_dict(hmm_state):
+                raise RuntimeError("bundle HMM state cannot be restored")
+
+            metadata = values["bundle_metadata.pkl"]
+            if not isinstance(metadata, dict):
+                raise RuntimeError("bundle metadata is not a mapping")
+            if sorted(int(h) for h in metadata.get("horizons") or []) != sorted(
+                int(h) for h in self.horizons
+            ):
+                raise RuntimeError("bundle metadata horizons do not match serving horizons")
+            if not str(metadata.get("model_bundle_id") or "").strip():
+                raise RuntimeError("bundle metadata has no model_bundle_id")
+
+            self._clear_loaded_bundle()
+            for rel in sorted(declared_model_paths):
+                reg, filename = rel.split("/", 1)
+                name, horizon_text = filename[:-4].rsplit("_", 1)
+                self.models_by_regime[reg][name][int(horizon_text)] = values[rel]
+
+            self.model_accuracies = values["accuracies.pkl"]
+            self.conformal_residuals = values["conformal_residuals.pkl"]
+            self.hmm_state = hmm_state
+            self.feature_reference = values["feature_reference.pkl"]
+            loaded_names = values["feature_reference_names.pkl"]
+            if not isinstance(loaded_names, list):
+                raise RuntimeError("feature reference names are not a list")
+            self.feature_reference_names = loaded_names
+            self.move_size_stats = values["move_size_stats.pkl"]
+            self.class_priors = values["class_priors.pkl"]
+            loaded_stackers = values["stackers.pkl"]
+            if not isinstance(loaded_stackers, dict):
+                raise RuntimeError("stackers artifact is not a mapping")
+            self.stackers_by_regime = {
+                reg: loaded_stackers.get(reg, {}) for reg in self.regimes
+            }
+            loaded_provenance = values["calibration_provenance.pkl"]
+            if not isinstance(loaded_provenance, dict):
+                raise RuntimeError("calibration provenance is not a mapping")
+            self.calibration_provenance = loaded_provenance
+            self.model_bundle_id = str(metadata["model_bundle_id"])
+            self.train_split_frac = float(metadata.get("train_split_frac", self.train_split_frac))
+            self.train_split_idx = int(metadata.get("train_split_idx", self.train_split_idx))
+            self.full_refit = bool(metadata.get("full_refit", False))
+
+            dummy_input = np.zeros((1, LOOKBACK * self.model_num_features))
+            for horizon in self.horizons:
+                self.models_by_regime["GLOBAL"]["xgb"][horizon].predict(dummy_input)
+
+            self.is_trained = True
+            logger.info(
+                "[MODEL LOAD] Loaded and validated %s manifest-bound model components from %s",
+                len(declared_model_paths),
+                model_dir,
+            )
+            return True
         except Exception as e:
+            self._clear_loaded_bundle()
             logger.error(f"Failed to load models: {e}")
             self.load_refusal = f"load_error:{type(e).__name__}: {e}"[:400]
             return False
@@ -3816,6 +3844,18 @@ class MultiModelEnsemble:
         3. Adjust smoothing alpha based on how often direction flips are correct
         4. Adjust confidence threshold based on high-conf accuracy
         """
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, reason = may_adapt("online_relearn")
+            except Exception as exc:
+                logger.warning("Auto-learning refused: forward gate unavailable: %s", exc)
+                return []
+            if not allowed:
+                logger.info("Auto-learning refused: %s", reason)
+                return []
+
         retrain_horizons = []
         
         for h, data in feedback.items():

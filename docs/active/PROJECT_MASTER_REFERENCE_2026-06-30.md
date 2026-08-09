@@ -39,7 +39,7 @@ no market, coin-flip) · arch `2horizon-5-15` · frozen on this 16GB box.
 | Families (7) | XGBoost · LightGBM · CatBoost · HistGradientBoosting · TCN (deep) · LogisticRegression · RandomForest |
 | Structure | regime-bucketed (TREND/RANGE/VOLATILE/GLOBAL) + OOF stackers per horizon × regime |
 | Output | UP/DOWN/NEUTRAL close direction — **coin-flip, used as confirmation only**, never a trade trigger |
-| Tilt fix | symmetric `BTC_DIR_MARGIN_5=0.015` dead-zone neutralizes a measured +34pt 5m UP-lean |
+| Tilt measurement | `BTC_DIR_MARGIN_5=0`; the tested 0.015 dead-zone increased selection of the already-biased UP side and is not a valid correction |
 
 ### Layer 2 — specialist heads (the actual value) — `train_heads.py`
 | Head | Predicts | Model | Status / metric |

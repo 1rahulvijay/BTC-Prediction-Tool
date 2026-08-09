@@ -11,9 +11,10 @@ Status of every known defect. **Updated 2026-08-09. HEAD at time of writing: `97
 > 2. **Three fixes committed during that audit were themselves defective**, caught by the next
 >    scan. A `FIXED` row here means a mutation-tested regression exists, not that the fix was
 >    later re-audited.
-> 3. **Scan 6 raised 34 further claims; 7 were confirmed and fixed, 26 remain uninvestigated**
->    — including release-scoped adaptation, the paper close/reversal lifecycle, and the
->    meta-model profitability target. They are NOT represented in the P0/P1 sections below.
+> 3. **2026-08-09 follow-up:** the confirmed release-scoped adaptation, HMM fail-open,
+>    paper close/reversal, forward-gate and meta-target defects are fixed and regression-tested.
+>    See `CORRECTNESS_AND_MONEY_PATH_FIXES_2026-08-09.md`. Uninvestigated Scan-6 claims remain
+>    claims, not defects, until verified against source.
 
 **2026-08-08 sweep.** Three entries below were STALE — P0-4, P0-10 and the P0-14
 blocker were all fixed while this file still listed them open. A defect register that is
@@ -185,12 +186,14 @@ silently answering. That refusal is correct until it is taught to read the new c
 Read routes expose database paths, positions, orders, fills, equity, model and evidence state.
 Acceptable on localhost; unsafe the moment anything is reachable beyond it.
 
-**P0-16 / P0-18 — mixed and partial releases.**
-Promotion copies manifest files but does not remove stale ones, and the loader scans the
-directory — so a release can be new ensemble + old HMM + older calibrator. Partial loads still
-mark a bundle trained.
-*Fix:* immutable `releases/<id>/`, atomic pointer swap, load only manifest-declared components,
-require a complete component matrix.
+**P0-16 / P0-18 — FIXED FOR CORRECTNESS 2026-08-09; pointer-swap hardening remains.**
+The loader now reads only manifest-declared files, requires every support artifact plus the core
+GLOBAL component matrix, validates feature schema/architecture/horizons/bundle ID/restorable HMM,
+and clears all state on any failure. Promotion commits the manifest last and rolls back on error,
+so stale files cannot join a release and partial state cannot become trained. Immutable
+`releases/<id>/` plus an atomic pointer remains useful availability hardening: the current copy
+transaction can briefly make the old manifest fail its hash, but it fails closed rather than
+serving a mixed generation.
 
 **P0-4 — FIXED. The history below is kept because the two failed attempts are the
 reason the third one is shaped the way it is.**
@@ -261,11 +264,11 @@ instead. See 5.2 in the closeout document.
 | P0-10 training vs live neutral band | **FIXED** by `causal_neutral_band` — the live value is the training threshold series, not an instantaneous recomputation |
 | P0-13 decision identity not threaded | OPEN. This is the `DecisionEnvelope` work (3.15), tracked as architecture |
 | P0-15 restored ≠ live adaptive state | **FIXED.** The percentile window is rehydrated at boot, scoped to the serving release and in the same calibrated/raw namespace the gate compares against |
-| P0-17 incomplete composite release | OPEN, and it is one job with P0-16/P0-18 |
+| P0-17 incomplete composite release | **FIXED FOR CORRECTNESS 2026-08-09.** Save and load now require the complete declared support set, every core GLOBAL seat for every served horizon, restorable HMM state, class priors and move state. Any missing/tampered member clears the partial load. Immutable-directory pointer swapping remains availability hardening, as described under P0-16/P0-18. |
 | P0-19 compatibility inconsistency | read, not resolved |
-| P0-20 bootstrap contradiction | read, not resolved |
-| P0-24 unsafe migrations | **CONFIRMED, and it is the real one.** `ALTER TABLE ... except: pass` appears 13 times in `database.py`, so a migration that fails for a genuine reason is indistinguishable from one already applied. The 5.29 funding migration uses `PRAGMA table_info` instead — that is the pattern the rest should adopt, and it matters most wherever an INSERT is positional |
-| P0-26 fill-engine optimism | addressed by the `fd46d51` work ("a defaulted gate is a disabled gate"); not re-verified end to end |
+| P0-20 bootstrap contradiction | **FIXED 2026-08-09.** A first compatible candidate passes the same holdout gate and durable promotion transaction before activation; it is no longer made active only in memory and lost on restart. |
+| P0-24 unsafe migrations | **FIXED 2026-08-09.** All additive migrations in `database.py` use `ADD COLUMN IF NOT EXISTS` through one checked helper. Genuine SQL, type, lock and storage failures now propagate and stop initialization instead of masquerading as an already-applied column. |
+| P0-26 fill-engine optimism | **RE-VERIFIED 2026-08-09.** Strict heuristic/group defaults are off, entries fail closed, queued exits remain executable in CLOSE_ONLY, and reversal entry requires a fresh post-close decision plus a second latency leg. The Binance Phase-1, engine, API and economics suites pass. |
 
 P0-11/12 are partially evidenced: the complementarity study exposed the endpoint-vs-first-touch
 grading mismatch in the archive (47% of seat predictions are NEUTRAL; `actual_direction` never
@@ -287,7 +290,8 @@ quality · G deployment and frontend.
 2. **P0-8 and P0-14** — both corrupt the forward-evidence record a retrain would be judged by.
 3. **Backfill or capture round truth**, then retrain.
 4. **P0-27** before anything leaves localhost.
-5. **P0-16 / P0-18** before the first promotion.
+5. Run the 1000-day retrain, verify the staged bundle reload/smoke test, and keep the first
+   release in paper/shadow until release-bound forward evidence clears its gates.
 6. Everything else.
 
 ---

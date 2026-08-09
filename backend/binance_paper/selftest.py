@@ -532,7 +532,7 @@ def test_opposing_signal_order() -> None:
     with tempfile.TemporaryDirectory() as directory:
         client = FakeFuturesClient()
         service = BinancePaperService(
-            client, config=config(Path(directory) / "paper.duckdb", latency_ms=0)
+            client, config=config(Path(directory) / "paper.duckdb", latency_ms=500)
         )
         service.initialize()
         service.registry.update(
@@ -547,13 +547,13 @@ def test_opposing_signal_order() -> None:
             service, "trend_following", snapshot, PositionSide.LONG, "reversal-open"
         )
         queue_manual(service, long_decision, snapshot)
-        feed(service, client, base + 1, 100_000.0, 100_002.0)
+        feed(service, client, base + 500, 100_000.0, 100_002.0)
         assert service.persistence.open_positions("trend_following")[0]["side"] == "LONG"
 
         short_decision = manual_decision(
             service,
             "trend_following",
-            feed(service, client, base + 2, 100_000.0, 100_002.0),
+            feed(service, client, base + 501, 100_000.0, 100_002.0),
             PositionSide.SHORT,
             "reversal-close",
         )
@@ -562,10 +562,18 @@ def test_opposing_signal_order() -> None:
         strategy.decide = lambda _snapshot: short_decision
         try:
             service._evaluate(service.latest_snapshot)
+            # First latency leg closes the LONG. The post-close re-evaluation still sees the
+            # SHORT thesis, but the fresh reversal order must remain pending for another full
+            # latency leg rather than filling immediately from the stale original timestamp.
+            feed(service, client, base + 1_001, 100_000.0, 100_002.0)
+            assert service.persistence.open_positions("trend_following") == []
+            pending = list(service._pending.values())
+            assert len(pending) == 1 and pending[0].operation == "ENTRY"
+            assert pending[0].decision_ts_ms == base + 1_001
+            assert pending[0].arrival_ts_ms == base + 1_501
+            feed(service, client, base + 1_501, 100_000.0, 100_002.0)
         finally:
             strategy.decide = original
-        feed(service, client, base + 3, 100_000.0, 100_002.0)
-        feed(service, client, base + 4, 100_000.0, 100_002.0)
         position = service.persistence.open_positions("trend_following")[0]
         assert position["side"] == "SHORT"
         events = [
@@ -577,6 +585,42 @@ def test_opposing_signal_order() -> None:
         assert operations[-2:] == ["EXIT", "ENTRY"], operations
         service.shutdown()
     print("  PASS  opposing signal closes before opening the opposite side")
+
+
+def test_close_only_processes_pending_exit() -> None:
+    """Disabling new risk must never strand an exit that was already queued."""
+    with tempfile.TemporaryDirectory() as directory:
+        client = FakeFuturesClient()
+        service = BinancePaperService(
+            client, config=config(Path(directory) / "paper.duckdb", latency_ms=500)
+        )
+        service.initialize()
+        service.start_engine()
+        base = int(time.time() * 1000)
+        snapshot = feed(service, client, base, 100_000.0, 100_002.0)
+        decision = manual_decision(
+            service, "trend_following", snapshot, PositionSide.LONG, "close-only-open"
+        )
+        queue_manual(service, decision, snapshot)
+        feed(service, client, base + 500, 100_000.0, 100_002.0)
+        position = service.persistence.open_positions("trend_following")[0]
+        service._queue_exit(
+            position,
+            service.latest_snapshot,
+            signal_id="close-only-exit",
+            exit_reason="ENVIRONMENT_DISABLED",
+        )
+
+        # Simulate the operator disabling the environment after the exit was sent but before
+        # its exchange-arrival timestamp. New entries are forbidden; reducing risk is allowed.
+        service.config = replace(service.config, hard_enabled=False)
+        feed(service, client, base + 1_000, 100_000.0, 100_002.0)
+        assert service.persistence.open_positions("trend_following") == []
+        assert service.status()["pending_order_count"] == 0
+        order = service.persistence.latest_orders(1)[0]
+        assert order["operation"] == "EXIT" and order["status"] == "FILLED"
+        service.shutdown()
+    print("  PASS  CLOSE_ONLY still processes an already-queued exit")
 
 
 def test_feed_gap_blocks_history_dependent_strategies() -> None:
@@ -1259,6 +1303,7 @@ def run() -> None:
     test_long_short_accounting_and_isolation()
     test_observed_funding_accounting()
     test_opposing_signal_order()
+    test_close_only_processes_pending_exit()
     test_actual_strategies_end_to_end()
     test_feed_gap_blocks_history_dependent_strategies()
     test_post_fill_invalidation_unwinds_instead_of_erasing()

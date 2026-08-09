@@ -15,6 +15,7 @@ than from improving the direction model.
 """
 
 import logging
+import os
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -50,24 +51,58 @@ class TrainedMetaModel:
         self.is_trained = False
         self.val_accuracy = None
         self.n_samples = 0
+        self.release_id = ""
+        self.target_contract = ""
+        self.target_definition = "unavailable"
 
-    def train(self, db_path: str, horizon: int) -> str:
+    def train(
+        self,
+        db_path: str,
+        horizon: int,
+        *,
+        release_id: str = "",
+        target_contract: str = "",
+        forward_status: dict | None = None,
+    ) -> str:
         if not (HAS_DUCKDB and HAS_SKLEARN):
             return "duckdb/sklearn unavailable"
+        if int(horizon) not in (5, 15):
+            return f"unsupported horizon: {horizon}"
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, reason = may_adapt("online_relearn", forward_status)
+            except Exception as exc:
+                return f"forward-evidence gate unavailable: {exc}"
+            if not allowed:
+                return reason
+        release_id = str(release_id or "").strip()
+        target_contract = str(target_contract or "").strip()
+        if not release_id or not target_contract:
+            return "release_id and target_contract are required"
         try:
             with duckdb.connect(db_path) as conn:
                 df = conn.execute(f"""
-                    SELECT confidence, agreement, regime, ewma_vol, spread_norm,
+                    SELECT timestamp, confidence, agreement, regime, ewma_vol, spread_norm,
                            wall_imbalance, sr_compression, liq_imbalance, 
                            quantile_width_pct, quantile_asymmetry, quantile_spread,
                            wf_accuracy, wf_accuracy_minus_0_5, wf_fold_std, wf_sample_count, wf_age_minutes,
                            (timestamp / 3600000) % 24 AS hour_utc, 
                            tradeability, regime_score, liquidity_score, expected_edge, expectancy_usd, hit,
-                           binance_price, actual_move, expected_slippage_usd, signal, raw_direction
+                           binance_price, endpoint_move, expected_slippage_usd, signal, raw_direction,
+                           release_id, target_contract, endpoint_price_basis
                     FROM predictions_{horizon}m
-                    WHERE resolved = TRUE AND hit IS NOT NULL AND confidence > 0.55 AND binance_price IS NOT NULL
+                    WHERE resolved = TRUE
+                      AND confidence > 0.55
+                      AND binance_price IS NOT NULL
+                      AND endpoint_move IS NOT NULL
+                      AND endpoint_price_basis = 'ENDPOINT'
+                      AND raw_direction IN ('UP', 'DOWN')
+                      AND release_id = ?
+                      AND target_contract = ?
                     ORDER BY timestamp
-                """).df()
+                """, (release_id, target_contract)).df()
         except Exception as e:
             return f"query failed: {e}"
 
@@ -77,10 +112,12 @@ class TrainedMetaModel:
         self.regime_encoder = LabelEncoder()
         df["regime_encoded"] = self.regime_encoder.fit_transform(df["regime"].fillna("RANGE"))
 
-        # Cost-aware target: Did the trade actually produce positive P&L after costs?
+        # Counterfactual endpoint-economic target. This is deliberately NOT called realized
+        # execution P&L: the prediction table has no fill. It uses the real horizon endpoint
+        # plus the decision-time cost estimate, and never the first-touch barrier observation.
         def calc_profitable(row):
             direction_sign = 1 if row.get("raw_direction") == "UP" else (-1 if row.get("raw_direction") == "DOWN" else 0)
-            gross_pnl = direction_sign * row.get("actual_move", 0.0)
+            gross_pnl = direction_sign * row.get("endpoint_move", 0.0)
             cost_estimate = row.get("binance_price", 0.0) * 0.0010 + row.get("expected_slippage_usd", 0.0)
             return int((gross_pnl - cost_estimate) > 0)
 
@@ -96,8 +133,18 @@ class TrainedMetaModel:
 
         # Strict temporal split — never shuffle a time series.
         split = int(len(df) * 0.75)
-        X_tr, y_tr = X[:split], y[:split]
+        # Purge a FULL horizon before validation. Predictions can be emitted every few seconds,
+        # so a one-row embargo still leaves hundreds of training labels whose endpoint lies in
+        # the validation era. Those overlapping labels are not independent holdout evidence.
+        split_ts = int(df.iloc[split]["timestamp"])
+        purge_before_ts = split_ts - int(horizon) * 60_000
+        train_indices = np.flatnonzero(
+            df.iloc[:split]["timestamp"].astype(np.int64).values < purge_before_ts
+        )
+        X_tr, y_tr = X[train_indices], y[train_indices]
         X_val, y_val = X[split:], y[split:]
+        if len(X_tr) < max(40, self.MIN_SAMPLES // 2):
+            return f"insufficient purged training data: {len(X_tr)}"
         if len(np.unique(y_tr)) < 2:
             return "training split has one class"
 
@@ -110,6 +157,9 @@ class TrainedMetaModel:
         self.val_accuracy = float(self.model.score(X_val, y_val)) if len(X_val) else None
         self.is_trained = True
         self.n_samples = len(df)
+        self.release_id = release_id
+        self.target_contract = target_contract
+        self.target_definition = "counterfactual_endpoint_net_after_decision_cost"
         return (f"trained on {len(df)} samples"
                 + (f", val acc {self.val_accuracy:.3f}" if self.val_accuracy is not None else ""))
 
@@ -154,12 +204,15 @@ class TrainedMetaModel:
             trust = float(self.model.predict_proba(feats)[0][1])
             return trust >= threshold, trust
         except Exception as e:
-            logger.debug(f"meta should_execute fallback: {e}")
-            return True, 0.5
+            logger.warning("trained meta-model inference failed closed: %s", e)
+            return False, 0.0
 
     def status(self) -> dict:
         return {
             "trained": self.is_trained,
             "samples": self.n_samples,
             "val_accuracy": round(self.val_accuracy, 3) if self.val_accuracy is not None else None,
+            "release_id": self.release_id,
+            "target_contract": self.target_contract,
+            "target_definition": self.target_definition,
         }

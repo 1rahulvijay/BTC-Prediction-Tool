@@ -261,7 +261,10 @@ class BinancePaperService:
             # bookTicker can publish many times per second. Keep pending-order latency
             # faithful to the live quote stream, but bound DuckDB portfolio work to the
             # configured sampling cadence so this observer cannot block feed ingestion.
-            if self.config.hard_enabled and self._pending:
+            # Pending EXITS remain executable in CLOSE_ONLY mode. `_process_pending` rejects
+            # entry intents when the environment gate is off, so processing the queue here
+            # cannot accidentally open risk while allowing existing inventory to close.
+            if self._pending:
                 self._process_pending(snapshot)
             funding_due = (
                 snapshot.funding_time_ms is not None
@@ -601,6 +604,12 @@ class BinancePaperService:
         ]
         due.sort(key=lambda item: (item.arrival_ts_ms, item.operation))
         for intent in due:
+            if intent.operation == "ENTRY" and not self.config.hard_enabled:
+                self._cancel_pending_intent(
+                    intent,
+                    "engine_environment_gate_disabled_before_arrival",
+                )
+                continue
             if intent.operation == "ENTRY" and (
                 not self.runtime_active
                 or not self.registry.is_enabled(intent.strategy_id)
@@ -738,11 +747,48 @@ class BinancePaperService:
                 intent.operation == "EXIT"
                 and intent.reversal_decision is not None
             ):
-                self._queue_entry(
-                    intent.reversal_decision,
-                    snapshot,
-                    signal_already_seen=False,
-                )
+                # A close and a reversal are two market interactions. Reusing the original
+                # decision timestamp made the second order's arrival time already elapsed.
+                # Re-evaluate on the post-exit snapshot, require the thesis to persist, then
+                # stamp a fresh decision so the new entry pays a complete latency leg.
+                requested_side = intent.reversal_decision.side
+                strategy = self.registry.get(intent.strategy_id)
+                fresh = strategy.decide(snapshot)
+                if (
+                    fresh.action in (Action.OPEN_LONG, Action.OPEN_SHORT)
+                    and fresh.side == requested_side
+                ):
+                    ttl_ms = (
+                        max(0, int(fresh.valid_until_ms) - int(fresh.timestamp_ms))
+                        if fresh.valid_until_ms is not None else None
+                    )
+                    fresh = replace(
+                        fresh,
+                        timestamp_ms=snapshot.received_at_ms,
+                        valid_until_ms=(
+                            snapshot.received_at_ms + ttl_ms
+                            if ttl_ms is not None else None
+                        ),
+                    )
+                    self.persistence.record_signal(fresh)
+                    self._queue_entry(
+                        fresh,
+                        snapshot,
+                        signal_already_seen=False,
+                    )
+                else:
+                    self.persistence.append_event(
+                        "REVERSAL_CANCELLED",
+                        "Opposing thesis did not persist after the close fill",
+                        strategy_id=intent.strategy_id,
+                        details={
+                            "requested_side": (
+                                requested_side.value if requested_side is not None else None
+                            ),
+                            "fresh_action": fresh.action.value,
+                            "fresh_side": fresh.side.value if fresh.side is not None else None,
+                        },
+                    )
 
     def _entry_arrival_invalid_reason(
         self, intent: PendingIntent, snapshot: MarketSnapshot

@@ -62,6 +62,17 @@ def init_db():
     if _ANCHOR_CONN is None:
         _ANCHOR_CONN = duckdb.connect(DB_PATH)
     conn = _connect()
+
+    def add_columns(table: str, clauses) -> None:
+        """Apply idempotent additive migrations without hiding real DB failures."""
+        for clause in clauses:
+            clause = str(clause).strip()
+            prefix = "ADD COLUMN "
+            if not clause.upper().startswith(prefix):
+                raise ValueError(f"Unsupported additive migration for {table}: {clause}")
+            definition = clause[len(prefix):]
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {definition}")
+
     # For each timeframe, create a table if it doesn't exist
     timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     for tf in timeframes:
@@ -87,15 +98,9 @@ def init_db():
                 regime VARCHAR DEFAULT 'UNKNOWN'
             )
         """)
-        try:
-            conn.execute(f"ALTER TABLE predictions_{tf}m ADD COLUMN cascade_active BOOLEAN DEFAULT FALSE;")
-        except Exception:
-            pass # column already exists
-        try:
-            conn.execute(f"ALTER TABLE predictions_{tf}m ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN';")
-        except Exception:
-            pass # column already exists
-        for ddl in [
+        add_columns(f"predictions_{tf}m", [
+            "ADD COLUMN cascade_active BOOLEAN DEFAULT FALSE",
+            "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'",
             "ADD COLUMN raw_direction VARCHAR DEFAULT ''",
             "ADD COLUMN skip_reason VARCHAR DEFAULT ''",
             "ADD COLUMN avoid_success BOOLEAN DEFAULT FALSE",
@@ -157,19 +162,18 @@ def init_db():
             "ADD COLUMN resolution_event_ts BIGINT DEFAULT NULL",
             "ADD COLUMN resolution_price DOUBLE DEFAULT NULL",
             "ADD COLUMN label_version VARCHAR DEFAULT ''",
-        ]:
-            try:
-                conn.execute(f"ALTER TABLE predictions_{tf}m {ddl};")
-            except Exception:
-                pass # column already exists
-        try:
-            conn.execute(f"""
-                UPDATE predictions_{tf}m
-                SET resolution_status='RESOLVED'
-                WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
-            """)
-        except Exception:
-            pass
+            # Endpoint economics are a different observation from the contract grader's
+            # resolution price. Under first-touch the latter is a barrier; meta/economic
+            # models must never reinterpret it as the horizon-end return.
+            "ADD COLUMN endpoint_price DOUBLE DEFAULT NULL",
+            "ADD COLUMN endpoint_move DOUBLE DEFAULT NULL",
+            "ADD COLUMN endpoint_price_basis VARCHAR DEFAULT ''",
+        ])
+        conn.execute(f"""
+            UPDATE predictions_{tf}m
+            SET resolution_status='RESOLVED'
+            WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+        """)
         # Backfill lean_hit for already-resolved rows (no-op when nothing qualifies; safe
         # to run every boot).
         #
@@ -182,28 +186,24 @@ def init_db():
         # outcome was recorded. A row that cannot say what the contract decided is left
         # NULL - unknown, and excluded from the betting metric - rather than assigned an
         # answer by a rule the contract does not use.
-        try:
-            conn.execute(f"""
-                UPDATE predictions_{tf}m
-                SET lean_hit = (raw_direction = actual_direction)
-                WHERE lean_hit IS NULL AND resolved = TRUE
-                  AND raw_direction IN ('UP', 'DOWN')
-                  AND actual_direction IS NOT NULL AND actual_direction <> ''
-            """)
-        except Exception:
-            pass
+        conn.execute(f"""
+            UPDATE predictions_{tf}m
+            SET lean_hit = (raw_direction = actual_direction)
+            WHERE lean_hit IS NULL AND resolved = TRUE
+              AND raw_direction IN ('UP', 'DOWN')
+              AND actual_direction IS NOT NULL AND actual_direction <> ''
+        """)
         # Context columns for the trained meta-model (logged now so data accrues).
-        for col in ["ewma_vol", "spread_norm", "wall_imbalance",
-                    "sr_compression", "liq_imbalance", "quantile_width_pct", "quantile_asymmetry",
-                    "quantile_spread",
-                    "wf_accuracy", "wf_accuracy_minus_0_5", "wf_fold_std", "wf_sample_count", "wf_age_minutes",
-                    "tradeability", "regime_score", "liquidity_score", "expected_edge",
-                    "expectancy_usd", "expected_slippage_usd",
-                    "conviction", "actionable", "confluence"]:
-            try:
-                conn.execute(f"ALTER TABLE predictions_{tf}m ADD COLUMN {col} DOUBLE DEFAULT 0.0;")
-            except Exception:
-                pass  # column already exists
+        add_columns(f"predictions_{tf}m", [
+            f"ADD COLUMN {col} DOUBLE DEFAULT 0.0"
+            for col in ["ewma_vol", "spread_norm", "wall_imbalance",
+                        "sr_compression", "liq_imbalance", "quantile_width_pct", "quantile_asymmetry",
+                        "quantile_spread",
+                        "wf_accuracy", "wf_accuracy_minus_0_5", "wf_fold_std", "wf_sample_count", "wf_age_minutes",
+                        "tradeability", "regime_score", "liquidity_score", "expected_edge",
+                        "expectancy_usd", "expected_slippage_usd",
+                        "conviction", "actionable", "confluence"]
+        ])
     conn.execute("""
         CREATE TABLE IF NOT EXISTS feature_importance (
             timestamp TIMESTAMP,
@@ -391,16 +391,12 @@ def init_db():
             notes VARCHAR
         )
     """)
-    for ddl in [
+    add_columns("analysis_snapshots", [
         "ADD COLUMN support_resistance_json VARCHAR DEFAULT '{}'",
         "ADD COLUMN indicator_snapshot_json VARCHAR DEFAULT '{}'",
         "ADD COLUMN kronos_status_json VARCHAR DEFAULT '{}'",
         "ADD COLUMN fsr_ppo_json VARCHAR DEFAULT '{}'",
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE analysis_snapshots {ddl};")
-        except Exception:
-            pass
+    ])
     # Durable A/B testing relational schema
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ab_experiments (
@@ -461,7 +457,7 @@ def init_db():
             invalid_reason VARCHAR DEFAULT ''
         )
     """)
-    for ddl in [
+    add_columns("ab_results", [
         "ADD COLUMN variant VARCHAR",
         "ADD COLUMN pred_id VARCHAR",
         "ADD COLUMN timestamp BIGINT",
@@ -475,11 +471,7 @@ def init_db():
         "ADD COLUMN feature_schema_hash VARCHAR DEFAULT ''",
         "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
         "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE ab_results {ddl};")
-        except Exception:
-            pass
+    ])
     # B1 (2026-06-13): live per-bar feature vector log. Closes the train/serve gap —
     # the high-edge microstructure features are constant in the historical training
     # matrix (one live snapshot broadcast over 50d); logging them live, keyed by the
@@ -540,11 +532,10 @@ def init_db():
     # Additive migration (2026-06-14): persist trailing-60s vol + the live calibrated P(hold)
     # at snapshot time, so the live P(hold) tier is EXACTLY gradeable from the DB (not just the
     # structural distance/time zone the §5bw validation reconstructed). Crash-safe no-op if present.
-    for _ddl in ["ADD COLUMN vol_60s_pct DOUBLE", "ADD COLUMN p_hold DOUBLE"]:
-        try:
-            conn.execute(f"ALTER TABLE persistence_snapshot {_ddl}")
-        except Exception:
-            pass
+    add_columns("persistence_snapshot", [
+        "ADD COLUMN vol_60s_pct DOUBLE",
+        "ADD COLUMN p_hold DOUBLE",
+    ])
     # A10 (2026-06-13): per-prediction setup FINGERPRINT — the DECISION context (regime,
     # conviction, agreement, grade, CVD, GEX) keyed by (ts,horizon), joinable to
     # predictions_{h}m for the outcome. Two no-retrain payoffs: (1) the evidence layer for
@@ -616,28 +607,18 @@ def init_db():
         )
     """)
     for table in ("kronos_predictions", "model_predictions"):
-        for ddl in (
+        add_columns(table, (
             "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
             "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
-        ):
-            try:
-                conn.execute(f"ALTER TABLE {table} {ddl}")
-            except Exception:
-                pass
-        try:
-            conn.execute(f"""
-                UPDATE {table} SET resolution_status='RESOLVED'
-                WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
-            """)
-        except Exception:
-            pass
-    try:
-        conn.execute("""
-            UPDATE ab_results SET resolution_status='RESOLVED'
+        ))
+        conn.execute(f"""
+            UPDATE {table} SET resolution_status='RESOLVED'
             WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
         """)
-    except Exception:
-        pass
+    conn.execute("""
+        UPDATE ab_results SET resolution_status='RESOLVED'
+        WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+    """)
     # Offline replay rows are deliberately separate from live predictions_*m tables.
     # They are useful for calibration/backtest research but must never contaminate
     # live accuracy, because replay cannot reproduce feed outages, latency, or slippage.
@@ -690,16 +671,13 @@ def init_db():
     # Additive migration: which rule produced the price-to-beat lean ("model" = committed
     # 3-class lean, "fallback" = two-way probability tilt). Lets the win-rate split survive
     # restarts (the tracker rehydrates its history from this table at boot).
-    try:
-        conn.execute("ALTER TABLE price_to_beat ADD COLUMN lean_source VARCHAR DEFAULT ''")
-    except Exception:
-        pass
+    add_columns("price_to_beat", ["ADD COLUMN lean_source VARCHAR DEFAULT ''"])
     # Additive migration: persist the setup grade (A/B/C) and the late-entry flag so
     # grade-discipline win rates are measurable from the DB, not just the small
     # in-memory recent-rounds buffer.
-    for _ddl in ["ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
-                 "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE",
-                 "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'",
+    add_columns("price_to_beat", ["ADD COLUMN confluence_grade VARCHAR DEFAULT ''",
+                                  "ADD COLUMN late_entry BOOLEAN DEFAULT FALSE",
+                                  "ADD COLUMN regime VARCHAR DEFAULT 'UNKNOWN'",
                  # price anchor: 'pyth' (Polymarket settlement) or 'binance' (the live mirror).
                  # Lets both trackers persist to one table; readers filter by source.
                  "ADD COLUMN source VARCHAR DEFAULT 'pyth'",
@@ -728,12 +706,8 @@ def init_db():
                  # blended number is all that is left.
                  "ADD COLUMN pred_contract VARCHAR DEFAULT ''",
                  "ADD COLUMN grading_contract VARCHAR DEFAULT ''",
-                 "ADD COLUMN horizon_overlap DOUBLE",
-                 "ADD COLUMN grade_usable BOOLEAN DEFAULT FALSE"]:
-        try:
-            conn.execute(f"ALTER TABLE price_to_beat {_ddl}")
-        except Exception:
-            pass
+                                  "ADD COLUMN horizon_overlap DOUBLE",
+                                  "ADD COLUMN grade_usable BOOLEAN DEFAULT FALSE"])
     conn.execute("""
         CREATE TABLE IF NOT EXISTS champion_snapshots (
             round_id VARCHAR,
@@ -761,10 +735,9 @@ def init_db():
             PRIMARY KEY(round_id, ts)
         )
     """)
-    try:
-        conn.execute("ALTER TABLE champion_snapshots ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'")
-    except Exception:
-        pass
+    add_columns("champion_snapshots", [
+        "ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'",
+    ])
     conn.execute("""
         CREATE TABLE IF NOT EXISTS round_state_snapshots (
             round_id VARCHAR,
@@ -787,10 +760,9 @@ def init_db():
             PRIMARY KEY(round_id, ts)
         )
     """)
-    try:
-        conn.execute("ALTER TABLE round_state_snapshots ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'")
-    except Exception:
-        pass
+    add_columns("round_state_snapshots", [
+        "ADD COLUMN head_identity_json VARCHAR DEFAULT '{}'",
+    ])
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fsr_ppo_decisions (
             id VARCHAR PRIMARY KEY,
@@ -817,21 +789,14 @@ def init_db():
             invalid_reason VARCHAR DEFAULT ''
         )
     """)
-    for ddl in (
+    add_columns("fsr_ppo_decisions", (
         "ADD COLUMN resolution_status VARCHAR DEFAULT 'PENDING'",
         "ADD COLUMN invalid_reason VARCHAR DEFAULT ''",
-    ):
-        try:
-            conn.execute(f"ALTER TABLE fsr_ppo_decisions {ddl}")
-        except Exception:
-            pass
-    try:
-        conn.execute("""
-            UPDATE fsr_ppo_decisions SET resolution_status='RESOLVED'
-            WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
-        """)
-    except Exception:
-        pass
+    ))
+    conn.execute("""
+        UPDATE fsr_ppo_decisions SET resolution_status='RESOLVED'
+        WHERE resolved=TRUE AND COALESCE(resolution_status, 'PENDING')='PENDING'
+    """)
     conn.close()
 
 
@@ -3375,7 +3340,10 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
 
 def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move: float,
                    hit: bool, price_match: bool, move_error: float, avoid_success: bool = False,
-                   lean_hit: bool = None, actual_direction: str = ""):
+                   lean_hit: bool = None, actual_direction: str = "",
+                   endpoint_price: float | None = None,
+                   endpoint_move: float | None = None,
+                   endpoint_price_basis: str = ""):
     """Write one resolved outcome, INCLUDING the direction the contract actually produced.
 
     `actual_direction` is the graded result, not the sign of `actual_move`. Under first
@@ -3390,10 +3358,12 @@ def update_outcome(pred_id: str, horizon: int, actual_price: float, actual_move:
             UPDATE predictions_{horizon}m
             SET actual_price = ?, actual_move = ?, hit = ?, price_match = ?, move_error = ?,
                 avoid_success = ?, lean_hit = ?, actual_direction = ?, resolved = ?,
+                endpoint_price = ?, endpoint_move = ?, endpoint_price_basis = ?,
                 resolution_status = 'RESOLVED', invalid_reason = ''
             WHERE id = ?
         """, (actual_price, actual_move, hit, price_match, move_error, avoid_success,
-              lean_hit, str(actual_direction or ""), True, pred_id))
+              lean_hit, str(actual_direction or ""), True,
+              endpoint_price, endpoint_move, str(endpoint_price_basis or ""), pred_id))
         # SEAT VOTES ARE GRADED BY THE CONTRACT, ONCE, BY ONE GRADER.
         #
         # This block computed `strict_direction = "UP" if actual_move >= 0 else "DOWN"` and
@@ -3508,7 +3478,9 @@ def fetch_prediction_verifier_history(limit_per_horizon: int = 500) -> list[dict
                        timestamp, verify_at, prob_up, prob_down, agreement,
                        cascade_active, model_dirs_json, regime, neutral_band,
                        actual_price, actual_move, hit, avoid_success, lean_hit,
-                       price_match, move_error, decision_state_json
+                       price_match, move_error, decision_state_json,
+                       actual_direction, endpoint_price, endpoint_move,
+                       endpoint_price_basis, target_contract, release_id
                 FROM predictions_{h}m
                 WHERE resolved = TRUE AND timestamp >= ?
                   AND COALESCE(resolution_status, 'RESOLVED') = 'RESOLVED'
@@ -3535,7 +3507,13 @@ def fetch_prediction_verifier_history(limit_per_horizon: int = 500) -> list[dict
                 actual_move = (actual - predicted) if actual_move is None else actual_move
                 neutral_band = _f(row.get("neutral_band")) or 0.0008
                 change = ((actual - predicted) / predicted) if predicted > 0 else 0.0
-                if change > neutral_band:
+                # New rows persist the contract grader's canonical direction. Derive from
+                # endpoint price only for pre-migration legacy rows whose contract outcome
+                # was never stored; never overwrite a persisted first-touch NEUTRAL/UP/DOWN.
+                persisted_direction = str(row.get("actual_direction") or "")
+                if persisted_direction in ("UP", "DOWN", "NEUTRAL"):
+                    actual_direction = persisted_direction
+                elif change > neutral_band:
                     actual_direction = "UP"
                 elif change < -neutral_band:
                     actual_direction = "DOWN"
@@ -3581,6 +3559,11 @@ def fetch_prediction_verifier_history(limit_per_horizon: int = 500) -> list[dict
                     "avoid_success": bool(row.get("avoid_success")),
                     "actual_move_usd": actual_move,
                     "actual_abs_move_usd": abs(actual_move),
+                    "endpoint_price": _f(row.get("endpoint_price")),
+                    "endpoint_move_usd": _f(row.get("endpoint_move")),
+                    "endpoint_price_basis": str(row.get("endpoint_price_basis") or ""),
+                    "target_contract": str(row.get("target_contract") or ""),
+                    "release_id": str(row.get("release_id") or ""),
                     "move_error_usd": move_error,
                     "target_error_usd": actual - target,
                     "move_error_pct": (move_error / expected_abs * 100.0) if expected_abs else 0.0,

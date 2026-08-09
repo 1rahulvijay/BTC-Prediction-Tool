@@ -22,6 +22,7 @@ maintenance loop off the event loop. Fitting is a cheap aggregate query (<100ms)
 """
 
 import logging
+import os
 import time
 
 import numpy as np
@@ -127,9 +128,24 @@ class PrecisionEngine:
         self._last_fit = 0.0
 
     # ── fitting ──────────────────────────────────────────────────────────
-    def refresh_if_stale(self, max_age_s: float = REFIT_SEC) -> bool:
+    def refresh_if_stale(
+        self,
+        max_age_s: float = REFIT_SEC,
+        forward_status: dict | None = None,
+    ) -> bool:
         if time.time() - self._last_fit < max_age_s:
             return False
+        if os.environ.get("BTC_EVIDENCE_MODE", "0") == "1":
+            try:
+                from forward_evidence_gate import may_adapt
+
+                allowed, reason = may_adapt("confidence_recalibration", forward_status)
+            except Exception as exc:
+                logger.warning("[PRECISION] recalibration gate unavailable: %s", exc)
+                return False
+            if not allowed:
+                logger.info("[PRECISION] %s", reason)
+                return False
         try:
             self.fit_from_db()
             self._last_fit = time.time()

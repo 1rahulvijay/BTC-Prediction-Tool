@@ -20,18 +20,17 @@ REM Only the model seat and its zero-information benchmark run in this dedicated
 if not defined BTC_BINANCE_COMPETITION_ONLY set "BTC_BINANCE_COMPETITION_ONLY=1"
 if not defined BTC_ENABLE_BINANCE_PAPER set "BTC_ENABLE_BINANCE_PAPER=1"
 if not defined BTC_BINANCE_PAPER_AUTO_START set "BTC_BINANCE_PAPER_AUTO_START=1"
-REM Explicit PAPER-ONLY research opt-ins. They allow the $500 Binance lane to collect
-REM evidence while clearly recording that uncertainty is a fixed haircut and the endpoint
-REM head's overlapping holdout rows are not independent rounds. Neither flag authorizes live
-REM orders (no live-order route exists).
-if not defined BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV set "BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=1"
-if not defined BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD set "BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD=1"
-REM === 5m UP-TILT FIX (serving, no retrain) =============================
-REM Symmetric up-vs-down dead-zone applied to 5m ONLY (15m is already balanced: tilt -0.0pt).
-REM Neutralizes the measured +34pt 5m UP-lean skew by sending marginal coin-flip calls to
-REM NEUTRAL instead of the slightly-higher side. Set to 0 to revert. After a day, verify with:
-REM   python backend\probe_direction_tilt.py
-if not defined BTC_DIR_MARGIN_5 set "BTC_DIR_MARGIN_5=0.015"
+REM Strict paper evidence is the default. A fixed probability haircut is not an empirical
+REM uncertainty interval, and overlapping endpoint rows are not independent evidence. An
+REM operator may opt into either limitation for an explicitly labelled exploratory run, but
+REM the normal $500 race must abstain until both contracts are satisfied.
+if not defined BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV set "BTC_BINANCE_PAPER_ALLOW_HEURISTIC_EV=0"
+if not defined BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD set "BTC_BINANCE_PAPER_ALLOW_UNGROUPED_HEAD=0"
+REM === 5m DIRECTION MARGIN ==============================================
+REM Measured on the served distribution, increasing this symmetric dead-zone selected an even
+REM more UP-skewed subset (0.000 -> 69.5%% UP; 0.015 -> 71.1%% UP). Keep it disabled. Bias must
+REM be repaired in training/calibration rather than by deleting near-tie predictions.
+if not defined BTC_DIR_MARGIN_5 set "BTC_DIR_MARGIN_5=0"
 REM === TRAINING WINDOW (DAYS) ============================================
 REM Historical training window in DAYS. 40 = current (v5-classbal run, 2026-06-12):
 REM   +33%% samples vs 30, dilutes the one-sided -21%% month, no RAM risk on 16GB

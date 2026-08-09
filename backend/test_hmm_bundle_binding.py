@@ -123,8 +123,9 @@ def main() -> int:
     model_src = _code_only(here / "model.py")
     chk('save_bundle_value(getattr(self, "hmm_state", None), "hmm_state.pkl")' in model_src,
         "save_models writes the HMM into the bundle")
-    chk('hmm_path = os.path.join(model_dir, "hmm_state.pkl")' in model_src,
-        "load_models reads it back")
+    chk('hmm_state = values["hmm_state.pkl"]' in model_src
+        and 'required_hmm.issubset(hmm_state)' in model_src,
+        "load_models reads it back and rejects a partial state")
     chk("self.hmm_state = None" in model_src,
         "and an older bundle without one restores as None rather than an empty dict - "
         "'carries no HMM' and 'carries an HMM that failed to fit' must stay distinguishable")
