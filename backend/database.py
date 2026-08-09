@@ -12,7 +12,37 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), 'data'
 )
-DB_PATH = os.environ.get("BTC_DB_PATH") or os.path.join(_DATA_DIR, 'analytics.duckdb')
+# THE CANONICAL STORE, not a bare default.
+#
+# This resolved to <data>/analytics.duckdb while a SECOND analytics.duckdb existed under
+# data/btc_duckdbs/ holding three more weeks of model rows. Neither was a superset, so which
+# past a study saw depended on which path it happened to take. The declaration now lives in
+# `audit.datastore_identity.CANONICAL_RELATIVE_PATH` - in code, reviewable in a diff, and it
+# raises if several stores exist with none declared rather than silently picking one.
+#
+# Precedence is unchanged for deliberate overrides: BTC_DB_PATH still wins, then BTC_DATA_DIR
+# (which is how the tests and every temp-dir fixture get an isolated store), then the
+# declaration, then the historical default. The fallback chain never guesses between rivals -
+# it only applies when the resolver cannot answer at all.
+def _resolve_db_path() -> str:
+    explicit = os.environ.get("BTC_DB_PATH")
+    if explicit:
+        return explicit
+    if os.environ.get("BTC_DATA_DIR"):
+        return os.path.join(_DATA_DIR, "analytics.duckdb")
+    try:
+        from audit.datastore_identity import CANONICAL_RELATIVE_PATH as _canon
+        if _canon:
+            candidate = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _canon)
+            if os.path.exists(candidate):
+                return candidate
+    except Exception:
+        pass
+    return os.path.join(_DATA_DIR, 'analytics.duckdb')
+
+
+DB_PATH = _resolve_db_path()
 _dbdir = os.path.dirname(DB_PATH)
 if _dbdir:
     os.makedirs(_dbdir, exist_ok=True)

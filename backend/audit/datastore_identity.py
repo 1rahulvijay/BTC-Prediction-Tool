@@ -47,6 +47,21 @@ except Exception:
 #: Set this to the ONE store that owns the write path. Absolute or repo-relative.
 DECLARATION_ENV = "BTC_CANONICAL_DB"
 
+#: THE DECLARATION, committed rather than left to an environment variable.
+#:
+#: Operator decision, 2026-08-09: `data/btc_duckdbs/analytics.duckdb` owns the write path.
+#: It holds three more weeks of MODEL rows (predictions_5m to 07-25 vs 07-04, model_predictions
+#: 108,955 vs 98,195), which is the history a retrain and every per-seat study consume.
+#:
+#: The cost of the switch was MEASURED before making it, not assumed: the default store held
+#: exactly 9 `price_to_beat` rows newer than the archive (2026-08-06 to 08-08) and ZERO model
+#: rows. Nine rows of price context is the whole price of choosing the store with three extra
+#: weeks of predictions.
+#:
+#: In code so it is reviewable in a diff and cannot be lost with a shell session. The env var
+#: still wins, for a deliberate one-off against a snapshot.
+CANONICAL_RELATIVE_PATH = "data/btc_duckdbs/analytics.duckdb"
+
 #: Tables whose spans distinguish these stores in practice - the ones observed to disagree.
 WITNESS_TABLES = ("predictions_5m", "predictions_15m", "model_predictions", "price_to_beat")
 
@@ -107,6 +122,10 @@ def resolve(root: Path | None = None, declared: str | None = None) -> dict:
         raise DatastoreAmbiguous(
             "no analytics.duckdb found; refusing to create or assume one")
     decl = declared if declared is not None else os.environ.get(DECLARATION_ENV)
+    if decl is None and root is None and CANONICAL_RELATIVE_PATH:
+        # The committed declaration applies to the real repo only; a caller passing an
+        # explicit `root` is testing, and must not silently inherit production's choice.
+        decl = CANONICAL_RELATIVE_PATH
     if decl:
         want = Path(decl)
         if not want.is_absolute():
@@ -181,6 +200,20 @@ def selftest() -> int:
         check(set(identity(one)) >= {"path", "size_bytes", "mtime_utc_ms", "tables"},
               "identity carries path, size, mtime and per-table spans, so a training run "
               "records WHICH history it consumed")
+
+    # The committed declaration must be what the APP writes to, or the decision is
+    # decorative: declaring one store canonical while database.DB_PATH resolves to another
+    # is the same divergence under a new name.
+    import os as _os
+    if CANONICAL_RELATIVE_PATH and not _os.environ.get("BTC_DATA_DIR"):
+        sys.path.insert(0, str(BACKEND))
+        import database as _db
+        want = (REPO / CANONICAL_RELATIVE_PATH).resolve()
+        check(Path(_db.DB_PATH).resolve() == want,
+              f"database.DB_PATH resolves to the DECLARED store ({want.name}) - a declaration "
+              f"the app does not follow is the same divergence under a new name")
+        check(Path(_db.DB_PATH).resolve() != (REPO / "data" / "analytics.duckdb").resolve(),
+              "and no longer to the bare default, which had three fewer weeks of model rows")
 
     print(f"\nDATASTORE IDENTITY SELFTEST: PASS ({checks} checks)")
     return 0
