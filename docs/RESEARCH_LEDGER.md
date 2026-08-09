@@ -2052,3 +2052,33 @@ Detail: `docs/active/MARKET_NEUTRAL_CARRY_2026-08-09.md`.
 `start.bat`. It backfills official Binance settlement rows and continuously records new funding,
 mark/index basis, schedule gaps, sign flips and heartbeats in `data/funding.duckdb`. The first
 backfill and rerun produced the measured result above; collection does not itself promote carry.
+
+**Correction (2026-08-09, after basis sampling): the two terms are NOT independent, and the
+hurdle above was understated.** This lane was written as "two independent P&L terms". Recording
+mark and index disproved it — Binance *derives* funding from the premium,
+`F = premium + clamp(interest - premium, +-0.05%)`, checked against live samples and agreeing
+in sign to within +-0.5 bps.
+
+The consequence is a cost that was not counted. Recorded mark-vs-index sits at **-4.76 bps**:
+the perp trades *below* spot, so a funding-collecting hedge (long spot, short perp) sells the
+perp below spot and returns exactly that difference on convergence. The entry basis is a
+**4.76 bps cost of the funding-collecting direction, not a gain**; the reverse hedge captures it
+but then pays funding rather than collecting it. One or the other, never both.
+
+| | before | corrected |
+|---|---:|---:|
+| hurdle | 24.0 bps | **28.8 bps** |
+| 30d hold, full sample | +35.96 bps (77.6%) | **+31.21 bps (70.9%)** |
+| 30d hold, last 180d | -11.52 bps (39.6%) | **-16.27 bps (32.1%)** |
+| breakeven | not stated | **14.4 days** |
+
+Two further notes. First, the live basis **independently corroborates** the research matrix's
+`perp_spot_basis_bps` (monthly means -4.46 to -4.55) — a column whose construction was never
+verified and whose persistent negative level was unexplained. It is now confirmed by direct
+measurement and explained by the funding formula. Second, the yearly means
+(2024 +11.9% -> 2025 +5.1% -> 2026 +2.1%) read as a decaying edge, but **the rolling 90-day
+window refutes that**: it oscillates between -1.58% and +23.28% and the low 2026 mean was a
+trough that has since recovered to +4.76%. Regime variation, not decay.
+
+Verdict unchanged in direction, smaller in size. Detail:
+`docs/active/FUNDING_RECORDER_2026-08-09.md`.

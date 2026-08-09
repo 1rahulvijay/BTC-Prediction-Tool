@@ -78,4 +78,4 @@ read as though it checks three things. Both numbers are reported.
 | job | run steps | python invocations |
 | --- | --- | --- |
 | `invariants` | 183 | 182 |
-| `startbat` | 3 | 165 |
+| `startbat` | 3 | 166 |

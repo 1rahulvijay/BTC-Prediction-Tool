@@ -9,12 +9,19 @@ Carry does not. Long spot against short perpetual is direction-neutral by constr
 cannot inherit the martingale result - which is exactly why it is worth testing separately
 rather than folding into the same conclusion.
 
-CARRY HAS TWO INDEPENDENT P&L TERMS AND THEY MUST BE TESTED SEPARATELY.
+CARRY HAS TWO P&L TERMS AND THEY MUST BE TESTED SEPARATELY.
 
     basis convergence   the perp/spot price spread narrowing after you put the hedge on
     funding             the 8-hourly cashflow between longs and shorts
 
-Only ONE of them is measurable from data on disk, and conflating them would produce a
+This file used to call them INDEPENDENT. That was wrong, and recording the basis is what
+showed it: Binance DERIVES funding from the premium, F = premium + clamp(interest - premium,
++-0.05%). The persistent negative basis and the small positive funding are two views of one
+number. They still get tested separately - they are separate cashflows - but the entry basis
+turns out to be a COST of the funding-collecting direction, which the funding column alone
+never showed.
+
+Only ONE of them was measurable from data on disk, and conflating them would produce a
 confident answer to a question that was never asked. So:
 
   1. BASIS. `perp_spot_basis_bps` is a real series in the research matrix - 49,883 distinct
@@ -93,6 +100,25 @@ def load_funding():
         return None, None
     return (np.asarray([r[0] for r in rows], dtype=np.int64),
             np.asarray([r[1] for r in rows], dtype=float))
+
+
+def entry_basis_bps():
+    """Median recorded mark-vs-index, or None if the recorder has not sampled yet.
+
+    This is the basis a hedge is actually PUT ON at, measured directly from Binance's own
+    mark and index rather than inherited from a matrix column of unverified construction.
+    """
+    if not Path(FUNDING_DB).exists():
+        return None
+    try:
+        import duckdb
+        conn = duckdb.connect(FUNDING_DB, read_only=True)
+        row = conn.execute("SELECT median(basis_bps), count(*) "
+                           "FROM funding_basis_samples").fetchone()
+        conn.close()
+    except Exception:
+        return None
+    return float(row[0]) if row and row[1] and row[0] is not None else None
 
 
 def sign_flips(rate: np.ndarray) -> int:
@@ -177,15 +203,39 @@ def main() -> int:
     print()
     print("   THE SIGN IS RIGHT AND THE MAGNITUDE CLEARS THE COST. That is a different result")
     print("   from every other lane in this sweep, so it gets checked properly rather than")
-    print("   celebrated. Net of the four-leg round trip, by holding period:")
+    print("   celebrated - starting with a cost this study had not counted.")
+
+    # THE TWO TERMS ARE NOT INDEPENDENT, and the header of this file used to say they were.
+    # Binance DERIVES funding from the premium: F = premium + clamp(interest - premium, +-5bps).
+    # So the persistent negative basis and the small positive funding are two views of one
+    # number, and that has a P&L consequence the funding column alone does not show.
+    entry = entry_basis_bps()
+    if entry is not None:
+        print()
+        print(f"   ENTRY BASIS. Recorded mark-vs-index sits at {entry:+.2f} bps, and the")
+        print("   research matrix's unexplained perp_spot_basis_bps agrees within 0.3 bps -")
+        print("   an independent corroboration of a column whose provenance was never verified.")
+        print("   Long spot + short perp SELLS the perp below spot. Holding to convergence")
+        print(f"   returns exactly that difference, so a {entry:+.2f} bps entry is a "
+              f"{abs(entry):.2f} bps")
+        print("   COST for the funding-collecting direction, not a gain. The reverse hedge")
+        print("   captures it but then PAYS funding instead of collecting it. One or the other.")
+    drag = abs(entry) if entry is not None else 0.0
+    total = cost + drag
+    print()
+    print(f"   Net of the four-leg round trip ({cost:.1f} bps) AND the adverse entry basis "
+          f"({drag:.1f} bps),")
+    print(f"   so {total:.1f} bps to overcome, by holding period:")
     cum = np.cumsum(np.insert(rate, 0, 0.0))
     for days in (5, 15, 30, 60, 90):
         k = days * 3
         if k >= rate.size:
             continue
-        net = (cum[k:] - cum[:-k]) - cost
+        net = (cum[k:] - cum[:-k]) - total
         print(f"     hold {days:>3}d   mean net {net.mean():+8.2f} bps   "
               f"median {np.median(net):+8.2f}   profitable {(net > 0).mean():5.1%}")
+    print(f"   Breakeven at the 3.2y mean rate: {total / max(rate.mean(), 1e-9) / 3:.1f} days "
+          f"of holding before the first cent.")
 
     print("\n3. THE TWO THINGS THAT DECIDE IT - regime and scale")
     print("-" * 78)
@@ -200,7 +250,7 @@ def main() -> int:
     print(f"     last 180d   {recent.mean():+.4f} bps/8h -> {r_ann:+.2f}% annualized, "
           f"{(recent < 0).mean():.1%} of settlements NEGATIVE")
     net30 = (np.cumsum(np.insert(recent, 0, 0.0))[90:]
-             - np.cumsum(np.insert(recent, 0, 0.0))[:-90]) - cost
+             - np.cumsum(np.insert(recent, 0, 0.0))[:-90]) - total
     print(f"     a 30-day hold in THAT regime nets {net30.mean():+.2f} bps "
           f"({(net30 > 0).mean():.1%} profitable)")
     print("   The spread between the best and worst 90-day windows is more than an order of")

@@ -102,9 +102,18 @@ def main() -> int:
     chk("lookback" in kw,
         f"the server passes lookback (kwargs: {sorted(kw)}) - it defaulted to 0, collapsing "
         f"the purge to the horizon alone")
-    chk("groups" not in kw,
-        "and deliberately does NOT pass groups: round IDs do not exist yet, and pseudo-rounds "
-        "would make the independence floors certify something never established")
+    # This check used to assert the OPPOSITE - that groups must not be passed, because the only
+    # groups imaginable were fabricated Polymarket round IDs. Endpoint labels are rolling, so
+    # the right unit was never a round: it is the sequence-plus-outcome dependence block. With
+    # groups=None `_group_count` falls back to the ROW COUNT, i.e. it treats every overlapping
+    # row as an independent observation - the most optimistic assumption available, and the one
+    # the old assertion was locking in. Passing time-derived blocks is strictly more honest.
+    chk("groups" in kw,
+        f"the server passes groups (kwargs: {sorted(kw)}) - without them `_group_count` counts "
+        f"ROWS as independent units and the cluster intervals cannot fire at all")
+    chk("_settlement_ts // ((LOOKBACK + int(_h)) * 60_000)" in server_src,
+        "and they are derived from TIMESTAMPS at a width of lookback+horizon, not from "
+        "anything claiming to be a round ID - a real dependence span, not a fabricated one")
     chk("lookback=LOOKBACK" in server_src, "the value passed is the real LOOKBACK constant")
 
     # The purge arithmetic itself, measured through the head.

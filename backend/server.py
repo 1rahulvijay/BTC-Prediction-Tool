@@ -2467,9 +2467,13 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         # own comment states the requirement; the caller simply never met it.
                         lookback=LOOKBACK,
                         # Endpoint labels are rolling, not Polymarket round labels. Cluster by
-                        # non-overlapping sequence-plus-horizon dependence blocks and retain the
-                        # purge above; rows sharing model inputs or outcome windows must not be
-                        # reported as separate bootstrap units.
+                        # sequence-plus-horizon dependence blocks and retain the purge above;
+                        # rows sharing model inputs or outcome windows must not be reported as
+                        # separate bootstrap units. The blocks tile TIME without overlap, which
+                        # is not the same as rows never sharing dependence across a boundary -
+                        # two rows a minute apart on either side of a block edge still overlap.
+                        # That residual makes the floors slightly optimistic, but far less so
+                        # than groups=None, which counts every overlapping row as independent.
                         groups=_settlement_groups,
                         contract=_SETTLEMENT_CONTRACT))
                 _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
