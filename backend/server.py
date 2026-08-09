@@ -448,8 +448,16 @@ async def lifespan(app: FastAPI):
     # to inspect it - and it was never stopped, so queued writes were abandoned at shutdown.
     FEED_WRITER.start()
     logger.info("Feed writer started (bounded, non-blocking persistence queue)")
-    binance_paper_service.initialize()
     try:
+        # INSIDE the try, not above it. This opens DuckDB, runs schema migrations, reconciles
+        # account/position state and cancels orphan orders - any of which can raise on a
+        # locked file, a partial migration or a corrupt paper DB. Sitting one line above the
+        # handler, that turned an optional scoreboard's storage fault into a failed FastAPI
+        # lifespan: no market data, no UI, no /healthz. The handler below already states the
+        # rule; this call was outside the block that enforces it. Fail-closed is preserved
+        # for free - start_engine() is downstream, so a failed initialize() skips it rather
+        # than starting an engine on unreconciled state.
+        binance_paper_service.initialize()
         _competition_state = paper_competition.ensure_started()
         _competition_summary = paper_competition.summary()
         if os.getenv("BTC_BINANCE_PAPER_AUTO_START", "0") == "1":
