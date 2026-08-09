@@ -116,6 +116,12 @@ Competition mode enables `model_consensus` and `random_control`; the older Binan
 accounts stay disabled by default in the dedicated race database. Auto-start only starts this
 paper engine; it does not create or authorize any real exchange order route.
 
+On a first forced retrain, old unmanifested serving artifacts are not required to exist before
+their replacements can be trained. The launcher first rebuilds the research matrix to the requested
+window, then checks that rebuilt input with `verify_artifact_identity.py --training-only`
+immediately before fitting any head. A normal non-retraining boot continues to enforce the complete
+serving-artifact identity gate.
+
 ## Code Ownership
 
 | Component | Responsibility |

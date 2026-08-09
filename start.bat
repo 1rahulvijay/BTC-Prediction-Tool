@@ -266,8 +266,15 @@ REM outcomes - no models AND no refusal.
 REM
 REM This gate converts that into a refusal to launch, with the two honest ways forward.
 if "%BTC_STRICT_ARTIFACT_IDENTITY%"=="1" (
-    python backend/verify_artifact_identity.py >nul 2>&1
-    if errorlevel 1 (
+    if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" (
+        REM A forced retrain cannot require its OUTPUT manifests before it starts, and the
+        REM current matrix may still describe the OLD window. The INPUT identity is checked
+        REM after build_research_matrix reconstructs the requested window and before fitting.
+        echo [preflight] Forced retrain: serving-artifact identity is deferred until publish.
+        echo             Training identity will be enforced after the matrix rebuild.
+    ) else (
+        python backend/verify_artifact_identity.py >nul 2>&1
+        if errorlevel 1 (
         echo.
         echo ======================================================================
         echo  REFUSING TO START: no model artifact can satisfy the identity contract.
@@ -287,6 +294,7 @@ if "%BTC_STRICT_ARTIFACT_IDENTITY%"=="1" (
         echo       Predictions will then come from artifacts nothing can vouch for.
         echo ======================================================================
         exit /b 1
+        )
     )
 )
 
@@ -568,18 +576,16 @@ if errorlevel 1 (
     echo [0/3c2] Research-matrix build failed or coverage is too low.
     echo          Skipping specialist-head training to avoid stamping stale data as fresh.
 ) else (
-    echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
-    echo          HEAD_VERSION changed. Set BTC_FORCE_HEAD_RETRAIN=1 to train every head one by one:
-    if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (
-        python backend\train_heads.py --force --transactional-live
+    if "%BTC_STRICT_ARTIFACT_IDENTITY%"=="1" (
+        python backend\verify_artifact_identity.py --training-only
+        if errorlevel 1 (
+            set "BTC_HEAD_RETRAIN_COMPLETE=0"
+            echo [0/3d] Training identity failed after matrix rebuild. No head will fit.
+        ) else (
+            call :run_head_training
+        )
     ) else (
-        python backend\train_heads.py --transactional-live
-    )
-    if errorlevel 1 (
-        set "BTC_HEAD_RETRAIN_COMPLETE=0"
-        echo [0/3d] Head training had an issue. Completion marker will NOT be written.
-    ) else (
-        set "BTC_HEAD_RETRAIN_COMPLETE=1"
+        call :run_head_training
     )
 )
 if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not "%BTC_HEAD_RETRAIN_COMPLETE%"=="1" (
@@ -616,3 +622,20 @@ if "%BTC_DEV_RELOAD%"=="1" (
 )
 
 pause
+exit /b 0
+
+:run_head_training
+echo [0/3] d. Specialized heads - VERSION-AWARE - retrain a head only if MISSING or its
+echo          HEAD_VERSION changed. Set BTC_FORCE_HEAD_RETRAIN=1 to train every head one by one:
+if "%BTC_FORCE_HEAD_RETRAIN%"=="1" (
+    python backend\train_heads.py --force --transactional-live
+) else (
+    python backend\train_heads.py --transactional-live
+)
+if errorlevel 1 (
+    set "BTC_HEAD_RETRAIN_COMPLETE=0"
+    echo [0/3d] Head training had an issue. Completion marker will NOT be written.
+) else (
+    set "BTC_HEAD_RETRAIN_COMPLETE=1"
+)
+exit /b 0

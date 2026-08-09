@@ -48,6 +48,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strict", action="store_true",
                     help="evaluate as if BTC_STRICT_ARTIFACT_IDENTITY=1")
+    ap.add_argument(
+        "--training-only",
+        action="store_true",
+        help="validate the current matrix for a forced retrain without requiring old artifacts",
+    )
     a = ap.parse_args()
     env_strict = os.environ.get("BTC_STRICT_ARTIFACT_IDENTITY", "1").lower() not in ("0", "false", "no")
     strict = True if a.strict else env_strict
@@ -61,6 +66,7 @@ def main() -> int:
     print("=" * 88)
 
     # Is the CURRENT matrix even able to satisfy a training run?
+    training_ok = False
     try:
         ident = current_training_identity(requested_days=days)
         issues = training_identity_issues(ident)
@@ -71,8 +77,17 @@ def main() -> int:
             print("  -> a retrain will RuntimeError until the matrix is rebuilt to the requested window")
         else:
             print("  OK    the current matrix satisfies the training identity contract")
+            training_ok = True
     except Exception as exc:
         print(f"\nTRAINING contract: could not evaluate ({type(exc).__name__}: {exc})")
+
+    if a.training_only:
+        print("\nVERDICT")
+        if training_ok:
+            print("  READY TO RETRAIN - current data identity satisfies the requested window.")
+            return 0
+        print("  RETRAIN REFUSED - rebuild the matrix/data identity before fitting models.")
+        return 1
 
     print("\nSERVING gate (which heads would load):")
     print(f"  {'artifact':<32}{'manifest':<10}{'loads':<8} reason")
