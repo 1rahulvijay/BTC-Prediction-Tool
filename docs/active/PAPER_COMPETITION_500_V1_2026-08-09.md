@@ -52,10 +52,12 @@ The two venues retain separate economics and ledgers:
 - Binance race ledger: `data/binance_paper_competition_500.duckdb`.
 - Persistent race identity and start epoch: `data/paper_competition_500.json`.
 
-The state file is created atomically on the first successful backend startup. Subsequent restarts
-continue the same race. Changing the bankroll, model IDs or risk contract without deliberately
-starting a new state causes `BLOCKED_CONFIGURATION_MISMATCH`; it does not silently reset or
-reinterpret old results.
+The state file is created atomically on the first successful backend startup. It records whether
+the dedicated Binance account was clean: no prior trades, no open position and no prior realized
+P/L, fees or funding. Subsequent restarts continue the same race. Removing only the state file
+while retaining a used Binance database produces `BLOCKED_CONFIGURATION_MISMATCH`; it cannot
+silently reuse old P/L as a new `$500` account. Changing the bankroll, model IDs or risk contract
+without deliberately starting a new state is also blocked.
 
 ## Accounting And Ranking
 
@@ -107,10 +109,12 @@ BTC_BINANCE_PAPER_STARTING_CASH=500
 BTC_BINANCE_PAPER_DB=data\binance_paper_competition_500.duckdb
 BTC_BINANCE_COMPETITION_ONLY=1
 BTC_ENABLE_BINANCE_PAPER=1
+BTC_BINANCE_PAPER_AUTO_START=1
 ```
 
 Competition mode enables `model_consensus` and `random_control`; the older Binance strategy
-accounts stay disabled by default in the dedicated race database.
+accounts stay disabled by default in the dedicated race database. Auto-start only starts this
+paper engine; it does not create or authorize any real exchange order route.
 
 ## Code Ownership
 

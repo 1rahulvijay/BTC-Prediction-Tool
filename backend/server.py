@@ -448,12 +448,26 @@ async def lifespan(app: FastAPI):
     FEED_WRITER.start()
     logger.info("Feed writer started (bounded, non-blocking persistence queue)")
     binance_paper_service.initialize()
-    _competition_state = paper_competition.ensure_started()
-    logger.info(
-        "Paper competition ready: race=%s bankroll=$%.2f per model",
-        _competition_state.get("race_id"),
-        paper_competition.config.bankroll_usd,
-    )
+    try:
+        _competition_state = paper_competition.ensure_started()
+        _competition_summary = paper_competition.summary()
+        if os.getenv("BTC_BINANCE_PAPER_AUTO_START", "0") == "1":
+            if not _competition_summary.get("comparable"):
+                logger.error(
+                    "Binance competition paper auto-start blocked: race accounting "
+                    "is not comparable"
+                )
+            else:
+                binance_paper_service.start_engine()
+        logger.info(
+            "Paper competition ready: race=%s bankroll=$%.2f per model binance=%s",
+            _competition_state.get("race_id"),
+            paper_competition.config.bankroll_usd,
+            binance_paper_service.status().get("runtime_state"),
+        )
+    except Exception as exc:
+        # The optional scoreboard must fail closed without taking the market-data app down.
+        logger.exception("Paper competition accounting unavailable: %s", exc)
     loaded_signals = signal_buffer.load(SIGNAL_HISTORY_PATH)
     logger.info(f"Loaded {loaded_signals} persisted signal-history snapshots")
     _pending_predictions = database.fetch_unresolved_predictions()

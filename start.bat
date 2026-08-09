@@ -19,6 +19,7 @@ if not defined BTC_BINANCE_PAPER_DB set "BTC_BINANCE_PAPER_DB=%BTC_DATA_DIR%\bin
 REM Only the model seat and its zero-information benchmark run in this dedicated DB.
 if not defined BTC_BINANCE_COMPETITION_ONLY set "BTC_BINANCE_COMPETITION_ONLY=1"
 if not defined BTC_ENABLE_BINANCE_PAPER set "BTC_ENABLE_BINANCE_PAPER=1"
+if not defined BTC_BINANCE_PAPER_AUTO_START set "BTC_BINANCE_PAPER_AUTO_START=1"
 REM === 5m UP-TILT FIX (serving, no retrain) =============================
 REM Symmetric up-vs-down dead-zone applied to 5m ONLY (15m is already balanced: tilt -0.0pt).
 REM Neutralizes the measured +34pt 5m UP-lean skew by sending marginal coin-flip calls to
@@ -213,7 +214,8 @@ REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
 
 if "%BTC_VALIDATE_STARTUP%"=="1" (
     echo [validate] days=%BTC_HISTORICAL_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
-    echo [validate] binance_paper=%BTC_ENABLE_BINANCE_PAPER% default_db=data\binance_paper.duckdb
+    echo [validate] paper_race=$%BTC_PAPER_COMPETITION_BANKROLL_USD% each binance_paper=%BTC_ENABLE_BINANCE_PAPER% auto_start=%BTC_BINANCE_PAPER_AUTO_START%
+    echo [validate] paper_race_db=%BTC_BINANCE_PAPER_DB% poly=%BTC_PAPER_COMPETITION_POLY_RULE% binance=%BTC_PAPER_COMPETITION_BINANCE_STRATEGY%
     echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%
     echo [validate] direction_cap=%BTC_DIRECTION_MAX_SAMPLES% memmap_threshold_mb=%BTC_SEQUENCE_MEMMAP_THRESHOLD_MB% lgb_device=%BTC_LGB_DEVICE%
     echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_calls=%BTC_PROMOTION_MIN_DIRECTIONAL_CALLS% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%

@@ -330,7 +330,8 @@ def summarize_binance(
         expected_daily_limit = bankroll * float(config.daily_loss_fraction)
         expected_weekly_limit = bankroll * float(config.weekly_loss_fraction)
         config_ok = (
-            abs(configured_cash - bankroll) <= 1e-6 and active_db == expected_db
+            state.get("binance_clean_start") is True
+            and abs(configured_cash - bankroll) <= 1e-6 and active_db == expected_db
             and abs(
                 _finite(risk.get("max_position_notional_usd"), -1.0)
                 - expected_position_cap
@@ -474,6 +475,26 @@ class PaperCompetition:
                 self.binance_service.config.db_path.resolve()
             ),
         }
+        strategies = {
+            item["strategy_id"]: item
+            for item in self.binance_service.strategy_statuses()
+        }
+        strategy = strategies.get(self.config.binance_strategy) or {}
+        account = strategy.get("account") or {}
+        prior_trades = self.binance_service.persistence.trades(
+            1, self.config.binance_strategy
+        )
+        state["binance_clean_start"] = bool(
+            not prior_trades
+            and not strategy.get("position")
+            and abs(
+                _finite(account.get("starting_cash_usd"), -1.0)
+                - self.config.bankroll_usd
+            ) <= 1e-6
+            and abs(_finite(account.get("realized_pnl_usd"))) <= 1e-9
+            and abs(_finite(account.get("trading_fees_usd"))) <= 1e-9
+            and abs(_finite(account.get("funding_usd"))) <= 1e-9
+        )
         fd, temporary = tempfile.mkstemp(
             prefix=path.name, suffix=".tmp", dir=str(path.parent)
         )
@@ -604,6 +625,80 @@ def selftest() -> int:
     assert abs(summary["realized_net_pnl_usd"] - 49.4) < 1e-9
     assert abs(summary["settled_equity_usd"] - 549.4) < 1e-9
     assert summary["open_positions"] == 0
+
+    class FakePersistence:
+        @staticmethod
+        def competition_trades_since(strategy_id: str, since_ms: int):
+            assert strategy_id == "model_consensus" and since_ms == 900
+            return [
+                {
+                    "trade_id": "b1",
+                    "entry_time_ms": 1_000,
+                    "exit_time_ms": 2_000,
+                    "net_pnl_usd": 5.0,
+                    "entry_fee_usd": 0.10,
+                    "exit_fee_usd": 0.10,
+                    "funding_usd": -0.05,
+                    "slippage_usd": 0.15,
+                },
+                {
+                    "trade_id": "b2",
+                    "entry_time_ms": 3_000,
+                    "exit_time_ms": 4_000,
+                    "net_pnl_usd": -2.0,
+                    "entry_fee_usd": 0.10,
+                    "exit_fee_usd": 0.10,
+                    "funding_usd": 0.02,
+                    "slippage_usd": 0.15,
+                },
+            ]
+
+    risk = {
+        "max_position_notional_usd": 50.0,
+        "max_account_exposure_usd": 100.0,
+        "maximum_daily_loss_usd": 25.0,
+        "maximum_weekly_loss_usd": 60.0,
+        "maximum_drawdown_fraction": 0.10,
+    }
+
+    class FakeService:
+        config = type("Config", (), {"db_path": Path("fake.duckdb").resolve()})()
+        persistence = FakePersistence()
+
+        @staticmethod
+        def status():
+            return {"initialized": True, "runtime_state": "RUNNING"}
+
+        @staticmethod
+        def strategy_statuses():
+            return [{
+                "strategy_id": "model_consensus",
+                "enabled": True,
+                "risk": risk,
+                "account": {
+                    "starting_cash_usd": 500.0,
+                    "available_cash_usd": 503.0,
+                    "equity_usd": 503.0,
+                    "maximum_drawdown_usd": 2.0,
+                },
+                "position": None,
+                "latest_decision": {"action": "HOLD"},
+                "inactive_reason": None,
+            }]
+
+    race_state = {
+        "started_at_ms": 900,
+        "binance_db_path": str(FakeService.config.db_path),
+        "binance_clean_start": True,
+    }
+    binance = summarize_binance(FakeService(), race_state, config)
+    assert binance["trust_state"] == "PAPER_ACCOUNTING_ONLY"
+    assert binance["closed_trades"] == 2 and binance["wins"] == 1
+    assert abs(binance["realized_net_pnl_usd"] - 3.0) < 1e-9
+    assert abs(binance["settled_equity_usd"] - 503.0) < 1e-9
+    race_state["binance_clean_start"] = False
+    blocked = summarize_binance(FakeService(), race_state, config)
+    assert blocked["trust_state"] == "BLOCKED_CONFIGURATION_MISMATCH"
     print("paper-competition: PASS")
     return 0
 
