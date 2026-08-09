@@ -52,6 +52,11 @@ def _summary(rows):
                "actual_move_usd": barrier_move, "regime": "RANGE"}
         if endpoint_move is not None:
             row["endpoint_move_usd"] = endpoint_move
+            # These rows simulate GENUINE horizon-end observations, so they must declare it.
+            # Economic expectancy now refuses any row whose basis is not ENDPOINT, because
+            # `endpoint_move_usd` is also populated on BARRIER_FALLBACK rows from the
+            # first-touch barrier price - a classification distance, not a realised return.
+            row["endpoint_price_basis"] = "ENDPOINT"
         v.verified_by_horizon[5].append(row)
     v._update_accuracy_cache()
     return v.get_accuracy_summary()[5]

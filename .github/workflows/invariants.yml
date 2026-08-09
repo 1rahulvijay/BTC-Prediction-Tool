@@ -132,6 +132,9 @@ jobs:
       - name: Decision price race (no live re-read after the freeze)
         run: python backend/test_decision_price_race.py
 
+      - name: Endpoint basis economic admissibility (a barrier is not PnL)
+        run: python backend/test_endpoint_basis_economic_admissibility.py
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -880,6 +883,7 @@ jobs:
           python backend/forward_evidence_gate.py --selftest || exit /b 1
           python backend/decision_snapshot.py --selftest || exit /b 1
           python backend/test_decision_price_race.py || exit /b 1
+          python backend/test_endpoint_basis_economic_admissibility.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

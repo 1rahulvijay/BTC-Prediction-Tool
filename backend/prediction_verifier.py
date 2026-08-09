@@ -620,6 +620,21 @@ class PredictionVerifier:
             # The real per-trade return is the ENDPOINT move signed by the side actually
             # served, which `endpoint_move_usd` carries for exactly this purpose.
             def _signed_endpoint_pnl(v):
+                # ECONOMIC ADMISSIBILITY. `endpoint_move_usd` exists on BARRIER_FALLBACK rows
+                # too: when no real horizon-end observation was available, the first-touch
+                # BARRIER price is substituted and the move computed from it. The row is
+                # correctly LABELLED `endpoint_price_basis = "BARRIER_FALLBACK"` - and this
+                # consumer never read the label, so a classification barrier entered the
+                # economic expectancy as if it were a realised endpoint return.
+                #
+                # That is the safeguard-exists-but-nobody-consults-it pattern. `meta_model`
+                # already filters `AND endpoint_price_basis = 'ENDPOINT'`; this path did not.
+                #
+                # The row stays perfectly good CLASSIFICATION evidence. It simply carries no
+                # economic outcome, and returning None keeps it out of expectancy_n rather
+                # than contributing a barrier distance dressed as PnL.
+                if str(v.get("endpoint_price_basis") or "") != "ENDPOINT":
+                    return None
                 mv = v.get("endpoint_move_usd")
                 if mv is None:
                     return None
