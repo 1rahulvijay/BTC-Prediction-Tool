@@ -98,8 +98,8 @@ def main() -> int:
     src = (Path(__file__).resolve().parent / "backtester.py").read_text(encoding="utf-8")
     chk('self.results["ohlc_source"] = ohlc_source' in src,
         "the result carries WHICH extremes produced it")
-    chk('self.results["valid_for_promotion"] = (ohlc_source == "REAL")' in src,
-        "and a fabricated run is marked ineligible for promotion")
+    chk('self.results["valid_for_promotion"] = False' in src,
+        "and a probability-only replay cannot promote a production trading policy")
     chk("highs=None, lows=None" in src or "highs=None" in src,
         "run() accepts the real extremes")
 
@@ -107,8 +107,9 @@ def main() -> int:
     feats = np.zeros((200, 4), dtype=np.float32)
     out = bt.run(feats, closes[:200], [5], lambda *a, **k: (0.3, 0.4, 0.3), lookback=60,
                  highs=real_high[:200], lows=real_low[:200])
-    chk(out.get("ohlc_source") == "REAL" and out.get("valid_for_promotion") is True,
-        "supplying real extremes yields a promotion-eligible result")
+    chk(out.get("ohlc_source") == "REAL" and out.get("valid_for_promotion") is False,
+        "supplying real extremes fixes labels but remains non-promotable because this class "
+        "does not replay decisions, fills or exits")
     # STRENGTHENED by 87a036d, which this test originally contradicted. Tagging a fabricated
     # run was the whole remedy when this file was written; a PATH contract now REFUSES it
     # outright, because grading first touch against an invented constant 0.2% range silently

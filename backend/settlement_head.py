@@ -54,8 +54,8 @@ import target_contract as tc                                      # noqa: E402
 
 #: The contract this head answers. Stamped on the artifact and checked on load: a bundle
 #: claiming a different target is refused rather than silently used for the wrong question.
-#: The Polymarket lane is what this head exists to serve, and that market resolves on a strict
-#: comparison with no neutral band. Training it on the three-class endpoint labels meant ~68%
+#: This proxy resolves on the verified comparator with no neutral band. Training it on the
+#: three-class endpoint labels meant ~68%
 #: of real payouts were labelled NEUTRAL, so the head answered a question the venue never asks.
 TARGET_CONTRACT = tc.ROLLING_EXCHANGE_RETURN_SIGN_V1
 
@@ -168,6 +168,47 @@ def _group_count(groups, index) -> int:
         return len(index)
     return int(len(np.unique(np.asarray(groups)[index])))
 
+
+def _groups_for_horizon(groups, horizon):
+    """Accept one grouping or a horizon-specific grouping map."""
+    if isinstance(groups, dict):
+        return groups.get(horizon)
+    return groups
+
+
+def _cluster_probability_intervals(probabilities, labels, groups, *, random_state=0,
+                                   n_bootstrap=1000):
+    """Predeclared confidence bins with a group-bootstrap 95% lower hit-rate bound."""
+    probabilities = np.asarray(probabilities, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    groups = np.asarray(groups)
+    predicted = np.argmax(probabilities, axis=1)
+    confidence = np.max(probabilities, axis=1)
+    correct = (predicted == labels).astype(float)
+    edges = np.asarray((0.50, 0.55, 0.60, 0.65, 0.70, 0.75,
+                        0.80, 0.85, 0.90, 0.95, 1.0000001))
+    rng = np.random.default_rng(random_state)
+    intervals = []
+    for low, high in zip(edges[:-1], edges[1:]):
+        mask = (confidence >= low) & (confidence < high)
+        bucket_groups = np.unique(groups[mask])
+        if len(bucket_groups) < 30:
+            continue
+        group_hit_rates = np.asarray([
+            float(np.mean(correct[mask & (groups == group)])) for group in bucket_groups
+        ])
+        samples = rng.choice(
+            group_hit_rates, size=(int(n_bootstrap), len(group_hit_rates)), replace=True)
+        observed = float(np.mean(group_hit_rates))
+        intervals.append({
+            "confidence_low": float(low), "confidence_high": float(min(high, 1.0)),
+            "rows": int(np.sum(mask)), "independent_groups": int(len(bucket_groups)),
+            "observed_accuracy": observed,
+            "accuracy_lower_95": float(np.quantile(np.mean(samples, axis=1), 0.05)),
+            "method": "group_bootstrap_95",
+        })
+    return intervals
+
 def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
                           horizons=None, valid_mask: dict | None = None,
                           random_state: int = 0,
@@ -207,6 +248,7 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
             skipped[h] = f"label/feature length mismatch {len(labels)} vs {len(X_flat)}"
             continue
 
+        horizon_groups = _groups_for_horizon(groups, h)
         # PURGED BOUNDARY. Rows just before split_idx share most of their lookback with rows
         # just after it, and their horizon labels overlap, so an unpurged split leaks the
         # holdout into training through the entanglement rather than through the index.
@@ -220,8 +262,8 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
             skipped[h] = f"only {len(y_train)} train rows after a {purge}-row purge (<{MIN_TRAIN_ROWS})"
             continue
         # INDEPENDENT UNITS, not rows.
-        n_train_groups = _group_count(groups, train_idx)
-        n_hold_groups = _group_count(groups, hold_idx)
+        n_train_groups = _group_count(horizon_groups, train_idx)
+        n_hold_groups = _group_count(horizon_groups, hold_idx)
         # WITHOUT groups these floors cannot fire at all. Guarding them on `groups is not
         # None` and leaving every caller passing None made them decorative - a declared limit
         # that no run could ever hit, which is the same defect as a counter nobody reads.
@@ -230,7 +272,7 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
         # does not pretend to validate independence. It records that it could not, and the
         # metrics below are marked as carrying NO independence guarantee. A promotion gate
         # must refuse a bundle whose independence was never established.
-        if groups is not None:
+        if horizon_groups is not None:
             if n_train_groups < MIN_TRAIN_GROUPS:
                 skipped[h] = (f"only {n_train_groups} independent train rounds "
                               f"(<{MIN_TRAIN_GROUPS})")
@@ -272,11 +314,11 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
         entry["train_rounds"] = n_train_groups
         entry["holdout_rounds"] = n_hold_groups
         entry["purge_rows"] = purge
-        entry["grouped"] = groups is not None
+        entry["grouped"] = horizon_groups is not None
         # Stated on every horizon's metrics, so a reader cannot mistake "the floor did not
         # fire" for "the floor was satisfied".
-        entry["independence_validated"] = groups is not None
-        if groups is None:
+        entry["independence_validated"] = horizon_groups is not None
+        if horizon_groups is None:
             entry["independence_note"] = (
                 "no round grouping supplied: rows are NOT independent (overlapping lookbacks, "
                 "and multiple checkpoints per round once round-aligned labels exist). Row "
@@ -294,6 +336,10 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
                 "prior_brier": prior_brier(y_train, y_hold, n_classes),
             })
             entry["beats_prior"] = bool(entry["holdout_brier"] < entry["prior_brier"])
+            if horizon_groups is not None:
+                entry["confidence_intervals"] = _cluster_probability_intervals(
+                    probabilities, y_hold, np.asarray(horizon_groups)[hold_idx],
+                    random_state=random_state + int(h))
         else:
             entry["holdout_rows"] = int(len(y_hold))
             entry["holdout_brier"] = None
@@ -309,7 +355,8 @@ def train_settlement_head(X: np.ndarray, Ysettle: dict, split_idx: int,
     bundle = {"heads": heads, "metrics": metrics, "skipped": skipped,
               "target_contract": contract, "n_classes": n_classes,
               # Bundle-level, so a promotion gate reads one field instead of every horizon.
-              "independence_validated": groups is not None,
+              "independence_validated": bool(metrics) and all(
+                  row.get("independence_validated") is True for row in metrics.values()),
               "trained_at_ms": int(time.time() * 1000)}
     if tc.is_binary_endpoint(contract):
         bundle["settlement_rule"] = tc.DEFAULT_SETTLEMENT_RULE.identity()
@@ -351,6 +398,16 @@ def settlement_probability(bundle: dict, x_row: np.ndarray, horizon: int) -> dic
         "target_contract": contract,
         "horizon": int(horizon),
     }
+    confidence = max(out["p_up"], out["p_down"])
+    intervals = ((bundle.get("metrics") or {}).get(horizon) or {}).get(
+        "confidence_intervals") or []
+    matched = next((row for row in intervals
+                    if float(row.get("confidence_low", 2.0)) <= confidence
+                    < float(row.get("confidence_high", -1.0)) + 1e-12), None)
+    if matched:
+        out["confidence_lower_95"] = float(matched["accuracy_lower_95"])
+        out["uncertainty_method"] = str(matched.get("method") or "group_bootstrap_95")
+        out["uncertainty_bucket"] = dict(matched)
     # Carried through to the consumer so an EV calculation can check which market's rule the
     # probability was fitted under, rather than assuming its own.
     if bundle.get("settlement_rule"):
@@ -423,10 +480,14 @@ def selftest() -> int:
           "floor was satisfied'")
     _grouped = train_settlement_head(
         X, Ybinary, split, horizons=[5],
-        groups=np.repeat(np.arange(len(X) // 4 + 1), 4)[:len(X)])
+        groups={5: np.repeat(np.arange(len(X) // 4 + 1), 4)[:len(X)]})
     check(_grouped.get("independence_validated") is True,
           "while a run given real round groups declares it True - the flag tracks the input, "
           "not a constant")
+    _intervals = _grouped["metrics"][5].get("confidence_intervals") or []
+    check(_intervals and all(row["independent_groups"] >= 30 for row in _intervals),
+          "grouped holdout confidence gets a cluster-bootstrap lower bound, and sparse bins "
+          "are withheld rather than called empirical uncertainty")
     _rule_id = bundle.get("settlement_rule") or {}
     check(_rule_id.get("comparator") == ">=" and _rule_id.get("tie_outcome") == tc.UP,
           "and the SETTLEMENT RULE it was fitted under, so a bundle trained on the old "

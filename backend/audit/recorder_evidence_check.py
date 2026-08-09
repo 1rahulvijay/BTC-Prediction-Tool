@@ -18,10 +18,11 @@ WHAT IT REPORTS, per recorder wired in the launcher
     wired          the launcher references it
     ever ran       a stdout or stderr log exists
     has data       its DuckDB store exists and is non-empty
-    freshness      when that store was last written
+    freshness      newest timestamp IN THE DATA, through recorder_health.py
 
     A recorder that is wired, selftests, and has never produced a byte is reported as
-    NEVER_RAN - the state that is invisible in every other view of this repository.
+    NEVER_RAN. STALLED, LOCKED_BY_WRITER, UNREADABLE, SCHEMA_DRIFT and UNIT_MISMATCH stay
+    distinct; none is collapsed into NO_DATA.
 
     python backend/audit/recorder_evidence_check.py
     python backend/audit/recorder_evidence_check.py --selftest
@@ -89,16 +90,28 @@ def logs_exist(script: str) -> bool:
 def audit() -> list[dict]:
     text = LAUNCHER.read_text(encoding="utf-8", errors="replace") if LAUNCHER.is_file() else ""
     rows = []
+    backend = str(REPO / "backend")
+    if backend not in os.sys.path:
+        os.sys.path.insert(0, backend)
+    from recorder_health import RECORDER_CLOCKS, probe
     for script in wired_recorders(text):
         store, table = EXPECTED_STORE.get(script, (None, None))
-        state = store_state(store, table) if store else {"path": None, "rows": None}
+        if script in RECORDER_CLOCKS:
+            state = probe(script)
+        else:
+            state = store_state(store, table) if store else {"path": None, "rows": None}
         ran = logs_exist(script)
+        rows_count = state.get("rows")
+        status = state.get("status")
+        if not status:
+            status = ("NEVER_RAN" if not ran and not rows_count
+                      else "NO_DATA" if not rows_count else "HAS_DATA")
         rows.append({
             "recorder": script, "store": store, "ever_ran": ran,
-            "rows": state.get("rows"), "last_write": state.get("mtime_utc"),
-            "status": ("NEVER_RAN" if not ran and not state.get("rows")
-                       else "NO_DATA" if not state.get("rows")
-                       else "HAS_DATA"),
+            "rows": rows_count,
+            "last_write": state.get("newest_utc") or state.get("mtime_utc"),
+            "status": status,
+            "detail": state.get("detail"),
         })
     return rows
 
@@ -123,11 +136,14 @@ def selftest() -> int:
 
     rows = audit()
     check(rows, "the real launcher wires at least one recorder")
-    check(all(row["status"] in ("NEVER_RAN", "NO_DATA", "HAS_DATA") for row in rows),
-          "every wired recorder resolves to one of the three states")
+    declared = {"ADVANCING", "STALLED", "NEVER_RAN", "LOCKED_BY_WRITER", "UNREADABLE",
+                "SCHEMA_DRIFT", "UNIT_MISMATCH", "NO_DATA", "HAS_DATA"}
+    check(all(row["status"] in declared for row in rows),
+          "every wired recorder resolves to a declared evidence state")
     # The state this file exists to surface must be REACHABLE, or the check is decoration.
     check(any(row["status"] == "NEVER_RAN" for row in rows)
-          or all(row["status"] == "HAS_DATA" for row in rows),
+          or all(row["status"] in ("HAS_DATA", "ADVANCING", "STALLED", "LOCKED_BY_WRITER")
+                 for row in rows),
           "NEVER_RAN is reachable - a wired, selftested, never-launched recorder is visible")
 
     print(f"\nRECORDER EVIDENCE SELFTEST: PASS ({checks} checks)")
@@ -149,6 +165,8 @@ def main() -> int:
         rows_text = f"{row['rows']:,}" if isinstance(row["rows"], int) else "-"
         print(f"{row['recorder']:<34}{str(bool(row['ever_ran'])):>10}{rows_text:>14}"
               f"{str(row['last_write'] or '-'):>19}  {row['status']}")
+        if row.get("detail"):
+            print(f"  {row['detail']}")
 
     never = [row["recorder"] for row in rows if row["status"] == "NEVER_RAN"]
     if never:

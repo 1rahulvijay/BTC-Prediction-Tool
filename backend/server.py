@@ -2344,13 +2344,13 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
     # 4.4. Ysettle is requested HERE. build_sequences could always emit endpoint labels, but
     # nothing asked for them, so the settlement lane had no head and every settlement-EV
     # consumer refused for want of an admissible probability. Y answers "which barrier is
-    # touched first"; Ysettle answers "where does price END" - the question Polymarket
-    # resolves on, and they disagree on ~25% of paths.
+    # touched first"; Ysettle answers "where does exchange price END relative to decision
+    # price". That endpoint geometry is measurable, but it is only a proxy for Polymarket's
+    # market-anchor Chainlink TWAP settlement, and they disagree on ~25% of paths.
     #
-    # Ysettle is keyed BY CONTRACT and the head is trained on the BINARY one. Polymarket
-    # resolves on a strict comparison with no neutral band; under the three-class endpoint
-    # labels ~68% of real payouts were called NEUTRAL, so the head was being scored on a
-    # question the venue never asks.
+    # Ysettle is keyed BY CONTRACT and the head is trained on the binary rolling-return proxy.
+    # Its verified default comparator has no neutral band and resolves equality UP; under the
+    # three-class endpoint labels ~68% of binary endpoints were called NEUTRAL.
     X, Y, Ymag, Yvalid, Ysettle = build_sequences(
         sequence_features,
         closes,
@@ -2443,6 +2443,17 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                 from settlement_head import (train_settlement_head,
                                              SettlementHeadUnavailable,
                                              TARGET_CONTRACT as _SETTLEMENT_CONTRACT)
+                _settlement_ts = np.asarray(
+                    train_ts[LOOKBACK:LOOKBACK + len(X)], dtype=np.int64)
+                if len(_settlement_ts) and int(np.median(_settlement_ts)) < 10**12:
+                    _settlement_ts = _settlement_ts * 1000
+                _settlement_groups = {
+                    # One dependence block spans the full sequence plus outcome window. This
+                    # is more conservative than grouping only by the horizon: rows that share
+                    # model inputs must not become separate bootstrap units.
+                    int(_h): (_settlement_ts // ((LOOKBACK + int(_h)) * 60_000)).astype(np.int64)
+                    for _h in target_model.horizons
+                }
                 _settle_bundle = await loop.run_in_executor(
                     None, functools.partial(
                         train_settlement_head, X,
@@ -2455,11 +2466,11 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                         # labels overlap the boundary, on both sides of the split. The head's
                         # own comment states the requirement; the caller simply never met it.
                         lookback=LOOKBACK,
-                        # `groups` is deliberately NOT passed. The head documents that round
-                        # IDs "do not exist yet (they arrive with the round-aligned dataset)",
-                        # so there is nothing real to supply. Passing row indices as pseudo
-                        # rounds would let the independence floors report a guarantee that was
-                        # never established - worse than recording that it could not be.
+                        # Endpoint labels are rolling, not Polymarket round labels. Cluster by
+                        # non-overlapping sequence-plus-horizon dependence blocks and retain the
+                        # purge above; rows sharing model inputs or outcome windows must not be
+                        # reported as separate bootstrap units.
+                        groups=_settlement_groups,
                         contract=_SETTLEMENT_CONTRACT))
                 _settle_path = os.path.join(target_model.model_dir, "settlement_head.pkl")
                 from verified_io import atomic_dump as _atomic_dump
@@ -2742,6 +2753,9 @@ async def run_backtest_legacy_unused():
                 # which outcomes count as UP/DOWN/NEUTRAL - stops tracking volatility.
                 highs=np.array([k["high"] for k in kl_snapshot]),
                 lows=np.array([k["low"] for k in kl_snapshot]),
+                model_kind="PRODUCTION_BASE_RANGE_REPLAY_RESEARCH_ONLY",
+                policy_kind="direction_probability_only",
+                round_trip_cost_fraction=0.0012,
             ),
         )
 
@@ -2990,6 +3004,18 @@ async def run_backtest(reason: str = "manual"):
                 progress_cb=main_progress,
                 highs=np.array([k["high"] for k in bt_klines]),
                 lows=np.array([k["low"] for k in bt_klines]),
+                # `predict_base` is the persisted model bundle, but with no historical
+                # decision snapshot it defaults to RANGE and omits locks, quality filters,
+                # action gates, sizing and executable fills. Name that exact scope so this
+                # number cannot be promoted as a production-policy replay.
+                model_kind="PRODUCTION_BASE_RANGE_REPLAY_RESEARCH_ONLY",
+                policy_kind="direction_probability_only",
+                # The list was already cropped to the untouched tail above. Score all of it
+                # after the lookback warm-up rather than throwing away another 80%.
+                score_start_index=(LOOKBACK if _btb else None),
+                # Match the Binance paper strategy's conservative round-trip floor (12 bps),
+                # not the older generic 8 bps research default.
+                round_trip_cost_fraction=0.0012,
             ),
         )
 
@@ -5677,6 +5703,38 @@ def _recorder_file_status(path: str, stale_after_s: float = 30.0) -> dict:
     }
 
 
+def _polymarket_truth_status() -> dict:
+    """Exact market-source label health from the recorder's lock-free JSON bridge."""
+    path = os.path.join(DATA_DIR, "pm_exact_truth_health.json")
+    if not os.path.isfile(path):
+        return {
+            "status": "MISSING", "required": False, "age_s": None,
+            "summary": "Exact Chainlink TWAP settlement truth has not been recorded",
+            "method": "atomic_recorder_summary",
+        }
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        age_s = max(0.0, time.time() - float(payload.get("generated_at") or 0.0))
+        status = str(payload.get("status") or "UNKNOWN")
+        if age_s > 300.0:
+            status = "STALE"
+        return {
+            "status": status, "required": False, "age_s": round(age_s, 1),
+            "summary": str(payload.get("summary") or "Exact truth state unavailable"),
+            "attempts": int(payload.get("attempts") or 0),
+            "admissible_rounds": int(payload.get("admissible_rounds") or 0),
+            "quarantined": int(payload.get("quarantined") or 0),
+            "method": "atomic_recorder_summary",
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "UNREADABLE", "required": False, "age_s": None,
+            "summary": f"Exact truth summary unreadable: {type(exc).__name__}",
+            "method": "atomic_recorder_summary",
+        }
+
+
 _ROW_HEALTH_CACHE: dict = {"generated_at_s": 0.0, "payload": {}}
 
 
@@ -5807,6 +5865,7 @@ def _system_health_snapshot() -> dict:
         "microstructure": _recorder_row_status("microstructure_recorder.py", 120.0),
         "multi_venue": _recorder_row_status("multi_venue_recorder.py", 120.0),
         "binance_l2": _recorder_row_status("binance_l2_recorder.py", 120.0),
+        "polymarket_exact_settlement_truth": _polymarket_truth_status(),
         "deribit_options_optional": _recorder_file_status(
             os.path.join(DATA_DIR, "deribit_options.duckdb"), 180.0
         ),
@@ -5818,7 +5877,8 @@ def _system_health_snapshot() -> dict:
         ),
     }
     for recorder_name, recorder_status in recorders.items():
-        recorder_status["required"] = recorder_name != "deribit_options_optional"
+        recorder_status.setdefault(
+            "required", recorder_name != "deribit_options_optional")
     forward_readiness = _forward_readiness_snapshot()
     evidence_health = _evidence_health_snapshot()
     action_recorder = forward_readiness.get("recorder") or {}

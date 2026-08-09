@@ -333,6 +333,7 @@ class Writer:
         self._last_recv = {}
         self.reconnects = 0
         self.started_marked = False
+        self._last_clock_error_log = 0.0
 
     def register_session(self):
         """Record who is observing. Cheap, once per process, and the join key for every row."""
@@ -539,8 +540,14 @@ class Writer:
                 self.con.execute(
                     "INSERT OR REPLACE INTO venue_clock VALUES (?,?,?,?,?)",
                     (minute, v, len(s), statistics.median(s), s[int(len(s) * 0.95)]))
-            except Exception:
-                pass
+            except Exception as exc:
+                # Clock telemetry is evidence about receive-time comparability. Losing it must
+                # be visible, but a transient lock must not terminate otherwise valid capture.
+                now = time.time()
+                if now - self._last_clock_error_log >= 60.0:
+                    self._last_clock_error_log = now
+                    print(f"[venues] venue_clock write failed: {type(exc).__name__}: "
+                          f"{str(exc)[:160]}")
 
 
 # ---------------------------------------------------------------- streams
@@ -689,6 +696,7 @@ async def _binance_perp_rest(w, stop):
     sess = requests.Session()
     last_id = 0
     last_slow = 0.0
+    last_slow_error_log = 0.0
     poll_id = 0
     # D7 (2026-07-26): `connection_id` used to be assigned `poll_id`, so every single poll looked
     # like a fresh network connection. That is not a cosmetic mislabel - connection generation is
@@ -771,8 +779,14 @@ async def _binance_perp_rest(w, stop):
                             "connection_id": float(w.connection_id["binance_perp_rest"]),
                             "event": "oi", "event_key": _stamp_key(d, _OI_FIELDS),
                             "size": float(d.get("openInterest") or 0.0)}])
-            except Exception:
-                pass
+            except Exception as exc:
+                # Funding/OI are required evidence streams. They may fail independently of
+                # aggTrades, so suppressing this exception made a degraded recorder look quiet.
+                # Rate-limit the diagnostic because this poll runs every five seconds.
+                if time.time() - last_slow_error_log >= 60.0:
+                    last_slow_error_log = time.time()
+                    print(f"[venues] binance_perp premium/OI poll failed: "
+                          f"{type(exc).__name__}: {str(exc)[:160]}")
         await asyncio.sleep(1.0)
 
 

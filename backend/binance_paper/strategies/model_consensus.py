@@ -46,7 +46,7 @@ def _allow_ungrouped_head() -> bool:
 class ModelConsensusStrategy(StrategyBase):
     strategy_id = "model_consensus"
     strategy_name = "Model Consensus (calibrated, cost-aware)"
-    strategy_version = "paper-v1"
+    strategy_version = "paper-v2"
     timeframe = "5m ensemble / max 5m hold"
     required_inputs = (
         "perpetual_book",
@@ -136,6 +136,11 @@ class ModelConsensusStrategy(StrategyBase):
             "target_contract": str(prediction.get("targetContract") or ""),
             "holdout_metrics": dict(prediction.get("holdout_metrics") or {}),
             "independence_validated": bool(prediction.get("independence_validated")),
+            "confidence_lower_95": self._finite_float(
+                prediction.get("confidenceLower95")
+            ),
+            "uncertainty_method": str(prediction.get("uncertaintyMethod") or ""),
+            "uncertainty_bucket": dict(prediction.get("uncertaintyBucket") or {}),
             "research_only": bool(prediction.get("research_only")),
         }
 
@@ -251,7 +256,19 @@ class ModelConsensusStrategy(StrategyBase):
                 conservative_move / snapshot.mark_price * 10_000.0 * self.target_capture_fraction,
             ),
         )
-        haircut_probability = max(0.0, probability - self.conservative_probability_haircut)
+        empirical_probability_lower = self._finite_float(
+            prediction.get("confidenceLower95"))
+        probability_uncertainty_method = str(
+            prediction.get("uncertaintyMethod") or "")
+        has_empirical_probability_bound = (
+            empirical_probability_lower is not None
+            and 0.0 <= empirical_probability_lower <= probability
+            and probability_uncertainty_method == "group_bootstrap_95"
+        )
+        haircut_probability = (
+            empirical_probability_lower if has_empirical_probability_bound
+            else max(0.0, probability - self.conservative_probability_haircut)
+        )
         # The calibrated head predicts endpoint DIRECTION, not which TP/SL barrier is touched
         # first. Therefore EV must be computed on the direction target it was trained on; using
         # `p * target - (1-p) * stop` would silently reinterpret it as a barrier-order model.
@@ -274,7 +291,11 @@ class ModelConsensusStrategy(StrategyBase):
                 # hand-chosen constant, not an interval derived from data.
                 "heuristic_haircut_probability": haircut_probability,
                 "heuristic_haircut_ev_bps": haircut_ev_bps,
-                "uncertainty_method": self.uncertainty_method,
+                "uncertainty_method": (
+                    probability_uncertainty_method if has_empirical_probability_bound
+                    else self.uncertainty_method
+                ),
+                "probability_bound_is_empirical": has_empirical_probability_bound,
                 # The EV above is (2p-1) * move - costs, which assumes the correct-side and
                 # wrong-side moves have the SAME average magnitude. A 60% model still loses if
                 # wins average 8 bps and losses average 25 bps. Recorded so the assumption is
@@ -293,19 +314,37 @@ class ModelConsensusStrategy(StrategyBase):
         # position. A pessimism constant is not an uncertainty estimate, and the symmetric-payoff
         # EV compounds that. Until a measured interval and an asymmetric payoff model exist, this
         # strategy reports and abstains.
-        if self.uncertainty_method != "empirical_interval" and not _allow_heuristic_ev():
+        # A group-bootstrap hit-rate bound validates the probability bucket only. It does NOT
+        # validate this strategy's stop/target/latency path or the symmetric-payoff EV formula.
+        # Only a replay of THIS exact policy may emit policyValueLowerBps and authorise it.
+        policy_value_lower = self._finite_float(prediction.get("policyValueLowerBps"))
+        policy_value_method = str(prediction.get("policyValueMethod") or "")
+        policy_value_id = str(prediction.get("policyValueId") or "")
+        policy_value_valid = (
+            policy_value_lower is not None
+            and policy_value_lower > 0.0
+            and policy_value_method == "policy_cluster_bootstrap_95"
+            and policy_value_id == f"{self.strategy_id}:{self.strategy_version}"
+        )
+        features.update({
+            "policy_value_lower_bps": policy_value_lower,
+            "policy_value_method": policy_value_method,
+            "policy_value_id": policy_value_id,
+            "policy_value_valid": policy_value_valid,
+        })
+        if not policy_value_valid and not _allow_heuristic_ev():
             return self._no_edge(
                 snapshot, features,
-                "uncertainty_is_heuristic_not_measured: a fixed "
-                f"{self.conservative_probability_haircut:.0%} haircut is not a lower bound, and "
-                "the EV assumes symmetric win/loss magnitude")
+                "exact_policy_value_interval_unavailable: probability calibration alone does "
+                "not validate stop/target/latency PnL or asymmetric win/loss magnitude")
 
         sign = 1.0 if side is PositionSide.LONG else -1.0
         stop_price = snapshot.mark_price * (1.0 - sign * stop_bps / 10_000.0)
         target_price = snapshot.mark_price * (1.0 + sign * target_bps / 10_000.0)
         expected_net = self.requested_notional_usd * expected_ev_bps / 10_000.0
-        lower_net = self.requested_notional_usd * haircut_ev_bps / 10_000.0
-        score = sign * min(1.0, haircut_ev_bps / max(1.0, target_bps))
+        authority_lower_ev_bps = policy_value_lower if policy_value_valid else haircut_ev_bps
+        lower_net = self.requested_notional_usd * authority_lower_ev_bps / 10_000.0
+        score = sign * min(1.0, authority_lower_ev_bps / max(1.0, target_bps))
         return self._decision(
             snapshot,
             action=Action.OPEN_LONG if side is PositionSide.LONG else Action.OPEN_SHORT,
@@ -317,12 +356,14 @@ class ModelConsensusStrategy(StrategyBase):
             take_profit_price=target_price,
             maximum_holding_seconds=self.maximum_holding_seconds,
             features=features,
-            reason_codes=("endpoint_head_trade", "positive_conservative_net_ev"),
+            reason_codes=("endpoint_head_trade", "positive_exact_policy_value_lower_bound"),
             probability_calibrated=True,
             # "LIVE_CALIBRATED" read like an empirical uncertainty method. The probability
             # is calibrated; the UNCERTAINTY is a hand-chosen constant, and the
             # label now says which is which.
-            uncertainty_status="CALIBRATED_PROBABILITY_UNMEASURED_UNCERTAINTY",
+            uncertainty_status=("EXACT_POLICY_CLUSTER_BOOTSTRAP_95"
+                                if policy_value_valid
+                                else "RESEARCH_OVERRIDE_UNMEASURED_POLICY_VALUE"),
             expected_net_pnl_usd=expected_net,
             expected_net_pnl_heuristic_haircut_usd=lower_net,
         )

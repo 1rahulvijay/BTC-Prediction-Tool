@@ -164,6 +164,10 @@ def predict(
         "holdout_metrics": dict(metrics),
         "independence_validated": bool(bundle.get("independence_validated")),
     }
+    if scored.get("confidence_lower_95") is not None:
+        prediction["confidenceLower95"] = float(scored["confidence_lower_95"])
+        prediction["uncertaintyMethod"] = str(scored.get("uncertainty_method") or "")
+        prediction["uncertaintyBucket"] = dict(scored.get("uncertainty_bucket") or {})
     return prediction, {**status, "metrics": metrics}
 
 

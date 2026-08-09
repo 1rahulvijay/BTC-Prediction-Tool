@@ -25,15 +25,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 import json
 import os
+import queue
+import re
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 
 import numpy as np
 import requests
+import websockets
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BACKEND_DIR = os.path.join(ROOT, "backend")
@@ -43,6 +49,13 @@ if BACKEND_DIR not in sys.path:
 from polymarket_fee import (  # noqa: E402
     DEFAULT_CRYPTO_TAKER_FEE_RATE as CRYPTO_TAKER_FEE_RATE,
     polymarket_taker_fee_per_share,
+)
+import target_contract as tc  # noqa: E402
+from polymarket.round_truth import (  # noqa: E402
+    ADMISSIBLE,
+    SCHEMA as ROUND_TRUTH_SCHEMA,
+    RoundSettlementTruth,
+    build_checkpoints,
 )
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -63,22 +76,138 @@ HTTP.headers.update({"User-Agent": "btc-polymarket-shadow-recorder/2.0"})
 ANCHOR_CAPTURE_MAX_LATE_SEC = 5.0
 ENTRY_FAIR_CAP = 0.91
 LIVE_QUOTES_PATH = os.path.join(DATA_DIR, "pm_live_quotes.json")
+TRUTH_HEALTH_PATH = os.path.join(DATA_DIR, "pm_exact_truth_health.json")
+RTDS_WS = "wss://ws-live-data.polymarket.com"
+RTDS_MAX_AGE_MS = 10_000
+
+
+def _parse_chainlink_update(raw):
+    """Return ``(price, source_ts_ms)`` for one BTC/USD RTDS update, else ``None``."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str) or raw.upper() in {"PING", "PONG"}:
+        return None
+    try:
+        event = json.loads(raw)
+        payload = event.get("payload") or {}
+        if event.get("topic") != "crypto_prices_chainlink":
+            return None
+        if str(payload.get("symbol") or "").lower() != "btc/usd":
+            return None
+        value = float(payload["value"])
+        source_ts_ms = int(payload["timestamp"])
+        if value <= 0 or source_ts_ms <= 0:
+            return None
+        return value, source_ts_ms
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+class ChainlinkRTDS:
+    """Background RTDS reader; DuckDB writes remain on the recorder's main thread."""
+
+    def __init__(self):
+        self._latest = None
+        self._lock = threading.Lock()
+        self._updates = queue.Queue()
+        self._thread = None
+        self.last_error = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=lambda: asyncio.run(self._run()),
+            name="polymarket-chainlink-rtds",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def latest(self, now_ms=None):
+        now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        with self._lock:
+            row = self._latest
+        if not row:
+            return None
+        price, source_ts_ms, recv_ts_ms = row
+        if source_ts_ms > now_ms + 5_000 or now_ms - source_ts_ms > RTDS_MAX_AGE_MS:
+            return None
+        return price, source_ts_ms, recv_ts_ms
+
+    def drain(self):
+        rows = []
+        while True:
+            try:
+                rows.append(self._updates.get_nowait())
+            except queue.Empty:
+                return rows
+
+    async def _run(self):
+        backoff = 1.0
+        subscription = {
+            "action": "subscribe",
+            "subscriptions": [{
+                "topic": "crypto_prices_chainlink",
+                "type": "*",
+                "filters": json.dumps({"symbol": "btc/usd"}, separators=(",", ":")),
+            }],
+        }
+        while True:
+            try:
+                async with websockets.connect(
+                    RTDS_WS, ping_interval=20, ping_timeout=20,
+                    open_timeout=15, close_timeout=5, max_queue=1024,
+                ) as ws:
+                    await ws.send(json.dumps(subscription, separators=(",", ":")))
+                    self.last_error = None
+                    backoff = 1.0
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            await ws.send("PING")
+                            continue
+                        parsed = _parse_chainlink_update(raw)
+                        if parsed is None:
+                            continue
+                        recv_ts_ms = int(time.time() * 1000)
+                        row = (float(parsed[0]), int(parsed[1]), recv_ts_ms)
+                        with self._lock:
+                            self._latest = row
+                        self._updates.put(row)
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, 30.0)
+
+
+_CHAINLINK_RTDS = ChainlinkRTDS()
 
 
 # --------------------------------------------------------------------------- sources
-def get_btc():
-    """Return (price, source), preferring the settlement-oracle proxy used by the app."""
+def get_btc_observation():
+    """Return ``(price, source, source_ts_ms)`` without falsifying feed provenance."""
+    exact = _CHAINLINK_RTDS.latest()
+    if exact:
+        return float(exact[0]), "polymarket_chainlink_rtds_reference", int(exact[1])
     try:
         data = HTTP.get(PYTH, params={"ids[]": PYTH_BTC_ID}, timeout=5).json()
         price = data["parsed"][0]["price"]
-        return float(price["price"]) * (10 ** int(price["expo"])), "pyth"
+        source_ts_ms = int(price.get("publish_time") or 0) * 1000 or None
+        return (float(price["price"]) * (10 ** int(price["expo"])),
+                "pyth_display_fallback", source_ts_ms)
     except Exception:
         try:
-            return float(
-                HTTP.get(BINANCE, timeout=5).json()["price"]
-            ), "binance_fallback"
+            return (float(HTTP.get(BINANCE, timeout=5).json()["price"]),
+                    "binance_display_fallback", None)
         except Exception:
-            return None, "unavailable"
+            return None, "unavailable", None
+
+
+def get_btc():
+    """Backward-compatible display-price API used by the cross-window recorder."""
+    price, source, _source_ts_ms = get_btc_observation()
+    return price, source
 
 
 def _market_tokens(market):
@@ -97,6 +226,55 @@ def _market_tokens(market):
     except Exception:
         return None
     return None
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _required_twap_source(rule_text, resolution_source, duration_s):
+    """Accept a source only when this market's own metadata names the expected TWAP."""
+    evidence = f"{rule_text} {resolution_source}".lower()
+    seconds = 30 if int(duration_s) == 300 else 60 if int(duration_s) == 900 else None
+    if seconds is None or "twap" not in evidence:
+        return ""
+    if not re.search(rf"(?<!\d){seconds}\s*(?:s|sec|secs|second|seconds)(?!\w)", evidence):
+        return ""
+    return f"chainlink_btc_usd_twap_{seconds}s"
+
+
+def _verified_updown_rule(rule_text):
+    """Return the comparator only when this market explicitly defines equality and Down."""
+    normalized = " ".join(str(rule_text or "").lower().split())
+    if ("greater than or equal" in normalized
+            and "resolve" in normalized
+            and "up" in normalized):
+        return ">=", tc.UP
+    return None
+
+
+def _market_contract_terms(market, duration_s):
+    """Capture the rule and fee terms delivered with this exact market."""
+    description = str(market.get("description") or "").strip()
+    resolution_source = str(
+        market.get("resolutionSource") or market.get("resolution_source") or ""
+    ).strip()
+    fees_enabled = _as_bool(
+        market.get("feesEnabled", market.get("fees_enabled", False)))
+    return {
+        "rule_text": description,
+        "resolution_source": resolution_source,
+        "fees_enabled": fees_enabled,
+        "fee_rate": CRYPTO_TAKER_FEE_RATE if fees_enabled else 0.0,
+        # The market descriptions currently name distinct TWAP streams. Generic RTDS
+        # Chainlink updates are useful features but are NOT either settlement source.
+        "required_reference_source": _required_twap_source(
+            description, resolution_source, duration_s),
+    }
 
 
 def discover_rounds():
@@ -131,6 +309,7 @@ def discover_rounds():
                         "dur": dur,
                         "up": toks[0],
                         "down": toks[1],
+                        **_market_contract_terms(m, dur),
                     }
                 )
             except Exception:
@@ -168,6 +347,7 @@ def discover_rounds():
                         "dur": dur,
                         "up": toks[0],
                         "down": toks[1],
+                        **_market_contract_terms(m, dur),
                     }
                 )
                 have.add(slug)
@@ -480,13 +660,150 @@ def init_db(path=None):
         )
     con.execute("""CREATE TABLE IF NOT EXISTS pm_round_meta(slug VARCHAR PRIMARY KEY, condition_id VARCHAR,
         horizon INT, anchor_ts BIGINT, start_ts BIGINT, end_ts BIGINT, up_token VARCHAR, down_token VARCHAR,
-        discovered_ts DOUBLE)""")
+        discovered_ts DOUBLE, rule_text VARCHAR, resolution_source VARCHAR,
+        fees_enabled BOOLEAN, fee_rate DOUBLE, required_reference_source VARCHAR)""")
+    for column, data_type in (
+        ("rule_text", "VARCHAR"), ("resolution_source", "VARCHAR"),
+        ("fees_enabled", "BOOLEAN"), ("fee_rate", "DOUBLE"),
+        ("required_reference_source", "VARCHAR"),
+    ):
+        con.execute(f"ALTER TABLE pm_round_meta ADD COLUMN IF NOT EXISTS {column} {data_type}")
     con.execute("""CREATE TABLE IF NOT EXISTS pm_round_settlements(slug VARCHAR PRIMARY KEY, horizon INT,
         anchor_ts BIGINT, anchor_price DOUBLE, expiry_btc DOUBLE, settled_side INT, up_win INT, down_win INT,
         resolution_source VARCHAR, resolved_at DOUBLE)""")
     con.execute("""CREATE TABLE IF NOT EXISTS pm_settlement_attempts(slug VARCHAR PRIMARY KEY,
         attempts INT, last_attempt DOUBLE, last_error VARCHAR)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS pm_reference_prices(
+        source VARCHAR, source_ts_ms BIGINT, recv_ts_ms BIGINT, price DOUBLE,
+        PRIMARY KEY(source, source_ts_ms))""")
+    con.execute("""CREATE TABLE IF NOT EXISTS pm_round_truth_attempts(
+        market_id VARCHAR PRIMARY KEY, attempted_at DOUBLE, status VARCHAR, reason VARCHAR)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS pm_export_health(
+        export_name VARCHAR PRIMARY KEY, last_success DOUBLE, last_error VARCHAR,
+        row_count BIGINT)""")
+    con.execute(ROUND_TRUTH_SCHEMA)
     return con
+
+
+def _record_rtds_updates(con):
+    rows = _CHAINLINK_RTDS.drain()
+    for price, source_ts_ms, recv_ts_ms in rows:
+        con.execute(
+            "INSERT OR REPLACE INTO pm_reference_prices VALUES (?,?,?,?)",
+            ["polymarket_chainlink_rtds_reference", int(source_ts_ms), int(recv_ts_ms),
+             float(price)],
+        )
+    return len(rows)
+
+
+def _nearest_reference(con, boundary_ms, source, max_lag_ms=5_000):
+    row = con.execute(
+        """
+        SELECT price, source_ts_ms FROM pm_reference_prices
+        WHERE source=?
+          AND source_ts_ms BETWEEN ? AND ?
+        ORDER BY abs(source_ts_ms - ?) ASC, source_ts_ms ASC
+        LIMIT 1
+        """,
+        [str(source), int(boundary_ms - max_lag_ms), int(boundary_ms + max_lag_ms),
+         int(boundary_ms)],
+    ).fetchone()
+    return (float(row[0]), int(row[1])) if row else None
+
+
+def _persist_round_truth(con, slug, condition_id, horizon, anchor_ts, official_side):
+    """Persist only exact-feed, official-outcome truth; missing evidence stays quarantined."""
+    attempted_at = time.time()
+    meta = con.execute(
+        "SELECT rule_text,resolution_source,required_reference_source FROM pm_round_meta "
+        "WHERE slug=?", [slug]
+    ).fetchone()
+    rule_text = str(meta[0] or "").strip() if meta else ""
+    resolution_url = str(meta[1] or "").strip() if meta else ""
+    required_source = str(meta[2] or "").strip() if meta else ""
+    verified_rule = _verified_updown_rule(rule_text)
+    if not rule_text or not resolution_url or not required_source or not verified_rule:
+        con.execute(
+            "INSERT OR REPLACE INTO pm_round_truth_attempts VALUES (?,?,?,?)",
+            [slug, attempted_at, "QUARANTINED",
+             "market-specific rule/comparator or TWAP resolution source missing/unrecognized"],
+        )
+        return "QUARANTINED"
+
+    start_ms = int(anchor_ts) * 1000
+    end_ms = start_ms + int(horizon) * 60_000
+    # The sponsored-stream boundary selection rule has not yet been empirically validated.
+    # Nearest-within-5s can select a report from the wrong side of the boundary, so strict truth
+    # accepts an exact source timestamp only. A later study may widen this under a new version.
+    anchor = _nearest_reference(con, start_ms, required_source, max_lag_ms=0)
+    final = _nearest_reference(con, end_ms, required_source, max_lag_ms=0)
+    if not anchor or not final:
+        missing = ",".join(name for name, value in (("anchor", anchor), ("final", final))
+                           if value is None)
+        con.execute(
+            "INSERT OR REPLACE INTO pm_round_truth_attempts VALUES (?,?,?,?)",
+            [slug, attempted_at, "QUARANTINED",
+             f"missing exact {required_source} {missing} boundary; generic RTDS/spot fallback "
+             "is intentionally inadmissible"],
+        )
+        return "QUARANTINED"
+
+    rule_version = f"polymarket_btc_updown_{int(horizon)}m_twap_v1"
+    rule_hash = hashlib.sha256(rule_text.encode("utf-8")).hexdigest()
+    comparator, tie_outcome = verified_rule
+    truth = RoundSettlementTruth(
+        market_id=str(slug), condition_id=str(condition_id or ""),
+        round_start_ms=start_ms, round_end_ms=end_ms,
+        round_duration_s=int(horizon) * 60,
+        rule_version=rule_version, rule_text_hash=rule_hash,
+        resolution_source=required_source, comparator=comparator, tie_outcome=tie_outcome,
+        anchor_value=anchor[0], anchor_source_ts_ms=anchor[1],
+        final_value=final[0], final_source_ts_ms=final[1],
+        official_outcome=tc.UP if int(official_side) == 1 else tc.DOWN,
+    )
+    verdict, reason = truth.admissibility()
+    con.execute(
+        """
+        INSERT OR REPLACE INTO round_settlement_truth (
+            market_id,condition_id,round_start_ms,round_end_ms,round_duration_s,
+            rule_version,rule_text_hash,resolution_source,comparator,tie_outcome,
+            anchor_value,anchor_source_ts_ms,final_value,final_source_ts_ms,
+            official_outcome,derived_outcome,outcomes_match,admissibility,
+            admissibility_reason
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        [truth.market_id, truth.condition_id, truth.round_start_ms, truth.round_end_ms,
+         truth.round_duration_s, truth.rule_version, truth.rule_text_hash,
+         truth.resolution_source, truth.comparator, truth.tie_outcome,
+         truth.anchor_value, truth.anchor_source_ts_ms, truth.final_value,
+         truth.final_source_ts_ms, truth.official_outcome, truth.derived_outcome,
+         truth.outcomes_match, verdict, reason],
+    )
+    if verdict == ADMISSIBLE:
+        refs = {}
+        offsets = ((0, 60, 120, 180, 240) if int(horizon) == 5
+                   else (0, 180, 360, 540, 720))
+        for offset in offsets:
+            observed = _nearest_reference(
+                con, start_ms + offset * 1000, required_source, max_lag_ms=0)
+            if observed:
+                refs[offset] = observed[0]
+        for checkpoint in build_checkpoints(truth, refs, offsets=offsets):
+            con.execute(
+                """
+                INSERT OR REPLACE INTO settlement_checkpoint VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                [checkpoint.market_id, checkpoint.checkpoint_index,
+                 checkpoint.decision_ts_ms, checkpoint.seconds_left,
+                 checkpoint.anchor_value, checkpoint.current_reference_price,
+                 checkpoint.distance_from_anchor, checkpoint.outcome,
+                 checkpoint.rule_text_hash],
+            )
+    con.execute(
+        "INSERT OR REPLACE INTO pm_round_truth_attempts VALUES (?,?,?,?)",
+        [slug, attempted_at, verdict, reason],
+    )
+    return verdict
 
 
 def _snapshot_prices(con, slug):
@@ -564,6 +881,10 @@ def resolve_pending_settlements(
                 now,
             ],
         )
+        truth_status = _persist_round_truth(
+            con, slug, condition_id, horizon, anchor_ts, side)
+        if truth_status != ADMISSIBLE:
+            print(f"[round-truth] {slug} {truth_status}; exact boundary evidence unavailable or inconsistent")
         con.execute("DELETE FROM pm_settlement_attempts WHERE slug=?", [slug])
         resolved += 1
     return {
@@ -592,6 +913,8 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
     # A smoke run must never write synthetic/future-round snapshots into the production evidence DB.
     global _ARTIFACT_HASH
     con = init_db(":memory:" if smoke else None)
+    if not smoke:
+        _CHAINLINK_RTDS.start()
     model = load_phold()
     mver = (
         (model or {}).get("version", "unknown")
@@ -614,7 +937,8 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
     )
     while True:
         now = time.time()
-        btc, price_source = get_btc()
+        _record_rtds_updates(con)
+        btc, price_source, source_ts_ms = get_btc_observation()
         if btc:
             buf.append((now, btc))
         if now - last_disc > discover or smoke:
@@ -622,7 +946,11 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                 if r["slug"] not in rounds:
                     rounds[r["slug"]] = r
                     con.execute(
-                        "INSERT OR REPLACE INTO pm_round_meta VALUES (?,?,?,?,?,?,?,?,?)",
+                        """INSERT OR REPLACE INTO pm_round_meta (
+                            slug,condition_id,horizon,anchor_ts,start_ts,end_ts,
+                            up_token,down_token,discovered_ts,rule_text,resolution_source,
+                            fees_enabled,fee_rate,required_reference_source
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         [
                             r["slug"],
                             r["condition_id"],
@@ -633,6 +961,11 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                             r["up"],
                             r["down"],
                             now,
+                            r.get("rule_text"),
+                            r.get("resolution_source"),
+                            bool(r.get("fees_enabled")),
+                            float(r.get("fee_rate") or 0.0),
+                            r.get("required_reference_source"),
                         ],
                     )
             settlement = resolve_pending_settlements(con, now=now, limit=settle_batch)
@@ -678,8 +1011,9 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                 if ub and dbk:
                     fair_up = min(pu, ENTRY_FAIR_CAP) if pu is not None else None
                     fair_down = min(pd, ENTRY_FAIR_CAP) if pd is not None else None
-                    fee_up = _taker_fee_per_share(ub["ask"])
-                    fee_down = _taker_fee_per_share(dbk["ask"])
+                    market_fee_rate = float(r.get("fee_rate") or 0.0)
+                    fee_up = _taker_fee_per_share(ub["ask"], market_fee_rate)
+                    fee_down = _taker_fee_per_share(dbk["ask"], market_fee_rate)
                     eu = [
                         (
                             fair_up - ub["ask"] - fee_up - c
@@ -819,8 +1153,10 @@ def run(poll=1.5, discover=30.0, smoke=False, settle_batch=50):
                         "up_book_hash": ub["book_hash"],
                         "down_book_hash": dbk["book_hash"],
                         "artifact_hash": _ARTIFACT_HASH,
-                        "fees_enabled": True,
-                        "fee_rate": CRYPTO_TAKER_FEE_RATE,
+                        "fees_enabled": bool(r.get("fees_enabled")),
+                        "fee_rate": market_fee_rate,
+                        "resolution_source": r.get("resolution_source"),
+                        "required_reference_source": r.get("required_reference_source"),
                         # Additive, read-only decision context for isolated research shadows.
                         # These fields do not consume repricing output and cannot alter the
                         # recorder's side, eligibility, paper ledger, or settlement logic.
@@ -867,17 +1203,103 @@ def _fwd(p):
     return p.replace(chr(92), "/")
 
 
+def _export_table(con, table, filename):
+    final_path = os.path.join(DATA_DIR, filename)
+    tmp_path = final_path + ".tmp"
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        con.execute(
+            f"COPY {table} TO '{_fwd(tmp_path)}' (FORMAT PARQUET)"
+        )
+        os.replace(tmp_path, final_path)
+        row_count = int(con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+        con.execute(
+            "INSERT OR REPLACE INTO pm_export_health VALUES (?,?,?,?)",
+            [filename, time.time(), None, row_count],
+        )
+        return True
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        previous = con.execute(
+            "SELECT last_success,row_count FROM pm_export_health WHERE export_name=?",
+            [filename],
+        ).fetchone()
+        con.execute(
+            "INSERT OR REPLACE INTO pm_export_health VALUES (?,?,?,?)",
+            [filename, previous[0] if previous else None,
+             f"{type(exc).__name__}: {exc}", previous[1] if previous else None],
+        )
+        print(f"[recorder] ERROR export {table} -> {filename}: {type(exc).__name__}: {exc}")
+        return False
+
+
+def _write_truth_health(con, path=TRUTH_HEALTH_PATH):
+    attempts, quarantined, last_attempt = con.execute(
+        """SELECT count(*), count(*) FILTER (WHERE status='QUARANTINED'),
+                  max(attempted_at) FROM pm_round_truth_attempts"""
+    ).fetchone()
+    admissible, last_end_ms = con.execute(
+        """SELECT count(*), max(round_end_ms) FROM round_settlement_truth
+           WHERE admissibility=?""", [ADMISSIBLE]
+    ).fetchone()
+    now = time.time()
+    recent = bool(last_end_ms and now * 1000.0 - float(last_end_ms) <= 20 * 60_000)
+    status = ("HEALTHY" if recent else "COLLECTING" if not attempts else "BLOCKED")
+    if status == "HEALTHY":
+        summary = f"{int(admissible)} exact TWAP rounds; latest within 20 minutes"
+    elif status == "COLLECTING":
+        summary = "No resolved round has been checked for exact TWAP truth yet"
+    else:
+        summary = (f"Exact TWAP truth unavailable: {int(quarantined or 0)}/"
+                   f"{int(attempts or 0)} attempts quarantined")
+    payload = {
+        "version": 1, "generated_at": now, "status": status, "summary": summary,
+        "attempts": int(attempts or 0), "quarantined": int(quarantined or 0),
+        "admissible_rounds": int(admissible or 0),
+        "last_attempt_at": float(last_attempt) if last_attempt is not None else None,
+        "last_admissible_round_end_ms": int(last_end_ms) if last_end_ms is not None else None,
+        "required_sources": ["chainlink_btc_usd_twap_30s", "chainlink_btc_usd_twap_60s"],
+        "generic_rtds_is_settlement_truth": False,
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix="pm_exact_truth_health_", suffix=".json",
+        dir=os.path.dirname(path),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return True
+
+
+def _export_truth_health(con):
+    try:
+        return _write_truth_health(con)
+    except Exception as exc:
+        # Health export must be visible but cannot kill the primary quote/settlement recorder.
+        print(f"[recorder] ERROR exact-truth health export: {type(exc).__name__}: {exc}")
+        return False
+
+
 def _export(con):
     """Write parquet snapshots so --report can read while the recorder holds the live DB lock."""
-    try:
-        con.execute(
-            f"COPY pm_round_snapshots TO '{_fwd(os.path.join(DATA_DIR, 'pm_export_snapshots.parquet'))}' (FORMAT PARQUET)"
-        )
-        con.execute(
-            f"COPY pm_round_settlements TO '{_fwd(os.path.join(DATA_DIR, 'pm_export_settlements.parquet'))}' (FORMAT PARQUET)"
-        )
-    except Exception:
-        pass
+    results = [
+        _export_table(con, "pm_round_snapshots", "pm_export_snapshots.parquet"),
+        _export_table(con, "pm_round_settlements", "pm_export_settlements.parquet"),
+        _export_table(con, "round_settlement_truth", "pm_round_settlement_truth.parquet"),
+        _export_table(con, "settlement_checkpoint", "pm_settlement_checkpoints.parquet"),
+        _export_truth_health(con),
+    ]
+    return all(results)
 
 
 def settle_once(limit=1000):
@@ -906,9 +1328,28 @@ def selftest():
         except FileNotFoundError:
             pass
     con = init_db(tmp)
+    parsed = _parse_chainlink_update(json.dumps({
+        "topic": "crypto_prices_chainlink", "type": "update",
+        "payload": {"symbol": "btc/usd", "timestamp": 9_000_000,
+                    "value": 100.0},
+    }))
+    assert parsed == (100.0, 9_000_000)
+    assert _parse_chainlink_update("PONG") is None
+    assert _as_bool("false") is False and _as_bool("true") is True
+    assert _verified_updown_rule(
+        "This market resolves Up if the end is greater than or equal to the start."
+    ) == (">=", tc.UP)
+    assert _verified_updown_rule("Up if the end is greater than the start") is None
+    assert _required_twap_source(
+        "Chainlink BTC/USD TWAP 30 second stream", "https://data.chain.link", 300
+    ) == "chainlink_btc_usd_twap_30s"
     now = 10_000.0
     con.execute(
-        "INSERT INTO pm_round_meta VALUES (?,?,?,?,?,?,?,?,?)",
+        """INSERT INTO pm_round_meta (
+            slug,condition_id,horizon,anchor_ts,start_ts,end_ts,up_token,down_token,
+            discovered_ts,rule_text,resolution_source,fees_enabled,fee_rate,
+            required_reference_source
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             "btc-updown-5m-test",
             "cond-test",
@@ -919,6 +1360,11 @@ def selftest():
             "up-token",
             "down-token",
             9_000,
+            "Resolves Up when ending TWAP is greater than or equal to starting TWAP.",
+            "https://data.chain.link/streams/btc-usd-twap-30s-streams",
+            True,
+            CRYPTO_TAKER_FEE_RATE,
+            "chainlink_btc_usd_twap_30s",
         ],
     )
     assert (
@@ -940,6 +1386,51 @@ def selftest():
         "SELECT settled_side,resolution_source FROM pm_round_settlements"
     ).fetchone()
     assert out["resolved"] == 1 and row == (0, "polymarket_clob"), (out, row)
+    five_min_truth = con.execute(
+        "SELECT status,reason FROM pm_round_truth_attempts WHERE market_id='btc-updown-5m-test'"
+    ).fetchone()
+    assert five_min_truth and five_min_truth[0] == "QUARANTINED"
+
+    start_ms = 20_000_000
+    end_ms = start_ms + 900_000
+    con.execute(
+        """INSERT INTO pm_round_meta (
+            slug,condition_id,horizon,anchor_ts,start_ts,end_ts,up_token,down_token,
+            discovered_ts,rule_text,resolution_source,fees_enabled,fee_rate,
+            required_reference_source
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        ["btc-updown-15m-test", "cond-15m", 15, start_ms // 1000,
+         start_ms // 1000, end_ms // 1000, "up-15", "down-15", start_ms / 1000,
+         "Resolves Up when ending TWAP is greater than or equal to starting TWAP.",
+         "https://data.chain.link/streams/btc-usd-twap-60s-streams", True,
+         CRYPTO_TAKER_FEE_RATE, "chainlink_btc_usd_twap_60s"],
+    )
+    for source_ts_ms, price in ((start_ms, 100.0), (start_ms + 180_000, 101.0),
+                                (start_ms + 360_000, 99.0),
+                                (start_ms + 540_000, 102.0),
+                                (start_ms + 720_000, 101.5), (end_ms, 102.0)):
+        con.execute(
+            "INSERT INTO pm_reference_prices VALUES (?,?,?,?)",
+            ["chainlink_btc_usd_twap_60s", source_ts_ms, source_ts_ms + 10, price],
+        )
+    status = _persist_round_truth(
+        con, "btc-updown-15m-test", "cond-15m", 15, start_ms // 1000, 1)
+    truth = con.execute(
+        "SELECT official_outcome,derived_outcome,admissibility FROM round_settlement_truth "
+        "WHERE market_id='btc-updown-15m-test'"
+    ).fetchone()
+    checkpoints = con.execute(
+        "SELECT count(*) FROM settlement_checkpoint WHERE market_id='btc-updown-15m-test'"
+    ).fetchone()[0]
+    assert status == ADMISSIBLE and truth == ("UP", "UP", ADMISSIBLE), truth
+    assert checkpoints == 5, checkpoints
+    health_path = tmp + ".truth.json"
+    _write_truth_health(con, health_path)
+    with open(health_path, "r", encoding="utf-8") as handle:
+        health = json.load(handle)
+    assert health["admissible_rounds"] == 1 and health["attempts"] == 2, health
+    assert health["generic_rtds_is_settlement_truth"] is False
+    os.remove(health_path)
     con.close()
     os.remove(tmp)
     print("live_btc_updown_recorder self-test: PASS")

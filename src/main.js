@@ -678,11 +678,11 @@ function renderSystemHealthStatus(payload) {
   }));
   const recorderTiles = Object.entries(payload.recorders || {}).map(([name, item]) => ({
     name,
-    value: item.age_s != null
+    value: item.summary || (item.age_s != null
       ? `${item.age_s} s since write${item.required === false ? ' · optional' : ''}`
       : item.age_ms != null
         ? `${Math.round(item.age_ms / 1000)} s since heartbeat${item.required === false ? ' · optional' : ''}`
-        : `no evidence yet${item.required === false ? ' · optional' : ''}`,
+        : `no evidence yet${item.required === false ? ' · optional' : ''}`),
     status: item.required === false && item.status !== 'HEALTHY' ? 'INFO' : item.status,
   }));
   const protocols = payload.forward_protocols || {};

@@ -122,9 +122,25 @@ def test_binance_model_consensus_abstains_on_heuristic_uncertainty():
     strategy = ModelConsensusStrategy()
     decision = strategy.decide(_snapshot(_prediction()))
     assert decision.action is Action.NO_EDGE
-    assert any("uncertainty_is_heuristic_not_measured" in code
+    assert any("exact_policy_value_interval_unavailable" in code
                for code in decision.reason_codes), decision.reason_codes
     assert strategy.uncertainty_method == "fixed_haircut"
+
+
+def test_binance_model_consensus_requires_matching_exact_policy_value():
+    strategy = ModelConsensusStrategy()
+    prediction = _prediction(
+        confidenceLower95=0.61,
+        uncertaintyMethod="group_bootstrap_95",
+        policyValueLowerBps=2.0,
+        policyValueMethod="policy_cluster_bootstrap_95",
+        policyValueId=f"{strategy.strategy_id}:{strategy.strategy_version}",
+    )
+    decision = strategy.decide(_snapshot(prediction))
+    assert decision.action is Action.OPEN_LONG
+    assert decision.features["probability_bound_is_empirical"] is True
+    assert decision.features["policy_value_valid"] is True
+    assert decision.expected_net_pnl_heuristic_haircut_usd > 0.0
 
 
 def test_binance_model_consensus_ev_path_still_computes(monkeypatch):
@@ -183,6 +199,9 @@ def test_binance_endpoint_serving_uses_gated_endpoint_probability(monkeypatch):
             "p_up": 0.68,
             "p_down": 0.32,
             "target_contract": _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
+            "confidence_lower_95": 0.59,
+            "uncertainty_method": "group_bootstrap_95",
+            "uncertainty_bucket": {"independent_groups": 80},
         },
     )
     prediction, status = binance_endpoint_serving.predict(
@@ -201,6 +220,8 @@ def test_binance_endpoint_serving_uses_gated_endpoint_probability(monkeypatch):
     assert prediction["calibratedConfidence"] == 0.68
     assert prediction["targetContract"] == _tc.ROLLING_EXCHANGE_RETURN_SIGN_V1
     assert prediction["independence_validated"] is False
+    assert prediction["confidenceLower95"] == 0.59
+    assert prediction["uncertaintyMethod"] == "group_bootstrap_95"
 
     monkeypatch.setattr(
         binance_endpoint_serving,

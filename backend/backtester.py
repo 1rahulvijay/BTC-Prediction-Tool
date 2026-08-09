@@ -19,6 +19,11 @@ VALID_WF_MODEL_KINDS = (
     "PRODUCTION_PIPELINE_WALK_FORWARD",
 )
 
+VALID_REPLAY_MODEL_KINDS = (
+    "SURROGATE_RESEARCH_ONLY",
+    "PRODUCTION_BASE_RANGE_REPLAY_RESEARCH_ONLY",
+)
+
 
 def walk_forward_validate(X: np.ndarray, y: np.ndarray, n_folds: int = 5,
                           model_factory=None, embargo: int = 0,
@@ -193,7 +198,11 @@ class Backtester:
 
     def run(self, features: np.ndarray, closes: np.ndarray, horizons: list[int], predict_fn,
             lookback: int = 60, progress_cb=None, highs=None, lows=None,
-            target_contract: str | None = None) -> dict:
+            target_contract: str | None = None,
+            model_kind: str = "SURROGATE_RESEARCH_ONLY",
+            policy_kind: str = "direction_probability_only",
+            score_start_index: int | None = None,
+            round_trip_cost_fraction: float | None = None) -> dict:
         """
         Run backtest over the historical dataset.
         features: [timesteps, NUM_FEATURES]
@@ -204,8 +213,21 @@ class Backtester:
         """
         n_samples = len(features)
         
-        # Test on the last 20% of the dataset
-        test_start = int(n_samples * 0.8)
+        if model_kind not in VALID_REPLAY_MODEL_KINDS:
+            raise ValueError(
+                f"replay model_kind {model_kind!r} is not one of {VALID_REPLAY_MODEL_KINDS}")
+        # A caller that already sliced to an untouched tail supplies the first scoreable row;
+        # taking another last-20% slice discarded 80% of the scarce OOS evidence.
+        test_start = (int(score_start_index) if score_start_index is not None
+                      else int(n_samples * 0.8))
+        test_start = min(max(test_start, lookback), max(lookback, n_samples - 1))
+        if round_trip_cost_fraction is None:
+            round_trip_cost_fraction = float(os.environ.get(
+                "BTC_BACKTEST_COST_FLOOR",
+                os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008")))
+        if not np.isfinite(round_trip_cost_fraction) or round_trip_cost_fraction < 0:
+            raise ValueError("round_trip_cost_fraction must be finite and non-negative")
+        self.round_trip_cost_fraction = float(round_trip_cost_fraction)
         
         self.results = {}
         self._trade_returns_by_horizon = {}
@@ -380,7 +402,17 @@ class Backtester:
         # Tagged ON the result, not just logged. A backtest graded against a fabricated
         # volatility band must not be readable as one graded against the real market.
         self.results["ohlc_source"] = ohlc_source
-        self.results["valid_for_promotion"] = (ohlc_source == "REAL")
+        self.results["model_kind"] = model_kind
+        self.results["policy_kind"] = str(policy_kind)
+        self.results["score_start_index"] = int(test_start)
+        self.results["round_trip_cost_fraction"] = self.round_trip_cost_fraction
+        # This class predicts directions and grades endpoints/barriers. It does not execute
+        # the server's quality gates, position sizing, latency, book fills or exit policy, so
+        # no caller may self-declare an exact-policy replay by passing a flattering string.
+        self.results["valid_for_promotion"] = False
+        self.results["promotion_block_reason"] = (
+            "Backtester is probability-only; it does not execute the complete production "
+            "decision/execution policy")
         return self.results
 
     def _compute_metrics(self, preds, actuals, returns, horizon: int = None) -> dict:
@@ -417,7 +449,7 @@ class Backtester:
 
         # Trading metrics. Convert gross directional return to a rough net return
         # by subtracting round-trip cost, so PF/Sharpe are not inflated by sub-cost moves.
-        cost = float(os.environ.get("BTC_BACKTEST_COST_FLOOR", os.environ.get("BTC_LABEL_COST_FLOOR", "0.0008")))
+        cost = float(getattr(self, "round_trip_cost_fraction", 0.0008))
         wins = 0
         losses = 0
         trade_returns = []

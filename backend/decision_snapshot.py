@@ -42,7 +42,8 @@ except Exception:
 #: new read of live state is a KeyError at test time rather than a silent race in production.
 SNAPSHOT_KEYS = (
     "klines", "order_flow", "derivatives", "sentiment", "regime_info",
-    "regime_model_weights", "regime_calibration", "confidence_calibrators",
+    "regime_model_weights", "regime_model_weights_by_horizon",
+    "regime_calibration", "confidence_calibrators",
     "signal_policy", "feature_parity",
     # P0-6. Read by apply_live_quality_filters, which now runs off this snapshot rather than
     # the live global. They are listed because `.get()` on a missing key does NOT raise - it
@@ -171,6 +172,7 @@ def selftest() -> int:
         "sentiment": {"fgi": 55},
         "regime_info": {"regime": "RANGE"},
         "regime_model_weights": {"xgb": 0.4},
+        "regime_model_weights_by_horizon": {"5": {"RANGE": {"xgb": 0.7}}},
         "confidence_calibrators": {"5": "calibrator"},
         "signal_policy": {"min_conf": 0.6},
         "regime_calibration": {}, "feature_parity": {},
@@ -178,6 +180,8 @@ def selftest() -> int:
     snap = build(live, 1_000)
 
     check(set(SNAPSHOT_KEYS).issubset(snap.keys()), "every key inference reads is captured")
+    check(snap["regime_model_weights_by_horizon"]["5"]["RANGE"]["xgb"] == 0.7,
+          "horizon-specific regime weights survive the immutable decision snapshot")
     check(snap["decision_id"] and len(snap["decision_id"]) == 16,
           "the decision carries a content-addressed id")
 

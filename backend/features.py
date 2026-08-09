@@ -1678,8 +1678,9 @@ def build_sequences(
     #:   ENDPOINT_SETTLEMENT_V1          three classes with an adaptive volatility band. The
     #:                                   band is the region a Binance perp trade does not
     #:                                   clear its costs.
-    #:   POLYMARKET_BINARY_SETTLEMENT_V1 two classes, strict comparison, no band. This is how
-    #:                                   the venue actually pays. At a realistic band the two
+    #:   ROLLING_EXCHANGE_RETURN_SIGN_V1 two classes, endpoint comparison, no band. Under the
+    #:                                   verified default rule a tie resolves UP. This proxy is
+    #:                                   not market-anchor settlement truth. At a realistic band the two
     #:                                   disagree on ~68% of endpoints - each one a real
     #:                                   payout the banded contract calls NEUTRAL.
     #:
@@ -1732,8 +1733,8 @@ def build_sequences(
                 Ysettle[_ENDPOINT_V1][h][row, 0] = 1.0
             else:
                 Ysettle[_ENDPOINT_V1][h][row, 1] = 1.0
-            # Binary: strict comparison, columns [DOWN, UP], no band and no tie column. A tie
-            # resolves DOWN by the venue's rule, which label_polymarket_binary owns.
+            # Binary proxy: columns [DOWN, UP], no band and no tie column. The comparator and
+            # tie outcome come from the verified settlement rule; the default resolves ties UP.
             Ysettle[_BINARY_V1][h][row, 1 if _label_binary(current_price, settle_price) == _UP
                                    else 0] = 1.0
 

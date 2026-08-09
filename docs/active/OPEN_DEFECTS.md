@@ -1,6 +1,7 @@
 # OPEN DEFECTS AND FUTURE FIXES
 
-Status of every known defect. **Updated 2026-08-09. HEAD at time of writing: `971ad39`.**
+Status of every known defect. **Updated 2026-08-09. Base HEAD: `4907ada`; current working-tree
+remediation is documented in `CORRECTNESS_EVIDENCE_REMEDIATION_2026-08-09.md`.**
 
 > **READ `SESSION_MASTER_RECORD_2026-08-09.md` FIRST.** The 2026-08-08/09 audit closed ~35
 > defects across six scans and measured seven alpha lanes to negative results. Three facts
@@ -47,7 +48,10 @@ Worst exactly where late-round information is worth most. No retraining or recal
 repairs a backwards label.
 
 - **FIXED** — the label logic: `backend/polymarket/round_truth.py` (21 checks, 7/0 mutation).
-- **OPEN** — the capture/backfill path. Nothing writes those rows yet.
+- **PARTIAL** — the live recorder now captures market-specific terms, official outcomes and
+  generic Chainlink RTDS reference updates, and writes strict truth/checkpoint rows only when
+  exact 30s/60s TWAP boundaries reconcile. Authenticated sponsored-TWAP ingestion/backfill is
+  still external-data gated; generic RTDS is deliberately inadmissible.
 
 ### Backfill is probably possible (correction, 2026-08-06)
 
@@ -110,10 +114,10 @@ winners, two winners, or unexpected labels. 4/0 mutation.
 
 **The boundary-report selection rule is an empirical contract question**, not a preference.
 Data Streams reports carry `validFromTimestamp` and `observationsTimestamp`; a report 5s after
-a boundary may contain observations unavailable at it. The current
-`abs(source_ts - boundary) <= 5000` tolerance is too naive to be the final rule. Candidate
-policies are listed in `BOUNDARY_POLICIES` and must be tested against the venue's displayed
-Price to Beat and resolved outcomes, then frozen.
+a boundary may contain observations unavailable at it. Strict live truth now accepts only an
+exact source timestamp at the boundary. Candidate wider policies in `BOUNDARY_POLICIES` must be
+tested against the venue's displayed Price to Beat and resolved outcomes, then versioned and
+frozen before that exact-only rule can change.
 
 **Acceptance gate before training on backfilled rows:** reconstruct 500–1,000 resolved markets
 and require **>= 99.9%** derived-vs-official agreement, reported by month and by policy. Any
@@ -154,14 +158,15 @@ fallback invents a 0.2% range, and inventing barriers is as wrong as ignoring th
 requiring the two contracts to give DIFFERENT confusion matrices on the same data; a
 refusal-only test let a "grade by endpoint sign regardless of contract" mutant survive.
 `run()` had always accepted highs/lows — the path was passed and ignored.
-**P0-8B — OPEN — wrong model under evaluation.** A contract-correct RandomForest backtest is
-still a backtest of a RandomForest, not of the seven seats + OOF stacker + regime routing +
-bundle-bound HMM + calibrators + conformal objects + decision policy. Needs a `BacktestSpec`
-declaring `model_kind` (PRODUCTION_BUNDLE_REPLAY / PRODUCTION_PIPELINE_WALK_FORWARD /
-SURROGATE_RESEARCH_ONLY), with surrogate results printing
-`THIS DOES NOT EVALUATE THE SERVED ENSEMBLE`.
+**P0-8B — SAFETY FIXED; exact replay remains open.** Replay results now declare `model_kind`
+and the server's persisted-bundle path is named
+`PRODUCTION_BASE_RANGE_REPLAY_RESEARCH_ONLY`. Every result is non-promotable and states that
+the full served policy was not evaluated. A true production-pipeline walk-forward replay is
+still a separate build.
 
-**P0-8C — OPEN — execution-policy parity.** Neither path replays the decision policy.
+**P0-8C — FAIL-CLOSED; exact replay remains open.** The backtest cannot promote, and Binance
+`model_consensus:paper-v2` refuses entry without a matching exact-policy clustered lower-value
+bound. The producer for that bound is not yet built.
 
 **P0-14 — PARTIALLY FIXED 2026-08-06 — two calibration systems disagree.**
 `PrecisionEngine` defines correct as `sign(actual_move)` regardless of the prediction's

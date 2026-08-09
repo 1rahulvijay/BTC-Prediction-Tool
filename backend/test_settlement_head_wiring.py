@@ -102,6 +102,9 @@ def main() -> int:
     # ---- failure must ABSTAIN, never substitute ---------------------------------------
     check("SettlementHeadUnavailable" in server_code,
           "the server handles the unavailable case explicitly")
+    check("groups=_settlement_groups" in server_code.replace(" ", ""),
+          "the server passes horizon-specific sequence-plus-outcome dependence blocks, so "
+          "confidence bounds do not treat overlapping one-minute rows as separate trials")
     settle_block = server_code[server_code.index("train_settlement_head"):]
     settle_block = settle_block[:4000]
     check("target_model.train" not in settle_block.split("settlement_head")[0][:200],
@@ -114,7 +117,7 @@ def main() -> int:
     threshold = float(probe[pad])
 
     rng = np.random.default_rng(7)
-    n = 2600
+    n = 3600
     # A drifting series so endpoint labels carry both classes, with intrabar extremes that
     # make first-touch and endpoint genuinely disagree on some rows.
     steps = rng.normal(0, threshold * 0.9, n)
@@ -162,7 +165,8 @@ def main() -> int:
     # (NEUTRAL folded into DOWN): the disagreement rates stay high and no row reads NEUTRAL.
     # A mutation doing exactly that survived. The only assertion that catches it is comparing
     # against `label_polymarket_binary` applied to the same entry/settle prices, so the label
-    # is pinned to the strict comparison rather than to a plausible-looking distribution.
+    # is pinned to the rule object's verified comparator rather than to a plausible-looking
+    # distribution.
     #
     # Entry is closes[i] and settlement is closes[min(i + h, len - 1)], matching
     # build_sequences: row r corresponds to i = lookback + r.
@@ -186,12 +190,20 @@ def main() -> int:
           "substitution that satisfies every rate-based check while being wrong")
 
     split = int(len(X) * 0.8)
-    bundle = train_settlement_head(X, Ybinary, split, horizons=[horizon])
+    # One dependence block per non-overlapping sequence-plus-horizon window. The production
+    # server derives these from wall-clock timestamps; the synthetic fixture is one row/minute.
+    groups = {horizon: np.arange(len(X), dtype=np.int64) // (pad + horizon)}
+    bundle = train_settlement_head(
+        X, Ybinary, split, horizons=[horizon], groups=groups,
+    )
     check(bundle["target_contract"] == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,
           "the head fitted from REAL build_sequences output carries the BINARY contract")
 
     probability = settlement_probability(bundle, X[split].reshape(-1), horizon)
     check(0.0 <= probability["p_up"] <= 1.0, "and yields a probability in [0, 1]")
+    check(probability.get("uncertainty_method") == "group_bootstrap_95"
+          and probability.get("confidence_lower_95") is not None,
+          "and exposes an empirical lower confidence bound from grouped dependence blocks")
     check(tc.assert_admissible(tc.PROXY_SETTLEMENT_RESEARCH,
                                probability["target_contract"])
           == tc.ROLLING_EXCHANGE_RETURN_SIGN_V1,

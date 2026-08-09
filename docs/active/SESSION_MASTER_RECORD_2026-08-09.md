@@ -3,6 +3,11 @@
 One document for the whole session. Twenty-six commits, six audit scans, nine research studies,
 one new recorder. Everything below is measured, and every claim has a script that reproduces it.
 
+**Post-audit remediation:** see
+`CORRECTNESS_EVIDENCE_REMEDIATION_2026-08-09.md` for the later regime-snapshot repair,
+grouped settlement uncertainty, non-promotable replay contract, exact-policy Binance paper gate,
+market-specific Polymarket TWAP truth quarantine, and recorder-health visibility.
+
 **The two things worth knowing first:**
 
 1. **The app has served no prediction since 2026-07-04.** The saved bundle is refused for
