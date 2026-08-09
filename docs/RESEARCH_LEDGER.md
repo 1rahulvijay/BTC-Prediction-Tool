@@ -1674,6 +1674,18 @@ Canonical detail and all 46 conclusions:
 
 ---
 
+## Sections 15-23 — the 2026-08-08/09 lane sweep
+
+Nine studies run in two days. **Seven alpha lanes measured, seven closed** — five on execution
+economics (fee curve, spread crossed twice, queue, adverse selection), two on the absence of
+information (the barrier geometry is a martingale, and no observable state changes that). One
+new recorder built to unblock the single remaining question.
+
+Consolidated account, including the ~35 code defects fixed alongside them and the traps found
+inside the studies themselves: `docs/active/SESSION_MASTER_RECORD_2026-08-09.md`.
+
+---
+
 ## 15. The served lean has no edge on the venue's own question — `2026-08-08`
 
 Every other accuracy number here is graded under the *training* contract. `price_to_beat`

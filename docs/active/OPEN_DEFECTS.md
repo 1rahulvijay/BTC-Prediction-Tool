@@ -1,6 +1,19 @@
 # OPEN DEFECTS AND FUTURE FIXES
 
-Status of every known defect. Updated 2026-08-08. HEAD at time of writing: `34ee2d6`.
+Status of every known defect. **Updated 2026-08-09. HEAD at time of writing: `971ad39`.**
+
+> **READ `SESSION_MASTER_RECORD_2026-08-09.md` FIRST.** The 2026-08-08/09 audit closed ~35
+> defects across six scans and measured seven alpha lanes to negative results. Three facts
+> change how everything below should be read:
+>
+> 1. **The app has served no prediction since 2026-07-04 10:44.** The saved bundle is refused
+>    for having no identity manifest — correct behaviour, and only a retrain fixes it honestly.
+> 2. **Three fixes committed during that audit were themselves defective**, caught by the next
+>    scan. A `FIXED` row here means a mutation-tested regression exists, not that the fix was
+>    later re-audited.
+> 3. **Scan 6 raised 34 further claims; 7 were confirmed and fixed, 26 remain uninvestigated**
+>    — including release-scoped adaptation, the paper close/reversal lifecycle, and the
+>    meta-model profitability target. They are NOT represented in the P0/P1 sections below.
 
 **2026-08-08 sweep.** Three entries below were STALE — P0-4, P0-10 and the P0-14
 blocker were all fixed while this file still listed them open. A defect register that is
