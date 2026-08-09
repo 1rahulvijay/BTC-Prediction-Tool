@@ -321,7 +321,10 @@ def current_training_identity(
         if feature_names is not None
         else matrix_manifest.get("feature_schema_hash")
     )
-    code_files = list(code_paths or [])
+    # Same shape as feature_schema_hash above: `or` on a non-list iterable either raises
+    # (pandas) or, worse, consumes a generator and silently records ZERO code files - a
+    # training identity asserting no semantic source was hashed. Explicit None check instead.
+    code_files = [] if code_paths is None else [str(path) for path in code_paths]
     runtime_versions = model_runtime_versions()
 
     # ---- THE SERVING CONTRACT -------------------------------------------------------------

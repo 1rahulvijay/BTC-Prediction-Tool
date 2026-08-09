@@ -69,6 +69,16 @@ def main() -> int:
           "reordered names hash DIFFERENTLY - column order is part of the contract a model "
           "was trained under, not an incidental detail")
 
+    # The SAME defect sat one function away: `list(code_paths or [])` in the training
+    # identity. A generator there does not raise - it records ZERO code files, so the identity
+    # asserts no semantic source was hashed while looking complete.
+    from artifact_identity import current_training_identity as cti
+    import inspect
+    src = inspect.getsource(cti)
+    check("or []" not in src.split("code_files")[1][:120],
+          "current_training_identity no longer uses `or []` for code_paths - a generator "
+          "there would silently record an empty code hash rather than raising")
+
     print("")
     print(f"FEATURE SCHEMA HASH CONTAINERS: PASS ({CHECKS} checks)")
     return 0
