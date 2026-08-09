@@ -130,7 +130,24 @@ def feature_schema_hash(feature_names: Iterable[str] | None) -> str:
 
 
 def configured_model_training_days() -> int | None:
-    """Return the optional model span, independent of live boot-candle history."""
+    """Was an EXPLICIT model-span override set? `None` means "nobody said", not "zero days".
+
+    NEVER pass this into `current_training_identity`. It answers a different question from
+    `resolve_history_days`, and the difference is a silent hole:
+
+        save  ->  resolve_history_days()          env x3 -> matrix manifest -> 60, never None
+        load  ->  configured_model_training_days() ONE env var, else None
+
+    and `artifact_compatibility` SKIPS any expected key that is None. So a bundle stamped
+    requested_days=1000 loaded into a process where BTC_MODEL_TRAINING_DAYS happened to be
+    unset did not fail the window check - the check silently ceased to exist, which is the
+    "absent reads as pass" defect this module exists to prevent. Reached whenever the server
+    is started by anything other than start.bat, since only the launcher sets that variable;
+    `HISTORY_DAYS_ENV_ORDER` below already calls that "a convention, not a control".
+
+    Use `resolve_history_days()` for identity. Use this only to ask whether an operator set
+    the override, which is what it was written for.
+    """
     raw = os.environ.get("BTC_MODEL_TRAINING_DAYS")
     try:
         return int(raw) if raw else None
@@ -530,6 +547,40 @@ def write_artifact_manifest(
     return path
 
 
+#: The identity fields `artifact_compatibility` compares. Declared at module scope so
+#: `unverifiable_identity_keys` reports on the SAME list the comparison walks, rather than a
+#: copy that can drift away from it.
+COMPARED_IDENTITY_KEYS = (
+    "requested_days",
+    "matrix_requested_days",
+    "actual_start_ts_ms",
+    "actual_end_ts_ms",
+    "actual_span_days",
+    "row_count",
+    "matrix_coverage_ok",
+    "matrix_monthly_quality_passed",
+    "training_data_hash",
+    "source_manifest_hash",
+    "feature_schema_hash",
+    "code_hash",
+    "runtime_dependency_hash",
+)
+
+
+def unverifiable_identity_keys(expected: dict[str, Any]) -> list[str]:
+    """Which compared keys will be SKIPPED because the expected side is None.
+
+    `artifact_compatibility` cannot refuse on these - several are legitimately absent (a matrix
+    manifest that records no row_count, for instance), and failing closed on all of them would
+    reject every honest bundle on disk today. But a skipped check that leaves no trace is
+    indistinguishable from a passed one, and that is what let the requested_days hole sit open.
+
+    So the skip stays and becomes VISIBLE: callers log what they could not establish instead of
+    implying they established it.
+    """
+    return [key for key in COMPARED_IDENTITY_KEYS if expected.get(key) is None]
+
+
 def artifact_compatibility(
     artifact_path: str | os.PathLike[str],
     expected: dict[str, Any],
@@ -542,22 +593,7 @@ def artifact_compatibility(
         return (not strict, ["missing artifact manifest"])
 
     reasons: list[str] = []
-    keys = (
-        "requested_days",
-        "matrix_requested_days",
-        "actual_start_ts_ms",
-        "actual_end_ts_ms",
-        "actual_span_days",
-        "row_count",
-        "matrix_coverage_ok",
-        "matrix_monthly_quality_passed",
-        "training_data_hash",
-        "source_manifest_hash",
-        "feature_schema_hash",
-        "code_hash",
-        "runtime_dependency_hash",
-    )
-    for key in keys:
+    for key in COMPARED_IDENTITY_KEYS:
         expected_value = expected.get(key)
         if expected_value is None:
             continue
@@ -616,7 +652,10 @@ def artifact_matches_current_training(
             "BTC_STRICT_ARTIFACT_IDENTITY", "1"
         ).strip().lower() not in ("0", "false", "no")
     if requested_days is None:
-        requested_days = configured_model_training_days()
+        # resolve_history_days, NOT configured_model_training_days: the latter returns None
+        # when BTC_MODEL_TRAINING_DAYS is unset, and a None expected value makes
+        # artifact_compatibility SKIP the window check rather than fail it.
+        requested_days = resolve_history_days()
     expected = current_training_identity(requested_days=requested_days)
     return artifact_compatibility(
         artifact_path, expected, strict=bool(strict)
@@ -632,6 +671,16 @@ def selftest() -> None:
         assert configured_model_training_days() is None
         os.environ["BTC_MODEL_TRAINING_DAYS"] = "1265"
         assert configured_model_training_days() == 1265
+
+        # THE ASYMMETRY THAT OPENED THE HOLE. With only BTC_HISTORICAL_DAYS set, the narrow
+        # resolver answers None and the canonical one answers 3. A None expected value makes
+        # artifact_compatibility SKIP the window comparison, so the check does not fail - it
+        # stops existing. Both ends of save/load must therefore use the canonical resolver.
+        os.environ.pop("BTC_MODEL_TRAINING_DAYS", None)
+        assert configured_model_training_days() is None
+        assert resolve_history_days() == 3, "canonical resolver always answers"
+        assert "requested_days" in unverifiable_identity_keys({"requested_days": None})
+        assert "requested_days" not in unverifiable_identity_keys({"requested_days": 3})
     finally:
         if old_boot_days is None:
             os.environ.pop("BTC_HISTORICAL_DAYS", None)
@@ -665,6 +714,20 @@ def selftest() -> None:
         assert not ok and any(
             "runtime_dependency_hash mismatch" in reason for reason in reasons
         )
+        # A WRONG window is caught when the expected side answers...
+        wrong_window = {**identity, "requested_days": 1000}
+        ok, reasons = artifact_compatibility(artifact, wrong_window)
+        assert not ok and any("requested_days mismatch" in reason for reason in reasons), \
+            "a 90d bundle must not satisfy a 1000d expectation"
+
+        # ...and SILENTLY ACCEPTED when it does not. This is the hole, asserted rather than
+        # described: same artifact, same disagreement, no complaint - because None skips.
+        blind_window = {**identity, "requested_days": None}
+        ok, reasons = artifact_compatibility(artifact, blind_window)
+        assert ok and not reasons, "None must skip - the reason the caller may never pass one"
+        assert "requested_days" in unverifiable_identity_keys(blind_window), \
+            "and the skip must be REPORTABLE, or it is indistinguishable from a pass"
+
         artifact.write_bytes(b"tampered")
         ok, reasons = artifact_compatibility(artifact, identity)
         assert not ok and "artifact hash mismatch" in reasons

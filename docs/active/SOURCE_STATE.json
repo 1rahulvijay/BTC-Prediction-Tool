@@ -195,7 +195,7 @@
     "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
     "backend/auto_finetune.py": "8326f1e4ab48047d56c06090f853d8ef92dd70ea2d143907a340e50edb615040",
     "backend/features.py": "3fda9238456461b8142e28c5d04e241fcbb3ac8608d26a2e0812a9c4eda5ae8f",
-    "backend/model.py": "2324db1454353bd5730a6149be976a127676bc053a3a64aa2743922d09dc8926",
+    "backend/model.py": "9e8bd71286022d840eabcd91614f6dac7e088d3d2997a2322c62c8a7dcee1d2d",
     "backend/model_registry.py": "22ec0377c8c7f143c4dd0299eb3a16e8fe5bdd28762f70417e0b14700963b2ca",
     "backend/settlement_head.py": "8d317652785d0b024e54f751b2353b5da827ca267104e8dd220b281d44da0e36",
     "backend/target_contract.py": "4b29e1ca7e1f7e714fba0bce685af0113e272ad9dfd790924046154e6a67c3ce",

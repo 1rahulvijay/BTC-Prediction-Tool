@@ -33,11 +33,12 @@ from model_contract import (
 from artifact_identity import (
     artifact_compatibility,
     artifact_manifest_path,
-    configured_model_training_days,
     current_training_identity,
     executed_training_identity,
     resolve_history_days,
+    resolve_history_days_verbose,
     training_identity_issues,
+    unverifiable_identity_keys,
     write_artifact_manifest,
 )
 
@@ -3674,11 +3675,27 @@ class MultiModelEnsemble:
                 )
                 self.load_refusal = "no_identity_manifest:provenance_unprovable"
                 return False
+            # SAVE resolves the window with resolve_history_days (env x3 -> matrix manifest ->
+            # 60). LOAD used configured_model_training_days, which reads one env var and
+            # returns None otherwise - and artifact_compatibility SKIPS a None expected value.
+            # So outside start.bat, the only place that sets BTC_MODEL_TRAINING_DAYS, the
+            # window check silently ceased to exist instead of failing. Both ends now resolve
+            # identically. A malformed override raises here and is caught below as a refusal,
+            # which is the correct outcome: refusing to guess a training window.
+            requested_days, days_source = resolve_history_days_verbose()
             expected_identity = current_training_identity(
-                requested_days=configured_model_training_days(),
+                requested_days=requested_days,
                 feature_names=self.model_feature_names,
                 code_paths=SEMANTIC_CODE_PATHS(),
             )
+            unverifiable = unverifiable_identity_keys(expected_identity)
+            if unverifiable:
+                # A skipped check that leaves no trace is indistinguishable from a passed one.
+                logger.warning(
+                    "[MODEL LOAD] Identity fields NOT verifiable (expected side is None): %s"
+                    " - these were not checked, not passed.", ", ".join(unverifiable),
+                )
+            logger.info("[MODEL LOAD] Training window %sd from %s", requested_days, days_source)
             compatible, incompatibilities = artifact_compatibility(
                 model_dir, expected_identity, strict=strict_identity
             )

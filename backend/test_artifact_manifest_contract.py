@@ -145,6 +145,46 @@ def main() -> int:
             f"'{legacy}' is still present for existing readers (artifact_compatibility, the "
             f"oracle freeze)")
 
+    print("\nsave and load resolve the training window the SAME way")
+    # Asserted on CALL NODES, not on source text. Both files now carry comments that name
+    # `configured_model_training_days` while explaining why it must not be used here, so a
+    # substring search would be satisfied by the very documentation of the fix - the trap this
+    # repo has already sprung several times.
+    import ast as _ast
+
+    def _called_names(path, func_name=None):
+        tree = _ast.parse(Path(path).read_text(encoding="utf-8"))
+        scope = tree
+        if func_name:
+            scope = next((n for n in _ast.walk(tree)
+                          if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+                          and n.name == func_name), None)
+        return {n.func.id for n in _ast.walk(scope)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)} if scope else set()
+
+    backend_dir = Path(__file__).resolve().parent
+    load_calls = _called_names(backend_dir / "model.py", "load_models")
+    chk("configured_model_training_days" not in load_calls,
+        "the model LOAD path does not call configured_model_training_days - it returns None "
+        "when BTC_MODEL_TRAINING_DAYS is unset, and a None expected value makes "
+        "artifact_compatibility SKIP the window check instead of failing it")
+    chk("resolve_history_days_verbose" in load_calls,
+        "it calls the canonical resolver instead, the same one the SAVE path uses, so the two "
+        "ends cannot disagree about which window the bundle belongs to")
+    chk("unverifiable_identity_keys" in load_calls,
+        "and it reports which identity fields could NOT be verified - a skipped check that "
+        "leaves no trace is indistinguishable from a passed one")
+    _full = {key: "set" for key in AI.COMPARED_IDENTITY_KEYS}
+    chk(AI.unverifiable_identity_keys(_full) == [],
+        "a fully-populated expected identity has nothing unverifiable")
+    chk(AI.unverifiable_identity_keys({**_full, "requested_days": None}) == ["requested_days"],
+        "an explicit None is named as unverifiable")
+    chk("row_count" in AI.unverifiable_identity_keys({k: v for k, v in _full.items()
+                                                     if k != "row_count"}),
+        "and so is an ABSENT key - absent is unproven, never a pass")
+    chk(set(AI.COMPARED_IDENTITY_KEYS) >= {"requested_days", "code_hash", "training_data_hash"},
+        "and it reports on the SAME key list artifact_compatibility walks, not a copy")
+
     print("\nARTIFACT MANIFEST CONTRACT:", "PASS" if _OK else "FAIL")
     return 0 if _OK else 1
 

@@ -27,6 +27,7 @@ from artifact_identity import (  # noqa: E402
     artifact_matches_current_training,
     configured_model_training_days,
     current_training_identity,
+    resolve_history_days_verbose,
     training_identity_issues,
 )
 from model_registry import REGISTRY  # noqa: E402
@@ -57,10 +58,15 @@ def main() -> int:
     env_strict = os.environ.get("BTC_STRICT_ARTIFACT_IDENTITY", "1").lower() not in ("0", "false", "no")
     strict = True if a.strict else env_strict
 
-    days = configured_model_training_days()
+    # Was labelled BTC_HISTORICAL_DAYS while reading BTC_MODEL_TRAINING_DAYS - the wrong
+    # variable named in the one tool an operator opens to debug a window mismatch. It now
+    # resolves the window the same way save and load do, and prints WHERE it came from.
+    days, days_source = resolve_history_days_verbose()
     print("=" * 88)
     print("ARTIFACT IDENTITY STATUS")
-    print(f"  BTC_HISTORICAL_DAYS            {days or '(unset)'}")
+    print(f"  training window                {days}d (source: {days_source})")
+    print(f"  BTC_MODEL_TRAINING_DAYS        "
+          f"{configured_model_training_days() or '(unset)'}")
     print(f"  BTC_STRICT_ARTIFACT_IDENTITY   {'1 (enforcing)' if env_strict else '0 (not enforcing)'}")
     print(f"  evaluating as                  strict={strict}")
     print("=" * 88)
