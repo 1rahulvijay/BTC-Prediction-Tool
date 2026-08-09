@@ -4927,14 +4927,33 @@ async def main_loop():
             # Record predictions per-horizon cadence
             now_ms = int(time.time() * 1000)
             if predictions:
-                current_price = data_state["klines"][-1]["close"]
+                # P0-6 (2026-08-09). THE FROZEN DECISION PRICE, not the live global.
+                #
+                # This re-read `data_state["klines"][-1]["close"]` AFTER two suspension
+                # points - the per-horizon inference executor and the revision-ledger write -
+                # so a WebSocket callback could move the price between the moment the model
+                # decided and the moment that decision was recorded. The entry price persisted
+                # for every prediction was then one the model never saw.
+                #
+                # Lines 4760/4832/4889 already read the frozen value; this consumer was the
+                # one that reverted to the live global, which is why the earlier snapshot fix
+                # looked complete. It corrupts realized move, target error, forward-EV entry
+                # economics and eventual training feedback - manufacturing or destroying
+                # apparent alpha depending only on which way price happened to tick.
+                current_price = float(decision_state["decision_price"])
                 # Use the real Chainlink/CoinGecko oracle price as the reference when it
                 # has reported; fall back to the Binance close only while the oracle is
                 # cold. Previously reference_price was hardcoded to current_price, so the
                 # DuckDB `chainlink_price` column silently stored Binance prices —
                 # corrupting any Chainlink-vs-Binance reconciliation and disagreeing with
                 # price-to-beat (which already uses the oracle/fallback).
-                _cl = data_state.get("chainlink_price")
+                #
+                # Taken from the SAME frozen view for the same reason; falls back to the live
+                # value only if the snapshot did not carry one, so the oracle reference cannot
+                # come from a later instant than the price it is reconciled against.
+                _cl = decision_state.get("chainlink_price")
+                if _cl is None:
+                    _cl = data_state.get("chainlink_price")
                 reference_price = float(_cl) if _cl else current_price
                 _feature_logged = False  # B1: log the vector once per recording cycle
                 for p in predictions:
