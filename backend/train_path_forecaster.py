@@ -172,19 +172,29 @@ def train():
         # -> fit+cal = sf = 98% TRAINING, test = 2%. Matches the direction ensemble + keeper heads.
         _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
         n = len(d); a, b = int(n * (2 * _sf - 1)), int(n * _sf)
-        Xtr, Xcal, Xte = X[:a], X[a:b], X[b:]
+        # PURGE every boundary by the label horizon. Each target here reads FORWARD h bars
+        # (_future_hl spans t..t+h, net is close[t+h]), so a row at index i encodes prices
+        # through i+h. Adjacent slices therefore shared prices across all three boundaries:
+        # the last h fit rows were built from calibration-span prices, the last h calibration
+        # rows from test-span prices. Chronological ordering does not remove that overlap.
+        # TRAIN and CAL give up rows at their own ends; TEST keeps every row, because
+        # shrinking the scored side is how a purge turns into a better-looking number.
+        _pg = int(h)
+        a_end = max(1, a - _pg)
+        b_end = max(a_end + 1, b - _pg)
+        Xtr, Xcal, Xte = X[:a_end], X[a:b_end], X[b:]
         hz = {"qhi": {}, "qlo": {}, "touch": {}, "conformal": {}, "metrics": {}}
         for q in QUANTILES:
-            hz["qhi"][q] = _fit_all(_q_models(q), Xtr, yu[:a])
-            hz["qlo"][q] = _fit_all(_q_models(q), Xtr, yd[:a])
+            hz["qhi"][q] = _fit_all(_q_models(q), Xtr, yu[:a_end])
+            hz["qlo"][q] = _fit_all(_q_models(q), Xtr, yd[:a_end])
         # conformal on the ensemble-averaged [0.25,0.75] band
-        e_up = np.maximum(ens_pred(hz["qhi"][0.25], Xcal) - yu[a:b], yu[a:b] - ens_pred(hz["qhi"][0.75], Xcal))
-        e_dn = np.maximum(ens_pred(hz["qlo"][0.25], Xcal) - yd[a:b], yd[a:b] - ens_pred(hz["qlo"][0.75], Xcal))
+        e_up = np.maximum(ens_pred(hz["qhi"][0.25], Xcal) - yu[a:b_end], yu[a:b_end] - ens_pred(hz["qhi"][0.75], Xcal))
+        e_dn = np.maximum(ens_pred(hz["qlo"][0.25], Xcal) - yd[a:b_end], yd[a:b_end] - ens_pred(hz["qlo"][0.75], Xcal))
         hz["conformal"] = {"up": float(np.quantile(e_up, 0.5)), "dn": float(np.quantile(e_dn, 0.5))}
 
         def _clf_target(yt, key):
-            models = _fit_all(_clf_models(), Xtr, yt[:a])
-            iso = _fit_iso(ens_proba(models, Xcal), yt[a:b])
+            models = _fit_all(_clf_models(), Xtr, yt[:a_end])
+            iso = _fit_iso(ens_proba(models, Xcal), yt[a:b_end])
             try:
                 auc = roc_auc_score(yt[b:], ens_proba(models, Xte))
             except ValueError:
@@ -203,10 +213,10 @@ def train():
         hz["touch_early"] = _clf_target(
             ((yeu_bps >= early_bps) | (yed_bps >= early_bps)).astype(int), "touch_early")
         # |net move| magnitude (size, not sign)
-        nm_models = _fit_all(_reg_models(), Xtr, np.abs(ynet[:a]))
+        nm_models = _fit_all(_reg_models(), Xtr, np.abs(ynet[:a_end]))
         pred_nm = ens_pred(nm_models, Xte); ytr_nm = np.abs(ynet[b:])
         mse_nm = np.mean((ytr_nm - pred_nm) ** 2)
-        mse_base = np.mean((ytr_nm - np.abs(ynet[:a]).mean()) ** 2)
+        mse_base = np.mean((ytr_nm - np.abs(ynet[:a_end]).mean()) ** 2)
         hz["net_mag"] = {"models": nm_models, "skill": float(1 - mse_nm / (mse_base + 1e-30)),
                          "mae": float(np.mean(np.abs(ytr_nm - pred_nm)))}
         # coverage check
@@ -214,6 +224,7 @@ def train():
                                  (yu[b:] <= ens_pred(hz["qhi"][0.75], Xte) + hz["conformal"]["up"])))
         cov_low = float(np.mean((yd[b:] >= ens_pred(hz["qlo"][0.25], Xte) - hz["conformal"]["dn"]) &
                                 (yd[b:] <= ens_pred(hz["qlo"][0.75], Xte) + hz["conformal"]["dn"])))
+        hz["purge_bars"] = _pg
         hz["metrics"] = {"band_coverage": float((cov_high + cov_low) / 2.0),
                          "high_band_coverage": cov_high, "low_band_coverage": cov_low,
                          "touch_auc": {l: hz["touch"][l]["auc"] for l in TOUCH_USD},
@@ -232,16 +243,19 @@ def train():
         _gate = (hz["metrics"]["touch_auc"].get(50.0, 0.0) >= 0.65
                  and 0.35 <= hz["metrics"]["band_coverage"] <= 0.65)
         if _gate and os.environ.get("BTC_HEAD_REFIT_ALL", "1") != "0":
-            Xf, Xc = X[:b], X[b:]
+            # Same purge on the refit boundary: the served models must not be fit on rows
+            # whose labels are built from the conformal/isotonic span scored right after.
+            b_ref = max(1, b - _pg)
+            Xf, Xc = X[:b_ref], X[b:]
             for q in QUANTILES:
-                hz["qhi"][q] = _fit_all(_q_models(q), Xf, yu[:b])
-                hz["qlo"][q] = _fit_all(_q_models(q), Xf, yd[:b])
+                hz["qhi"][q] = _fit_all(_q_models(q), Xf, yu[:b_ref])
+                hz["qlo"][q] = _fit_all(_q_models(q), Xf, yd[:b_ref])
             e_up2 = np.maximum(ens_pred(hz["qhi"][0.25], Xc) - yu[b:], yu[b:] - ens_pred(hz["qhi"][0.75], Xc))
             e_dn2 = np.maximum(ens_pred(hz["qlo"][0.25], Xc) - yd[b:], yd[b:] - ens_pred(hz["qlo"][0.75], Xc))
             hz["conformal"] = {"up": float(np.quantile(e_up2, 0.5)), "dn": float(np.quantile(e_dn2, 0.5))}
 
             def _refit_clf(entry, yt):
-                models = _fit_all(_clf_models(), Xf, yt[:b])
+                models = _fit_all(_clf_models(), Xf, yt[:b_ref])
                 entry.update({"models": models, "iso": _fit_iso(ens_proba(models, Xc), yt[b:])})
 
             for dollars in TOUCH_USD:
@@ -250,8 +264,9 @@ def train():
             _refit_clf(hz["roundtrip"], ((yup_bps >= rt_bps) & (ydown_bps >= rt_bps)).astype(int))
             _refit_clf(hz["touch_asym"], ((yup_bps >= asym_hi_bps) & (ydown_bps >= asym_lo_bps)).astype(int))
             _refit_clf(hz["touch_early"], ((yeu_bps >= early_bps) | (yed_bps >= early_bps)).astype(int))
-            hz["net_mag"]["models"] = _fit_all(_reg_models(), Xf, np.abs(ynet[:b]))
+            hz["net_mag"]["models"] = _fit_all(_reg_models(), Xf, np.abs(ynet[:b_ref]))
             hz["refit_on_all"] = True
+            hz["refit_purge_bars"] = _pg
             print(f"[{h}m] production refit: models through {b:,}/{n:,} rows; "
                   f"conformal/iso on the freshest {n-b:,}", flush=True)
         else:

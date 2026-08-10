@@ -162,6 +162,9 @@ jobs:
       - name: Keeper heads purge the label horizon in the shared trainer
         run: python backend/test_keeper_head_purge.py
 
+      - name: Path head purges every split boundary by the label horizon
+        run: python backend/test_path_head_purge.py
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -920,6 +923,7 @@ jobs:
           python backend/test_feature_schema_hash_containers.py || exit /b 1
           python backend/test_champion_meta_split.py || exit /b 1
           python backend/test_keeper_head_purge.py || exit /b 1
+          python backend/test_path_head_purge.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1
