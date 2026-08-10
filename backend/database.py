@@ -2207,12 +2207,40 @@ def log_forward_ev_event(entry: dict):
     try:
         conn = _connect()
         conn.execute("""
-            INSERT OR REPLACE INTO forward_ev_ledger
+            INSERT INTO forward_ev_ledger
             (id, prediction_id, source, timestamp, horizon, entry_price, target_price,
              expected_move, confidence, raw_direction, final_direction, trade_verdict,
              action, notional_usd, fee_bps, slippage_bps, no_trade_reasons_json,
              setup_quality_json, resolved)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+            -- Insert-only for RESOLVED rows. This was INSERT OR REPLACE, naming 19 columns
+            -- and hard-coding resolved = FALSE, so re-logging an id reverted resolved_at and
+            -- outcome_status to their defaults and drove a settled ledger entry back to
+            -- PENDING. Same defect repaired in log_price_to_beat; forward EV is the economic
+            -- record a promotion gate reads, so losing a terminal state here is not cosmetic.
+            --
+            -- The conflict update touches PREDICTION fields only, so an entry still in flight
+            -- can be corrected; resolved, resolved_at and outcome_status appear in no SET
+            -- clause and the WHERE makes a settled row immutable outright.
+            ON CONFLICT (id) DO UPDATE SET
+                prediction_id = excluded.prediction_id,
+                source = excluded.source,
+                timestamp = excluded.timestamp,
+                horizon = excluded.horizon,
+                entry_price = excluded.entry_price,
+                target_price = excluded.target_price,
+                expected_move = excluded.expected_move,
+                confidence = excluded.confidence,
+                raw_direction = excluded.raw_direction,
+                final_direction = excluded.final_direction,
+                trade_verdict = excluded.trade_verdict,
+                action = excluded.action,
+                notional_usd = excluded.notional_usd,
+                fee_bps = excluded.fee_bps,
+                slippage_bps = excluded.slippage_bps,
+                no_trade_reasons_json = excluded.no_trade_reasons_json,
+                setup_quality_json = excluded.setup_quality_json
+            WHERE forward_ev_ledger.resolved = FALSE
         """, (
             entry.get("id"),
             entry.get("prediction_id"),

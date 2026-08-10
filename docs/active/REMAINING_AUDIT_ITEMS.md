@@ -104,3 +104,39 @@ how much to trust the numbers afterward and how the paper lane behaves.
   measured **worse** (t3 fired 17.9% vs 11.0% against a 10% nominal). It was shipped, measured,
   and reverted. `test_keeper_head_purge.py` re-measures both bases so the same argument cannot
   re-apply the same regression.
+
+---
+
+## Pre-retrain blockers (added 2026-08-10, from the `3c78352` scan)
+
+Four items the latest scan calls blockers **before** the 1,000-day build, because each changes
+what a trained artifact is or how it is identified. NOT yet verified by me — confirm each
+before editing, the way every other entry here was confirmed.
+
+- **R1 — signed quantiles.** `train_signed_quantiles.py` fits q10/q50/q90 on the first 98%,
+  estimates the CQR widening on the last 2%, and reports `cov80_cqr` on that same 2%. The
+  coverage is ~80% by construction. Needs train → purge → calibration → purge → untouched
+  test, with the widening frozen on calibration and coverage measured only on test.
+- **R2 — magnitude quantiles.** `train_magnitude_quantiles.py` saves the whole head when only
+  q50 pinball beats a constant baseline, so q10/q90 can be useless and still serve the bands
+  used for stops and expected range. Gate each quantile against its own unconditional
+  baseline; add the horizon purge; guarantee q10 <= q50 <= q90 per served row or
+  monotone-project.
+- **R3 — per-head provenance.** `train_heads.py` stamps specialist artifacts with one generic
+  `current_training_identity()` derived from the research matrix, but persistence trains on
+  `persistence_dataset.parquet`, champion_meta on `champion_snapshots` + `price_to_beat`,
+  round_state on its own parquets. A manifest can therefore name a dataset the head never
+  read. Each trainer should emit its own source manifest and `train_heads` validate it. Also
+  make trainer import failure explicit (`TRAINER_IMPORT_FAILED`) rather than `None`, which is
+  currently indistinguishable from a legacy unversioned trainer.
+- **R4 — training-window namespace.** Keeper version tags derive from `BTC_HISTORICAL_DAYS` /
+  `BTC_BACKFILL_DAYS` rather than `BTC_MODEL_TRAINING_DAYS`. Harmless when all three are 1000,
+  but `start_instant.bat` deliberately sets `BTC_HISTORICAL_DAYS=3` with
+  `BTC_MODEL_TRAINING_DAYS=1000`, so identity becomes ambiguous. Small; do it now.
+
+R1 and R2 are the same class as the purges already fixed in the keeper and path heads —
+`test_path_head_purge.py` is the closest pattern to copy.
+
+**Retrain hygiene the scan recommends and I agree with:** freeze the commit SHA, train into a
+staging/challenger directory, never overwrite `saved_models` during the run, preserve the
+untouched holdouts, write manifests atomically.

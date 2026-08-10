@@ -44,7 +44,6 @@ TERMINAL_COLUMNS = (
 KNOWN_UNFIXED = {
     ("backend/database.py", "kronos_predictions"),
     ("backend/database.py", "model_predictions"),
-    ("backend/database.py", "forward_ev_ledger"),
     ("backend/database.py", "fsr_ppo_decisions"),
     ("backend/database.py", "ab_results"),
 }
@@ -110,7 +109,7 @@ def main() -> int:
           "price_to_beat - the round table holding 14,368 settled outcomes - is NOT among "
           "them; it is insert-only for resolved rows")
 
-    check(len(KNOWN_UNFIXED) <= 5,
+    check(len(KNOWN_UNFIXED) <= 4,
           f"the remaining debt is {len(KNOWN_UNFIXED)} statements and bounded - this list is "
           f"allowed to shrink, never grow")
 
