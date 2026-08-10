@@ -92,15 +92,26 @@ def _fit_iso_by_horizon(clf, ca: pd.DataFrame, feat_cols, min_rows=2000):
 
 
 def _join_keepers(df: pd.DataFrame) -> pd.DataFrame | None:
-    """Join the volatility keepers at each row's CURRENT minute. Returns None if the
+    """Join the volatility keepers at each row's PREVIOUS CLOSED minute. Returns None if the
     research matrix is absent (keeper model is then skipped — base model unaffected)."""
     mpath = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
     if not os.path.exists(mpath):
         return None
     m = pd.read_parquet(mpath, columns=["ts_ms"] + KEEPERS).replace([np.inf, -np.inf], np.nan)
     d = df.copy()
-    d["cur_min_ms"] = (((d["window_start_ms"] + d["seconds_elapsed"] * 1000) // 60000) * 60000).astype("int64")
-    out = d.merge(m.rename(columns={"ts_ms": "cur_min_ms"}), on="cur_min_ms", how="inner")
+    # THE PREVIOUS CLOSED MINUTE, not the minute the decision sits inside.
+    #
+    # A research-matrix row keyed to 12:30 describes the bar 12:30:00-12:30:59, and its high,
+    # low, close and volume are only known once that minute ENDS. Keying a decision made at
+    # 12:30:15 to that row fed the model 44 seconds of its own future - the keeper features
+    # already contained the move the label was about to measure. P(Hold) is the head the
+    # Polymarket path leans on hardest, so inflating it here inflates everything downstream.
+    #
+    # Stepping back one full minute is the causal choice: at 12:30:15 the newest bar that has
+    # actually closed is 12:29.
+    _decision_ms = d["window_start_ms"] + d["seconds_elapsed"] * 1000
+    d["feat_min_ms"] = (((_decision_ms // 60000) * 60000) - 60_000).astype("int64")
+    out = d.merge(m.rename(columns={"ts_ms": "feat_min_ms"}), on="feat_min_ms", how="inner")
     return out.dropna(subset=KEEPERS)
 
 
@@ -115,9 +126,24 @@ def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
     n = len(wins)
     _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)  # 98/2: fit+cal=sf, test=1-sf
     tr_cut, ca_cut = wins[int(n * (2 * _sf - 1))], wins[int(n * _sf)]
-    tr = kdf[kdf["window_start_ms"] < tr_cut]
-    ca = kdf[(kdf["window_start_ms"] >= tr_cut) & (kdf["window_start_ms"] < ca_cut)]
+    # PARTITION BY WHEN THE OUTCOME LANDS, not only by when the window opens.
+    #
+    # A round's label is decided at window_start + horizon. Splitting on window_start alone,
+    # a 15m round opening at 12:55 resolves at 13:10 - so with a 13:00 boundary its label was
+    # built from calibration-period prices while the row itself counted as training. The
+    # longer horizon leaks further, which is exactly backwards from what you want.
+    #
+    # A row joins a partition only if its outcome also COMPLETES inside it. Rows straddling a
+    # boundary are dropped from the earlier side; the test side is never trimmed, because
+    # shrinking the scored set is how a purge becomes a better-looking number.
+    _outcome_end = kdf["window_start_ms"] + kdf["horizon"].astype("int64") * 60_000
+    tr = kdf[(kdf["window_start_ms"] < tr_cut) & (_outcome_end <= tr_cut)]
+    ca = kdf[(kdf["window_start_ms"] >= tr_cut) & (kdf["window_start_ms"] < ca_cut)
+             & (_outcome_end <= ca_cut)]
     te = kdf[kdf["window_start_ms"] >= ca_cut]
+    print(f"[keeper] purged split: train={len(tr):,} cal={len(ca):,} test={len(te):,} "
+          f"(dropped {len(kdf) - len(tr) - len(ca) - len(te):,} rows whose outcome crossed a "
+          f"boundary)")
     KF = FEATURES + KEEPERS
     kclf = HistGradientBoostingClassifier(max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
                                           l2_regularization=0.1, random_state=42,
