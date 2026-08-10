@@ -140,6 +140,41 @@ def main() -> int:
           "while a head with a real untouched test reads MEASURED, so the flag distinguishes "
           "the two rather than being constant")
 
+    # 8. TARGET DEFINITION must come from the fitting span only.
+    #
+    # derive_buckets_bps computes the p75/p90/p97 that DECIDE what counts as a big move. Taken
+    # over the whole series, the held-out span helps define the target it is then scored on.
+    # Measured on the live 1,440,000-row matrix at split 0.98: p75 moved 12.33 -> 12.43 bps
+    # (+0.79%) and 0.26% of labels flipped. Small there only because the tail is 2% of rows;
+    # BTC_TRAIN_SPLIT_FRAC goes down to 0.50, where a third of the series would define its
+    # own labels. This check uses a series whose tail is deliberately violent, so a full-span
+    # threshold is visibly different from a train-only one.
+    calm = 100.0 + np.cumsum(rng.normal(0, 0.02, 4000))
+    wild = calm[-1] + np.cumsum(rng.normal(0, 2.0, 1000))     # tail with far larger moves
+    series = np.concatenate([calm, wild])
+    b_train = khl.derive_buckets_bps(series, horizons=(5,), fit_frac=0.80)
+    b_full = khl.derive_buckets_bps(series, horizons=(5,), fit_frac=1.0)
+    check(b_train[5][0] < b_full[5][0] * 0.9,
+          f"a violent held-out tail does NOT raise the train-only threshold "
+          f"({b_train[5][0]:.1f} bps) toward the full-span one ({b_full[5][0]:.1f} bps) - the "
+          f"target definition no longer reads the span it is scored on")
+
+    try:
+        khl.derive_buckets_bps(series, horizons=(5,))
+        raise AssertionError("derive_buckets_bps accepted no fit_frac")
+    except TypeError:
+        CHECKS += 1
+        print("  PASS  omitting fit_frac raises TypeError - the span that defines the target "
+              "must be stated, not defaulted to 'all of it'")
+
+    for name in ("train_activity_keeper", "train_bigdrop_keeper",
+                 "train_bigmove_keeper", "train_directional_keeper"):
+        t = ast.parse((BACKEND / f"{name}.py").read_text(encoding="utf-8", errors="replace"))
+        calls = [c for c in ast.walk(t) if isinstance(c, ast.Call)
+                 and getattr(c.func, "id", "") == "derive_buckets_bps"]
+        check(calls and all(any(k.arg == "fit_frac" for k in c.keywords) for c in calls),
+              f"{name}: derive_buckets_bps is called with an explicit fit_frac")
+
     print(f"\nKEEPER HEAD PURGE: PASS ({CHECKS} checks)")
     return 0
 

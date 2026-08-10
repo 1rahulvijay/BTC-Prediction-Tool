@@ -15,6 +15,7 @@ import pandas as pd
 
 from keeper_head_training import (
     BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, derive_buckets_bps,
+    train_split_frac,
     fit_binary_head, future_close_delta, model_summary, rel_bps,
 )
 
@@ -51,7 +52,7 @@ def main():
     X_all = df[FEATURES].values
     # BPS labels (2026-07-03): thresholds + per-row labels in bps of each row's own price, so the
     # label means the same thing at $15k and $115k (mandatory for 1200-1500d training windows).
-    buckets = derive_buckets_bps(close)      # auto-derived p75/p90/p97 of RELATIVE moves (bps)
+    buckets = derive_buckets_bps(close, fit_frac=train_split_frac())      # auto-derived p75/p90/p97 of RELATIVE moves (bps)
     px_now = float(close[-1])
 
     models = {}
@@ -73,6 +74,10 @@ def main():
         "features": FEATURES,
         "horizons": sorted(models),
         "label_units": "bps",
+        # Provenance for the TARGET DEFINITION: which span the p75/p90/p97 came from.
+        # Without it a bundle cannot show whether its labels were defined using the
+        # span it was later scored on.
+        "threshold_fit_frac": train_split_frac(),
         "move_threshold_bps_by_horizon": {h: v[0] for h, v in buckets.items()},
         "move_buckets_bps_by_horizon": buckets,
         # back-compat display keys: the $-equivalent AT THE LATEST TRAINING PRICE (informational only)

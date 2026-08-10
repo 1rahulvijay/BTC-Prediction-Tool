@@ -14,6 +14,7 @@ import pandas as pd
 
 from keeper_head_training import (
     BUCKET_TAG, FEATURES, HORIZONS, TRAIN_DAYS_TAG, derive_buckets_bps,
+    train_split_frac,
     fit_binary_head, future_window, model_summary, rel_bps,
 )
 
@@ -49,7 +50,7 @@ def main():
     close = df["close"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
     X_all = df[FEATURES].values
-    buckets = derive_buckets_bps(close)      # BPS labels (2026-07-03): price-level-proof for long windows
+    buckets = derive_buckets_bps(close, fit_frac=train_split_frac())      # BPS labels (2026-07-03): price-level-proof for long windows
     px_now = float(close[-1])
 
     models = {}
@@ -71,6 +72,10 @@ def main():
         "features": FEATURES,
         "horizons": sorted(models),
         "label_units": "bps",
+        # Provenance for the TARGET DEFINITION: which span the p75/p90/p97 came from.
+        # Without it a bundle cannot show whether its labels were defined using the
+        # span it was later scored on.
+        "threshold_fit_frac": train_split_frac(),
         "drop_threshold_bps_by_horizon": {h: v[0] for h, v in buckets.items()},
         "move_buckets_bps_by_horizon": buckets,
         "drop_threshold_usd_by_horizon": {h: round(v[0] * px_now / 1e4) for h, v in buckets.items()},

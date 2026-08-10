@@ -165,15 +165,34 @@ def derive_buckets(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[float
     return out
 
 
-def derive_buckets_bps(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[float, float, float]]:
+def derive_buckets_bps(close, horizons=HORIZONS, pcts=None, *,
+                       fit_frac) -> dict[int, tuple[float, float, float]]:
     """PRICE-LEVEL-PROOF buckets: quantiles of the RELATIVE move |close[t+h]-close[t]| / close[t]
     in BASIS POINTS. Rationale (2026-07-03 audit): a single DOLLAR quantile over a long window mixes
     price regimes -- $-label base rates already swing ~2x per quarter at 400d, and a 1200-1500d
     window spans BTC $15.5k..$115k (7.5x), where a fixed $100 means anything from noise to a crash.
     Labeling each row against a bps threshold keeps 'big move' equally notable at every price level.
-    Returns {h: (meaningful, large, extreme)} in bps; {} if the series is too short."""
+    Returns {h: (meaningful, large, extreme)} in bps; {} if the series is too short.
+
+    `fit_frac` is REQUIRED and keyword-only. These percentiles DEFINE the label - they decide
+    what counts as a big move - so taking them over the whole series lets the held-out span
+    help define the target it is then scored on. Measured on the live 1,440,000-row matrix at
+    the default split of 0.98:
+
+        h=5   p75  full-span 12.33 bps -> train-only 12.43 bps  (+0.79%)
+        h=15  p75  full-span 21.13 bps -> train-only 21.30 bps  (+0.79%)
+        ~0.26% of labels flip between the two thresholds
+
+    Small at 0.98 because the test tail is 2% of the rows. The severity is a function of the
+    knob, not a constant: BTC_TRAIN_SPLIT_FRAC is settable down to 0.50, where a third of the
+    series would be defining its own labels. Passing the fit fraction explicitly removes the
+    latent version of the defect rather than the currently-mild one.
+    """
     close = np.asarray(close, dtype=float)
     pcts = pcts or move_bucket_pcts()
+    fit_frac = float(fit_frac)
+    if not 0.0 < fit_frac <= 1.0:
+        raise ValueError(f"fit_frac must be in (0, 1]; got {fit_frac}")
     out = {}
     for h in horizons:
         h = int(h)
@@ -182,6 +201,10 @@ def derive_buckets_bps(close, horizons=HORIZONS, pcts=None) -> dict[int, tuple[f
         base = close[:-h]
         d = np.abs(close[h:] - base) / np.where(base > 0, base, np.nan) * 1e4
         d = d[np.isfinite(d)]
+        # Threshold from the FITTING span only, minus the label horizon: rows in the last h
+        # of that span are themselves labelled from prices past the boundary.
+        n_fit = max(1, int(len(d) * fit_frac) - h)
+        d = d[:n_fit]
         if len(d) < 100:
             continue
         a, b, c = sorted(float(np.quantile(d, p)) for p in pcts)
