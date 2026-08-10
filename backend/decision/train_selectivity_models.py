@@ -67,13 +67,26 @@ NEEDED = sorted(set(
        "perp_spot_basis_bps", "cvd_divergence", "vpin", "close"]))
 
 
+#: Forward window of every selectivity label, in 1-minute bars. Used as the purge width.
+HORIZON_BARS = 5
+#: Fraction of rows whose moves may DEFINE the big-move threshold. The rest is evaluated.
+SELECTIVITY_FIT_FRAC = 0.98
+#: Span for "what is extreme right now" - deliberately short, and NOT the model-fit window.
+EXTREME_REFERENCE_MINUTES = 60 * 24 * 60   # 60 days of 1-minute rows
+
+
 def _oos_auc(X: np.ndarray, y: np.ndarray) -> float:
-    """Out-of-sample AUC via 5-fold TimeSeriesSplit (train past → test future)."""
+    """Out-of-sample AUC via 5-fold PURGED TimeSeriesSplit (train past -> test future).
+
+    The gap is load-bearing: every target here (big move, tradable, fail-fast) is built from
+    a forward 5-minute window, so the last HORIZON_BARS training rows of each fold read
+    prices inside the fold used to score them. Chronological order alone does not remove
+    that overlap, and without the gap this AUC is optimistic."""
     if len(np.unique(y)) < 2:
         return float("nan")
     oof = np.zeros(len(y))
     seen = np.zeros(len(y), dtype=bool)
-    for tr, te in TimeSeriesSplit(n_splits=5).split(X):
+    for tr, te in TimeSeriesSplit(n_splits=5, gap=HORIZON_BARS).split(X):
         sc = StandardScaler().fit(X[tr])
         clf = LogisticRegression(class_weight="balanced", max_iter=1000)
         clf.fit(sc.transform(X[tr]), y[tr])
@@ -109,7 +122,7 @@ def _oos_auc_ensemble(X: np.ndarray, y: np.ndarray) -> float:
     if len(np.unique(y)) < 2:
         return float("nan")
     oof = np.zeros(len(y)); seen = np.zeros(len(y), dtype=bool)
-    for tr, te in TimeSeriesSplit(n_splits=5).split(X):
+    for tr, te in TimeSeriesSplit(n_splits=5, gap=HORIZON_BARS).split(X):
         clf = _make_selectivity_ensemble()
         clf.fit(X[tr], y[tr])
         oof[te] = clf.predict_proba(X[te])[:, 1]; seen[te] = True
@@ -140,8 +153,21 @@ def main():
     print(f"Rows after NaN-drop: {len(df):,}")
 
     # Targets
-    p75 = df["future_abs_move_5m"].quantile(0.75)
-    y_big = (df["future_abs_move_5m"] > p75).astype(int).values
+    #
+    # THE LABEL IS IN BPS, AND ITS THRESHOLD COMES FROM THE FITTING SPAN ONLY.
+    # It was `df["future_abs_move_5m"].quantile(0.75)` - a raw-USD percentile over the WHOLE
+    # frame. Both halves of that were wrong at a 1000-day window:
+    #   * USD is non-stationary here. A $100 move is 50 bps at BTC $20k and 10 bps at $100k,
+    #     so a fixed dollar cut-point calls quiet late-history minutes "big" and misses
+    #     genuinely large early-history ones. The sibling keeper heads were converted to bps
+    #     on 2026-07-03 for exactly this reason; selectivity never received that repair.
+    #   * A full-frame quantile lets the evaluated tail help define what counts as a big
+    #     move, i.e. the target is partly set by the rows it is then scored on.
+    _abs_bps = (df["future_abs_move_5m"] / df["close"] * 10000.0).values
+    _fit_end = max(1, int(len(_abs_bps) * SELECTIVITY_FIT_FRAC) - HORIZON_BARS)
+    _fit_slice = _abs_bps[:_fit_end]
+    p75 = float(np.nanpercentile(_fit_slice[np.isfinite(_fit_slice)], 75))
+    y_big = (_abs_bps > p75).astype(int)
     y_trad = df["tradable_move_label"].fillna(0).astype(int).values
     y_fail = df["fail_fast_label"].fillna(0).astype(int).values
     # Expected move in bps (absolute), the cost-gate input.
@@ -166,9 +192,16 @@ def main():
     move_pipe = Pipeline([("scaler", StandardScaler()), ("reg", Ridge(alpha=1.0))]).fit(Xm, move_bps)
     print(f"  expected_move_bps (Ridge): holdout MAE {mae:.1f} bps  (mean |move| {move_bps.mean():.1f} bps)")
 
-    # Microstructure extreme thresholds + selectivity tier cutoffs from 60d history.
+    # LIVE EXTREME REFERENCE WINDOW, which is NOT the model-fit window.
+    # This said "from 60d history" while the percentiles ran over the whole frame - at
+    # BTC_HISTORICAL_DAYS=1000 a "95th percentile VPIN" was a 1000-day extreme, not a
+    # current-market one. What counts as extreme microstructure right now is a property of
+    # the recent regime; what the model learns is a property of the long window. They are
+    # different questions and now use different spans.
+    _ref_rows = min(len(df), EXTREME_REFERENCE_MINUTES)
+
     def pct(col, q):
-        v = df[col].values
+        v = df[col].values[-_ref_rows:]
         return float(np.percentile(v[np.isfinite(v)], q))
     sel_scores = sel_pipe.predict_proba(df[SELECTIVITY_FEATURES].values)[:, 1]
     side_thresholds = {
@@ -179,7 +212,8 @@ def main():
         "sel_t2": float(np.percentile(sel_scores, 99)),
         "sel_t3": float(np.percentile(sel_scores, 99.75)),
     }
-    print("\nPersisted side thresholds (60d):")
+    print(f"\nPersisted side thresholds (live-extreme window: {_ref_rows:,} rows / "
+          f"{_ref_rows/1440:.0f}d of {len(df)/1440:.0f}d fitted):")
     for k, v in side_thresholds.items():
         print(f"  {k:>10}: {v:+.4f}")
 
