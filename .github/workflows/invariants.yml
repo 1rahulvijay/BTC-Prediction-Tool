@@ -180,6 +180,12 @@ jobs:
       - name: A release-pooled meta-model may not veto the current generation
         run: python backend/test_meta_veto_requires_scoped_release.py
 
+      - name: A settled round survives a re-log of its prediction
+        run: python backend/test_resolved_round_is_immutable.py
+
+      - name: No writer resets a terminal outcome through REPLACE
+        run: python backend/test_terminal_outcomes_not_replaceable.py
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -944,6 +950,8 @@ jobs:
           python backend/test_champion_specialist_authority.py || exit /b 1
           python backend/test_row_identity_is_served_model.py || exit /b 1
           python backend/test_meta_veto_requires_scoped_release.py || exit /b 1
+          python backend/test_resolved_round_is_immutable.py || exit /b 1
+          python backend/test_terminal_outcomes_not_replaceable.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

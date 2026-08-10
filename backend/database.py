@@ -2428,18 +2428,59 @@ def fetch_forward_ev_summary(limit: int = 50) -> dict:
 
 
 def log_price_to_beat(entry: dict):
+    """Record a round's PREDICTION. Never its outcome, and never over its outcome.
+
+    THIS FUNCTION COULD DESTROY GROUND TRUTH. It was `INSERT OR REPLACE`, listing 20 of the
+    table's 32 columns and hard-coding `resolved = FALSE`. OR REPLACE rewrites the whole row,
+    so every omitted column reverted to its default:
+
+        actual_price -> NULL     actual_direction -> NULL     hit -> NULL
+        move -> NULL             settlement_source -> NULL    resolved -> FALSE
+
+    Re-logging an id that had already settled therefore erased that round's outcome silently -
+    no error, no constraint violation, nothing in a log. 14,368 of 14,372 rounds in the live
+    store are resolved; they are the labels the retrain learns from and the population
+    head-health measures against. A settlement record must not be destroyable by the
+    prediction writer.
+
+    Now insert-only for settled rounds: ON CONFLICT it updates the PREDICTION fields (so an
+    unresolved round can still be refined mid-flight, which is what callers relied on) and the
+    WHERE clause makes a resolved row immutable - the update is skipped entirely rather than
+    partially applied. The outcome columns appear in no SET list, so they cannot be touched
+    even for an unresolved round. Resolution belongs to the resolver.
+    """
     conn = None
     try:
         conn = _connect()
         cfl = entry.get("confluence") or {}
         grade = str(cfl.get("grade", "")) if isinstance(cfl, dict) else ""
         conn.execute("""
-            INSERT OR REPLACE INTO price_to_beat
+            INSERT INTO price_to_beat
             (id, timestamp, horizon, price_to_beat, our_direction, signal, conviction,
              actionable, kronos_direction, target_price, verify_at, lean_source,
              confluence_grade, regime, source, pred_contract, grading_contract,
              horizon_overlap, grade_usable, resolved)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = excluded.timestamp,
+                horizon = excluded.horizon,
+                price_to_beat = excluded.price_to_beat,
+                our_direction = excluded.our_direction,
+                signal = excluded.signal,
+                conviction = excluded.conviction,
+                actionable = excluded.actionable,
+                kronos_direction = excluded.kronos_direction,
+                target_price = excluded.target_price,
+                verify_at = excluded.verify_at,
+                lean_source = excluded.lean_source,
+                confluence_grade = excluded.confluence_grade,
+                regime = excluded.regime,
+                source = excluded.source,
+                pred_contract = excluded.pred_contract,
+                grading_contract = excluded.grading_contract,
+                horizon_overlap = excluded.horizon_overlap,
+                grade_usable = excluded.grade_usable
+            WHERE price_to_beat.resolved = FALSE
         """, (
             entry["id"], entry["timestamp"], entry["horizon"], entry["price_to_beat"],
             entry["our_direction"], entry.get("signal", ""), float(entry.get("conviction", 0.0)),
