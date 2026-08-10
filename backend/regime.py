@@ -414,10 +414,24 @@ class MarketRegime:
             future_belief = future_belief @ Tk
             future_belief = np.clip(future_belief, 0, None)
             future_belief /= (future_belief.sum() + 1e-12)
-            dist = {}
+            # ACCUMULATE per label, never assign.
+            #
+            # state_labels is many-to-one: several hidden states can carry the same public
+            # regime (two RANGE states is ordinary after a refit). Assigning made the last one
+            # win, so P(RANGE) = 0.18 + 0.31 was reported as 0.31 and the returned
+            # distribution summed to less than 1 - a forecast quietly discarding probability
+            # mass, feeding regime routing and strategy selection.
+            #
+            # get_confidence_vector() a few lines below already did this correctly. The two
+            # disagreed about the same arithmetic on the same state_labels map.
+            dist: dict = {}
             for s, label in self.state_labels.items():
                 if s < len(future_belief):
-                    dist[label] = round(float(future_belief[s]), 4)
+                    dist[label] = dist.get(label, 0.0) + float(future_belief[s])
+            total = sum(dist.values())
+            if total > 0:
+                # Normalise AFTER aggregating, so per-label rounding cannot reintroduce a gap.
+                dist = {lab: round(p / total, 4) for lab, p in dist.items()}
             forecasts[f"{k}bar"] = dist
         return {"forecasts": forecasts, "available": True}
 

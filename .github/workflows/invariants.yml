@@ -189,6 +189,9 @@ jobs:
       - name: P(Hold) reads only closed bars and purges by outcome end
         run: python backend/test_persistence_causal_and_purged.py
 
+      - name: Regime forecast conserves probability mass
+        run: python backend/test_regime_forecast_conserves_mass.py
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -956,6 +959,7 @@ jobs:
           python backend/test_resolved_round_is_immutable.py || exit /b 1
           python backend/test_terminal_outcomes_not_replaceable.py || exit /b 1
           python backend/test_persistence_causal_and_purged.py || exit /b 1
+          python backend/test_regime_forecast_conserves_mass.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1
