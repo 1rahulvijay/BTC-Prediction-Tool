@@ -100,6 +100,23 @@ def logs_exist(script: str) -> bool:
     return any(any(DATA_DIR.glob(f"*{alias}*.log")) for alias in aliases if alias)
 
 
+def derive_status(ran: bool, rows_count) -> str:
+    """Fallback classification when a probe reports no status of its own.
+
+    Extracted so the selftest can exercise THIS rule rather than scanning the live database.
+    The reachability check used to assert that some real recorder was currently NEVER_RAN, or
+    that every recorder sat in a healthy state - so it passed or failed on whatever the store
+    happened to hold, and went red the moment one recorder entered SCHEMA_DRIFT, which is a
+    state this audit exists to REPORT. A selftest that depends on production data tells you
+    about production, not about the code.
+    """
+    if not ran and not rows_count:
+        return "NEVER_RAN"
+    if not rows_count:
+        return "NO_DATA"
+    return "HAS_DATA"
+
+
 def audit() -> list[dict]:
     text = LAUNCHER.read_text(encoding="utf-8", errors="replace") if LAUNCHER.is_file() else ""
     rows = []
@@ -117,8 +134,7 @@ def audit() -> list[dict]:
         rows_count = state.get("rows")
         status = state.get("status")
         if not status:
-            status = ("NEVER_RAN" if not ran and not rows_count
-                      else "NO_DATA" if not rows_count else "HAS_DATA")
+            status = derive_status(ran, rows_count)
         rows.append({
             "recorder": script, "store": store, "ever_ran": ran,
             "rows": rows_count,
@@ -158,10 +174,42 @@ def selftest() -> int:
     check(all(row["status"] in declared for row in rows),
           "every wired recorder resolves to a declared evidence state")
     # The state this file exists to surface must be REACHABLE, or the check is decoration.
-    check(any(row["status"] == "NEVER_RAN" for row in rows)
-          or all(row["status"] in ("HAS_DATA", "ADVANCING", "STALLED", "LOCKED_BY_WRITER")
-                 for row in rows),
-          "NEVER_RAN is reachable - a wired, selftested, never-launched recorder is visible")
+    #
+    # Reachability is a property of the CLASSIFIER, not of today's database. This used to
+    # assert that some real recorder was currently NEVER_RAN, or that every recorder sat in a
+    # healthy set - so it went red when the live store held 9 STALLED and 1 SCHEMA_DRIFT, a
+    # combination containing nothing wrong: SCHEMA_DRIFT is precisely what this audit exists
+    # to report. Exercising derive_status directly keeps the guarantee and drops the
+    # dependency on production data.
+    check(derive_status(ran=False, rows_count=0) == "NEVER_RAN",
+          "NEVER_RAN is reachable - a recorder that never ran and holds no rows classifies "
+          "as NEVER_RAN, so the state this file exists to surface can actually occur")
+    check(derive_status(ran=True, rows_count=0) == "NO_DATA",
+          "a recorder that RAN but wrote nothing is NO_DATA, not NEVER_RAN - the two failures "
+          "have different causes and must not collapse into one label")
+    check(derive_status(ran=True, rows_count=5) == "HAS_DATA"
+          and derive_status(ran=False, rows_count=5) == "HAS_DATA",
+          "rows present means HAS_DATA whether or not a log survives - evidence in the store "
+          "outranks the absence of a log file")
+
+    # Live rows are still REPORTED, but no live combination is treated as a failure here:
+    # every declared state is legitimate, which the declared-states check above already
+    # covers.
+    seen = sorted({row["status"] for row in rows})
+    print(f"        (live: {len(rows)} wired recorders in states {seen})")
+
+    # audit() must actually USE the classifier the checks above exercise. Every recorder in
+    # this environment gets its status from probe(), so the fallback branch never runs here -
+    # meaning audit() could stop calling derive_status entirely and the assertions above would
+    # still pass, testing a function nothing uses. Mutation testing surfaced exactly that.
+    import ast as _ast
+    _src = Path(__file__).read_text(encoding="utf-8", errors="replace")
+    _fn = next(n for n in _ast.walk(_ast.parse(_src))
+               if isinstance(n, _ast.FunctionDef) and n.name == "audit")
+    check(any(isinstance(c, _ast.Call) and getattr(c.func, "id", "") == "derive_status"
+              for c in _ast.walk(_fn)),
+          "audit() derives its fallback status through derive_status - the rule the checks "
+          "above verify is the rule the report actually uses")
 
     print(f"\nRECORDER EVIDENCE SELFTEST: PASS ({checks} checks)")
     return 0
