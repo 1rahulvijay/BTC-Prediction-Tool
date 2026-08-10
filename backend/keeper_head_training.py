@@ -26,7 +26,17 @@ HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-fli
 # changing BTC_HISTORICAL_DAYS (e.g. 100 -> 180) makes the version differ and train_heads
 # retrains every head on the new window. (The matrix itself is rebuilt to this window by
 # build_research_matrix.py --days before train_heads runs.)
-TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
+#: BTC_MODEL_TRAINING_DAYS FIRST. It names the window an artifact was FIT over; the other two
+#: name runtime warm-up and backfill, which are different questions that merely happen to hold
+#: the same value under start.bat (line 60 derives one from the other).
+#:
+#: start_instant.bat sets BTC_HISTORICAL_DAYS=3 with BTC_MODEL_TRAINING_DAYS=1000 - three days
+#: is only enough candles to serve, while identity must still describe the full training
+#: window, which its own comment says. Reading the warm-up value first tagged a 1000d artifact
+#: "3d" under that launcher, so the same bundle carried two identities depending on which
+#: script started the process.
+TRAIN_DAYS_TAG = (os.environ.get("BTC_MODEL_TRAINING_DAYS")
+                  or os.environ.get("BTC_HISTORICAL_DAYS")
                   or os.environ.get("BTC_BACKFILL_DAYS") or "60").strip() + "d"
 
 
