@@ -114,15 +114,20 @@ def _active_head_identity() -> dict:
         try:
             mtime = os.path.getmtime(path)
             cache_key = (path, mtime)
-            identity = _HEAD_IDENTITY_CACHE.get(cache_key)
+            # The IN-MEMORY sha wins. Re-hashing `path` describes whatever is on disk now,
+            # which under freeze mode is not what produced the prediction being recorded.
+            served = bundle.get("_artifact_sha256")
+            identity = None if served else _HEAD_IDENTITY_CACHE.get(cache_key)
             if identity is None:
                 from verified_io import file_sha256
                 identity = {
-                    "sha256": file_sha256(path),
+                    "sha256": served or file_sha256(path),
+                    "sha_source": "deserialized" if served else "path_rehash",
                     "version": str(bundle.get("version") or bundle.get("model_version") or ""),
                     "label_basis": str(bundle.get("label_basis") or ""),
                 }
-                _HEAD_IDENTITY_CACHE[cache_key] = identity
+                if not served:
+                    _HEAD_IDENTITY_CACHE[cache_key] = identity
             result[label] = dict(identity)
         except Exception as exc:
             result[label] = {"error": str(exc)}
@@ -3314,6 +3319,23 @@ def _verified_load(path):
     _backend = str(_Path(__file__).resolve().parent)
     if _backend not in _sys.path:
         _sys.path.insert(0, _backend)
-    from verified_io import verified_load as _vl
+    from verified_io import file_sha256 as _sha, verified_load as _vl
 
-    return _vl(path)
+    bundle = _vl(path)
+    # STAMP THE SHA OF WHAT WAS ACTUALLY DESERIALIZED.
+    #
+    # Identity was previously recovered by re-hashing the path at report time, which answers a
+    # different question. Freeze mode pins the first loaded artifact and REFUSES later file
+    # replacements while continuing to serve the old in-memory model, so:
+    #
+    #     serve A -> file becomes B -> freeze rejects B -> path now hashes to B
+    #
+    # and every row written afterwards claims B produced predictions that came from A. The
+    # only sha that describes the serving model is the one taken when that model was read,
+    # which is here - the file has just been hash-checked and deserialized in one step.
+    if isinstance(bundle, dict):
+        try:
+            bundle.setdefault("_artifact_sha256", _sha(path))
+        except Exception:
+            pass
+    return bundle

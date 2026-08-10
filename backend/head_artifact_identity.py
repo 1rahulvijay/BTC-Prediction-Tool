@@ -113,12 +113,51 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+#: head -> the price_to_beat module global holding its LOADED bundle.
+_SERVING_GLOBALS = {
+    "p_hold": "_PERSIST_MODEL", "flip_risk": "_PERSIST_MODEL",
+    "big_move": "_BIGMOVE_MODEL", "big_drop": "_BIGDROP_MODEL",
+    "directional": "_DIRECTIONAL_MODEL", "activity": "_ACTIVITY_MODEL",
+    "path": "_PATH_FORECASTER", "signed_quantile": "_SIGNED_QMODEL",
+}
+
+
+def in_memory_sha(head: str) -> str | None:
+    """sha of the bundle this process actually DESERIALIZED for `head`, if one is loaded.
+
+    `_verified_load` stamps `_artifact_sha256` at load time. That is the only sha describing
+    the model producing predictions right now: price_to_beat's freeze mode pins the first
+    loaded artifact and refuses later file replacements, so after a swap the path and the
+    served model disagree by design."""
+    attr = _SERVING_GLOBALS.get(head)
+    if not attr:
+        return None
+    try:
+        import price_to_beat as ptb
+    except Exception:      # noqa: BLE001
+        return None
+    bundle = getattr(ptb, attr, None)
+    if isinstance(bundle, dict):
+        sha = bundle.get("_artifact_sha256")
+        return str(sha) if sha else None
+    return None
+
+
 def resolve_serving_sha(head: str) -> str | None:
     """sha256 of the artifact serving `head`, or None when it cannot be determined.
 
-    Content hash rather than a recorded manifest field on purpose: the question is what is
-    ON DISK about to be loaded, not what some sidecar claims. A swapped file changes the
-    answer even if its manifest was copied along with it."""
+    IN-MEMORY FIRST. Hashing the path answers "what would be loaded next", which is a
+    different question from "what produced this decision" whenever the two diverge - and
+    freeze mode makes them diverge deliberately:
+
+        serve A -> file becomes B -> freeze rejects B -> path hashes to B
+
+    Reporting B there would attach health and authority to a model that never ran. The disk
+    fallback covers processes that have loaded nothing (a health run, a CLI), where no
+    in-memory model exists to contradict the file."""
+    served = in_memory_sha(head)
+    if served:
+        return served
     path = artifact_path(head)
     if path is None or not path.exists() or not path.is_file():
         return None
@@ -172,6 +211,41 @@ def selftest() -> int:
         sha_a = resolve_serving_sha("p_hold")
         check(sha_a is not None and len(sha_a) == 64, "an existing artifact resolves to a sha256")
         check(resolve_serving_sha("p_hold") == sha_a, "and the sha is stable across calls")
+
+        # THE LOADER MUST DO THE STAMPING. The injection below proves the resolver PREFERS a
+        # stamp; it does not prove one is ever produced. Without this, removing the stamp from
+        # _verified_load changes nothing that any test can see.
+        try:
+            import joblib
+            import price_to_beat as _p2b
+            from verified_io import write_manifest
+            probe = MODELS / "stamp_probe.pkl"
+            joblib.dump({"version": "probe"}, probe)
+            write_manifest(str(probe))     # named, not aliased: the manifest invariant
+                                           # check scans for this call by name
+            loaded = _p2b._verified_load(str(probe))
+            check(isinstance(loaded, dict)
+                  and loaded.get("_artifact_sha256") == file_sha256(probe),
+                  "_verified_load STAMPS the sha of what it deserialized onto the bundle - "
+                  "that stamp is the only record of which artifact actually ran")
+        except ImportError:
+            pass
+
+        # IN-MEMORY WINS OVER DISK. This is the freeze-mode case: the process is serving a
+        # bundle it deserialized earlier while the file underneath has been replaced.
+        import price_to_beat as _ptb
+        _saved = getattr(_ptb, "_PERSIST_MODEL", None)
+        try:
+            _ptb._PERSIST_MODEL = {"_artifact_sha256": "d" * 64}
+            check(resolve_serving_sha("p_hold") == "d" * 64,
+                  "the sha of the DESERIALIZED bundle wins over the file on disk - under "
+                  "freeze mode the path names a model that was refused and never ran")
+            _ptb._PERSIST_MODEL = {"no_sha_here": 1}
+            check(resolve_serving_sha("p_hold") == sha_a,
+                  "and a loaded bundle carrying no stamp falls back to the file rather than "
+                  "returning nothing, so older artifacts stay resolvable")
+        finally:
+            _ptb._PERSIST_MODEL = _saved
 
         art.write_bytes(b"artifact-B")           # a retrain
         sha_b = resolve_serving_sha("p_hold")

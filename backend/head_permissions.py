@@ -142,7 +142,17 @@ def head_state(head: str, *, artifact_sha: str | None = None,
             f"model; evidence measured on an unnamed artifact does not transfer to a "
             f"retrained one"
         )
-    if artifact_sha is not None and str(artifact_sha) != measured_sha:
+    if artifact_sha is None:
+        # NOT "skip the comparison". If identity is required for authority, a caller that
+        # cannot name what it is asking about has not met the requirement. Treating None as
+        # "no comparison needed" made the binding opt-OUT: any call site that simply omitted
+        # the argument kept its old name-keyed authority, which is the exact bug this module
+        # exists to close.
+        return "ARTIFACT_UNSPECIFIED", _denied(
+            f"'{head}' authority requires the serving artifact sha; the caller supplied none, "
+            f"so there is nothing to check the measured {measured_sha[:12]} against"
+        )
+    if str(artifact_sha) != measured_sha:
         return "ARTIFACT_MISMATCH", _denied(
             f"'{head}' health was measured on {measured_sha[:12]}, but {str(artifact_sha)[:12]} "
             f"is serving; a retrained head starts from zero evidence"
@@ -374,23 +384,33 @@ def selftest() -> int:
     chk(st == "HORIZON_POOLED",
         "a report with no per-horizon blocks cannot authorize a specific horizon at all")
 
+    # OMITTING the sha is a denial in its own right, not a skipped comparison. Treating None
+    # as "nothing to compare" made the binding opt-OUT - any call site that just left the
+    # argument off kept its old name-keyed authority.
+    write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
+                                "permissions": {"may_price": True, "may_rank": True}}}})
+    st, p = head_state("p_hold")
+    chk(st == "ARTIFACT_UNSPECIFIED" and not p["may_rank"] and not p["may_price"],
+        "a caller that names NO artifact is denied - it has not met the identity requirement, "
+        "so there is nothing to check the measured sha against")
+
     # --- the graded permissions that SHOULD be honoured --------------------------------------
     write({"heads": {"p_hold": {"state": "CALIBRATION_ONLY", "reason": "ECE 0.07",
                                 "artifact_sha": SHA_A,
                                 "permissions": {"may_price": False, "may_rank": True}}}})
-    _, p = head_state("p_hold")
+    _, p = head_state("p_hold", artifact_sha=SHA_A)
     chk(not p["may_price"] and p["may_rank"], "CALIBRATION_ONLY may rank, may NOT price")
 
     write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
                                 "permissions": {"may_price": True, "may_rank": True,
                                                 "may_display_confidence": True}}}})
-    _, p = head_state("p_hold")
+    _, p = head_state("p_hold", artifact_sha=SHA_A)
     chk(p["may_rank"], "USABLE may rank (the gate re-opens)")
-    chk(may_rank("p_hold")[0], "may_rank() honours a measured USABLE head")
+    chk(may_rank("p_hold", artifact_sha=SHA_A)[0], "may_rank() honours a measured USABLE head")
     # The REGISTRY CAP. model_registry gives persistence/P(Hold) may_rank but not may_price;
     # health classifying it USABLE must not manufacture pricing authority the contract
     # withholds. Live evidence subtracts from the ceiling, it never adds.
-    chk(not p["may_price"] and not may_price("p_hold")[0],
+    chk(not p["may_price"] and not may_price("p_hold", artifact_sha=SHA_A)[0],
         "but may NOT price: the registry caps this head below what health measured")
     chk("registry" in p.get("reason", ""),
         "and the cap SAYS SO in the reason, so an operator sees why pricing was withheld "
@@ -399,7 +419,7 @@ def selftest() -> int:
     # --- defaults are DENY, not ALLOW --------------------------------------------------------
     write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
                                 "permissions": {}}}})
-    _, p = head_state("p_hold")
+    _, p = head_state("p_hold", artifact_sha=SHA_A)
     chk(not p["may_price"] and not p["may_rank"],
         "an empty permissions block defaults to DENY, not ALLOW")
     chk(DENIED == {"may_price": False, "may_rank": False, "may_display_confidence": False},

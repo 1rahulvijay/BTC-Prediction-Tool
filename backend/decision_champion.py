@@ -105,7 +105,35 @@ def _load_meta_model():
             if not identity_ok:
                 _META_ERROR = "artifact identity mismatch: " + "; ".join(reasons)
                 return None
-            _META_MODEL = _verified_load(path)
+            bundle = _verified_load(path)
+            # THE BUNDLE'S OWN METADATA IS A REFUSAL, and it was being ignored.
+            #
+            # train_champion_meta records release_scoped=False and
+            # release_pooling=UNMITIGATED_NO_IDENTITY_COLUMNS, because champion_snapshots
+            # carries no per-row model identity - its training rows therefore mix every head
+            # generation that has ever run, while its live inputs come from the current
+            # stack. An artifact that documents that about itself must not be able to turn
+            # PAPER_BET / SETUP / LEAN / WATCH into WAIT.
+            #
+            # Separately, the 0.55 gate reads predict_proba as a literal hold probability
+            # while the trainer validates only AUC and a grouped AUC lower bound. AUC
+            # establishes ranking, not that 0.55 means 55%, and class_weight="balanced"
+            # actively distorts the probability scale. Both must be declared by the trainer
+            # before this model may veto anything; until then it is diagnostic.
+            if isinstance(bundle, dict) and bundle.get("release_scoped") is not True:
+                _META_ERROR = (
+                    "release_scoped is not True (%s); a meta-model whose own manifest says it "
+                    "pools model generations may not veto the current one"
+                    % bundle.get("release_pooling", "undeclared")
+                )
+                return None
+            if isinstance(bundle, dict) and bundle.get("probability_validated") is not True:
+                _META_ERROR = (
+                    "probability_validated is not True; the 0.55 gate reads predict_proba as a "
+                    "calibrated probability, which AUC does not establish"
+                )
+                return None
+            _META_MODEL = bundle
     except Exception as exc:
         _META_ERROR = str(exc)
         _META_MODEL = None

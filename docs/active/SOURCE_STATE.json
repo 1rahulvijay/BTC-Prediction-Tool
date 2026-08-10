@@ -1,11 +1,11 @@
 {
   "ci_steps_by_job": {
     "invariants": {
-      "python_invocations": 197,
-      "run_steps": 198
+      "python_invocations": 199,
+      "run_steps": 200
     },
     "startbat": {
-      "python_invocations": 182,
+      "python_invocations": 184,
       "run_steps": 3
     }
   },
@@ -191,7 +191,7 @@
     ]
   },
   "source_digests": {
-    ".github/workflows/invariants.yml": "f74e1fcf5118cabc2a961006317e74400b512808151929cf43a86e2748e1ba39",
+    ".github/workflows/invariants.yml": "2468ea1f9a309e9b3753599fce90fe5ab8188c9ae40e56199393101e848d8756",
     "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
     "backend/auto_finetune.py": "8326f1e4ab48047d56c06090f853d8ef92dd70ea2d143907a340e50edb615040",
     "backend/features.py": "3fda9238456461b8142e28c5d04e241fcbb3ac8608d26a2e0812a9c4eda5ae8f",
