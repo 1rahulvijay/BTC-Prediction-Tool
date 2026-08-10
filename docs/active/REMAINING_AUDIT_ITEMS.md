@@ -140,3 +140,63 @@ R1 and R2 are the same class as the purges already fixed in the keeper and path 
 **Retrain hygiene the scan recommends and I agree with:** freeze the commit SHA, train into a
 staging/challenger directory, never overwrite `saved_models` during the run, preserve the
 untouched holdouts, write manifests atomically.
+
+---
+
+## STATE AT HANDOFF — read this before trusting anything above
+
+Written at `7077bc0`. **A parallel session is working this repo and its changes are
+UNCOMMITTED in the tree right now.** Reconcile before editing; never clobber.
+
+Uncommitted when this was written (`git status --porcelain`):
+
+    .github/workflows/invariants.yml
+    backend/ab_testing.py
+    backend/binance_paper/config.py
+    backend/binance_paper/governor.py
+    backend/binance_paper/portfolio.py
+    backend/binance_paper/risk_engine.py
+    backend/binance_paper/service.py
+    backend/binance_paper/test_strategy_economics.py
+    backend/test_terminal_outcomes_not_replaceable.py
+
+That maps onto section 5 above (governor max/min, maintenance-margin liquidation, A/B
+bootstrap) plus section 1. **`KNOWN_UNFIXED` is now an empty set in the working tree**, so the
+other four `INSERT OR REPLACE` statements appear to have been repaired there. Section 1 above
+is therefore accurate as of HEAD and probably stale in the tree — verify with
+
+    python backend/test_terminal_outcomes_not_replaceable.py
+
+before assuming either way. SOURCE_STATE was deliberately NOT regenerated for this append,
+because doing so would hash another session's in-flight code into a state document that does
+not match HEAD. Whoever commits that batch should regenerate it then.
+
+### What is committed and verified at `7077bc0`
+
+Local CI green, 233 checks, tree clean at commit time. Fixed and mutation-tested this session:
+
+| area | what was wrong |
+| --- | --- |
+| datastore | `BTC_DATA_DIR` made the canonical declaration unreachable under start.bat |
+| server startup | paper-service init sat outside the try that exists to contain it |
+| champion-meta | split snapshots not rounds; no ORDER BY; gate counted rows not resolutions |
+| keeper heads | no purge at either OOF site or the 98/2 boundary; target thresholds full-span |
+| path head | no purge at any of three boundaries incl. the production refit |
+| selectivity | USD target over the full frame; unpurged OOS; "60d" window was 1000d |
+| head authority | 6 of 9 artifact filenames wrong; health outranked the registry cap |
+| identity | row sha rehashed the path, not the deserialized bundle; sha was optional |
+| champion-meta veto | bundle declared `release_scoped=False` and was used anyway |
+| price_to_beat | `INSERT OR REPLACE` erased settled outcomes (14,368 resolved rounds) |
+| forward_ev_ledger | same defect; reset `resolved_at` / `outcome_status` |
+| P(Hold) | same-minute feature leak; split ignored outcome end |
+| regime | transition forecast discarded probability mass on duplicate labels |
+| recorder evidence | selftest asserted live DB state instead of the classifier |
+| keeper identity | tagged the warm-up window, not the training window |
+
+### Still open at `7077bc0`
+
+R1 (signed-quantile CQR validated on its own calibration slice), R2 (magnitude gates q50
+only), R3 (per-head provenance stamped from the research matrix regardless of what the head
+actually read), plus sections 2-4 above. R1-R3 are **unverified by me** — confirm at file:line
+first. Three audit claims did not survive measurement this session and one recommended fix
+made things measurably worse, so verification is not ceremony here.
