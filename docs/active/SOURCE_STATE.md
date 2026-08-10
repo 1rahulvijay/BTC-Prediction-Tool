@@ -77,5 +77,5 @@ read as though it checks three things. Both numbers are reported.
 
 | job | run steps | python invocations |
 | --- | --- | --- |
-| `invariants` | 197 | 196 |
-| `startbat` | 3 | 181 |
+| `invariants` | 198 | 197 |
+| `startbat` | 3 | 182 |

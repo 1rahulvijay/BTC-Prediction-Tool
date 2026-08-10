@@ -168,6 +168,47 @@ def _reward_room(round_data: Dict[str, Any], side: str) -> Optional[float]:
     return max(high, -low)
 
 
+#: Specialist head -> the round_data key whose tier it produces. Every one of these CHANGES
+#: A DECISION (quiet -> WAIT, HIGH drop -> AVOID_LONG, big-down HIGH -> block UP), so every
+#: one needs authority to do so.
+RANKING_HEADS = {
+    "big_move": "big_move_tier",
+    "big_drop": "big_drop_risk",
+    "directional": ("big_up_tier", "big_down_tier"),
+    "activity": "activity_tier",
+}
+
+
+def _ranked(head: str, value: str, horizon, denied: dict) -> str:
+    """The specialist's tier if that head currently holds may_rank, else "".
+
+    Head health was ENFORCED for exactly one head - p_hold, at the final bet-authority
+    branch - while these five tiers reached the decision ungated. A big_drop head measured
+    as having no skill could still suppress profitable longs; a big_move head could still
+    skip profitable windows; a directional keeper could still veto one side. None of those
+    produce a PRICE, so may_price never applied to them, and nothing else did either.
+
+    Returning "" is what makes the denial real rather than advisory: every consumer compares
+    the tier against a literal ("HIGH", "quiet"), so an empty string simply stops matching and
+    the head becomes diagnostic instead of decisive. The raw value is still recorded on the
+    snapshot for display and for later health measurement.
+    """
+    if not value:
+        return value
+    try:
+        from head_permissions import may_rank as _may_rank
+        from head_artifact_identity import resolve_serving_sha as _serving_sha
+        ok, why = _may_rank(head, artifact_sha=_serving_sha(head), horizon=horizon)
+    except Exception as exc:        # noqa: BLE001
+        # FAIL CLOSED, same as the p_hold branch: a permission check that cannot run has not
+        # granted permission.
+        ok, why = False, f"permission_check_failed:{type(exc).__name__}"
+    if ok:
+        return value
+    denied[head] = why
+    return ""
+
+
 def champion_decision(
     round_data: Dict[str, Any],
     market: Optional[Dict[str, Any]] = None,
@@ -256,11 +297,28 @@ def champion_decision(
     lean = round_data.get("live_lean")
     lean_source = round_data.get("lean_source")
     p_hold = _f(round_data.get("p_hold"))
-    drop_risk = (round_data.get("big_drop_risk") or "").upper()
-    move_tier = (round_data.get("big_move_tier") or "").lower()
-    up_tier = (round_data.get("big_up_tier") or "").upper()
-    down_tier = (round_data.get("big_down_tier") or "").upper()
-    activity_tier = (round_data.get("activity_tier") or "").lower()
+    # Hoisted from below: nine of this function's early returns fire before the old
+    # assignment site, so the specialist tiers were changing decisions before a horizon was
+    # even in scope to authorize them with. round_data is not mutated in between.
+    horizon = max(1, int(_f(round_data.get("horizon")) or 5))
+
+    # UNAUTHORIZED heads are recorded, not silently dropped: an operator seeing WAIT is
+    # entitled to know a head was suppressed rather than quiet.
+    _unauthorized: dict = {}
+    drop_risk = _ranked("big_drop",
+                        (round_data.get("big_drop_risk") or "").upper(), horizon, _unauthorized)
+    move_tier = _ranked("big_move",
+                        (round_data.get("big_move_tier") or "").lower(), horizon, _unauthorized)
+    up_tier = _ranked("directional",
+                      (round_data.get("big_up_tier") or "").upper(), horizon, _unauthorized)
+    down_tier = _ranked("directional",
+                        (round_data.get("big_down_tier") or "").upper(), horizon, _unauthorized)
+    activity_tier = _ranked("activity",
+                            (round_data.get("activity_tier") or "").lower(), horizon,
+                            _unauthorized)
+    if _unauthorized:
+        flags.append("specialist heads without rank authority: "
+                     + ", ".join(sorted(_unauthorized)))
     regime = (round_data.get("regime") or "UNKNOWN").upper()
 
     if drop_risk == "HIGH":
@@ -378,7 +436,7 @@ def champion_decision(
     room = _reward_room(round_data, position)
     gap = abs(_f(round_data.get("current_move")) or 0.0)
     seconds_left = _f(round_data.get("seconds_left")) or 0.0
-    horizon = max(1, int(_f(round_data.get("horizon")) or 5))
+    # `horizon` is computed above, before the first tier read that depends on it.
     late_max = min(120.0, horizon * 60.0 * 0.4)
     structural_late_entry = (
         p_hold >= PHOLD_STRONG

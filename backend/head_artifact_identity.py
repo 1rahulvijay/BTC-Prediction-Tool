@@ -31,6 +31,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import model_registry  # noqa: E402
+
 BACKEND = Path(__file__).resolve().parent
 REPO = BACKEND.parent
 try:
@@ -41,26 +44,65 @@ except Exception:
 DATA = os.environ.get("BTC_DATA_DIR") or str(REPO / "data")
 MODELS = Path(os.environ.get("BTC_MODEL_OUTPUT_DIR") or (Path(DATA) / "saved_models"))
 
-#: head name -> the artifact file that SERVES it. One place, so a rename cannot silently
-#: leave a head bound to a file nothing loads.
-HEAD_ARTIFACTS: dict[str, str] = {
-    "p_hold": "phold_calibrator.pkl",
-    "flip_risk": "phold_calibrator.pkl",
-    "path": "path_forecaster.pkl",
-    "big_move": "bigmove_keeper.pkl",
-    "big_drop": "bigdrop_keeper.pkl",
-    "directional": "directional_keeper.pkl",
-    "activity": "activity_keeper.pkl",
-    "selectivity": "selectivity_models.pkl",
-    "champion_meta": "champion_meta_model.pkl",
+#: Health/champion head name -> the registry TARGET that names its artifact.
+#:
+#: DERIVED FROM model_registry, never hand-maintained. The first version of this file carried
+#: its own filename dictionary and six of nine entries were wrong - `bigmove_keeper.pkl` where
+#: the trained artifact is `bigmove_keeper_model.pkl`, `phold_calibrator.pkl` where it is
+#: `persistence_model.pkl`. Every one of those heads resolved to no sha at all, so the
+#: authority gate denied them permanently: fail-closed, and completely useless, while looking
+#: like it worked. A second hand-maintained mapping of the same facts is how that happens.
+#:
+#: Only names that DIFFER from their registry target need an entry here.
+HEAD_ALIASES: dict[str, str] = {
+    "flip_risk": "p_hold",          # same persistence artifact produces both outputs
+    "directional": "direction",
+    "path": "path_quantiles",
+    "champion_meta": "champion_decision",
 }
+
+
+def registry_entry(head: str):
+    """The registry row that owns this head's artifact, or None."""
+    target = HEAD_ALIASES.get(head, head)
+    for entry in model_registry.REGISTRY:
+        if entry.target == target:
+            return entry
+    return model_registry.lookup(head)
+
+
+def head_artifacts() -> dict[str, str]:
+    """head -> canonical filename, resolved through the registry."""
+    out = {}
+    for head in list(HEAD_ALIASES) + [e.target for e in model_registry.REGISTRY]:
+        entry = registry_entry(head)
+        if entry is not None:
+            out[head] = entry.filename
+    return out
+
+
+def registry_authority(head: str) -> dict[str, bool]:
+    """The STATIC ceiling on what this head may ever do.
+
+    Live health must never grant more than this. The registry says persistence/P(Hold) may
+    RANK but may not PRICE - live P(Hold) is overconfident - while head-health hands
+    may_price to anything it classifies USABLE. Two sources of authority disagreeing means
+    the more permissive one wins by accident, so they are intersected at the gate.
+    """
+    entry = registry_entry(head)
+    if entry is None:
+        # Unregistered: no contract to check against, so no authority. Never a default-allow.
+        return {"may_price": False, "may_rank": False, "may_size": False}
+    return {"may_price": entry.may_price, "may_rank": entry.may_rank,
+            "may_size": entry.may_size}
+
 
 _CHUNK = 1 << 20
 
 
 def artifact_path(head: str) -> Path | None:
-    name = HEAD_ARTIFACTS.get(head)
-    return (MODELS / name) if name else None
+    entry = registry_entry(head)
+    return (MODELS / entry.filename) if entry is not None else None
 
 
 def file_sha256(path: Path) -> str:
@@ -87,6 +129,7 @@ def resolve_serving_sha(head: str) -> str | None:
 
 
 def selftest() -> int:
+    global MODELS                 # declared first: Python forbids `global` after any use
     import json
     import tempfile
     checks = 0
@@ -97,7 +140,24 @@ def selftest() -> int:
         checks += 1
         print(f"  PASS  {text}")
 
-    global MODELS
+    # EVERY head the champion and health actually use must resolve to a registry entry, and
+    # to a file that is really there. The first version of this module carried a hand-written
+    # filename dict in which six of nine entries named files that do not exist - so those
+    # heads resolved to no sha, and the authority gate denied them permanently while looking
+    # like it worked. This check is what makes that class of rot fail loudly.
+    LIVE_HEADS = ("p_hold", "flip_risk", "big_move", "big_drop", "directional",
+                  "activity", "path", "selectivity", "champion_meta")
+    for head in LIVE_HEADS:
+        entry = registry_entry(head)
+        check(entry is not None,
+              f"'{head}' resolves to a model_registry entry ({entry.filename if entry else '-'})")
+    on_disk = {q.name for q in MODELS.glob("*.pkl")} if MODELS.exists() else set()
+    if on_disk:
+        missing = [h for h in LIVE_HEADS if registry_entry(h).filename not in on_disk]
+        check(not missing,
+              f"and every live head's artifact is present in {MODELS.name} (missing: "
+              f"{missing or 'none'}) - a name that matches no file yields no sha at all")
+
     original = MODELS
     with tempfile.TemporaryDirectory() as tmp:
         MODELS = Path(tmp)
@@ -107,7 +167,7 @@ def selftest() -> int:
         check(resolve_serving_sha("not_a_head") is None,
               "an unmapped head name resolves to None rather than guessing a filename")
 
-        art = MODELS / HEAD_ARTIFACTS["p_hold"]
+        art = MODELS / head_artifacts()["p_hold"]
         art.write_bytes(b"artifact-A")
         sha_a = resolve_serving_sha("p_hold")
         check(sha_a is not None and len(sha_a) == 64, "an existing artifact resolves to a sha256")
@@ -139,19 +199,26 @@ def selftest() -> int:
                   "permissions": {"may_price": True, "may_rank": True}}
         publish({"heads": {"p_hold": usable}})
 
-        ok, why = hp.may_price("p_hold", artifact_sha=sha_a)
-        check(ok, f"the MEASURED artifact may price ({why[:44]}...)")
-        ok_b, why_b = hp.may_price("p_hold", artifact_sha=sha_b)
+        ok, why = hp.may_rank("p_hold", artifact_sha=sha_a)
+        check(ok, f"the MEASURED artifact may RANK ({why[:44]}...)")
+        # PRICE is not merely unmeasured here - the registry caps it. model_registry declares
+        # persistence/P(Hold) may_rank and NOT may_price, because live P(Hold) is
+        # overconfident. Health saying USABLE must not override that.
+        ok_p, why_p = hp.may_price("p_hold", artifact_sha=sha_a)
+        check(not ok_p and "registry" in why_p,
+              "and may NOT price even when health says USABLE - the registry is a ceiling, so "
+              "live evidence can revoke authority but never grant more than the contract")
+        ok_b, why_b = hp.may_rank("p_hold", artifact_sha=sha_b)
         check(not ok_b and "ARTIFACT_MISMATCH" in why_b,
-              f"the RETRAINED artifact may not - it starts from zero evidence ({why_b[:52]}...)")
+              f"the RETRAINED artifact may not rank - it starts from zero evidence ({why_b[:44]}...)")
 
         unbound = {"state": "USABLE", "permissions": {"may_price": True, "may_rank": True}}
         publish({"heads": {"p_hold": unbound}})
-        ok_u, why_u = hp.may_price("p_hold", artifact_sha=sha_a)
+        ok_u, why_u = hp.may_rank("p_hold", artifact_sha=sha_a)
         check(not ok_u and "UNBOUND_EVIDENCE" in why_u,
               "a report naming NO artifact certifies nothing, even for a head it calls USABLE "
               "- otherwise the old unbound reports keep granting authority forever")
-        ok_n, _ = hp.may_price("p_hold")
+        ok_n, _ = hp.may_rank("p_hold")
         check(not ok_n,
               "and it is denied even when the caller asks WITHOUT a sha, so the fix cannot be "
               "sidestepped by omitting the argument")
@@ -167,7 +234,7 @@ def main() -> int:
     print("=" * 74)
     print(f"SERVING ARTIFACTS  ({MODELS})")
     print("=" * 74)
-    for head in sorted(HEAD_ARTIFACTS):
+    for head in sorted(head_artifacts()):
         sha = resolve_serving_sha(head)
         path = artifact_path(head)
         print(f"  {head:<15}{(sha[:16] if sha else '-- not on disk --'):<20}{path.name}")

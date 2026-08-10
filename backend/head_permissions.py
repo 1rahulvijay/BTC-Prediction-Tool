@@ -87,6 +87,19 @@ def _denied(reason: str) -> dict:
     return {**DENIED, "reason": reason}
 
 
+def _registry_cap(head: str) -> dict:
+    """The static ceiling from model_registry. Unresolvable -> no authority, never a default.
+
+    Imported lazily so this module keeps working (denying) if the registry cannot be loaded -
+    an import error here must not become an exception that a caller's except-branch turns
+    into a pass."""
+    try:
+        from head_artifact_identity import registry_authority
+        return registry_authority(head)
+    except Exception:      # noqa: BLE001
+        return {"may_price": False, "may_rank": False, "may_size": False}
+
+
 def head_state(head: str, *, artifact_sha: str | None = None,
                horizon: int | None = None) -> tuple[str, dict]:
     """(state, permissions) for a head. Missing / stale / unknown / corrupt -> DENIED.
@@ -160,13 +173,28 @@ def head_state(head: str, *, artifact_sha: str | None = None,
         # A report that grants permission to a no-action state is self-contradictory; the STATE
         # wins, so a malformed or hand-edited report cannot re-open the gate.
         return state, _denied(h.get("reason") or f"state {state} carries no action authority")
-    perms = {
-        "may_price": bool(perms.get("may_price", False)),
-        "may_rank": bool(perms.get("may_rank", False)),
+    # ── REGISTRY CAP ───────────────────────────────────────────────────────────────────────
+    # Live evidence may REVOKE authority, never grant more than the static contract allows.
+    # There were two disagreeing sources: model_registry declares persistence/P(Hold) as
+    # may_rank but NOT may_price - live P(Hold) is overconfident, so pricing is deliberately
+    # withheld - while head-health handed may_price to anything it classified USABLE. When two
+    # systems disagree about authority the more permissive one wins by accident. Intersecting
+    # them makes the registry a ceiling and health a further restriction on top.
+    cap = _registry_cap(head)
+    capped = {
+        "may_price": bool(perms.get("may_price", False)) and cap["may_price"],
+        "may_rank": bool(perms.get("may_rank", False)) and cap["may_rank"],
+        # Display is diagnostic, not authority, so the registry does not gate it.
         "may_display_confidence": bool(perms.get("may_display_confidence", False)),
         "reason": h.get("reason", ""),
     }
-    return state, perms
+    for act in ("may_price", "may_rank"):
+        if perms.get(act) and not cap[act]:
+            capped["reason"] = (
+                f"{capped['reason']} | {act} withheld by the model registry, which caps this "
+                f"head below what health measured"
+            ).strip(" |")
+    return state, capped
 
 
 def may_price(head: str, *, artifact_sha: str | None = None,
@@ -263,8 +291,11 @@ def selftest() -> int:
     # inherit its predecessor's evidence for up to the 14-day freshness window.
     write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
                                 "permissions": {"may_price": True, "may_rank": True}}}})
-    chk(may_price("p_hold", artifact_sha=SHA_A)[0],
-        "the MEASURED artifact may price")
+    chk(may_rank("p_hold", artifact_sha=SHA_A)[0],
+        "the MEASURED artifact may rank")
+    chk(not may_price("p_hold", artifact_sha=SHA_A)[0],
+        "and still may not PRICE - the registry cap applies on top of a valid artifact "
+        "binding, not instead of it")
     st, p = head_state("p_hold", artifact_sha=SHA_B)
     chk(st == "ARTIFACT_MISMATCH" and not p["may_price"] and not p["may_rank"],
         "a RETRAINED artifact inherits nothing - a different sha is a different model")
@@ -277,6 +308,47 @@ def selftest() -> int:
     chk(not may_price("p_hold")[0] and not may_rank("p_hold")[0],
         "and omitting the sha does not sidestep it - unbound evidence denies either way")
 
+    # A head the registry caps at NO RANK. `fade_roundtrip` is declared may_rank=False -
+    # research only - so health calling it USABLE must not make it rankable. Without a case
+    # like this the rank half of the cap is untested: every other head here happens to have
+    # may_rank=True, so deleting that half of the intersection changes nothing.
+    write({"heads": {"fade_roundtrip": {
+        "state": "USABLE", "artifact_sha": SHA_A,
+        "permissions": {"may_price": True, "may_rank": True}}}})
+    st, p = head_state("fade_roundtrip", artifact_sha=SHA_A)
+    chk(st == "USABLE" and not p["may_rank"] and not p["may_price"],
+        "a research-only head stays research-only however healthy it measures - the registry "
+        "caps RANK as well as PRICE")
+
+    # A registry lookup that RAISES must deny. The cap is wrapped in a try/except so a
+    # registry import problem cannot crash the gate - but that except branch must fail
+    # CLOSED, or an unrelated import error silently restores full authority.
+    import head_artifact_identity as _hai
+    _real_auth = _hai.registry_authority
+
+    def _boom(*a, **k):
+        raise RuntimeError("registry unavailable")
+
+    _hai.registry_authority = _boom
+    try:
+        write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
+                                    "permissions": {"may_price": True, "may_rank": True}}}})
+        _, p = head_state("p_hold", artifact_sha=SHA_A)
+        chk(not p["may_price"] and not p["may_rank"],
+            "a registry lookup that RAISES denies - the cap's except branch fails closed, so "
+            "an import error cannot restore the authority it exists to withhold")
+    finally:
+        _hai.registry_authority = _real_auth
+
+    # A head with no registry contract at all.
+    write({"heads": {"not_registered_anywhere": {
+        "state": "USABLE", "artifact_sha": SHA_A,
+        "permissions": {"may_price": True, "may_rank": True}}}})
+    _, p = head_state("not_registered_anywhere", artifact_sha=SHA_A)
+    chk(not p["may_price"] and not p["may_rank"],
+        "an UNREGISTERED head gets no authority - an artifact outside the registry has no "
+        "identity contract to check against, so it cannot be granted one by a health file")
+
     # Horizon. P(Hold) at 5m and 15m are different calibration problems; a pooled figure must
     # not let one act on the other's evidence.
     write({"heads": {"p_hold": {
@@ -287,9 +359,9 @@ def selftest() -> int:
                   "permissions": {"may_price": True, "may_rank": True}},
             "15": {"state": "DISABLED_NO_SKILL",
                    "permissions": {"may_price": False, "may_rank": False}}}}}})
-    chk(may_price("p_hold", artifact_sha=SHA_A, horizon=5)[0],
-        "the horizon with evidence may price")
-    chk(not may_price("p_hold", artifact_sha=SHA_A, horizon=15)[0],
+    chk(may_rank("p_hold", artifact_sha=SHA_A, horizon=5)[0],
+        "the horizon with evidence may rank")
+    chk(not may_rank("p_hold", artifact_sha=SHA_A, horizon=15)[0],
         "while the WEAK horizon may not, though the pooled entry says USABLE - 15m no longer "
         "acts on authority 5m earned")
     st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=60)
@@ -313,8 +385,16 @@ def selftest() -> int:
                                 "permissions": {"may_price": True, "may_rank": True,
                                                 "may_display_confidence": True}}}})
     _, p = head_state("p_hold")
-    chk(p["may_price"] and p["may_rank"], "USABLE may price and rank (the gate re-opens)")
-    chk(may_price("p_hold")[0], "may_price() honours a measured USABLE head")
+    chk(p["may_rank"], "USABLE may rank (the gate re-opens)")
+    chk(may_rank("p_hold")[0], "may_rank() honours a measured USABLE head")
+    # The REGISTRY CAP. model_registry gives persistence/P(Hold) may_rank but not may_price;
+    # health classifying it USABLE must not manufacture pricing authority the contract
+    # withholds. Live evidence subtracts from the ceiling, it never adds.
+    chk(not p["may_price"] and not may_price("p_hold")[0],
+        "but may NOT price: the registry caps this head below what health measured")
+    chk("registry" in p.get("reason", ""),
+        "and the cap SAYS SO in the reason, so an operator sees why pricing was withheld "
+        "rather than assuming the head measured badly")
 
     # --- defaults are DENY, not ALLOW --------------------------------------------------------
     write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
