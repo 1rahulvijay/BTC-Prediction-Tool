@@ -87,8 +87,21 @@ def _denied(reason: str) -> dict:
     return {**DENIED, "reason": reason}
 
 
-def head_state(head: str) -> tuple[str, dict]:
+def head_state(head: str, *, artifact_sha: str | None = None,
+               horizon: int | None = None) -> tuple[str, dict]:
     """(state, permissions) for a head. Missing / stale / unknown / corrupt -> DENIED.
+
+    Authority is bound to WHICH ARTIFACT and WHICH HORIZON was measured, not to a head's
+    NAME. Keying on the name alone let a retrained head inherit its predecessor's evidence:
+
+        p_hold artifact A -> 5,000 live outcomes -> USABLE
+        retrain
+        p_hold artifact B -> zero live outcomes  -> may_price("p_hold") still True,
+                                                    because the report was under 14 days old
+
+    Freshness of the FILE is not freshness of the EVIDENCE. A report that cannot say which
+    artifact it measured certifies nothing, so an entry without `artifact_sha` is denied
+    outright rather than treated as applying to whatever happens to be serving.
 
     The app remains online in every one of these cases; what is withheld is the authority to
     price or rank, never the ability to serve or display."""
@@ -107,6 +120,40 @@ def head_state(head: str) -> tuple[str, dict]:
         return "UNKNOWN", _denied(
             f"'{head}' absent from the head-health report; unmeasured heads cannot act"
         )
+
+    # ── ARTIFACT BINDING ───────────────────────────────────────────────────────────────────
+    measured_sha = str(h.get("artifact_sha") or "")
+    if not measured_sha:
+        return "UNBOUND_EVIDENCE", _denied(
+            f"'{head}' health names no artifact_sha, so it cannot certify any particular "
+            f"model; evidence measured on an unnamed artifact does not transfer to a "
+            f"retrained one"
+        )
+    if artifact_sha is not None and str(artifact_sha) != measured_sha:
+        return "ARTIFACT_MISMATCH", _denied(
+            f"'{head}' health was measured on {measured_sha[:12]}, but {str(artifact_sha)[:12]} "
+            f"is serving; a retrained head starts from zero evidence"
+        )
+
+    # ── HORIZON BINDING ────────────────────────────────────────────────────────────────────
+    # P(Hold) at 5m and P(Hold) at 15m are different calibration problems. A pooled figure
+    # can read USABLE on 5m strength while 15m is unusable, and 15m then acts on authority
+    # 5m earned.
+    if horizon is not None:
+        by_h = h.get("by_horizon") or {}
+        key = str(int(horizon))
+        if not by_h:
+            return "HORIZON_POOLED", _denied(
+                f"'{head}' health pools horizons; a pooled measurement cannot authorize "
+                f"{horizon}m specifically"
+            )
+        if key not in by_h:
+            return "HORIZON_UNMEASURED", _denied(
+                f"'{head}' health has no {horizon}m measurement "
+                f"(measured: {sorted(by_h)}); permission applies only where evidence exists"
+            )
+        h = {**h, **by_h[key]}          # the horizon's own state/permissions win
+
     state = str(h.get("state") or h.get("status") or "UNKNOWN")
     perms = dict(h.get("permissions") or {})
     if state in NO_ACTION_STATES:
@@ -122,18 +169,24 @@ def head_state(head: str) -> tuple[str, dict]:
     return state, perms
 
 
-def may_price(head: str) -> tuple[bool, str]:
-    """May this head supply a FAIR VALUE (i.e. authorize money-relevant arithmetic)?"""
-    state, perms = head_state(head)
+def may_price(head: str, *, artifact_sha: str | None = None,
+              horizon: int | None = None) -> tuple[bool, str]:
+    """May this head supply a FAIR VALUE (i.e. authorize money-relevant arithmetic)?
+
+    Pass the SERVING artifact's sha and the horizon being priced. Omitting them does not
+    grant a broader permission - an entry that names no artifact is denied either way - but
+    passing them is what makes a retrain revoke authority instead of inheriting it."""
+    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
     ok = bool(perms.get("may_price", False))      # default DENY, never allow
     return ok, f"{head}={state}: {perms.get('reason', '')}"
 
 
-def may_rank(head: str) -> tuple[bool, str]:
+def may_rank(head: str, *, artifact_sha: str | None = None,
+             horizon: int | None = None) -> tuple[bool, str]:
     """May this head ORDER candidates (weaker permission than pricing)?"""
-    state, perms = head_state(head)
+    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
     return bool(perms.get("may_rank", False)), f"{head}={state}: {perms.get('reason', '')}"
@@ -152,6 +205,8 @@ def selftest() -> int:
     global REPORT
     tmp = tempfile.mkdtemp()
     REPORT = os.path.join(tmp, "head_health.json")
+    SHA_A = "a" * 64          # the artifact the report measured
+    SHA_B = "b" * 64          # what a retrain produces
 
     def reset():
         global _CACHE
@@ -203,13 +258,58 @@ def selftest() -> int:
         chk(not p["may_price"] and not p["may_rank"],
             f"{state} denied even when the report grants permission")
 
+    # --- ARTIFACT AND HORIZON BINDING --------------------------------------------------------
+    # Authority belongs to an ARTIFACT, not to a name. Keying on the name let a retrained head
+    # inherit its predecessor's evidence for up to the 14-day freshness window.
+    write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
+                                "permissions": {"may_price": True, "may_rank": True}}}})
+    chk(may_price("p_hold", artifact_sha=SHA_A)[0],
+        "the MEASURED artifact may price")
+    st, p = head_state("p_hold", artifact_sha=SHA_B)
+    chk(st == "ARTIFACT_MISMATCH" and not p["may_price"] and not p["may_rank"],
+        "a RETRAINED artifact inherits nothing - a different sha is a different model")
+
+    write({"heads": {"p_hold": {"state": "USABLE",
+                                "permissions": {"may_price": True, "may_rank": True}}}})
+    st, p = head_state("p_hold", artifact_sha=SHA_A)
+    chk(st == "UNBOUND_EVIDENCE" and not p["may_price"],
+        "a report naming NO artifact certifies nothing, even when it says USABLE")
+    chk(not may_price("p_hold")[0] and not may_rank("p_hold")[0],
+        "and omitting the sha does not sidestep it - unbound evidence denies either way")
+
+    # Horizon. P(Hold) at 5m and 15m are different calibration problems; a pooled figure must
+    # not let one act on the other's evidence.
+    write({"heads": {"p_hold": {
+        "state": "USABLE", "artifact_sha": SHA_A,
+        "permissions": {"may_price": True, "may_rank": True},
+        "by_horizon": {
+            "5": {"state": "USABLE",
+                  "permissions": {"may_price": True, "may_rank": True}},
+            "15": {"state": "DISABLED_NO_SKILL",
+                   "permissions": {"may_price": False, "may_rank": False}}}}}})
+    chk(may_price("p_hold", artifact_sha=SHA_A, horizon=5)[0],
+        "the horizon with evidence may price")
+    chk(not may_price("p_hold", artifact_sha=SHA_A, horizon=15)[0],
+        "while the WEAK horizon may not, though the pooled entry says USABLE - 15m no longer "
+        "acts on authority 5m earned")
+    st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=60)
+    chk(st == "HORIZON_UNMEASURED",
+        "and an unmeasured horizon is denied rather than falling back to the pooled figure")
+
+    write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
+                                "permissions": {"may_price": True, "may_rank": True}}}})
+    st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=5)
+    chk(st == "HORIZON_POOLED",
+        "a report with no per-horizon blocks cannot authorize a specific horizon at all")
+
     # --- the graded permissions that SHOULD be honoured --------------------------------------
     write({"heads": {"p_hold": {"state": "CALIBRATION_ONLY", "reason": "ECE 0.07",
+                                "artifact_sha": SHA_A,
                                 "permissions": {"may_price": False, "may_rank": True}}}})
     _, p = head_state("p_hold")
     chk(not p["may_price"] and p["may_rank"], "CALIBRATION_ONLY may rank, may NOT price")
 
-    write({"heads": {"p_hold": {"state": "USABLE",
+    write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
                                 "permissions": {"may_price": True, "may_rank": True,
                                                 "may_display_confidence": True}}}})
     _, p = head_state("p_hold")
@@ -217,7 +317,8 @@ def selftest() -> int:
     chk(may_price("p_hold")[0], "may_price() honours a measured USABLE head")
 
     # --- defaults are DENY, not ALLOW --------------------------------------------------------
-    write({"heads": {"p_hold": {"state": "USABLE", "permissions": {}}}})
+    write({"heads": {"p_hold": {"state": "USABLE", "artifact_sha": SHA_A,
+                                "permissions": {}}}})
     _, p = head_state("p_hold")
     chk(not p["may_price"] and not p["may_rank"],
         "an empty permissions block defaults to DENY, not ALLOW")

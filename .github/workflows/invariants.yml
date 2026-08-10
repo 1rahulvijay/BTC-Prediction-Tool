@@ -168,6 +168,9 @@ jobs:
       - name: Selectivity target is bps from the fitting span, OOS purged
         run: python backend/test_selectivity_target_contract.py
 
+      - name: Head authority is bound to an artifact sha, not a head name
+        run: python backend/head_artifact_identity.py --selftest
+
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
@@ -928,6 +931,7 @@ jobs:
           python backend/test_keeper_head_purge.py || exit /b 1
           python backend/test_path_head_purge.py || exit /b 1
           python backend/test_selectivity_target_contract.py || exit /b 1
+          python backend/head_artifact_identity.py --selftest || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1

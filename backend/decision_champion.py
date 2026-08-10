@@ -471,7 +471,12 @@ def champion_decision(
             # live data says cannot supply a fair value - overruling the evidence with a flag.
             try:
                 from head_permissions import may_price as _may_price
-                _ph_ok, _ph_why = _may_price("p_hold")
+                from head_artifact_identity import resolve_serving_sha as _serving_sha
+                # Bound to the ARTIFACT and HORIZON, not the name. A retrain changes the sha,
+                # so the new head starts from zero evidence instead of inheriting USABLE from
+                # its predecessor for the remainder of the report's 14-day freshness window.
+                _ph_ok, _ph_why = _may_price(
+                    "p_hold", artifact_sha=_serving_sha("p_hold"), horizon=horizon)
             except Exception as exc:        # noqa: BLE001
                 # FAIL CLOSED. A permission check that cannot run has not granted permission.
                 # Assuming True here meant a broken or missing health reader silently restored

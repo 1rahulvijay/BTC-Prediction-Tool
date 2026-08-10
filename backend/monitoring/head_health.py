@@ -109,6 +109,27 @@ def check_tier_monotonicity(tiers):
 
 
 # ---------------------------------------------------------------- live data
+#: Horizons measured separately. Pooling them let one horizon act on the other's evidence.
+HORIZONS = (5, 15)
+#: Sub-bands of the champion's operating window. A head good at 18s and poor at 90s must not
+#: earn authority across the whole band.
+OPERATING_REGIONS = ((15, 30), (30, 60), (60, 90), (90, 120))
+REGION_MIN, REGION_MAX = 15, 120
+
+
+def serving_artifact_sha(head: str) -> str | None:
+    """SHA of the artifact currently SERVING this head, or None if it cannot be determined.
+
+    None is not a failure to be papered over: head_permissions treats an entry without an
+    artifact_sha as UNBOUND_EVIDENCE and denies it. A health report that cannot name the
+    artifact it measured must not certify whatever happens to be loaded later."""
+    try:
+        from head_artifact_identity import resolve_serving_sha
+        return resolve_serving_sha(head)
+    except Exception:
+        return None
+
+
 def run(db_path):
     import duckdb
     con = duckdb.connect(db_path, read_only=True)
@@ -122,37 +143,80 @@ def run(db_path):
             print(f"   query failed: {str(exc)[:90]}")
             return np.empty((0, 2))
 
-    # P(hold): does the leading side hold?
-    a = one_per_round("""
-        WITH s AS (SELECT round_id, ts, p_leader_holds, current_position, seconds_left,
-                          ROW_NUMBER() OVER (PARTITION BY round_id ORDER BY seconds_left) rn
-                   FROM round_state_snapshots
-                   WHERE seconds_left BETWEEN 15 AND 120 AND p_leader_holds IS NOT NULL)
-        SELECT s.p_leader_holds,
-               CASE WHEN s.current_position = p.actual_direction THEN 1 ELSE 0 END
-        FROM s JOIN price_to_beat p ON p.id = s.round_id
-        WHERE s.rn = 1 AND p.resolved AND p.actual_direction IN ('UP','DOWN')
-          AND p.settlement_source LIKE 'official:%'
-          AND s.current_position IN ('UP','DOWN')
-        ORDER BY s.ts""")
-    if len(a):
-        rep["heads"]["p_hold"] = classify(a[:, 0], a[:, 1], "p_hold")
+    # P(hold) and flip-risk, measured PER HORIZON and PER OPERATING REGION.
+    #
+    # This used one pooled population per head, built with
+    #     ROW_NUMBER() OVER (PARTITION BY round_id ORDER BY seconds_left) ... WHERE rn = 1
+    # which selects, within the 15-120s band, the snapshot with the LEAST time remaining -
+    # the easiest instance of the problem. Two things followed:
+    #   * 5m and 15m were pooled (95,481 and 91,504 rows in the live store), so a head strong
+    #     at 5m could carry a weak 15m to USABLE and 15m would act on 5m's evidence;
+    #   * a head excellent at 18s and poor at 90s earned authority across the whole band,
+    #     while the champion operates over all of it.
+    # Permission now applies only where evidence exists: head_permissions refuses a horizon
+    # with no block of its own, so an unmeasured region cannot borrow a measured one.
+    def _stratified(column, outcome_sql, head_name):
+        sql = f"""
+            WITH s AS (SELECT round_id, ts, horizon, {column} AS v, current_position,
+                              seconds_left,
+                              ROW_NUMBER() OVER (PARTITION BY round_id
+                                                 ORDER BY seconds_left) rn
+                       FROM round_state_snapshots
+                       WHERE seconds_left BETWEEN ? AND ? AND {column} IS NOT NULL
+                         AND horizon = ?)
+            SELECT s.v, {outcome_sql}
+            FROM s JOIN price_to_beat p ON p.id = s.round_id
+            WHERE s.rn = 1 AND p.resolved AND p.actual_direction IN ('UP','DOWN')
+              AND p.settlement_source LIKE 'official:%'
+              AND s.current_position IN ('UP','DOWN')
+            ORDER BY s.ts"""
+        by_horizon = {}
+        pooled_p, pooled_y = [], []
+        for hz in HORIZONS:
+            regions = {}
+            for lo, hi in OPERATING_REGIONS:
+                arr = one_per_round(sql, (lo, hi, hz))
+                if len(arr):
+                    regions[f"{lo}-{hi}s"] = classify(arr[:, 0], arr[:, 1],
+                                                      f"{head_name}@{hz}m/{lo}-{hi}s")
+            whole = one_per_round(sql, (REGION_MIN, REGION_MAX, hz))
+            if not len(whole):
+                continue
+            pooled_p.append(whole[:, 0])
+            pooled_y.append(whole[:, 1])
+            block = classify(whole[:, 0], whole[:, 1], f"{head_name}@{hz}m")
+            block["by_region"] = regions
+            block["horizon"] = hz
+            by_horizon[str(hz)] = block
+        if not by_horizon:
+            return None
+        entry = classify(np.concatenate(pooled_p), np.concatenate(pooled_y), head_name)
+        entry["by_horizon"] = by_horizon
+        # The pooled figure stays for display, but it is explicitly NOT what grants
+        # authority: head_permissions denies a horizon that has no block of its own.
+        entry["pooled_is_not_authority"] = True
+        return entry
 
-    # flip risk: is it the complement of holding?
-    b = one_per_round("""
-        WITH s AS (SELECT round_id, ts, flip_risk, current_position, seconds_left,
-                          ROW_NUMBER() OVER (PARTITION BY round_id ORDER BY seconds_left) rn
-                   FROM round_state_snapshots
-                   WHERE seconds_left BETWEEN 15 AND 120 AND flip_risk IS NOT NULL)
-        SELECT s.flip_risk,
-               CASE WHEN s.current_position <> p.actual_direction THEN 1 ELSE 0 END
-        FROM s JOIN price_to_beat p ON p.id = s.round_id
-        WHERE s.rn = 1 AND p.resolved AND p.actual_direction IN ('UP','DOWN')
-          AND p.settlement_source LIKE 'official:%'
-          AND s.current_position IN ('UP','DOWN')
-        ORDER BY s.ts""")
-    if len(b):
-        rep["heads"]["flip_risk"] = classify(b[:, 0], b[:, 1], "flip_risk")
+    a = _stratified("p_leader_holds",
+                    "CASE WHEN s.current_position = p.actual_direction THEN 1 ELSE 0 END",
+                    "p_hold")
+    if a:
+        rep["heads"]["p_hold"] = a
+
+    b = _stratified("flip_risk",
+                    "CASE WHEN s.current_position <> p.actual_direction THEN 1 ELSE 0 END",
+                    "flip_risk")
+    if b:
+        rep["heads"]["flip_risk"] = b
+
+    # ARTIFACT BINDING. Without this every entry is UNBOUND_EVIDENCE and grants nothing -
+    # which is the correct reading of a measurement that cannot name what it measured.
+    for name, entry in rep["heads"].items():
+        sha = serving_artifact_sha(name)
+        if sha:
+            entry["artifact_sha"] = sha
+            for blk in (entry.get("by_horizon") or {}).values():
+                blk["artifact_sha"] = sha
 
     # champion action tiers - are they a confidence scale at all?
     try:
