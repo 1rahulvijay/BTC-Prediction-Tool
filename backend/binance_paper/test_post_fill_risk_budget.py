@@ -39,9 +39,11 @@ def check(cond, text):
 def main() -> int:
     from binance_paper.post_fill_geometry import geometry
 
-    # Sized at the decided entry for a 50 bps stop and a $30 budget.
+    # Sized at the decided entry for a 50 bps stop and a $30 budget, including the
+    # one-leg cost that will be paid if the stop executes.
     decided, stop, target = 60_000.0, 59_700.0, 60_600.0
-    qty = 30.0 / (decided - stop)          # $30 / $300 = 0.1 BTC
+    exit_cost_per_btc = stop * (12.0 / 2.0) / 10_000.0
+    qty = 30.0 / ((decided - stop) + exit_cost_per_btc)
     common = dict(side="LONG", decided_entry=decided, stop_price=stop,
                   target_price=target, round_trip_bps=12.0,
                   quantity=qty, approved_risk_usd=30.0)
@@ -49,14 +51,10 @@ def main() -> int:
     # A fill AT the decided price stays inside budget once exit cost is charged.
     at_mark = geometry(fill_price=decided, **common)
     check(at_mark["admissible"] is True,
-          f"a fill AT the decided entry is admissible even though it risks "
-          f"${at_mark['filled_stop_loss_usd']:.2f} against a $30.00 budget - that gap is a "
-          f"SIZING defect (qty = budget/stop_fraction omits the exit cost it sizes for), not "
-          f"something the fill caused, and rejecting on it would block flawless fills")
-    check(at_mark["decided_stop_loss_usd"] > at_mark["approved_risk_usd"],
-          f"the sizing shortfall is REPORTED instead (${at_mark['decided_stop_loss_usd']:.2f} "
-          f"decided vs ${at_mark['approved_risk_usd']:.2f} approved) so the sizing policy can "
-          f"see it rather than it being hidden by a rejection")
+          "a fill at the decided entry remains admissible")
+    check(at_mark["decided_stop_loss_usd"] <= at_mark["approved_risk_usd"] + 1e-9,
+          f"cost-aware sizing keeps decided stop loss (${at_mark['decided_stop_loss_usd']:.2f}) "
+          "inside the approved $30.00 budget")
 
     # The defect case: 20 bps of adverse slippage, same quantity, same stop.
     slipped = geometry(fill_price=60_120.0, **common)

@@ -66,10 +66,10 @@ class _FakeDB(types.SimpleNamespace):
     def fetch_ab_variant_stats(self):
         return {}
 
-    def fetch_ab_paired_outcomes(self, a, b):
+    def fetch_ab_paired_outcomes(self, *args):
         return []
 
-    def fetch_ab_variant_profit_stats(self):
+    def fetch_ab_variant_profit_stats(self, *args):
         return {}
 
     def log_ab_prediction(self, *a, **k):

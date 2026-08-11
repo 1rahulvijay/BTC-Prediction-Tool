@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from threading import RLock
 from typing import Iterator
 
 import duckdb
 
-from .types import ExecutionResult, FillStatus, OrderRequest, PositionState
+from .paper_types import ExecutionResult, FillStatus, OrderRequest, PositionState
 
 
 SCHEMA = """
@@ -210,7 +209,17 @@ class BinancePaperStore:
                     "(instrument, quantity, average_entry, realized_pnl_gross, "
                     "fees_paid, funding_pnl, cash_balance, leverage, updated_at_ns) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    list(asdict(position).values()),
+                    [
+                        position.instrument,
+                        position.quantity,
+                        position.average_entry,
+                        position.realized_pnl_gross,
+                        position.fees_paid,
+                        position.funding_pnl,
+                        position.cash_balance,
+                        position.leverage,
+                        position.updated_at_ns,
+                    ],
                 )
                 con.execute("COMMIT")
             except Exception:
@@ -266,7 +275,17 @@ class BinancePaperStore:
                     "(instrument, quantity, average_entry, realized_pnl_gross, "
                     "fees_paid, funding_pnl, cash_balance, leverage, updated_at_ns) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    list(asdict(position).values()),
+                    [
+                        position.instrument,
+                        position.quantity,
+                        position.average_entry,
+                        position.realized_pnl_gross,
+                        position.fees_paid,
+                        position.funding_pnl,
+                        position.cash_balance,
+                        position.leverage,
+                        position.updated_at_ns,
+                    ],
                 )
                 con.execute("COMMIT")
                 return True
@@ -277,8 +296,10 @@ class BinancePaperStore:
     def append_equity(self, values: dict) -> None:
         with self._lock, self._connect() as con:
             con.execute(
-                "INSERT OR REPLACE INTO paper_equity_snapshots VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO paper_equity_snapshots "
+                "(timestamp_ns, instrument, mark_price, equity, unrealized_pnl, "
+                "initial_margin, available_balance, liquidation_price) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     values["timestamp_ns"],
                     values["instrument"],
@@ -395,7 +416,7 @@ def apply_position_fill(
     timestamp_ns: int,
     leverage: float,
 ) -> float:
-    from .types import OrderSide
+    from .paper_types import OrderSide
 
     delta = quantity if side is OrderSide.BUY else -quantity
     old_quantity = state.quantity
@@ -436,4 +457,4 @@ def apply_position_fill(
     return realized
 
 
-from .types import OrderSide  # noqa: E402
+from .paper_types import OrderSide  # noqa: E402

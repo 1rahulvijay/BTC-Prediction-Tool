@@ -27,6 +27,7 @@ from train_beat_classifier import (build_beat_features, FEATURE_NAMES,
 # artifact fails identity enforcement - which disables
 # PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 from verified_io import write_manifest as write_integrity_manifest
+from quantile_safety import monotone_quantiles, purged_train_test_slices
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
@@ -81,8 +82,11 @@ def main():
         if len(yv) < 400:
             print(f"{h:>3} {len(yv):>7}  (insufficient)"); continue
         _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
-        a = int(len(yv) * _sf)                      # 98/2: fit = sf (98%); conformal-cal = recent 1-sf (2%)
-        Xtr, ytr, Xte, yte = Xv[:a], yv[:a], Xv[a:], yv[a:]    # temporal
+        # Magnitude has no conformal stage, so reserve only the untouched recent test and the
+        # horizon purge. Reserving an unused calibration block would discard another 2% of fit
+        # data without buying any independence.
+        tr, te = purged_train_test_slices(len(yv), h, _sf)
+        Xtr, ytr, Xte, yte = Xv[tr], yv[tr], Xv[te], yv[te]
         if len(Xtr) > MAX_SAMPLES:
             sel = np.linspace(0, len(Xtr) - 1, MAX_SAMPLES).astype(int)
             Xtr, ytr = Xtr[sel], ytr[sel]
@@ -92,16 +96,28 @@ def main():
                                             max_depth=3, learning_rate=0.05, subsample=0.7,
                                             random_state=0)
             gbr.fit(Xtr, ytr); qmodels[q] = gbr; preds[q] = gbr.predict(Xte)
-        # noise gate: model pinball(q50) < constant baseline (empirical q50 of train)
-        base_pred = np.full(len(yte), np.quantile(ytr, 0.5))
-        pb_model, pb_base = pinball(yte, preds[0.5], 0.5), pinball(yte, base_pred, 0.5)
-        mono = bool(np.mean((preds[0.1] <= preds[0.5]) & (preds[0.5] <= preds[0.9])) > 0.95)
-        ok = (pb_model < pb_base) and mono
+        # Every advertised quantile must beat its own constant baseline. Gating only q50 let
+        # useless tails through even though q10/q90 define the displayed uncertainty band.
+        losses = {}
+        for q in QUANTILES:
+            base_pred = np.full(len(yte), np.quantile(ytr, q))
+            losses[q] = (pinball(yte, preds[q], q), pinball(yte, base_pred, q))
+        raw_mono = float(np.mean((preds[0.1] <= preds[0.5]) &
+                                 (preds[0.5] <= preds[0.9])))
+        preds[0.1], preds[0.5], preds[0.9] = monotone_quantiles(
+            preds[0.1], preds[0.5], preds[0.9])
+        pb_model, pb_base = losses[0.5]
+        mono = bool(np.all((preds[0.1] <= preds[0.5]) & (preds[0.5] <= preds[0.9])))
+        ok = all(model_loss < baseline_loss for model_loss, baseline_loss in losses.values()) and mono
         print(f"{h:>3} {len(yv):>7} {pb_model:>12.6f} {pb_base:>10.6f}  {str(mono):>5}  "
               f"{'SIGNAL' if ok else '** NOISE **'}")
         if ok:
             models[h] = {"q": {q: qmodels[q] for q in QUANTILES}, "features": FEATURE_NAMES,
-                         "quantiles": list(QUANTILES)}
+                         "quantiles": list(QUANTILES), "serve_monotone_projection": True,
+                         "raw_monotone_rate": raw_mono,
+                         "test_pinball": {str(q): {"model": losses[q][0],
+                                                   "baseline": losses[q][1]}
+                                          for q in QUANTILES}}
             passed.append(h)
 
     print(f"\n{len(passed)}/{len(HORIZONS)} horizons beat the flat baseline: {passed}")

@@ -9,7 +9,7 @@ import duckdb
 from backend.quant_platform.risk_engine import RiskLimits
 
 from .engine import BinancePaperEngine
-from .types import BookLevel, BookSnapshot, FillStatus, OrderRequest, OrderSide
+from .paper_types import BookLevel, BookSnapshot, FillStatus, OrderRequest, OrderSide
 
 
 def _book(

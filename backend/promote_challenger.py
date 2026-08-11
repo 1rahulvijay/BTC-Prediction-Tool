@@ -38,6 +38,7 @@ LIVE = DATA / "saved_models"
 MATRIX_QUALITY = DATA / "research_matrix_monthly_quality.json"
 MATRIX_MANIFEST = DATA / "research_matrix_1m.manifest.json"
 HEAD_HEALTH = DATA / "research" / "head_health" / "head_health.json"
+MAX_HEAD_HEALTH_AGE_S = 14 * 24 * 3600
 
 ARTIFACT_SUFFIXES = (".pkl", ".joblib")
 COMPLETE_TRADE_MANIFEST_FIELDS = (
@@ -212,6 +213,19 @@ def gate_report(challenger: Path, requested_days: int | None = None) -> dict:
     # gate meant to be fail-closed. Both keys are read now so a future rename cannot re-open it.
     health = _load_json(HEAD_HEALTH)
     heads = health.get("heads") or {}
+    evidence_last_ts_ms = health.get("evidence_last_ts_ms")
+    if evidence_last_ts_ms is None:
+        blockers.append(
+            "head-health report has no attributable resolved-outcome timestamp"
+        )
+    else:
+        evidence_age_s = time.time() - (float(evidence_last_ts_ms) / 1000.0)
+        if evidence_age_s < -300:
+            blockers.append("head-health evidence timestamp is in the future")
+        elif evidence_age_s > MAX_HEAD_HEALTH_AGE_S:
+            blockers.append(
+                f"head-health resolved outcomes are stale ({evidence_age_s / 86400:.1f}d old)"
+            )
     disabled = [
         name for name, entry in heads.items()
         if "DISABLED_NO_SKILL" in {
@@ -451,7 +465,10 @@ def selftest() -> int:
         try:
             hh = root2 / "hh.json"
             hh.write_text(
-                json.dumps({"heads": {"p_hold": {"state": "DISABLED_NO_SKILL"}}}),
+                json.dumps({
+                    "evidence_last_ts_ms": int(time.time() * 1000),
+                    "heads": {"p_hold": {"state": "DISABLED_NO_SKILL"}},
+                }),
                 encoding="utf-8",
             )
             HEAD_HEALTH = hh
@@ -467,7 +484,21 @@ def selftest() -> int:
                 "a MISSING health report blocks promotion (absence is not a pass)",
             )
             hh.write_text(
-                json.dumps({"heads": {"p_hold": {"state": "USABLE"}}}), encoding="utf-8"
+                json.dumps({
+                    "evidence_last_ts_ms": int((time.time() - MAX_HEAD_HEALTH_AGE_S - 60) * 1000),
+                    "heads": {"p_hold": {"state": "USABLE"}},
+                }), encoding="utf-8"
+            )
+            r = gate_report(chal2)
+            chk(
+                any("resolved outcomes are stale" in b for b in r["blockers"]),
+                "rewriting a report cannot make old head evidence fresh",
+            )
+            hh.write_text(
+                json.dumps({
+                    "evidence_last_ts_ms": int(time.time() * 1000),
+                    "heads": {"p_hold": {"state": "USABLE"}},
+                }), encoding="utf-8"
             )
             r = gate_report(chal2)
             chk(
@@ -511,7 +542,10 @@ def selftest() -> int:
         matrix_path.write_text(json.dumps({"requested_days": 30}), encoding="utf-8")
         health_path = root4 / "health.json"
         health_path.write_text(
-            json.dumps({"heads": {"p_hold": {"state": "USABLE"}}}), encoding="utf-8"
+            json.dumps({
+                "evidence_last_ts_ms": int(time.time() * 1000),
+                "heads": {"p_hold": {"state": "USABLE"}},
+            }), encoding="utf-8"
         )
         originals = (DATA, MATRIX_QUALITY, MATRIX_MANIFEST, HEAD_HEALTH)
         try:

@@ -55,7 +55,7 @@ class BinancePaperPortfolio:
 
     @staticmethod
     def exit_reason(position: dict, snapshot: MarketSnapshot,
-                    strategy=None) -> str | None:
+                    strategy=None, *, maintenance_margin_rate: float = 0.005) -> str | None:
         """Static levels first, then the strategy's own thesis check.
 
         STOP and TAKE_PROFIT are evaluated BEFORE the dynamic reassessment on purpose: those are
@@ -73,6 +73,18 @@ class BinancePaperPortfolio:
         age_seconds = max(
             0.0, (snapshot.received_at_ms - int(position["opened_at_ms"])) / 1000.0
         )
+        # Isolated-margin maintenance is checked at the executable exit side. Reporting a
+        # liquidation estimate without enforcing it lets paper positions trade through a
+        # state a real venue would have closed.
+        executable = snapshot.best_bid if side is PositionSide.LONG else snapshot.best_ask
+        direction = 1.0 if side is PositionSide.LONG else -1.0
+        quantity = abs(float(position.get("quantity") or 0.0))
+        margin = max(0.0, float(position.get("margin_usd") or 0.0))
+        entry = float(position.get("entry_price") or executable)
+        equity_at_executable = margin + direction * quantity * (executable - entry)
+        maintenance = quantity * executable * max(0.0, float(maintenance_margin_rate))
+        if quantity > 0 and margin > 0 and equity_at_executable <= maintenance:
+            return "LIQUIDATION"
         if side is PositionSide.LONG:
             if snapshot.best_bid <= float(position["stop_price"]):
                 return "STOP"

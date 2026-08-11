@@ -1493,16 +1493,30 @@ _PTB_ALLTIME_CACHE = {"ts": 0.0, "val": {}}
 
 
 def _ptb_alltime_accuracy():
-    """All-time price-to-beat accuracy straight from DuckDB, cached 60s."""
+    """All-time price-to-beat accuracy from DuckDB, with explicit stale state."""
     now = time.time()
     if now - _PTB_ALLTIME_CACHE["ts"] < 60.0:
         return _PTB_ALLTIME_CACHE["val"]
-    _PTB_ALLTIME_CACHE["ts"] = now
     try:
         import database
-        _PTB_ALLTIME_CACHE["val"] = database.fetch_price_to_beat_accuracy() or {}
-    except Exception:
-        pass  # keep last good value; never break serving
+        measured = database.fetch_price_to_beat_accuracy() or {}
+        if not isinstance(measured, dict):
+            raise TypeError("price-to-beat accuracy query returned a non-object")
+        measured = dict(measured)
+        measured["available"] = True
+        measured["stale"] = False
+        _PTB_ALLTIME_CACHE["val"] = measured
+        # A failed fetch must not stamp stale data fresh for another 60 seconds.
+        _PTB_ALLTIME_CACHE["ts"] = now
+    except Exception as exc:
+        previous = dict(_PTB_ALLTIME_CACHE.get("val") or {})
+        previous.update({
+            "available": False,
+            "stale": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        _PTB_ALLTIME_CACHE["val"] = previous
+        logger.warning("Price-to-beat accuracy refresh failed: %s", exc)
     return _PTB_ALLTIME_CACHE["val"]
 
 
@@ -1516,7 +1530,13 @@ def _accuracy_alltime(tracker) -> dict:
     """
     acc = tracker.accuracy()
     alltime = _ptb_alltime_accuracy()
+    alltime_available = bool(alltime.get("available", True)) if isinstance(alltime, dict) else False
     for _h, _a in acc.items():
+        _a["allTimeEvidenceAvailable"] = alltime_available
+        _a["allTimeEvidenceStale"] = not alltime_available
+        if not alltime_available:
+            _a["allTimeEvidenceError"] = str(alltime.get("error") or "unavailable")
+            continue
         at = alltime.get(int(_h)) if isinstance(alltime, dict) else None
         if at and at.get("total"):
             _a["total"] = int(at["total"])

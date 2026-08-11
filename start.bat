@@ -423,6 +423,52 @@ if errorlevel 1 goto :selftest_failed_b
 echo [selftest] c. Head permissions - a head that cannot price may not price:
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+python backend\quantile_safety.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_training_window_namespace.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_terminal_outcome_relogging.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_market_stream_ordering.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_ab_day_block_bootstrap.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_ab_bundle_scope.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_probability_bucket_audit_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_model_serving_risk_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.binance_paper.test_engine >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.binance_paper.test_model_consensus_probability_namespace >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.binance_paper.test_period_loss_boundaries >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.binance_paper.test_post_fill_risk_budget >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.binance_paper.test_sizing_exit_cost >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.quant_platform.test_kernel >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.quant_platform.test_research_validation >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_meta_model_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_model_bundle_completeness.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_training_integrity_20260731.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.trade_forecast.test_complete_trade_forecast >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.trade_forecast.test_evidence_completion >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.trade_forecast.test_ledger_v2_end_to_end >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.trade_forecast.test_serving_integration >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python -m backend.audit.recorder_evidence_check >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
 echo [selftest] d. Long-window preflight classification:
 python backend\preflight_longwindow.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_d

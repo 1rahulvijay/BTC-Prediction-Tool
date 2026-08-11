@@ -64,7 +64,10 @@ RECORDER_CLOCKS = {
                                    "ts_ms", "MILLIS"),
     "multi_venue_recorder.py": ("multi_venue.duckdb", "venue_events",
                                 "recv_ts", "SECONDS"),
-    "binance_l2_recorder.py": ("binance_l2.duckdb", "l2_diffs", "ts_ms", "MILLIS"),
+    # Row-progress health uses the local receive clock.  The table has never had a `ts_ms`
+    # column; declaring it kept a healthy 500k-row recorder permanently in SCHEMA_DRIFT.
+    "binance_l2_recorder.py": ("binance_l2.duckdb", "l2_diffs",
+                                "received_ts_ms", "MILLIS"),
     "btc_tick_recorder.py": ("btc_ticks.duckdb", "btc_tick_heartbeats",
                              "recv_ts_ns", "NANOS"),
     "crossing_recorder_hf.py": ("polymarket_crossings_hf.duckdb", "hf_heartbeats",
@@ -339,7 +342,8 @@ def main() -> int:
     rows = report()
     for r in rows:
         age = (f"{r['age_ms'] / 60000:.0f}m" if r.get("age_ms") is not None else "-")
-        print(f"  {r['recorder']:<30}{r['rows']:>14,}{r.get('newest_utc', '-'):>22}"
+        rows_text = f"{r['rows']:,}" if isinstance(r.get("rows"), int) else "-"
+        print(f"  {r['recorder']:<30}{rows_text:>14}{r.get('newest_utc', '-'):>22}"
               f"{age:>12}  {r['status']}")
         if r.get("detail"):
             print(f"    {r['detail']}")

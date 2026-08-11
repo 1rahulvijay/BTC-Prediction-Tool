@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -266,6 +267,8 @@ def selftest() -> int:
 
             head_permissions memoises for 60s, so without this the second report of the test
             is never read and every later assertion silently scores the first one."""
+            payload = dict(payload)
+            payload.setdefault("evidence_last_ts_ms", int(time.time() * 1000))
             rep.write_text(json.dumps(payload), encoding="utf-8")
             hp._CACHE["val"], hp._CACHE["ts"] = None, 0.0
 

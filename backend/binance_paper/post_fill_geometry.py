@@ -131,26 +131,17 @@ def geometry(*, side: str, fill_price: float, decided_entry: float,
         out["decided_stop_loss_usd"] = decided_loss_usd
         out["approved_risk_usd"] = approved_risk_usd
         out["risk_budget_overrun_usd"] = stop_loss_usd - approved_risk_usd
-        # TWO DIFFERENT PROBLEMS, and only one belongs to this function.
-        #
-        # Sizing solves qty = budget / stop_fraction from the PRICE distance alone, so even a
-        # perfect fill exceeds the budget once exit fees and slippage are charged - measured
-        # at $33.58 against a $30 budget on a 50bps stop at 12bps round trip. That is a
-        # SIZING defect: the formula omits the cost of the exit it is sizing for. Rejecting on
-        # it here would block every trade including flawless fills, so it is REPORTED
-        # (decided_stop_loss_usd vs approved_risk_usd) and left to the sizing policy.
-        #
-        # What this function can decide is whether the FILL made it worse. A fill at or better
-        # than the decided entry carries exactly the risk that was approved, whatever the
-        # sizing formula's own shortfall. Only slippage-induced growth is rejected.
-        if stop_loss_usd > approved_risk_usd and stop_loss_usd > decided_loss_usd:
+        # The sizing engine already includes the exit leg in its approved quantity. This
+        # function independently checks whether the actual fill made that bounded geometry
+        # worse. A fill at or better than the decided entry carries no extra fill risk;
+        # slippage-induced growth beyond the approved budget is rejected.
+        if stop_loss_usd > approved_risk_usd + 1e-9:
             out["admissible"] = False
             out["reason"] = (
                 f"stop_risk_exceeds_approved_budget: ${stop_loss_usd:.2f} at the stop "
                 f"(incl. ${exit_cost:.2f} exit cost) vs ${approved_risk_usd:.2f} approved - "
-                f"the fill moved {entry_slippage_bps:.1f}bps against us and the position was "
-                f"sized before that (decided geometry would have risked "
-                f"${decided_loss_usd:.2f})")
+                f"the fill moved {entry_slippage_bps:.1f}bps from the decision and the "
+                f"decided geometry would have risked ${decided_loss_usd:.2f}")
             return out
     return out
 

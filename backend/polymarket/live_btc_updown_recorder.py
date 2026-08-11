@@ -764,13 +764,14 @@ def _persist_round_truth(con, slug, condition_id, horizon, anchor_ts, official_s
     verdict, reason = truth.admissibility()
     con.execute(
         """
-        INSERT OR REPLACE INTO round_settlement_truth (
+        INSERT INTO round_settlement_truth (
             market_id,condition_id,round_start_ms,round_end_ms,round_duration_s,
             rule_version,rule_text_hash,resolution_source,comparator,tie_outcome,
             anchor_value,anchor_source_ts_ms,final_value,final_source_ts_ms,
             official_outcome,derived_outcome,outcomes_match,admissibility,
             admissibility_reason
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (market_id) DO NOTHING
         """,
         [truth.market_id, truth.condition_id, truth.round_start_ms, truth.round_end_ms,
          truth.round_duration_s, truth.rule_version, truth.rule_text_hash,
@@ -791,7 +792,11 @@ def _persist_round_truth(con, slug, condition_id, horizon, anchor_ts, official_s
         for checkpoint in build_checkpoints(truth, refs, offsets=offsets):
             con.execute(
                 """
-                INSERT OR REPLACE INTO settlement_checkpoint VALUES (?,?,?,?,?,?,?,?,?)
+                INSERT INTO settlement_checkpoint (
+                    market_id,checkpoint_index,decision_ts_ms,seconds_left,anchor_value,
+                    current_reference_price,distance_from_anchor,outcome,rule_text_hash
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT (market_id,checkpoint_index) DO NOTHING
                 """,
                 [checkpoint.market_id, checkpoint.checkpoint_index,
                  checkpoint.decision_ts_ms, checkpoint.seconds_left,
@@ -867,7 +872,10 @@ def resolve_pending_settlements(
             continue
         anchor_price, expiry_btc = _snapshot_prices(con, slug)
         con.execute(
-            "INSERT OR REPLACE INTO pm_round_settlements VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO pm_round_settlements "
+            "(slug,horizon,anchor_ts,anchor_price,expiry_btc,settled_side,up_win,down_win,"
+            "resolution_source,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (slug) DO NOTHING",
             [
                 slug,
                 int(horizon),

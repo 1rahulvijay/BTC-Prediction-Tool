@@ -6,7 +6,7 @@ from enum import Enum
 import math
 from typing import Iterable
 
-from .config import StrategyRiskConfig
+from .config import MINIMUM_ORDER_NOTIONAL_USD, StrategyRiskConfig
 from .schemas import DataQuality, MarketSnapshot
 
 
@@ -108,14 +108,16 @@ class CapitalPreservationGovernor:
         # error. It is reported under its own name so the outcome is unambiguous: the
         # strategy is ruined, and that is the answer rather than a missing one.
         #
-        # `capital_below_minimum_position` is the softer sibling: still solvent, but with too
-        # little left to open the smallest position the risk config permits, so it cannot
-        # produce further evidence either.
+        # `capital_below_minimum_order_margin` is the softer sibling: still solvent, but with
+        # too little left to fund the explicit executable-order floor. A previous version
+        # compared equity with max_position_notional_usd, turning a ceiling into a minimum.
         ruined = [st for st in states if float(st.equity_usd) <= 0.0]
         starved = [
             st for st in states
             if float(st.equity_usd) > 0.0
-            and float(st.equity_usd) < float(st.risk.max_position_notional_usd)
+            and float(st.equity_usd) < (
+                MINIMUM_ORDER_NOTIONAL_USD / max(1.0, float(st.risk.leverage))
+            )
         ]
 
         portfolio_drawdown: float | None = None
@@ -185,7 +187,7 @@ class CapitalPreservationGovernor:
             mode = GovernorMode.NO_NEW_ENTRIES
         elif starved:
             mode = GovernorMode.CLOSE_ONLY
-            reasons.append("capital_below_minimum_position")
+            reasons.append("capital_below_minimum_order_margin")
         elif loss_severity >= 0.5:
             mode = GovernorMode.REDUCED_SIZE
             reasons.append("capital_limit_half_consumed")

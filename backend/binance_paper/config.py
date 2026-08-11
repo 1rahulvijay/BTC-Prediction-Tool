@@ -44,6 +44,7 @@ class EngineConfig:
     max_transport_lag_ms: int
     evaluation_interval_ms: int
     sample_interval_ms: int
+    maintenance_margin_rate: float = 0.005
 
     @classmethod
     def from_env(cls) -> "EngineConfig":
@@ -82,6 +83,9 @@ class EngineConfig:
             sample_interval_ms=_int_env(
                 "BTC_BINANCE_PAPER_SAMPLE_MS", 1_000, 250, 60_000
             ),
+            maintenance_margin_rate=_float_env(
+                "BTC_BINANCE_PAPER_MAINTENANCE_MARGIN_RATE", 0.005, 0.0, 0.10
+            ),
         )
 
     @property
@@ -106,6 +110,7 @@ class EngineConfig:
 #: The fixed paper stake. Every dollar limit below is derived from it rather than written
 #: as a constant, because a constant limit stops being a limit when the capital changes.
 DEFAULT_STARTING_CASH_USD = 250.0
+MINIMUM_ORDER_NOTIONAL_USD = 10.0
 
 #: Dollar risk limits AS FRACTIONS OF STARTING CAPITAL.
 #:

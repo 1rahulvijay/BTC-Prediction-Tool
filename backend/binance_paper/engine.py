@@ -16,7 +16,7 @@ from backend.quant_platform.risk_engine import (
 
 from .execution import walk_book
 from .store import BinancePaperStore, apply_position_fill
-from .types import (
+from .paper_types import (
     BookSnapshot,
     ExecutionResult,
     FillStatus,

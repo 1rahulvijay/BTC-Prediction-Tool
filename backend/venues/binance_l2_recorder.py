@@ -193,6 +193,34 @@ class L2Store:
             );
             """
         )
+        # Repair the pre-fix archive shape where synchronization-time failures set
+        # l2_sessions.status='GAP' but never wrote l2_gaps or incremented gap_count. The terminal
+        # session row already contains the authoritative timestamp, local update id and reason;
+        # venue U/u/pu remain NULL because no overlapping diff existed.
+        self.db.execute(
+            """
+            INSERT INTO l2_gaps
+            SELECT s.session_id,
+                   COALESCE(s.ended_ts_ms, s.started_ts_ms),
+                   COALESCE(s.final_update_id, s.snapshot_update_id, 0),
+                   NULL, NULL, NULL,
+                   COALESCE(s.error, 'historical GAP session')
+            FROM l2_sessions AS s
+            WHERE s.status = 'GAP'
+              AND NOT EXISTS (
+                  SELECT 1 FROM l2_gaps AS g WHERE g.session_id = s.session_id
+              )
+            """
+        )
+        self.db.execute(
+            """
+            UPDATE l2_sessions AS s
+            SET gap_count = (
+                SELECT COUNT(*) FROM l2_gaps AS g WHERE g.session_id = s.session_id
+            )
+            WHERE s.status = 'GAP'
+            """
+        )
 
     def start_session(self, session_id: str, ws_url: str, rest_url: str) -> None:
         self.db.execute(
@@ -315,6 +343,14 @@ class L2Store:
         reason: str,
     ) -> None:
         self.flush()
+        # A sequence failure closes the session, so there is exactly one terminal gap record.
+        # The live-diff path records the venue IDs before re-raising; the synchronization path
+        # reaches the outer handler without an event. Both converge here, and a second call from
+        # the outer handler must not double-count the same failure.
+        if self.db.execute(
+            "SELECT 1 FROM l2_gaps WHERE session_id = ? LIMIT 1", [session_id]
+        ).fetchone():
+            return
         self.db.execute(
             "INSERT INTO l2_gaps VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
@@ -402,6 +438,19 @@ def apply_and_record(
         top_hash=book_top_hash(book),
     )
     return applied
+
+
+def finish_gap_session(
+    store: L2Store,
+    session_id: str,
+    update_id: int,
+    applied: int,
+    stale: int,
+    reason: str,
+) -> None:
+    """Persist one gap fact and close the affected reconstruction session."""
+    store.gap(session_id, update_id, None, reason)
+    store.finish(session_id, "GAP", update_id, applied, stale, reason)
 
 
 async def fetch_snapshot(url: str) -> tuple[dict[str, Any], int]:
@@ -511,13 +560,11 @@ async def collect_session(
                     )
                     return
     except BookSequenceGap as exc:
-        store.finish(
-            session_id,
-            "GAP",
-            book.last_update_id,
-            applied,
-            stale,
-            str(exc),
+        # apply_and_record() already records event IDs for a live-diff gap. A sync-time
+        # "buffer did not overlap" gap bypasses that function, so this idempotent call is the
+        # only place that guarantees every GAP session has forensic evidence and gap_count=1.
+        finish_gap_session(
+            store, session_id, book.last_update_id, applied, stale, str(exc)
         )
         raise
     except Exception as exc:
@@ -752,17 +799,61 @@ def selftest() -> int:
         try:
             apply_and_record(store, book, session, 3, gap, 1301)
         except BookSequenceGap:
-            pass
+            # Mirror collect_session's outer handler. The event-aware write above and this
+            # event-less finalizer describe one failure, not two.
+            finish_gap_session(store, session, book.last_update_id, 2, 0, "sequence gap")
         else:
             raise AssertionError("sequence gap must force a rebuild")
+
+        sync_session = "selftest-sync-gap"
+        store.start_session(sync_session, "ws", "rest")
+        store.snapshot(sync_session, 1400, snapshot)
+        finish_gap_session(
+            store,
+            sync_session,
+            snapshot["lastUpdateId"],
+            0,
+            0,
+            "buffer did not overlap the REST snapshot",
+        )
+        legacy_session = "selftest-legacy-gap"
+        store.start_session(legacy_session, "ws", "rest")
+        store.snapshot(legacy_session, 1500, snapshot)
+        # Reproduce the old incomplete persistence shape. Reopening L2Store must reconcile it.
+        store.finish(
+            legacy_session,
+            "GAP",
+            snapshot["lastUpdateId"],
+            0,
+            0,
+            "legacy buffer did not overlap",
+        )
         store.close()
+        migrated = L2Store(path)
+        migrated.close()
         replayed = replay_session(path, session)
         assert replayed["applied_diffs"] == 2
         assert replayed["last_update_id"] == 12
         assert replayed["best_bid"] == 100.0
         assert replayed["best_ask"] == 101.5
         db = duckdb.connect(str(path), read_only=True)
-        assert db.execute("SELECT COUNT(*) FROM l2_gaps").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM l2_gaps").fetchone()[0] == 3
+        assert db.execute(
+            "SELECT gap_count FROM l2_sessions WHERE session_id = ?", [session]
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT gap_count FROM l2_sessions WHERE session_id = ?", [sync_session]
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT gap_count FROM l2_sessions WHERE session_id = ?", [legacy_session]
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT first_update_id, final_update_id, previous_update_id
+            FROM l2_gaps WHERE session_id = ?
+            """,
+            [sync_session],
+        ).fetchone() == (None, None, None)
         assert (
             db.execute(
                 "SELECT disposition FROM l2_diffs WHERE ordinal = 3"
@@ -770,6 +861,18 @@ def selftest() -> int:
             == "SEQUENCE_GAP"
         )
         db.close()
+
+    # The synchronization-time exception bypasses apply_and_record(), so the outer handler's
+    # call to the shared finalizer is a required reachability edge, not an implementation detail.
+    import ast as _ast
+    import inspect as _inspect
+
+    collect_tree = _ast.parse(_inspect.getsource(collect_session))
+    assert any(
+        isinstance(node, _ast.Call)
+        and getattr(node.func, "id", "") == "finish_gap_session"
+        for node in _ast.walk(collect_tree)
+    )
     print("BINANCE SEQUENCED L2 SELFTEST PASS")
     return 0
 

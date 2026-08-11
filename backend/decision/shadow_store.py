@@ -106,8 +106,13 @@ def log_shadow_signal(row: dict, conn=None):
             "move_cost_ratio", "final_tier", "final_action", "rejection_reason", "entry_mode",
             "entry_price", "verify_at_ms"]
     vals = [row.get(c) for c in cols]
+    mutable = [column for column in cols if column != "id"]
+    assignments = ",".join(f"{column}=excluded.{column}" for column in mutable)
     conn.execute(
-        f"INSERT OR REPLACE INTO shadow_signals ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})",
+        f"INSERT INTO shadow_signals ({','.join(cols)}) "
+        f"VALUES ({','.join(['?']*len(cols))}) "
+        f"ON CONFLICT(id) DO UPDATE SET {assignments} "
+        "WHERE shadow_signals.resolved = FALSE",
         vals)
     if own:
         conn.close()
@@ -129,8 +134,9 @@ def bulk_write_signals(df, conn=None):
     table_cols = [r[0] for r in conn.execute("DESCRIBE shadow_signals").fetchall()]
     cols = [c for c in df.columns if c in table_cols]
     conn.register("sig_df", df[cols])
-    conn.execute(f"INSERT OR REPLACE INTO shadow_signals ({','.join(cols)}) "
-                 f"SELECT {','.join(cols)} FROM sig_df")
+    # Re-running an offline replay cannot reset an outcome resolved after its first load.
+    conn.execute(f"INSERT INTO shadow_signals ({','.join(cols)}) "
+                 f"SELECT {','.join(cols)} FROM sig_df ON CONFLICT(id) DO NOTHING")
     conn.unregister("sig_df")
     if own:
         conn.close()

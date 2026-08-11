@@ -30,23 +30,105 @@ Recurring traps that cost time this session, all real:
   at a feed-staleness guard 20 lines above the change under test.
 - **Bash heredocs collapse `\n`.** Write patch scripts to a file, or use the Edit tool.
 
+## Resolved in the 2026-08-10 core validation pass
+
+- Terminal prediction evidence is immutable across duplicate logging. All former
+  `INSERT OR REPLACE` writers that could erase resolution fields now use guarded upserts, and
+  `test_terminal_outcome_relogging.py` executes the write-resolve-rewrite sequence in DuckDB.
+- Head health is artifact-, horizon-, region-, and evidence-time-bound. Old model rows, stale
+  outcomes, pooled horizons, and pooled operating regions cannot authorize a current head.
+- Signed quantiles use purged train/calibration/test partitions and report coverage only on the
+  untouched test. Magnitude quantiles purge the horizon, gate every advertised quantile, and
+  both serving/reporting paths project independent quantiles into monotone order.
+- All versioned head trainers resolve `BTC_MODEL_TRAINING_DAYS` through one canonical resolver.
+  Import or missing-version failures are explicit instead of silently becoming legacy skips.
+- Binance paper capital starvation now uses the actual minimum order margin rather than treating
+  a maximum-notional ceiling as a minimum. Sub-minimum orders are rejected and executable-price
+  maintenance liquidation is enforced.
+- Perpetual CVD rejects duplicate aggregate-trade IDs and late older-minute messages. Bullish and
+  bearish liquidity-sweep timing no longer share one break timestamp.
+- A/B promotion resamples paired UTC-day clusters and scopes paired outcomes plus economic
+  results to exact model bundle IDs. Reusing a label cannot inherit an older model's evidence.
+- Challenger promotion rejects health reports with missing, future, or stale outcome timestamps.
+- The specialist probability-bucket audit defines its verified loader before execution and exits
+  nonzero instead of publishing a partial report when any expected head fails.
+
+Every item above is registered in both CI execution paths and the `start.bat` launch selftests.
+
+## Resolved in the second core sweep
+
+- Recorder health uses Binance L2's actual receive timestamp and the real evidence audit fails on
+  schema/unit drift. Launcher parsing excludes audit and selftest references.
+- The all-time accuracy cache stamps freshness only after a successful query and exposes stale/
+  unavailable state. DuckDB's anchor connection now uses the retrying path it documents.
+- Model liquidity and volatility controls fail closed on missing/non-finite inputs and bind their
+  ordinals from `FEATURE_NAMES`.
+- Deterministic execution, model-bundle, training-integrity, complete-trade and recorder-schema
+  tests that previously never ran are now in every automatic gate. Destructive/large-data drills
+  remain explicitly manual.
+- `binance_paper/types.py` was renamed to `paper_types.py`; paper-position persistence now lists
+  every field explicitly, so neither stdlib shadowing nor dataclass field order can corrupt it.
+- Terminal evidence tables no longer use REPLACE. The fence recognizes dynamic f-strings,
+  no-column forms and bound parameters by prohibiting REPLACE on terminal tables altogether.
+- Exact Polymarket settlement truth, checkpoints and official settlement rows are first-write
+  immutable. Shadow signal re-logging can update only unresolved rows.
+- Canonical analytics/execution additive migrations were backed up, applied and schema-verified.
+  Binance L2 synchronization-time gaps now persist one terminal forensic row and increment the
+  session gap count exactly once.
+
 ## Open items
 
-### 1. Five `INSERT OR REPLACE` statements can still destroy terminal outcomes
-`backend/database.py` — `kronos_predictions`, `model_predictions` (×2), `forward_ev_ledger`,
-`fsr_ppo_decisions`, `ab_results`. Each names a terminal column and hard-codes it to
-`FALSE`/`NULL`, so re-inserting an id wipes resolution exactly as `price_to_beat` did.
+The round-3 gate findings are resolved: terminal-table coverage is schema-derived with reviewed
+exemptions, and recorder code selftests are independent from the separately fatal live evidence
+audit. The canonical database migration remains intentionally additive at normal startup;
+unattributed history is not copied from the non-canonical store into certification populations.
 
-Fenced by `backend/test_terminal_outcomes_not_replaceable.py`: new violations fail, these five
-are an explicit `KNOWN_UNFIXED` set. **Remove each entry as you fix it** — the test also fails
-on stale entries, so the list cannot drift.
+The migration has now been run against the canonical stores after hash-verified backups. Existing
+unattributed rows remain excluded from authority, as designed. The sequential non-canonical
+segment remains preserved as an archive rather than being silently merged into live certification
+tables.
+
+### 1. Per-head source provenance still needs trainer-owned manifests
+
+`train_heads.py` now fails explicitly on trainer import/version errors and uses the canonical
+training-window namespace, but it still starts from the shared research-matrix identity when it
+stamps every specialist artifact. That is exact for matrix-trained heads; it is not exact for
+`persistence_dataset.parquet`, round-state parquets, or champion-meta DuckDB joins.
+
+This cannot be fixed honestly by guessing file names in the orchestrator. Each trainer must emit
+an atomic source manifest for the rows it actually consumed, including source hashes, query/table
+identity, row/time bounds, split boundaries, and dependency-artifact hashes. The orchestrator must
+then validate that trainer-owned manifest before stamping or promotion. Until that exists, these
+non-matrix heads remain provenance-limited and must not gain authority solely from the generic
+manifest.
+
+### 2. Snapshot-derived queue/spoof telemetry is not event-level truth
+
+Queue add/cancel, replenishment, and spoof estimates are derived from `depth20` snapshots. A
+snapshot delta cannot distinguish cancellation from fills outside the observed trade stream and
+cannot establish spoof intent. These fields are pruned from the active 63-feature ensemble and are
+research/display telemetry only. Promoting them requires sequenced L2 updates, gap detection,
+trade reconciliation, and a new feature-semantics version.
+
+### Historical items retained below for audit provenance
+
+### 3. Five `INSERT OR REPLACE` statements can still destroy terminal outcomes (resolved)
+`backend/database.py` — `kronos_predictions`, `model_predictions` (×2), `forward_ev_ledger`,
+`fsr_ppo_decisions`, `ab_results`. Each named a terminal column and hard-coded it to
+`FALSE`/`NULL`, so re-inserting an id reset that named terminal state. DuckDB preserves omitted
+columns when a REPLACE has an explicit column list; the observed damage signature was therefore
+`resolved=FALSE` while outcome fields could remain populated, not blank outcomes.
+
+Fenced by `backend/test_terminal_outcomes_not_replaceable.py`: REPLACE is now forbidden for every
+terminal evidence table, including dynamic f-strings and no-column statements. `KNOWN_UNFIXED`
+is empty and may not grow.
 
 Pattern to copy: `log_price_to_beat` in `database.py`, converted to
 `INSERT ... ON CONFLICT (id) DO UPDATE SET <prediction columns only> WHERE <table>.resolved =
 FALSE`. Note the SET clause is **whitelisted** in its test, not blacklisted — a blacklist
 missed `actual_direction = NULL`.
 
-### 2. Head-health aggregates rows it cannot attribute
+### 4. Head-health aggregates rows it cannot attribute (resolved)
 `backend/monitoring/head_health.py` queries `round_state_snapshots` with no filter on which
 artifact produced each row, then stamps the report with whatever is serving now. Model B can
 inherit model A's history — the inheritance bug the artifact binding exists to prevent, one
@@ -60,28 +142,25 @@ ran there while `DB_PATH` resolved to the other store. Check it exists before re
 Filter by the per-row sha; a newly trained artifact should then read `n=0` →
 `INSUFFICIENT_DATA` naturally.
 
-### 3. Health freshness measures the file, not the evidence
+### 5. Health freshness measures the file, not the evidence (resolved)
 `head_permissions._load()` uses `os.path.getmtime(REPORT)` against a 14-day bar. Re-running
 health against a database whose newest outcome is three weeks old produces a "fresh" report;
 so does touching the file. Record `evidence_last_ts` per block and gate on
 `now - evidence_last_ts`.
 
-### 4. Operating region is measured but never enforced
+### 6. Operating region is measured but never enforced (resolved)
 `head_health.run()` now measures 15-30/30-60/60-90/90-120s separately (`OPERATING_REGIONS`),
 but `head_state()` selects only artifact + horizon and never reads `by_region`. A head strong
 at 20s can price at 100s. Add `seconds_left` to the permission key with **no fallback** to the
 pooled horizon — the horizon binding is the pattern to copy (`HORIZON_UNMEASURED` denies
 rather than falling back).
 
-### 5. Execution-side batch (not yet examined)
-Named by the second audit; **I did not verify any of these**, so confirm before fixing:
-capital governor treating `max_position_notional_usd` as a minimum; no maintenance-margin
-liquidation path; stop/target validated against mark rather than executable fill; liquidity
-sweep sharing one `last_break` across directions; queue add/cancel estimates from top-20
-depth deltas; spoof score not establishing cancellation-without-execution; perp CVD bar
-rollover with no monotonicity or dedupe; A/B promotion using an iid bootstrap over overlapping
-predictions; magnitude head gating q50 only; signed-quantile CQR coverage measured on its own
-calibration slice.
+### 7. Execution-side batch (examined)
+Confirmed and fixed: capital governor ceiling/minimum inversion, maintenance liquidation,
+direction-shared sweep state, perpetual CVD monotonicity/deduplication, overlapping-row A/B
+bootstrap, magnitude-tail gating, and signed-CQR evaluation leakage. Stop/target checks already
+used executable bid/ask and post-fill geometry and required no change. Queue/spoof limitations are
+documented above and stay outside active model authority.
 
 ## Not blocking a retrain
 

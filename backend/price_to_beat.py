@@ -2206,9 +2206,13 @@ class PriceToBeatTracker:
                 _xv = [[float(_kp[f]) for f in _sq["features"]]]
                 _m = _sq["models"][_hh]
                 _cqr = float(_m.get("cqr", 0.0))
-                _drop = ref_price * (float(_m["q10"].predict(_xv)[0]) - _cqr) / 1e4
-                _med = ref_price * float(_m["q50"].predict(_xv)[0]) / 1e4
-                _high = ref_price * (float(_m["q90"].predict(_xv)[0]) + _cqr) / 1e4
+                from quantile_safety import monotone_quantiles
+                _qlo, _qmed, _qhi = monotone_quantiles(
+                    _m["q10"].predict(_xv), _m["q50"].predict(_xv),
+                    _m["q90"].predict(_xv))
+                _drop = ref_price * (float(_qlo[0]) - _cqr) / 1e4
+                _med = ref_price * float(_qmed[0]) / 1e4
+                _high = ref_price * (float(_qhi[0]) + _cqr) / 1e4
                 rnd["expected_move_range"] = {"low": round(_drop, 2),
                                               "median": round(_med, 2), "high": round(_high, 2)}
                 rnd["projected_close"] = round(ref_price + _med, 2)

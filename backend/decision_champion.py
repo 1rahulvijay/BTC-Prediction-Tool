@@ -207,7 +207,7 @@ RANKING_HEADS = {
 }
 
 
-def _ranked(head: str, value: str, horizon, denied: dict) -> str:
+def _ranked(head: str, value: str, horizon, seconds_left, denied: dict) -> str:
     """The specialist's tier if that head currently holds may_rank, else "".
 
     Head health was ENFORCED for exactly one head - p_hold, at the final bet-authority
@@ -226,7 +226,8 @@ def _ranked(head: str, value: str, horizon, denied: dict) -> str:
     try:
         from head_permissions import may_rank as _may_rank
         from head_artifact_identity import resolve_serving_sha as _serving_sha
-        ok, why = _may_rank(head, artifact_sha=_serving_sha(head), horizon=horizon)
+        ok, why = _may_rank(head, artifact_sha=_serving_sha(head), horizon=horizon,
+                            seconds_left=seconds_left)
     except Exception as exc:        # noqa: BLE001
         # FAIL CLOSED, same as the p_hold branch: a permission check that cannot run has not
         # granted permission.
@@ -329,20 +330,25 @@ def champion_decision(
     # assignment site, so the specialist tiers were changing decisions before a horizon was
     # even in scope to authorize them with. round_data is not mutated in between.
     horizon = max(1, int(_f(round_data.get("horizon")) or 5))
+    seconds_left = _f(round_data.get("seconds_left")) or 0.0
 
     # UNAUTHORIZED heads are recorded, not silently dropped: an operator seeing WAIT is
     # entitled to know a head was suppressed rather than quiet.
     _unauthorized: dict = {}
     drop_risk = _ranked("big_drop",
-                        (round_data.get("big_drop_risk") or "").upper(), horizon, _unauthorized)
+                        (round_data.get("big_drop_risk") or "").upper(), horizon, seconds_left,
+                        _unauthorized)
     move_tier = _ranked("big_move",
-                        (round_data.get("big_move_tier") or "").lower(), horizon, _unauthorized)
+                        (round_data.get("big_move_tier") or "").lower(), horizon, seconds_left,
+                        _unauthorized)
     up_tier = _ranked("directional",
-                      (round_data.get("big_up_tier") or "").upper(), horizon, _unauthorized)
+                      (round_data.get("big_up_tier") or "").upper(), horizon, seconds_left,
+                      _unauthorized)
     down_tier = _ranked("directional",
-                        (round_data.get("big_down_tier") or "").upper(), horizon, _unauthorized)
+                        (round_data.get("big_down_tier") or "").upper(), horizon, seconds_left,
+                        _unauthorized)
     activity_tier = _ranked("activity",
-                            (round_data.get("activity_tier") or "").lower(), horizon,
+                            (round_data.get("activity_tier") or "").lower(), horizon, seconds_left,
                             _unauthorized)
     if _unauthorized:
         flags.append("specialist heads without rank authority: "
@@ -463,7 +469,6 @@ def champion_decision(
 
     room = _reward_room(round_data, position)
     gap = abs(_f(round_data.get("current_move")) or 0.0)
-    seconds_left = _f(round_data.get("seconds_left")) or 0.0
     # `horizon` is computed above, before the first tier read that depends on it.
     late_max = min(120.0, horizon * 60.0 * 0.4)
     structural_late_entry = (
@@ -562,7 +567,8 @@ def champion_decision(
                 # so the new head starts from zero evidence instead of inheriting USABLE from
                 # its predecessor for the remainder of the report's 14-day freshness window.
                 _ph_ok, _ph_why = _may_price(
-                    "p_hold", artifact_sha=_serving_sha("p_hold"), horizon=horizon)
+                    "p_hold", artifact_sha=_serving_sha("p_hold"), horizon=horizon,
+                    seconds_left=seconds_left)
             except Exception as exc:        # noqa: BLE001
                 # FAIL CLOSED. A permission check that cannot run has not granted permission.
                 # Assuming True here meant a broken or missing health reader silently restored

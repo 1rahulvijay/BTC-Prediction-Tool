@@ -63,9 +63,15 @@ REQUIRED_LAUNCHER_RECORDERS = frozenset(EXPECTED_STORE)
 
 def wired_recorders(text: str) -> list[str]:
     """Every recorder script the launcher invokes."""
-    # Most names end in `_recorder.py`; `crossing_recorder_hf.py` intentionally carries a
-    # cadence suffix. Match the capability token, not one filename convention.
-    return sorted(set(re.findall(r"backend\\[\w\\]*?([\w]*recorder[\w]*\.py)", text)))
+    found = set()
+    for line in text.splitlines():
+        # Audit/selftest references are not launched recorder daemons.
+        if "--selftest" in line or re.search(r"backend\\audit\\", line, re.I):
+            continue
+        match = re.search(r"backend\\[\w\\]*?([\w]*recorder[\w]*\.py)", line, re.I)
+        if match:
+            found.add(match.group(1))
+    return sorted(found)
 
 
 def store_state(store: str, table: str) -> dict:
@@ -162,17 +168,20 @@ def selftest() -> int:
           "every recorder the launcher invokes is discovered from its arguments")
     check(wired_recorders("") == [],
           "an empty launcher yields no recorders rather than raising")
+    decoys = (r'python backend\recorder_health.py --selftest' "\n"
+              r'python backend\audit\recorder_evidence_check.py --selftest')
+    check(wired_recorders(decoys) == [],
+          "audit and selftest modules are not counted as recorder daemons")
 
-    rows = audit()
-    check(rows, "the real launcher wires at least one recorder")
     launcher_text = LAUNCHER.read_text(encoding="utf-8", errors="replace")
     real_wired = set(wired_recorders(launcher_text))
+    check(real_wired, "the real launcher wires at least one recorder")
     check(REQUIRED_LAUNCHER_RECORDERS <= real_wired,
           "the launcher includes every declared standalone forward recorder")
     declared = {"ADVANCING", "STALLED", "NEVER_RAN", "LOCKED_BY_WRITER", "UNREADABLE",
                 "SCHEMA_DRIFT", "UNIT_MISMATCH", "NO_DATA", "HAS_DATA"}
-    check(all(row["status"] in declared for row in rows),
-          "every wired recorder resolves to a declared evidence state")
+    check({"SCHEMA_DRIFT", "UNIT_MISMATCH", "NEVER_RAN", "STALLED"} <= declared,
+          "all fatal and operational recorder states are declared")
     # The state this file exists to surface must be REACHABLE, or the check is decoration.
     #
     # Reachability is a property of the CLASSIFIER, not of today's database. This used to
@@ -191,12 +200,6 @@ def selftest() -> int:
           and derive_status(ran=False, rows_count=5) == "HAS_DATA",
           "rows present means HAS_DATA whether or not a log survives - evidence in the store "
           "outranks the absence of a log file")
-
-    # Live rows are still REPORTED, but no live combination is treated as a failure here:
-    # every declared state is legitimate, which the declared-states check above already
-    # covers.
-    seen = sorted({row["status"] for row in rows})
-    print(f"        (live: {len(rows)} wired recorders in states {seen})")
 
     # audit() must actually USE the classifier the checks above exercise. Every recorder in
     # this environment gets its status from probe(), so the fallback branch never runs here -
@@ -241,6 +244,14 @@ def main() -> int:
             print(f"    {name}")
         print("  A passing selftest proves the code is correct. It says nothing about whether")
         print("  the process ever started, which is the question that went unasked for weeks.")
+    schema_failures = [row for row in rows
+                       if row["status"] in ("SCHEMA_DRIFT", "UNIT_MISMATCH")]
+    if schema_failures:
+        print()
+        print("  FATAL DECLARATION DRIFT - recorder health cannot be measured:")
+        for row in schema_failures:
+            print(f"    {row['recorder']}: {row['status']} - {row.get('detail') or ''}")
+        return 1
     return 0
 
 

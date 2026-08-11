@@ -134,19 +134,11 @@ and silent about it. Caught by checking the schema instead of trusting the attri
 four (and later five). Now compared against `StrategyRegistry()` itself, including the id set - a hardcoded count
 tests the constant rather than the API and must be edited on every registry change.
 
-## 5. Noted, not fixed
+## 5. Package import safety
 
-`backend/binance_paper/types.py` **shadows the standard library `types` module**. Harmless under
-package imports, but running any file in that directory as a script puts the directory on
-`sys.path[0]` and breaks Python's import machinery before the first line executes:
-
-```
-ImportError: cannot import name 'MappingProxyType' from 'types'
-```
-
-Every test in the package is therefore module-invoked (`python -m backend.binance_paper.…`), which
-is why the new test is too. Renaming a module the package imports from is a wider change than this
-work should carry, so it is recorded here rather than done quietly.
+The former `backend/binance_paper/types.py` standard-library collision is fixed. Strong paper
+types now live in `paper_types.py`. Tests remain module-invoked
+(`python -m backend.binance_paper...`) because they intentionally use package imports.
 
 ---
 

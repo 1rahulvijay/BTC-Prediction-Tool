@@ -283,6 +283,7 @@ class BinanceFuturesWebSocketClient:
         self._pb_cvd = 0.0
         self._pb_vol = 0.0
         self._pb_last = 0.0
+        self._last_perp_agg_trade_id = None
         self.last_perp_bar = None
         self.last_book = None
         self.last_book_receive_ts_ms = None
@@ -322,14 +323,33 @@ class BinanceFuturesWebSocketClient:
             ),
         }
 
-    def _ingest_perp_trade(self, price: float, qty: float, m: bool, T: int):
+    def _ingest_perp_trade(
+        self,
+        price: float,
+        qty: float,
+        m: bool,
+        T: int,
+        agg_trade_id: int | None = None,
+    ) -> bool:
         """Accumulate PERP CVD per clock-aligned 1m bar; emit the finalized bar on rollover.
         Sign convention: taker-buy (is_buyer_maker False) positive — IDENTICAL to
         build_crossvenue_flow._per_bar, so live == offline (train/serve parity)."""
+        if agg_trade_id is not None:
+            agg_trade_id = int(agg_trade_id)
+            if (
+                self._last_perp_agg_trade_id is not None
+                and agg_trade_id <= self._last_perp_agg_trade_id
+            ):
+                return False
+
         bar = (T // 60_000) * 60_000
         if self._pb_ms is None:
             self._pb_ms = bar
-        elif bar != self._pb_ms:
+        elif bar < self._pb_ms:
+            if agg_trade_id is not None:
+                self._last_perp_agg_trade_id = agg_trade_id
+            return False
+        elif bar > self._pb_ms:
             self.last_perp_bar = {
                 "ts": self._pb_ms, "cvd_perp": round(self._pb_cvd, 4),
                 "vol_perp": round(self._pb_vol, 4), "perp_price": self._pb_last,
@@ -341,6 +361,9 @@ class BinanceFuturesWebSocketClient:
         self._pb_cvd += (-qty if m else qty)
         self._pb_vol += qty
         self._pb_last = price
+        if agg_trade_id is not None:
+            self._last_perp_agg_trade_id = agg_trade_id
+        return True
 
     @staticmethod
     def _parse_book_ticker(data: dict, received_at_ms: int) -> dict:
@@ -412,7 +435,9 @@ class BinanceFuturesWebSocketClient:
                                 self.agg_trade_message_count += 1
                                 self._ingest_perp_trade(
                                     float(data["p"]), float(data["q"]),
-                                    bool(data["m"]), int(data["T"]))
+                                    bool(data["m"]), int(data["T"]),
+                                    int(data["a"]),
+                                )
                             elif stream == "btcusdt@bookTicker":
                                 received_at_ms = int(time.time() * 1000)
                                 book = self._parse_book_ticker(data, received_at_ms)

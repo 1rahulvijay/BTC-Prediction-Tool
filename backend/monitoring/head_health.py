@@ -43,7 +43,7 @@ BSS_FLOOR = 0.0          # <= 0 means no usable information vs the base rate
 ECE_MAX = 0.05           # above this the head may rank but may not price
 DRIFT_BSS_DROP = 0.02    # recent window losing this much skill = DRIFTED
 RECENT_FRACTION = 0.30
-PROTOCOL_VERSION = "2026-07-26-head-health-v1"
+PROTOCOL_VERSION = "2026-08-10-head-health-v2-artifact-region"
 
 STATE_PERMISSIONS = {
     "USABLE": {"may_price": True, "may_rank": True, "may_display_confidence": True},
@@ -134,14 +134,39 @@ def run(db_path):
     import duckdb
     con = duckdb.connect(db_path, read_only=True)
     rep = {"db": db_path, "generated_utc": datetime.now(timezone.utc).isoformat(),
-           "protocol": PROTOCOL_VERSION, "heads": {}}
+           "protocol": PROTOCOL_VERSION, "heads": {}, "blockers": []}
+
+    try:
+        snapshot_columns = {
+            str(row[1]) for row in con.execute(
+                "PRAGMA table_info('round_state_snapshots')"
+            ).fetchall()
+        }
+    except Exception as exc:
+        snapshot_columns = set()
+        rep["blockers"].append(f"round_state_snapshots unreadable: {str(exc)[:120]}")
+    identity_available = "head_identity_json" in snapshot_columns
+    if not identity_available:
+        rep["blockers"].append(
+            "round_state_snapshots.head_identity_json is absent; run the normal database "
+            "migration, then collect new artifact-attributed outcomes"
+        )
 
     def one_per_round(sql, params=()):
         try:
             return np.array(con.execute(sql, params).fetchall(), float)
         except Exception as exc:
             print(f"   query failed: {str(exc)[:90]}")
-            return np.empty((0, 2))
+            return np.empty((0, 3))
+
+    def with_evidence_times(block, arr):
+        """Attach the age of the outcomes, not the age of the generated JSON file."""
+        times = np.asarray(arr[:, 2], dtype=float)
+        times = times[np.isfinite(times)]
+        if len(times):
+            block["evidence_first_ts_ms"] = int(times.min())
+            block["evidence_last_ts_ms"] = int(times.max())
+        return block
 
     # P(hold) and flip-risk, measured PER HORIZON and PER OPERATING REGION.
     #
@@ -155,68 +180,87 @@ def run(db_path):
     #     while the champion operates over all of it.
     # Permission now applies only where evidence exists: head_permissions refuses a horizon
     # with no block of its own, so an unmeasured region cannot borrow a measured one.
-    def _stratified(column, outcome_sql, head_name):
-        sql = f"""
+    def _stratified(column, outcome_sql, head_name, identity_key):
+        serving_sha = serving_artifact_sha(head_name)
+        if not serving_sha:
+            return None
+
+        def query(lo, hi, hz, *, inclusive_hi=False):
+            upper = "<=" if inclusive_hi else "<"
+            sql = f"""
             WITH s AS (SELECT round_id, ts, horizon, {column} AS v, current_position,
                               seconds_left,
                               ROW_NUMBER() OVER (PARTITION BY round_id
                                                  ORDER BY seconds_left) rn
                        FROM round_state_snapshots
-                       WHERE seconds_left BETWEEN ? AND ? AND {column} IS NOT NULL
-                         AND horizon = ?)
-            SELECT s.v, {outcome_sql}
+                       WHERE seconds_left >= ? AND seconds_left {upper} ?
+                         AND {column} IS NOT NULL AND horizon = ?
+                         AND json_extract_string(
+                               head_identity_json, '$.{identity_key}.sha256') = ?)
+            SELECT s.v, {outcome_sql}, s.ts
             FROM s JOIN price_to_beat p ON p.id = s.round_id
             WHERE s.rn = 1 AND p.resolved AND p.actual_direction IN ('UP','DOWN')
               AND p.settlement_source LIKE 'official:%'
               AND s.current_position IN ('UP','DOWN')
             ORDER BY s.ts"""
+            return one_per_round(sql, (lo, hi, hz, serving_sha))
+
         by_horizon = {}
         pooled_p, pooled_y = [], []
+        pooled_ts = []
         for hz in HORIZONS:
             regions = {}
             for lo, hi in OPERATING_REGIONS:
-                arr = one_per_round(sql, (lo, hi, hz))
+                arr = query(lo, hi, hz, inclusive_hi=(hi == REGION_MAX))
                 if len(arr):
-                    regions[f"{lo}-{hi}s"] = classify(arr[:, 0], arr[:, 1],
-                                                      f"{head_name}@{hz}m/{lo}-{hi}s")
-            whole = one_per_round(sql, (REGION_MIN, REGION_MAX, hz))
+                    region = classify(arr[:, 0], arr[:, 1],
+                                      f"{head_name}@{hz}m/{lo}-{hi}s")
+                    regions[f"{lo}-{hi}s"] = with_evidence_times(region, arr)
+            whole = query(REGION_MIN, REGION_MAX, hz, inclusive_hi=True)
             if not len(whole):
                 continue
             pooled_p.append(whole[:, 0])
             pooled_y.append(whole[:, 1])
+            pooled_ts.append(whole[:, 2])
             block = classify(whole[:, 0], whole[:, 1], f"{head_name}@{hz}m")
             block["by_region"] = regions
             block["horizon"] = hz
-            by_horizon[str(hz)] = block
+            by_horizon[str(hz)] = with_evidence_times(block, whole)
         if not by_horizon:
             return None
-        entry = classify(np.concatenate(pooled_p), np.concatenate(pooled_y), head_name)
+        pooled = np.column_stack((np.concatenate(pooled_p), np.concatenate(pooled_y),
+                                  np.concatenate(pooled_ts)))
+        entry = with_evidence_times(
+            classify(pooled[:, 0], pooled[:, 1], head_name), pooled)
         entry["by_horizon"] = by_horizon
+        entry["artifact_sha"] = serving_sha
         # The pooled figure stays for display, but it is explicitly NOT what grants
         # authority: head_permissions denies a horizon that has no block of its own.
         entry["pooled_is_not_authority"] = True
         return entry
 
-    a = _stratified("p_leader_holds",
-                    "CASE WHEN s.current_position = p.actual_direction THEN 1 ELSE 0 END",
-                    "p_hold")
-    if a:
-        rep["heads"]["p_hold"] = a
+    if identity_available:
+        a = _stratified("p_leader_holds",
+                        "CASE WHEN s.current_position = p.actual_direction THEN 1 ELSE 0 END",
+                        "p_hold", "p_hold")
+        if a:
+            rep["heads"]["p_hold"] = a
 
-    b = _stratified("flip_risk",
-                    "CASE WHEN s.current_position <> p.actual_direction THEN 1 ELSE 0 END",
-                    "flip_risk")
-    if b:
-        rep["heads"]["flip_risk"] = b
+        b = _stratified("flip_risk",
+                        "CASE WHEN s.current_position <> p.actual_direction THEN 1 ELSE 0 END",
+                        "flip_risk", "p_hold")
+        if b:
+            rep["heads"]["flip_risk"] = b
 
-    # ARTIFACT BINDING. Without this every entry is UNBOUND_EVIDENCE and grants nothing -
-    # which is the correct reading of a measurement that cannot name what it measured.
-    for name, entry in rep["heads"].items():
-        sha = serving_artifact_sha(name)
-        if sha:
-            entry["artifact_sha"] = sha
-            for blk in (entry.get("by_horizon") or {}).values():
-                blk["artifact_sha"] = sha
+    # Report-level evidence age is derived from the newest attributable resolved outcome.
+    # Re-running this script cannot make old evidence fresh.
+    evidence_last = [h.get("evidence_last_ts_ms") for h in rep["heads"].values()
+                     if h.get("evidence_last_ts_ms") is not None]
+    evidence_first = [h.get("evidence_first_ts_ms") for h in rep["heads"].values()
+                      if h.get("evidence_first_ts_ms") is not None]
+    if evidence_last:
+        rep["evidence_last_ts_ms"] = int(max(evidence_last))
+        rep["evidence_first_ts_ms"] = int(min(evidence_first))
 
     # champion action tiers - are they a confidence scale at all?
     try:
@@ -246,6 +290,9 @@ def render(rep):
     L = ["=" * 96, f"HEAD HEALTH  |  {rep['protocol']}", f"generated {rep['generated_utc']}",
          "=" * 96,
          f"{'head':<14}{'n':>7}{'state':>20}{'BSS':>10}{'ECE':>9}{'pred':>8}{'real':>8}  permissions"]
+    if rep.get("blockers"):
+        L.extend(["", "BLOCKERS"])
+        L.extend(f"  - {item}" for item in rep["blockers"])
     L.append("-" * 96)
     for name, h in rep.get("heads", {}).items():
         m = h.get("metrics", {})
@@ -319,6 +366,56 @@ def selftest():
     chk(all(s in STATE_PERMISSIONS for s in
             ("USABLE", "CALIBRATION_ONLY", "DISABLED_NO_SKILL", "SHADOW",
              "INSUFFICIENT_DATA", "DRIFTED")), "every state has explicit permissions")
+
+    # End-to-end SQL: old artifact rows must not be attributed to the currently serving
+    # artifact, and the 30s boundary belongs to exactly one operating region.
+    import duckdb
+    import tempfile
+    import time
+    global serving_artifact_sha
+    original_resolver = serving_artifact_sha
+    current_sha, old_sha = "a" * 64, "b" * 64
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "health.duckdb")
+        con = duckdb.connect(db)
+        con.execute("""CREATE TABLE round_state_snapshots (
+            round_id VARCHAR, ts BIGINT, horizon INTEGER, p_leader_holds DOUBLE,
+            flip_risk DOUBLE, current_position VARCHAR, seconds_left DOUBLE,
+            head_identity_json VARCHAR)""")
+        con.execute("""CREATE TABLE price_to_beat (
+            id VARCHAR, resolved BOOLEAN, actual_direction VARCHAR,
+            settlement_source VARCHAR)""")
+        now_ms = int(time.time() * 1000)
+        rows = []
+        prices = []
+        for i, (sec, pos, actual) in enumerate(
+                ((20.0, "UP", "UP"), (30.0, "DOWN", "UP"),
+                 (65.0, "UP", "UP"), (100.0, "DOWN", "DOWN"))):
+            rid = f"current-{i}"
+            identity = json.dumps({"p_hold": {"sha256": current_sha}})
+            rows.append((rid, now_ms + i, 5, 0.8, 0.2, pos, sec, identity))
+            prices.append((rid, True, actual, "official:test"))
+        for i in range(3):
+            rid = f"old-{i}"
+            identity = json.dumps({"p_hold": {"sha256": old_sha}})
+            rows.append((rid, now_ms - 1000 - i, 5, 0.9, 0.1, "UP", 20.0, identity))
+            prices.append((rid, True, "UP", "official:test"))
+        con.executemany("INSERT INTO round_state_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        con.executemany("INSERT INTO price_to_beat VALUES (?, ?, ?, ?)", prices)
+        con.close()
+        serving_artifact_sha = lambda _head: current_sha
+        try:
+            report = run(db)
+        finally:
+            serving_artifact_sha = original_resolver
+        ph = report["heads"]["p_hold"]
+        chk(ph["n"] == 4 and ph["artifact_sha"] == current_sha,
+            "health evidence is filtered to the current artifact sha")
+        regions = ph["by_horizon"]["5"]["by_region"]
+        chk(regions["15-30s"]["n"] == 1 and regions["30-60s"]["n"] == 1,
+            "operating regions are half-open, so the 30s row is counted once")
+        chk(report["evidence_last_ts_ms"] == now_ms + 3,
+            "report freshness comes from the newest attributable resolved outcome")
     print("head-health:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -340,7 +437,7 @@ def main():
     with open(os.path.join(a.out, "head_health.json"), "w", encoding="utf-8") as fh:
         json.dump(rep, fh, indent=2)
     print(f"\nwrote -> {a.out}")
-    return 0
+    return 1 if rep.get("blockers") else 0
 
 
 if __name__ == "__main__":

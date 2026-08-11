@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 
-from .config import EngineConfig, StrategyRiskConfig
+from .config import EngineConfig, MINIMUM_ORDER_NOTIONAL_USD, StrategyRiskConfig
 from .fill_simulator import binance_fee
 from .schemas import Action, DataQuality, MarketSnapshot, PositionSide, RiskResult, StrategyDecision
 
@@ -193,6 +193,9 @@ class BinancePaperRiskEngine:
                 ) / 10_000.0
                 risk_notional = risk_budget / max(1e-9, stop_fraction + exit_cost_fraction)
             approved_notional = min(requested, risk_notional)
+        if 0.0 < approved_notional < MINIMUM_ORDER_NOTIONAL_USD:
+            reasons.append("below_minimum_order_notional")
+            approved_notional = 0.0
         quantity = approved_notional / reference_price if reference_price > 0 else 0.0
         visible_size = (
             snapshot.ask_size

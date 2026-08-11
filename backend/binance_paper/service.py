@@ -874,7 +874,10 @@ class BinancePaperService:
             # The portfolio is an injectable seam and is absent in some unit contexts; without
             # it there are no static levels to respect, so the thesis check stands alone.
             if self.portfolio is not None:
-                reason = self.portfolio.exit_reason(position, snapshot, strategy)
+                reason = self.portfolio.exit_reason(
+                    position, snapshot, strategy,
+                    maintenance_margin_rate=self.config.maintenance_margin_rate,
+                )
             else:
                 reason = strategy.position_exit_reason(position, snapshot)
             if reason:

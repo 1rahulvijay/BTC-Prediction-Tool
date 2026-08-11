@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parent
@@ -104,6 +105,8 @@ def main() -> int:
         hp.ENFORCED = True
 
         def publish(payload):
+            payload = dict(payload)
+            payload.setdefault("evidence_last_ts_ms", int(time.time() * 1000))
             rep.write_text(json.dumps(payload), encoding="utf-8")
             hp._CACHE["val"], hp._CACHE["ts"] = None, 0.0
 
@@ -150,7 +153,11 @@ def main() -> int:
         entry = {"state": "USABLE", "artifact_sha": sha or ("c" * 64),
                  "permissions": {"may_price": False, "may_rank": True},
                  "by_horizon": {"5": {"state": "USABLE",
-                                      "permissions": {"may_price": False, "may_rank": True}}}}
+                                      "permissions": {"may_price": False, "may_rank": True},
+                                      "by_region": {"60-90s": {
+                                          "state": "USABLE",
+                                          "permissions": {"may_price": False,
+                                                          "may_rank": True}}}}}}
         publish({"heads": {"big_move": entry}})
         armed = dc.champion_decision(_round(big_move_tier="quiet"), {})
         check("big_move" not in _unauth(armed)
@@ -178,7 +185,10 @@ def main() -> int:
         publish({"heads": {"big_move": {
             "state": "USABLE", "artifact_sha": sha_now,
             "permissions": {"may_rank": True},
-            "by_horizon": {"5": {"state": "USABLE", "permissions": {"may_rank": True}}}}}})
+            "by_horizon": {"5": {"state": "USABLE", "permissions": {"may_rank": True},
+                                    "by_region": {"60-90s": {
+                                        "state": "USABLE",
+                                        "permissions": {"may_rank": True}}}}}}}})
         near = dc.champion_decision(_round(big_move_tier="quiet", horizon=5), {})
         check("big_move" not in _unauth(near),
               "with the CURRENT sha and a 5m block, big_move SPECIFICALLY is authorized at 5m "

@@ -48,6 +48,13 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 
+def _verified_load(path):
+    """Hash-check against the sidecar manifest before deserializing."""
+    from verified_io import verified_load
+
+    return verified_load(path)
+
+
 def _oof_scores(X, y, ensemble_factory, n_splits=5):
     """Leak-free out-of-fold probabilities via TimeSeriesSplit — refits the head's own ensemble."""
     oof = np.full(len(y), np.nan)
@@ -128,7 +135,7 @@ def _score_quantile_coverage(df):
     """signed_quantile: realized 5m move inside the calibrated 80% band → coverage by the saved head."""
     path = os.path.join(SM, "signed_quantile_model.pkl")
     if not os.path.exists(path):
-        return None
+        raise FileNotFoundError(path)
     bundle = _verified_load(path)
     feats = bundle["features"]
     models = bundle.get("models", {})
@@ -139,8 +146,15 @@ def _score_quantile_coverage(df):
     sub = df.dropna(subset=feats + ["future_close_5m", "close"]).copy()
     Xv = sub[feats].values
     cqr = float(m.get("cqr", 0.0))
-    lo = m["q10"].predict(Xv) - cqr
-    hi = m["q90"].predict(Xv) + cqr
+    from quantile_safety import monotone_quantile_projection
+
+    q10, _, q90 = monotone_quantile_projection(
+        m["q10"].predict(Xv),
+        m["q50"].predict(Xv),
+        m["q90"].predict(Xv),
+    )
+    lo = q10 - cqr
+    hi = q90 + cqr
     realized = (sub["future_close_5m"].values / sub["close"].values - 1.0) * 1e4
     inside = (realized >= lo) & (realized <= hi)
     width = float(np.mean(hi - lo))
@@ -190,10 +204,11 @@ def _md(results, qcov):
 
 def main():
     if not os.path.exists(MATRIX):
-        print(f"ERROR: {MATRIX} not found."); return
+        print(f"ERROR: {MATRIX} not found.")
+        return 1
     df = pd.read_parquet(MATRIX).replace([np.inf, -np.inf], np.nan)
 
-    results, flat = [], []
+    results, flat, errors = [], [], []
     # bigmove
     try:
         import train_bigmove_keeper as bm
@@ -210,6 +225,7 @@ def main():
         results.append(r)
     except Exception as e:
         print(f"bigmove buckets skipped: {e}")
+        errors.append(f"bigmove:{e}")
     # bigdrop
     try:
         import train_bigdrop_keeper as bd
@@ -231,6 +247,7 @@ def main():
         results.append(r)
     except Exception as e:
         print(f"bigdrop buckets skipped: {e}")
+        errors.append(f"bigdrop:{e}")
     # directional confirmation heads
     try:
         import train_directional_keeper as dh
@@ -253,6 +270,7 @@ def main():
                                              "future_abs_move_5m", "_delta_usd", dh._ensemble, sv_down))
     except Exception as e:
         print(f"directional buckets skipped: {e}")
+        errors.append(f"directional:{e}")
     # activity/range proxy
     try:
         import train_activity_keeper as ah
@@ -272,12 +290,20 @@ def main():
                                              "_range_usd", None, ah._ensemble, sv))
     except Exception as e:
         print(f"activity buckets skipped: {e}")
+        errors.append(f"activity:{e}")
     # signed_quantile coverage
     qcov = None
     try:
         qcov = _score_quantile_coverage(df)
     except Exception as e:
         print(f"signed_quantile coverage skipped: {e}")
+        errors.append(f"signed_quantile:{e}")
+
+    if errors:
+        print("ERROR: probability-bucket audit incomplete; no report was written")
+        for error in errors:
+            print(f"  - {error}")
+        return 1
 
     # flatten for parquet
     for r in results:
@@ -300,24 +326,8 @@ def main():
     print(f"\nWrote {OUT_MD}")
     if flat:
         print(f"Wrote {OUT_PARQUET}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
-
-def _verified_load(path):
-    """Hash-check against the sidecar manifest BEFORE deserializing.
-
-    joblib.load executes arbitrary code while unpickling, so validating after loading has
-    already lost. Artifacts written before this migration carry no manifest; they still load
-    while BTC_STRICT_ARTIFACT_IDENTITY is off, and each one is counted as remaining debt."""
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _backend = str(_Path(__file__).resolve().parent)
-    if _backend not in _sys.path:
-        _sys.path.insert(0, _backend)
-    from verified_io import verified_load as _vl
-
-    return _vl(path)
+    raise SystemExit(main())

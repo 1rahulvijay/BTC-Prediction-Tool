@@ -32,7 +32,7 @@ def __getattr__(name):
 
         return BinancePaperEngine
     if name in {"BookLevel", "BookSnapshot", "OrderRequest", "OrderSide"}:
-        from .types import BookLevel, BookSnapshot, OrderRequest, OrderSide
+        from .paper_types import BookLevel, BookSnapshot, OrderRequest, OrderSide
 
         return {
             "BookLevel": BookLevel,

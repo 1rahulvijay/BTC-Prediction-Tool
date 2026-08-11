@@ -105,7 +105,7 @@ def init_db():
     # _connect() already retries transient locks for ~5s (e.g. an orphaned process).
     global _ANCHOR_CONN
     if _ANCHOR_CONN is None:
-        _ANCHOR_CONN = duckdb.connect(DB_PATH)
+        _ANCHOR_CONN = _connect()
     conn = _connect()
 
     def add_columns(table: str, clauses) -> None:
@@ -1920,9 +1920,18 @@ def log_kronos_prediction(pred_id: str, timestamp: int, horizon: int, ref_price:
     try:
         conn = _connect()
         conn.execute("""
-            INSERT OR REPLACE INTO kronos_predictions
+            INSERT INTO kronos_predictions
             (id, timestamp, horizon, ref_price, forecast_price, direction, verify_at, resolved)
             VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                horizon = EXCLUDED.horizon,
+                ref_price = EXCLUDED.ref_price,
+                forecast_price = EXCLUDED.forecast_price,
+                direction = EXCLUDED.direction,
+                verify_at = EXCLUDED.verify_at
+            WHERE kronos_predictions.resolved = FALSE
+              AND COALESCE(kronos_predictions.resolution_status, 'PENDING') = 'PENDING'
         """, (pred_id, timestamp, horizon, ref_price, forecast_price, direction, verify_at))
     except Exception as e:
         print(f"DuckDB Kronos Insert Error: {e}")
@@ -1983,9 +1992,18 @@ def log_model_prediction(pred_id: str, model: str, timestamp: int, horizon: int,
     try:
         conn = _connect()
         conn.execute("""
-            INSERT OR REPLACE INTO model_predictions
+            INSERT INTO model_predictions
             (id, model, timestamp, horizon, ref_price, direction, verify_at, resolved)
             VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)
+            ON CONFLICT (id) DO UPDATE SET
+                model = EXCLUDED.model,
+                timestamp = EXCLUDED.timestamp,
+                horizon = EXCLUDED.horizon,
+                ref_price = EXCLUDED.ref_price,
+                direction = EXCLUDED.direction,
+                verify_at = EXCLUDED.verify_at
+            WHERE model_predictions.resolved = FALSE
+              AND COALESCE(model_predictions.resolution_status, 'PENDING') = 'PENDING'
         """, (pred_id, model, timestamp, horizon, ref_price, direction, verify_at))
     except Exception as e:
         print(f"DuckDB Model Insert Error: {e}")
@@ -2653,11 +2671,28 @@ def log_fsr_ppo_decision(entry: dict):
     try:
         conn = _connect()
         conn.execute("""
-            INSERT OR REPLACE INTO fsr_ppo_decisions
+            INSERT INTO fsr_ppo_decisions
             (id, prediction_id, timestamp, horizon, price, action, side, size_fraction,
              confidence, expected_reward_usd, reason, risk_note, fsr_json, state_json,
              verify_at, resolved)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+            ON CONFLICT (id) DO UPDATE SET
+                prediction_id = EXCLUDED.prediction_id,
+                timestamp = EXCLUDED.timestamp,
+                horizon = EXCLUDED.horizon,
+                price = EXCLUDED.price,
+                action = EXCLUDED.action,
+                side = EXCLUDED.side,
+                size_fraction = EXCLUDED.size_fraction,
+                confidence = EXCLUDED.confidence,
+                expected_reward_usd = EXCLUDED.expected_reward_usd,
+                reason = EXCLUDED.reason,
+                risk_note = EXCLUDED.risk_note,
+                fsr_json = EXCLUDED.fsr_json,
+                state_json = EXCLUDED.state_json,
+                verify_at = EXCLUDED.verify_at
+            WHERE fsr_ppo_decisions.resolved = FALSE
+              AND COALESCE(fsr_ppo_decisions.resolution_status, 'PENDING') = 'PENDING'
         """, (
             entry.get("id"),
             entry.get("prediction_id"),
@@ -3079,9 +3114,20 @@ def log_ab_prediction(variant: str, pred_id: str, timestamp: int, horizon: int,
     try:
         conn = _connect()
         conn.execute("""
-            INSERT OR REPLACE INTO ab_results
+            INSERT INTO ab_results
             (id, variant, pred_id, timestamp, horizon, direction, confidence, resolved, model_bundle_id, feature_schema_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                variant = EXCLUDED.variant,
+                pred_id = EXCLUDED.pred_id,
+                timestamp = EXCLUDED.timestamp,
+                horizon = EXCLUDED.horizon,
+                direction = EXCLUDED.direction,
+                confidence = EXCLUDED.confidence,
+                model_bundle_id = EXCLUDED.model_bundle_id,
+                feature_schema_hash = EXCLUDED.feature_schema_hash
+            WHERE ab_results.resolved = FALSE
+              AND COALESCE(ab_results.resolution_status, 'PENDING') = 'PENDING'
         """, (f"{variant}_{pred_id}", variant, pred_id, timestamp, horizon, direction, confidence, model_bundle_id, feature_schema_hash))
     except Exception as e:
         print(f"DuckDB A/B Insert Error: {e}")
@@ -3276,26 +3322,37 @@ def fetch_ab_variant_stats() -> dict:
     return out
 
 
-def fetch_ab_paired_outcomes(primary_variant: str, challenger_variant: str) -> list[tuple[bool, bool]]:
+def fetch_ab_paired_outcomes(
+    primary_variant: str,
+    challenger_variant: str,
+    primary_bundle_id: str,
+    challenger_bundle_id: str,
+) -> list[tuple[int, bool, bool]]:
     """Return exact primary/challenger hit pairs for the same resolved prediction.
 
     Aggregate hit counts cannot be rearranged into paired evidence after a restart. The
     promotion bootstrap must compare both variants on identical prediction IDs.
     """
+    if not primary_bundle_id or not challenger_bundle_id:
+        return []
     conn = None
     try:
         conn = _connect()
         rows = conn.execute("""
-            SELECT p.hit, c.hit
+            SELECT p.timestamp, p.hit, c.hit
             FROM ab_results p
             JOIN ab_results c
               ON c.pred_id = p.pred_id AND c.horizon = p.horizon
             WHERE p.variant = ? AND c.variant = ?
+              AND p.model_bundle_id = ? AND c.model_bundle_id = ?
               AND p.resolved = TRUE AND c.resolved = TRUE
               AND p.hit IS NOT NULL AND c.hit IS NOT NULL
             ORDER BY p.timestamp, p.pred_id
-        """, (primary_variant, challenger_variant)).fetchall()
-        return [(bool(p_hit), bool(c_hit)) for p_hit, c_hit in rows]
+        """, (
+            primary_variant, challenger_variant,
+            primary_bundle_id, challenger_bundle_id,
+        )).fetchall()
+        return [(int(ts), bool(p_hit), bool(c_hit)) for ts, p_hit, c_hit in rows]
     except Exception as exc:
         print(f"DuckDB A/B Paired Outcomes Error: {exc}")
         return []
@@ -3303,13 +3360,15 @@ def fetch_ab_paired_outcomes(primary_variant: str, challenger_variant: str) -> l
         if conn:
             conn.close()
 
-def fetch_ab_variant_profit_stats() -> dict:
+def fetch_ab_variant_profit_stats(variant: str, model_bundle_id: str) -> dict:
     """Cost-adjusted per-variant trade stats from resolved A/B rows.
 
     A/B rows store the variant direction; the primary prediction tables store the
     realized dollar move. Join them by pred_id/horizon and compute a per-BTC
     directional PnL after the same cost floor used by labels.
     """
+    if not variant or not model_bundle_id:
+        return {}
     out = {}
     timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     union_sql = " UNION ALL ".join([
@@ -3328,10 +3387,12 @@ def fetch_ab_variant_profit_stats() -> dict:
             JOIN ({union_sql}) p
               ON p.id = a.pred_id AND p.horizon = a.horizon
             WHERE a.resolved = TRUE
+              AND a.variant = ?
+              AND a.model_bundle_id = ?
               AND p.resolved = TRUE
               AND p.actual_move IS NOT NULL
               AND p.binance_price IS NOT NULL
-        """).df()
+        """, (variant, model_bundle_id)).df()
         for r in df.to_dict("records"):
             variant = str(r.get("variant") or "")
             direction = str(r.get("direction") or "NEUTRAL")
@@ -3490,9 +3551,18 @@ def log_prediction(pred_id: str, timestamp: int, horizon: int, binance_price: fl
             except (TypeError, ValueError):
                 direction = "NEUTRAL"
             conn.execute("""
-                INSERT OR REPLACE INTO model_predictions
+                INSERT INTO model_predictions
                 (id, model, timestamp, horizon, ref_price, direction, verify_at, resolved)
                 VALUES (?, ?, ?, ?, ?, ?, ?, FALSE)
+                ON CONFLICT (id) DO UPDATE SET
+                    model = EXCLUDED.model,
+                    timestamp = EXCLUDED.timestamp,
+                    horizon = EXCLUDED.horizon,
+                    ref_price = EXCLUDED.ref_price,
+                    direction = EXCLUDED.direction,
+                    verify_at = EXCLUDED.verify_at
+                WHERE model_predictions.resolved = FALSE
+                  AND COALESCE(model_predictions.resolution_status, 'PENDING') = 'PENDING'
             """, (
                 f"{pred_id}::{model_name}", str(model_name), int(timestamp),
                 int(horizon), float(binance_price), direction, int(verify_at or 0),

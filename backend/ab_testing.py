@@ -19,6 +19,36 @@ logger = logging.getLogger(__name__)
 #: How many recent items each bounded buffer keeps for inspection. The COUNTS are exact and
 #: unbounded; only the retained detail is capped.
 RECENT_RETAINED = 200
+MIN_BOOTSTRAP_DAYS = 5
+
+
+def _paired_day_bootstrap_lower(
+    paired: list[tuple[int, bool, bool]],
+    *,
+    draws: int = 1000,
+    seed: int = 42,
+) -> tuple[float, int]:
+    """Return the 2.5% lower bound for challenger-minus-primary accuracy.
+
+    Predictions from nearby horizons and rounds overlap in market time. Resampling rows as
+    independent observations understates uncertainty, so the bootstrap unit is a whole UTC
+    day and every pair from a sampled day moves together.
+    """
+    by_day: dict[int, list[float]] = {}
+    for timestamp_ms, primary_hit, challenger_hit in paired:
+        day = int(timestamp_ms) // 86_400_000
+        by_day.setdefault(day, []).append(float(challenger_hit) - float(primary_hit))
+    days = sorted(by_day)
+    if len(days) < MIN_BOOTSTRAP_DAYS:
+        return 0.0, len(days)
+
+    rng = np.random.default_rng(seed)
+    samples = np.empty(int(draws), dtype=float)
+    for draw in range(int(draws)):
+        selected = rng.integers(0, len(days), len(days))
+        values = [value for index in selected for value in by_day[days[int(index)]]]
+        samples[draw] = float(np.mean(values))
+    return float(np.percentile(samples, 2.5)), len(days)
 
 
 class ModelVariant:
@@ -359,6 +389,7 @@ class ABTestRunner:
                 "promotion_criteria": {
                     "min_verified": 500,
                     "min_paired": 500,
+                    "min_bootstrap_days": MIN_BOOTSTRAP_DAYS,
                     "min_live_days": 30,
                     "min_profit_factor": 1.20,
                     "requires_positive_ev": True,
@@ -376,6 +407,7 @@ class ABTestRunner:
                 "promotion_criteria": {
                     "min_verified": 500,
                     "min_paired": 500,
+                    "min_bootstrap_days": MIN_BOOTSTRAP_DAYS,
                     "min_live_days": 30,
                     "min_profit_factor": 1.20,
                     "requires_positive_ev": True,
@@ -394,6 +426,7 @@ class ABTestRunner:
         criteria = {
             "min_verified": 500,
             "min_paired": 500,
+            "min_bootstrap_days": MIN_BOOTSTRAP_DAYS,
             "min_live_days": 30,
             "min_profit_factor": 1.20,
             "requires_positive_ev": True,
@@ -407,33 +440,34 @@ class ABTestRunner:
         if self.primary and self.challenger:
             try:
                 paired = database.fetch_ab_paired_outcomes(
-                    self.primary.label, self.challenger.label
+                    self.primary.label,
+                    self.challenger.label,
+                    self.primary.model_bundle_id,
+                    self.challenger.model_bundle_id,
                 )
             except Exception:
                 paired = []
         if paired:
-            p_arr = np.asarray([p for p, _ in paired], dtype=float)
-            c_arr = np.asarray([c for _, c in paired], dtype=float)
+            p_arr = np.asarray([p for _, p, _ in paired], dtype=float)
+            c_arr = np.asarray([c for _, _, c in paired], dtype=float)
             accuracy_delta = float(c_arr.mean() - p_arr.mean())
         else:
             p_arr = c_arr = np.asarray([], dtype=float)
 
-        # Calculate a paired 95% bootstrap lower bound for accuracy delta.
+        # Paired predictions overlap in time, so resample UTC-day clusters rather than rows.
         bootstrap_lower = 0.0
+        bootstrap_days = 0
         if len(paired) >= criteria["min_paired"]:
-            n_min = len(paired)
-            rng = np.random.default_rng(42)
-            diffs = []
-            for _ in range(1000):
-                idx = rng.integers(0, n_min, n_min)
-                diffs.append(c_arr[idx].mean() - p_arr[idx].mean())
-            bootstrap_lower = float(np.percentile(diffs, 2.5))
+            bootstrap_lower, bootstrap_days = _paired_day_bootstrap_lower(paired)
             
         # Calendar evidence cannot be inferred from prediction count: horizons have
         # different cadences and restarts change throughput. Use actual elapsed time.
         simulated_live_days = max(0.0, time.time() - self.challenger.started_at) / 86400.0
         try:
-            profit_stats = database.fetch_ab_variant_profit_stats()
+            profit_stats = database.fetch_ab_variant_profit_stats(
+                self.challenger.label,
+                self.challenger.model_bundle_id,
+            )
         except Exception:
             profit_stats = {}
         challenger_profit = profit_stats.get(self.challenger.label, {}) if self.challenger else {}
@@ -444,7 +478,11 @@ class ABTestRunner:
         passes_sample_size = self.challenger.total_verified >= criteria["min_verified"]
         passes_paired = len(paired) >= criteria["min_paired"]
         passes_accuracy_delta = accuracy_delta > 0.0
-        passes_bootstrap = passes_paired and bootstrap_lower > 0.0
+        passes_bootstrap = (
+            passes_paired
+            and bootstrap_days >= criteria["min_bootstrap_days"]
+            and bootstrap_lower > 0.0
+        )
         passes_live_days = simulated_live_days >= criteria["min_live_days"]
         passes_profit_samples = challenger_trades >= criteria["min_verified"]
         passes_pf = passes_profit_samples and challenger_pf > criteria["min_profit_factor"]
@@ -487,6 +525,8 @@ class ABTestRunner:
             "disagreement_rate": round(disagreement_rate, 4),
             "accuracy_delta": round(accuracy_delta, 4),
             "bootstrap_lower_bound": round(bootstrap_lower, 4),
+            "bootstrap_method": "paired_utc_day_cluster_95",
+            "bootstrap_days": bootstrap_days,
             "profit_factor": challenger_pf,
             "expectancy": challenger_ev,
             "profit_samples": challenger_trades,

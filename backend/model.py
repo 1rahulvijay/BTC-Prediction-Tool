@@ -20,7 +20,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.base import clone
 from typing import Optional, Dict
-from features import LOOKBACK, rsi, atr, ema, NUM_FEATURES
+from features import FEATURE_NAMES, LOOKBACK, rsi, atr, ema, NUM_FEATURES
 from model_contract import (
     DL_ARCH,
     MODEL_ARCH_VERSION,
@@ -45,6 +45,29 @@ from artifact_identity import (
 warnings.filterwarnings("ignore", message=".*Falling back to prediction using DMatrix due to mismatched devices.*")
 
 logger = logging.getLogger(__name__)
+
+# Bind serving inputs by canonical feature name. Literal ordinals silently point at a different
+# signal when FEATURE_NAMES is reordered, while still producing perfectly valid floats.
+SPREAD_FEATURE_INDEX = FEATURE_NAMES.index("spread_norm")
+VOL_ACCEL_FEATURE_INDEX = FEATURE_NAMES.index("vol_acceleration")
+EWMA_VOL_FEATURE_INDEX = FEATURE_NAMES.index("ewma_vol")
+VACUUM_FEATURE_INDEX = FEATURE_NAMES.index("vacuum_detected")
+
+
+def _serving_risk_inputs(seq):
+    """Return named, finite serving-risk inputs or an explicit unavailable reason."""
+    try:
+        values = {
+            "spread": float(seq[-1, SPREAD_FEATURE_INDEX]),
+            "vol_accel": float(seq[-1, VOL_ACCEL_FEATURE_INDEX]),
+            "ewma_vol": float(seq[-1, EWMA_VOL_FEATURE_INDEX]),
+            "vacuum": float(seq[-1, VACUUM_FEATURE_INDEX]),
+        }
+        if not all(np.isfinite(value) for value in values.values()):
+            raise ValueError("non-finite risk feature")
+        return values, None
+    except (IndexError, TypeError, ValueError, AttributeError) as exc:
+        return None, f"risk_inputs_unavailable:{type(exc).__name__}"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -2481,16 +2504,17 @@ class MultiModelEnsemble:
             regime_score *= 0.8
         regime_score = max(0.0, min(1.0, regime_score))
 
-        # Liquidity score from spread (15) and vacuum flag (56).
-        try:
-            spread_norm = float(seq[-1, 15])
-            vacuum = float(seq[-1, 56])
-        except Exception:
-            spread_norm = 0.5
-            vacuum = 0.0
-        liquidity_score = max(0.0, min(1.0, 1.0 - spread_norm))
-        if vacuum > 0.5:
-            liquidity_score *= 0.7
+        # Liquidity quality is a safety input. Missing/invalid data denies action; it must not
+        # be replaced with a plausible mid-range value that makes the signal look measured.
+        risk_inputs, quality_unavailable_reason = _serving_risk_inputs(seq)
+        liquidity_measured = risk_inputs is not None
+        liquidity_score = 0.0
+        if liquidity_measured:
+            spread_norm = risk_inputs["spread"]
+            vacuum = risk_inputs["vacuum"]
+            liquidity_score = max(0.0, min(1.0, 1.0 - spread_norm))
+            if vacuum > 0.5:
+                liquidity_score *= 0.7
 
         agreement_eff = agreement if agreement and agreement > 0 else 0.5
 
@@ -2500,7 +2524,9 @@ class MultiModelEnsemble:
             prod = max(1e-6, conf * agreement_eff * regime_score * liquidity_score)
             tradeability = round(100.0 * (prod ** 0.25), 1)
 
-        if tradeability >= 85:
+        if not liquidity_measured:
+            grade = "N/A"
+        elif tradeability >= 85:
             grade = "A+"
         elif tradeability >= 72:
             grade = "A"
@@ -2580,6 +2606,7 @@ class MultiModelEnsemble:
             and conviction >= 62
             and confluence >= 0.5
             and not contradicted
+            and liquidity_measured
         )
         if conviction >= 80:
             conv_grade = "A+"
@@ -2597,6 +2624,8 @@ class MultiModelEnsemble:
             "signalGrade": grade,
             "regimeScore": round(regime_score, 3),
             "liquidityScore": round(liquidity_score, 3),
+            "qualityInputsAvailable": liquidity_measured,
+            "qualityUnavailableReason": quality_unavailable_reason,
             "expectedEdge": round(expected_edge_usd, 2),
             "expectedEdgePct": round(expected_edge_pct, 4),
             "conviction": conviction,
@@ -2855,26 +2884,26 @@ class MultiModelEnsemble:
         else:
             conf = prob_neutral
 
-        # Volatility & Spread features for Meta-Model
-        # ewma_vol is Feature 50, vol_accel is Feature 49, spread is Feature 15
-        if seq.shape[1] > 50:
-            vol_accel = seq[-1, 49]
-            ewma_vol = seq[-1, 50]
-            spread = seq[-1, 15]
+        # Volatility/spread are risk controls. If the feature contract is incomplete or values
+        # are invalid, refuse the directional call rather than silently disabling the filter.
+        risk_inputs, risk_inputs_unavailable_reason = _serving_risk_inputs(seq)
+        risk_inputs_available = risk_inputs is not None
+        if not risk_inputs_available:
+            direction = "NEUTRAL"
+            conf = prob_neutral
 
-            # Meta-Model Trust Filter
+        if risk_inputs_available:
+            vol_accel = risk_inputs["vol_accel"]
+            ewma_vol = risk_inputs["ewma_vol"]
+            spread = risk_inputs["spread"]
             if agreement < agreement_threshold and (vol_accel > 0.3 or spread > 0.8):
                 direction = "NEUTRAL"
                 conf = prob_neutral
-            
-            # Confidence Scaling
-            # If EWMA Vol is high (e.g., >0.5), scale down conf.
+
             if ewma_vol > 0.5:
-                # E.g. if ewma_vol is 1.0 (very high), we reduce conf by max 25%
                 scaling = max(0.75, 1.0 - (ewma_vol - 0.5) * 0.5)
                 conf *= scaling
             elif ewma_vol < 0.1:
-                # low vol
                 conf *= 0.92
 
         # ──── Per-regime confidence calibration ────
@@ -3097,6 +3126,8 @@ class MultiModelEnsemble:
             "agreementVotes": agreement_votes,
             "agreementModelCount": model_count,
             "agreementThreshold": round(agreement_threshold, 3),
+            "riskInputsAvailable": risk_inputs_available,
+            "riskInputsUnavailableReason": risk_inputs_unavailable_reason,
             "pairwise": pairwise,
             "modelDirs": model_dirs,
             "modelProbabilities": dict(self.latest_model_probabilities.get(h, {})),

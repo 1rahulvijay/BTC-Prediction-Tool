@@ -73,7 +73,13 @@ def main() -> int:
             "cvd_1m": np.concatenate([base_cvd, np.full(30, 1_000_000.0)]),
         },
     )
-    assert np.allclose(base_features, extended_features[:len(base_features)])
+    # Only the final row may differ: it is the documented live-snapshot overlay for "now".
+    # Once future candles are appended that former final row can only be reconstructed from
+    # persisted signal history, which this fixture intentionally supplies for cvd_1m alone.
+    assert np.allclose(base_features[:-1], extended_features[:len(base_features) - 1])
+    changed_rows = np.flatnonzero(np.any(
+        ~np.isclose(base_features, extended_features[:len(base_features)]), axis=1))
+    assert changed_rows.tolist() in ([], [len(base_features) - 1])
 
     close_path = np.full(100, 100.0)
     high_path = close_path.copy()

@@ -25,6 +25,9 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.ensemble import GradientBoostingRegressor
+from quantile_safety import (conformal_adjustment, monotone_quantiles,
+                             purged_train_cal_test_slices)
+from artifact_identity import resolve_history_days
 
 # Manifest written in the same step as the artifact: without it the artifact reads as
 # UNKNOWN identity, and phold_challenger refuses to deploy a calibrator while any source
@@ -42,10 +45,9 @@ OUT = os.path.join(
 
 MOVE_FEATS = ["rv_15m", "rv_30m", "rv_60m", "compression_ratio"]
 HORIZONS = [5, 15]   # pruned 2026-06-21: band only for the tradeable markets
-TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
-                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+TRAIN_DAYS_TAG = str(resolve_history_days())
 
-HEAD_VERSION = f"2026-06-21-cqr-recency-h5-15-{TRAIN_DAYS_TAG}d"   # train_heads.py retrains when this changes
+HEAD_VERSION = f"2026-08-10-cqr-purged-test-h5-15-{TRAIN_DAYS_TAG}d"
 
 
 def _fit_q(X, y, q):
@@ -77,28 +79,40 @@ def main():
         m = ~np.isnan(y)
         Xh, yh = X[m], y[m]
         n = len(yh)
-        # Train on the older 80%; conformal-calibrate cqr on the MOST-RECENT 20% (best proxy for the
-        # live regime). The old code calibrated cqr on an OLDER slice (60-80%) and tested on a more
-        # volatile recent slice -> undercovered (~72%). Recency calibration restores honest ~80%
-        # coverage going forward (standard fix for non-stationary CQR).
+        # The newest 2% is an untouched test. The preceding 2% calibrates CQR, with a
+        # horizon-sized purge on both boundaries. Reporting calibration-set coverage here
+        # used to print ~80% by construction and call it evidence; only the untouched test
+        # is reported now.
         _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
-        a = int(n * _sf)                            # 98/2: fit = sf (98%); conformal-cal = recent 1-sf (2%)
-        Xtr, ytr = Xh[:a], yh[:a]
-        Xca, yca = Xh[a:], yh[a:]                   # recent slice = conformal calibration set
+        tr, ca, te = purged_train_cal_test_slices(n, h, _sf)
+        Xtr, ytr = Xh[tr], yh[tr]
+        Xca, yca = Xh[ca], yh[ca]
+        Xte, yte = Xh[te], yh[te]
         q10, q50, q90 = _fit_q(Xtr, ytr, 0.10), _fit_q(Xtr, ytr, 0.50), _fit_q(Xtr, ytr, 0.90)
-        lo_ca, hi_ca = q10.predict(Xca), q90.predict(Xca)
+        lo_ca, _, hi_ca = monotone_quantiles(
+            q10.predict(Xca), q50.predict(Xca), q90.predict(Xca))
         E = np.maximum(lo_ca - yca, yca - hi_ca)    # CQR conformity score on the recent slice
-        cqr = float(np.quantile(E, 0.80))           # widen both sides -> ~80% coverage on recent data
-        cov80_raw = np.mean((yca >= lo_ca) & (yca <= hi_ca)) * 100
-        cov80_cqr = np.mean((yca >= lo_ca - cqr) & (yca <= hi_ca + cqr)) * 100   # ~80% by construction
-        mid_t = q50.predict(Xca)
+        cqr = conformal_adjustment(E, 0.80)
+        lo_te, mid_t, hi_te = monotone_quantiles(
+            q10.predict(Xte), q50.predict(Xte), q90.predict(Xte))
+        cov80_raw = np.mean((yte >= lo_te) & (yte <= hi_te)) * 100
+        cov80_cqr = np.mean((yte >= lo_te - cqr) & (yte <= hi_te + cqr)) * 100
         print(f"{h:>3} {cov80_raw:>8.1f}% {cov80_cqr:>8.1f}% "
-              f"{(lo_ca - cqr).mean():>9.1f} {(hi_ca + cqr).mean():>+8.1f} {mid_t.mean():>+8.1f}")
-        models[h] = {"q10": q10, "q50": q50, "q90": q90, "cqr": cqr}
+              f"{(lo_te - cqr).mean():>9.1f} {(hi_te + cqr).mean():>+8.1f} {mid_t.mean():>+8.1f}")
+        models[h] = {
+            "q10": q10, "q50": q50, "q90": q90, "cqr": cqr,
+            "test_metrics": {"n": int(len(yte)), "coverage_raw": float(cov80_raw / 100),
+                             "coverage_cqr": float(cov80_cqr / 100)},
+            "split": {"train_rows": int(len(ytr)), "calibration_rows": int(len(yca)),
+                      "test_rows": int(len(yte)), "purge_rows": int(h)},
+            "serve_monotone_projection": True,
+        }
 
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
     joblib.dump({"models": models, "features": MOVE_FEATS, "horizons": HORIZONS,
                  "version": HEAD_VERSION,
-                 "note": "signed bps quantiles; band = [q10-cqr, q90+cqr] for ~80% coverage; "
+                 "note": "signed bps quantiles; purged train/cal/test; test-only coverage; "
+                         "band = [ordered q10-cqr, ordered q90+cqr] for ~80% coverage; "
                          "project close = ref_price*(1+q50/1e4); serve via live_keepers."}, OUT)
     write_integrity_manifest(OUT)
     print(f"\nSaved -> {OUT}")

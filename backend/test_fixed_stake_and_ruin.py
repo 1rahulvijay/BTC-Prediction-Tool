@@ -79,7 +79,7 @@ def test_fixed_stake():
 
 def test_ruin_is_terminal_and_named():
     print("\nRUIN reaching zero is the run ENDING, and it says so")
-    from binance_paper.config import StrategyRiskConfig
+    from binance_paper.config import MINIMUM_ORDER_NOTIONAL_USD, StrategyRiskConfig
     from binance_paper.governor import CapitalPreservationGovernor, GovernorAccountState
 
     now = int(time.time() * 1000)
@@ -114,11 +114,15 @@ def test_ruin_is_terminal_and_named():
         "empty account")
 
     print("\n     ... and being too small to trade is its own state, before zero")
-    starved = decide(risk.max_position_notional_usd - 1.0, peak=risk.max_position_notional_usd)
-    chk("capital_below_minimum_position" in starved.reason_codes and not starved.can_open,
-        f"below ${risk.max_position_notional_usd:.2f} the smallest permitted position no "
-        f"longer fits, so it goes CLOSE_ONLY - still solvent, but it cannot produce further "
-        f"evidence either")
+    starved = decide(MINIMUM_ORDER_NOTIONAL_USD - 1.0,
+                     peak=MINIMUM_ORDER_NOTIONAL_USD - 1.0)
+    chk("capital_below_minimum_order_margin" in starved.reason_codes and not starved.can_open,
+        f"below the ${MINIMUM_ORDER_NOTIONAL_USD:.2f} executable minimum at 1x the account "
+        f"goes CLOSE_ONLY; max_position_notional remains a ceiling, never a minimum")
+    not_starved = decide(risk.max_position_notional_usd - 1.0,
+                         peak=risk.max_position_notional_usd - 1.0)
+    chk("capital_below_minimum_order_margin" not in not_starved.reason_codes,
+        "an account below max_position_notional is not called starved - that field is a cap")
 
     print("\n     ... the whole ladder, on the $250 stake")
     for equity in (250.0, 235.0, 224.0, 30.0, 0.0):

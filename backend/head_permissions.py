@@ -27,6 +27,7 @@ WHY THIS MATTERS MORE THAN IT LOOKS
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 
@@ -52,9 +53,17 @@ def _load():
     try:
         with open(REPORT, encoding="utf-8") as fh:
             rep = json.load(fh)
-        age = now - os.path.getmtime(REPORT)
+        evidence_ms = rep.get("evidence_last_ts_ms")
+        if evidence_ms is None:
+            age = float("inf")
+            stale_reason = "report has no attributable resolved-outcome timestamp"
+        else:
+            age = now - (float(evidence_ms) / 1000.0)
+            stale_reason = ("evidence timestamp is in the future" if age < -300
+                            else "resolved outcomes are older than the freshness limit")
         rep["_age_s"] = age
-        rep["_stale"] = age > MAX_REPORT_AGE_S
+        rep["_stale"] = (age < -300) or (age > MAX_REPORT_AGE_S)
+        rep["_stale_reason"] = stale_reason
         _CACHE["val"] = rep
     except Exception:
         _CACHE["val"] = None
@@ -101,7 +110,8 @@ def _registry_cap(head: str) -> dict:
 
 
 def head_state(head: str, *, artifact_sha: str | None = None,
-               horizon: int | None = None) -> tuple[str, dict]:
+               horizon: int | None = None,
+               seconds_left: float | None = None) -> tuple[str, dict]:
     """(state, permissions) for a head. Missing / stale / unknown / corrupt -> DENIED.
 
     Authority is bound to WHICH ARTIFACT and WHICH HORIZON was measured, not to a head's
@@ -124,9 +134,11 @@ def head_state(head: str, *, artifact_sha: str | None = None,
             "no head-health report; action authority denied until health is measured"
         )
     if rep.get("_stale"):
+        age_text = ("unknown" if not math.isfinite(float(rep.get("_age_s", float("inf"))))
+                    else f"{rep['_age_s'] / 86400:.0f}d")
         return "STALE", _denied(
-            f"head-health report is {rep['_age_s'] / 86400:.0f}d old; "
-            f"stale measurement carries no action authority"
+            f"head-health evidence age is {age_text} ({rep.get('_stale_reason', 'stale')}); "
+            f"regenerating a JSON file cannot refresh old outcomes"
         )
     h = (rep.get("heads") or {}).get(head)
     if not h:
@@ -177,6 +189,39 @@ def head_state(head: str, *, artifact_sha: str | None = None,
             )
         h = {**h, **by_h[key]}          # the horizon's own state/permissions win
 
+    # Authority is also local to the seconds-left band that was measured. The health report
+    # already computed these blocks, but the old reader ignored them and granted the pooled
+    # horizon state across 15-120 seconds.
+    if seconds_left is not None:
+        if horizon is None:
+            return "REGION_WITHOUT_HORIZON", _denied(
+                f"'{head}' region authority requires a horizon as well as seconds_left"
+            )
+        try:
+            sec = float(seconds_left)
+        except (TypeError, ValueError):
+            return "REGION_INVALID", _denied(f"'{head}' seconds_left is not numeric")
+        region_key = None
+        for lo, hi in ((15, 30), (30, 60), (60, 90), (90, 120)):
+            if lo <= sec < hi or (hi == 120 and lo <= sec <= hi):
+                region_key = f"{lo}-{hi}s"
+                break
+        if region_key is None:
+            return "REGION_OUTSIDE_OPERATION", _denied(
+                f"'{head}' has no action authority at {sec:.1f}s; measured window is 15-120s"
+            )
+        by_region = h.get("by_region") or {}
+        if not by_region:
+            return "REGION_POOLED", _denied(
+                f"'{head}' health pools the {horizon}m operating window; pooled evidence "
+                f"cannot authorize {region_key}"
+            )
+        if region_key not in by_region:
+            return "REGION_UNMEASURED", _denied(
+                f"'{head}' health has no {horizon}m/{region_key} measurement"
+            )
+        h = {**h, **by_region[region_key]}
+
     state = str(h.get("state") or h.get("status") or "UNKNOWN")
     perms = dict(h.get("permissions") or {})
     if state in NO_ACTION_STATES:
@@ -208,13 +253,15 @@ def head_state(head: str, *, artifact_sha: str | None = None,
 
 
 def may_price(head: str, *, artifact_sha: str | None = None,
-              horizon: int | None = None) -> tuple[bool, str]:
+              horizon: int | None = None,
+              seconds_left: float | None = None) -> tuple[bool, str]:
     """May this head supply a FAIR VALUE (i.e. authorize money-relevant arithmetic)?
 
     Pass the SERVING artifact's sha and the horizon being priced. Omitting them does not
     grant a broader permission - an entry that names no artifact is denied either way - but
     passing them is what makes a retrain revoke authority instead of inheriting it."""
-    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon)
+    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon,
+                              seconds_left=seconds_left)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
     ok = bool(perms.get("may_price", False))      # default DENY, never allow
@@ -222,9 +269,11 @@ def may_price(head: str, *, artifact_sha: str | None = None,
 
 
 def may_rank(head: str, *, artifact_sha: str | None = None,
-             horizon: int | None = None) -> tuple[bool, str]:
+             horizon: int | None = None,
+             seconds_left: float | None = None) -> tuple[bool, str]:
     """May this head ORDER candidates (weaker permission than pricing)?"""
-    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon)
+    state, perms = head_state(head, artifact_sha=artifact_sha, horizon=horizon,
+                              seconds_left=seconds_left)
     if not ENFORCED:
         return True, f"{head}={state} (enforcement disabled)"
     return bool(perms.get("may_rank", False)), f"{head}={state}: {perms.get('reason', '')}"
@@ -251,11 +300,13 @@ def selftest() -> int:
         _CACHE = {"ts": 0.0, "val": None}
 
     def write(payload, age_days=0.0):
+        payload = dict(payload)
+        payload.setdefault(
+            "evidence_last_ts_ms",
+            int((time.time() - age_days * 86400) * 1000),
+        )
         with open(REPORT, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
-        if age_days:
-            old = time.time() - age_days * 86400
-            os.utime(REPORT, (old, old))
         reset()
 
     # --- the four denial paths -------------------------------------------------------------
@@ -383,6 +434,36 @@ def selftest() -> int:
     st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=5)
     chk(st == "HORIZON_POOLED",
         "a report with no per-horizon blocks cannot authorize a specific horizon at all")
+
+    # Operating-region binding. A healthy late head must not authorize the entire 15-120s
+    # band, and touching the JSON file cannot refresh old underlying evidence.
+    write({"heads": {"p_hold": {
+        "state": "USABLE", "artifact_sha": SHA_A,
+        "permissions": {"may_rank": True},
+        "by_horizon": {"5": {
+            "state": "USABLE", "permissions": {"may_rank": True},
+            "by_region": {
+                "15-30s": {"state": "USABLE", "permissions": {"may_rank": True}},
+                "30-60s": {"state": "DISABLED_NO_SKILL",
+                            "permissions": {"may_rank": False}},
+            }}}}}})
+    chk(may_rank("p_hold", artifact_sha=SHA_A, horizon=5, seconds_left=20)[0],
+        "the measured healthy 15-30s region may rank")
+    chk(not may_rank("p_hold", artifact_sha=SHA_A, horizon=5, seconds_left=45)[0],
+        "a weak 30-60s region cannot borrow authority from the horizon aggregate")
+    st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=5, seconds_left=75)
+    chk(st == "REGION_UNMEASURED",
+        "an unmeasured operating region is denied instead of using pooled evidence")
+    st, _ = head_state("p_hold", artifact_sha=SHA_A, horizon=5, seconds_left=5)
+    chk(st == "REGION_OUTSIDE_OPERATION", "seconds outside 15-120 never inherit authority")
+
+    write({"heads": {"p_hold": {
+        "state": "USABLE", "artifact_sha": SHA_A,
+        "permissions": {"may_rank": True}}}}, age_days=30)
+    os.utime(REPORT, None)  # a freshly rewritten report still carries old outcome evidence
+    reset()
+    st, _ = head_state("p_hold", artifact_sha=SHA_A)
+    chk(st == "STALE", "fresh file mtime cannot refresh 30-day-old evidence")
 
     # OMITTING the sha is a denial in its own right, not a skipped comparison. Treating None
     # as "nothing to compare" made the binding opt-OUT - any call site that just left the

@@ -18,6 +18,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from artifact_identity import resolve_history_days
 from verified_io import write_manifest as write_integrity_manifest
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
@@ -33,8 +34,7 @@ STATE_DIR = DATA / "research" / "round_state_stopping_180d_30s"
 MATRIX = DATA / "research_matrix_1m.parquet"
 OUT = Path(os.environ.get("BTC_MODEL_OUTPUT_DIR") or DATA / "saved_models") / "round_state_heads.pkl"
 METRICS_OUT = DATA / "research" / "round_state_live" / "metrics.csv"
-TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
-                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+TRAIN_DAYS_TAG = str(resolve_history_days())
 
 #: SCHEMA version, bumped to v2 on 2026-08-03 when the same-minute feature leak was fixed.
 #: Every v1 artifact was trained on features that included the tail of the minute the decision

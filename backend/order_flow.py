@@ -35,7 +35,12 @@ class OrderFlowAnalyzer:
             "asks_added": 0, "asks_canceled": 0, "asks_executed": 0
         }
         self.pending_executions = {"bid": 0.0, "ask": 0.0}
-        self.local_extremes = {"high": 0.0, "low": float('inf'), "last_break": 0}
+        self.local_extremes = {
+            "high": 0.0,
+            "low": float("inf"),
+            "last_high_break": 0,
+            "last_low_break": 0,
+        }
         # Last-sweep timestamps (ms); 0 = none. Stored as timestamps (not consume-on-read
         # booleans) so the per-candle feature snapshot reliably sees a sweep that occurred
         # during the candle instead of one that a prior get_summary() call already erased.
@@ -151,17 +156,27 @@ class OrderFlowAnalyzer:
         price = float(trade["price"])
         if price > self.local_extremes["high"]:
             self.local_extremes["high"] = price
-            self.local_extremes["last_break"] = trade["time"]
+            self.local_extremes["last_high_break"] = trade["time"]
         if price < self.local_extremes["low"]:
             self.local_extremes["low"] = price
-            self.local_extremes["last_break"] = trade["time"]
+            self.local_extremes["last_low_break"] = trade["time"]
             
-        # If we broke a local low recently (within 5 seconds), and we see massive buying (reversal)
-        if (trade["time"] - self.local_extremes["last_break"]) < 5000:
-            if price > self.local_extremes["low"] * 1.0005 and is_buy and enriched["is_whale"]:
-                self.liquidity_sweeps["bullish"] = trade["time"]
-            elif price < self.local_extremes["high"] * 0.9995 and not is_buy and enriched["is_whale"]:
-                self.liquidity_sweeps["bearish"] = trade["time"]
+        low_break_age = trade["time"] - self.local_extremes["last_low_break"]
+        high_break_age = trade["time"] - self.local_extremes["last_high_break"]
+        if (
+            0 <= low_break_age < 5000
+            and price > self.local_extremes["low"] * 1.0005
+            and is_buy
+            and enriched["is_whale"]
+        ):
+            self.liquidity_sweeps["bullish"] = trade["time"]
+        elif (
+            0 <= high_break_age < 5000
+            and price < self.local_extremes["high"] * 0.9995
+            and not is_buy
+            and enriched["is_whale"]
+        ):
+            self.liquidity_sweeps["bearish"] = trade["time"]
         
         return enriched
 

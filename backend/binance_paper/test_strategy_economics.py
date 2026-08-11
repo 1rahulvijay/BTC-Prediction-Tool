@@ -30,20 +30,13 @@ WHAT IS ASSERTED
 INVOCATION
     python -m backend.binance_paper.test_strategy_economics
 
-    Module invocation, matching every other test in this package, and NOT optional here:
-    `backend/binance_paper/types.py` shadows the standard library `types` module. Running any
-    file in this directory as a script puts the directory on sys.path[0], where the shadow
-    breaks Python's own import machinery before the first line of the test executes:
-
-        ImportError: cannot import name 'MappingProxyType' from 'types'
-
-    The shadowing is pre-existing and harmless under package imports. It is noted in
-    docs/VALIDATION_SWEEP_2026-07-31.md rather than fixed here, because renaming a module this
-    package imports from is a wider change than this commit should carry.
+    Module invocation is required because these tests use package-relative imports. The former
+    `types.py` standard-library name collision was removed by renaming it to `paper_types.py`.
 """
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from backend.binance_paper.config import EngineConfig
 from backend.binance_paper.schemas import (
@@ -237,6 +230,27 @@ def test_dynamic_exit_fires_and_control_stays_static():
     control = registry.get(CONTROL_STRATEGY_ID)
     assert "position_exit_reason" not in vars(type(control)),         "random_control must not implement position_exit_reason - a control with a thesis is not a control"
     assert control.position_exit_reason(position, snapshot(falling)) is None
+
+
+def test_maintenance_margin_forces_liquidation():
+    """A leveraged position cannot paper-trade through its venue liquidation boundary."""
+    from backend.binance_paper.portfolio import BinancePaperPortfolio as Portfolio
+
+    base = snapshot(_trending_history())
+    collapsed = replace(base, mark_price=31_000.0, best_bid=30_990.0,
+                        best_ask=31_010.0)
+    position = {
+        "side": "LONG", "opened_at_ms": base.received_at_ms - 10_000,
+        "entry_price": 64_000.0, "quantity": 0.01, "margin_usd": 320.0,
+        "stop_price": 40_000.0, "take_profit_price": 70_000.0,
+        "maximum_holding_seconds": 300,
+    }
+    assert Portfolio.exit_reason(
+        position, collapsed, maintenance_margin_rate=0.005) == "LIQUIDATION"
+
+    healthy = replace(base, mark_price=63_900.0, best_bid=63_890.0,
+                      best_ask=63_910.0)
+    assert Portfolio.exit_reason(position, healthy, maintenance_margin_rate=0.005) is None
 
 
 def main() -> int:

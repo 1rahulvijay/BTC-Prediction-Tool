@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
-from .types import BookLevel, BookSnapshot, OrderSide
+from .paper_types import BookLevel, BookSnapshot, OrderSide
 
 
 @dataclass(frozen=True, slots=True)

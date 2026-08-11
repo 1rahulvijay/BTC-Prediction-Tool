@@ -27,6 +27,7 @@ Usage:  python backend/decision/train_selectivity_models.py
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -36,6 +37,11 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 import joblib
+
+BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKEND not in sys.path:
+    sys.path.insert(0, BACKEND)
+from artifact_identity import resolve_history_days
 
 # Manifest written in the same step as the artifact: without it the artifact reads as
 # UNKNOWN identity, and phold_challenger refuses to deploy any calibrator while a source
@@ -50,8 +56,7 @@ OUT = os.path.join(
     os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
     "selectivity_models.pkl",
 )
-TRAIN_DAYS_TAG = (os.environ.get("BTC_HISTORICAL_DAYS")
-                  or os.environ.get("BTC_BACKFILL_DAYS") or "na")
+TRAIN_DAYS_TAG = str(resolve_history_days())
 
 HEAD_VERSION = f"2026-06-15-lr+rf-ensemble-{TRAIN_DAYS_TAG}d"   # train_heads.py retrains when this changes
 

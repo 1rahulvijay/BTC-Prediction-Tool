@@ -476,6 +476,59 @@ jobs:
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
 
+      - name: Quantile leakage and monotonicity safeguards
+        run: python backend/quantile_safety.py
+
+      - name: Artifact training-window namespace
+        run: python backend/test_training_window_namespace.py
+
+      - name: Resolved outcomes survive duplicate logging
+        run: python backend/test_terminal_outcome_relogging.py
+
+      - name: Market stream ordering and directional sweep state
+        run: python backend/test_market_stream_ordering.py
+
+      - name: A/B uncertainty uses UTC-day clusters
+        run: python backend/test_ab_day_block_bootstrap.py
+
+      - name: A/B outcomes and economics are bundle scoped
+        run: python backend/test_ab_bundle_scope.py
+
+      - name: Probability-bucket audit cannot hide loader failures
+        run: python backend/test_probability_bucket_audit_contract.py
+
+      - name: Serving risk features are name-bound and fail closed
+        run: python backend/test_model_serving_risk_contract.py
+
+      - name: Binance paper deterministic execution contracts
+        run: |
+          python -m backend.binance_paper.test_engine
+          python -m backend.binance_paper.test_model_consensus_probability_namespace
+          python -m backend.binance_paper.test_period_loss_boundaries
+          python -m backend.binance_paper.test_post_fill_risk_budget
+          python -m backend.binance_paper.test_sizing_exit_cost
+
+      - name: Quant platform deterministic contracts
+        run: |
+          python -m backend.quant_platform.test_kernel
+          python -m backend.quant_platform.test_research_validation
+
+      - name: Model artifact and training integrity contracts
+        run: |
+          python backend/test_meta_model_contract.py
+          python backend/test_model_bundle_completeness.py
+          python backend/test_training_integrity_20260731.py
+
+      - name: Complete-trade serving and evidence contracts
+        run: |
+          python -m backend.trade_forecast.test_complete_trade_forecast
+          python -m backend.trade_forecast.test_evidence_completion
+          python -m backend.trade_forecast.test_ledger_v2_end_to_end
+          python -m backend.trade_forecast.test_serving_integration
+
+      - name: Recorder declarations match actual stores
+        run: python -m backend.audit.recorder_evidence_check
+
       - name: Challenger promotion gates
         run: python backend/promote_challenger.py --selftest
 
@@ -889,6 +942,29 @@ jobs:
           python backend/order_lifecycle.py --selftest || exit /b 1
           python backend/test_control_plane_security.py || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
+          python backend/quantile_safety.py || exit /b 1
+          python backend/test_training_window_namespace.py || exit /b 1
+          python backend/test_terminal_outcome_relogging.py || exit /b 1
+          python backend/test_market_stream_ordering.py || exit /b 1
+          python backend/test_ab_day_block_bootstrap.py || exit /b 1
+          python backend/test_ab_bundle_scope.py || exit /b 1
+          python backend/test_probability_bucket_audit_contract.py || exit /b 1
+          python backend/test_model_serving_risk_contract.py || exit /b 1
+          python -m backend.binance_paper.test_engine || exit /b 1
+          python -m backend.binance_paper.test_model_consensus_probability_namespace || exit /b 1
+          python -m backend.binance_paper.test_period_loss_boundaries || exit /b 1
+          python -m backend.binance_paper.test_post_fill_risk_budget || exit /b 1
+          python -m backend.binance_paper.test_sizing_exit_cost || exit /b 1
+          python -m backend.quant_platform.test_kernel || exit /b 1
+          python -m backend.quant_platform.test_research_validation || exit /b 1
+          python backend/test_meta_model_contract.py || exit /b 1
+          python backend/test_model_bundle_completeness.py || exit /b 1
+          python backend/test_training_integrity_20260731.py || exit /b 1
+          python -m backend.trade_forecast.test_complete_trade_forecast || exit /b 1
+          python -m backend.trade_forecast.test_evidence_completion || exit /b 1
+          python -m backend.trade_forecast.test_ledger_v2_end_to_end || exit /b 1
+          python -m backend.trade_forecast.test_serving_integration || exit /b 1
+          python -m backend.audit.recorder_evidence_check || exit /b 1
           python backend/promote_challenger.py --selftest || exit /b 1
           python research/run_all_sequence.py --selftest || exit /b 1
           python backend/preflight_longwindow.py --selftest || exit /b 1

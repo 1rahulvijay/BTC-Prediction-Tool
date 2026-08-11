@@ -34,6 +34,7 @@ from artifact_identity import (
     artifact_compatibility,
     current_training_identity,
     hash_file,
+    resolve_history_days,
     training_identity_issues,
     write_artifact_manifest,
 )
@@ -51,7 +52,7 @@ DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
 SM = os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models")
 os.makedirs(SM, exist_ok=True)
 PY = sys.executable
-DAYS = os.environ.get("BTC_BACKFILL_DAYS") or os.environ.get("BTC_HISTORICAL_DAYS") or "60"
+DAYS = str(resolve_history_days())
 TRAIN_LEGACY_MISSING = os.environ.get("BTC_TRAIN_LEGACY_HEADS", "0") == "1"
 
 
@@ -144,13 +145,16 @@ def _remove_artifact_family(path: str) -> None:
             raise RuntimeError(f"could not remove stale staged artifact {candidate}: {exc}") from exc
 
 
-def _import_version(rel_dir: str, module: str) -> str | None:
+def _import_version(rel_dir: str, module: str) -> str:
     try:
         sys.path.insert(0, os.path.join(ROOT, rel_dir))
         mod = __import__(module)
-        return getattr(mod, "HEAD_VERSION", None)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(f"TRAINER_IMPORT_FAILED:{module}:{type(exc).__name__}:{exc}") from exc
+    version = getattr(mod, "HEAD_VERSION", None)
+    if version in (None, ""):
+        raise RuntimeError(f"TRAINER_VERSION_MISSING:{module}")
+    return str(version)
 
 
 def _saved_version(path: str):

@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Callable
 
+from artifact_identity import resolve_history_days
+
 import numpy as np
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, VotingClassifier
 from sklearn.isotonic import IsotonicRegression
@@ -35,9 +37,7 @@ HORIZONS = (5, 15)   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-fli
 #: window, which its own comment says. Reading the warm-up value first tagged a 1000d artifact
 #: "3d" under that launcher, so the same bundle carried two identities depending on which
 #: script started the process.
-TRAIN_DAYS_TAG = (os.environ.get("BTC_MODEL_TRAINING_DAYS")
-                  or os.environ.get("BTC_HISTORICAL_DAYS")
-                  or os.environ.get("BTC_BACKFILL_DAYS") or "60").strip() + "d"
+TRAIN_DAYS_TAG = f"{resolve_history_days()}d"
 
 
 def train_split_frac() -> float:
