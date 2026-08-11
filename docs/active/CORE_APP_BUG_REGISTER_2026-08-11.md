@@ -1,5 +1,15 @@
 # Core app — validation and complete bug register
 
+> **Superseded snapshot notice (current status at `971ba01`).** The audit below describes an
+> earlier read-only working tree and is retained as forensic history. Do not use its original
+> `OPEN` table as the current launch checklist. The resolution section near the end records the
+> fixes, and `PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md` plus
+> `FINAL_RETRAIN_RESCAN_2026-08-11.md` are the current executable verdict. On the current tree,
+> 216/216 workflow gates, the Windows launcher selftests, 155 pytest tests, backend compile/static
+> checks, both paper engines, the production HTTP boundary and the frontend build pass. Legacy
+> artifacts and stopped recorders remain deliberate pre-retrain operational blockers, not open
+> source fixes.
+
 Written **2026-08-11** against HEAD `804a108`, working tree carrying 62 uncommitted files from a
 parallel session.
 

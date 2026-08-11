@@ -2,8 +2,8 @@
 
 ## Verdict
 
-The canonical source tree is ready to start the deliberate 1,000-day retrain after this
-change is committed. This rescan did **not** run the application or fit production models.
+The canonical source tree at `971ba01` is committed and ready to start the deliberate 1,000-day
+retrain. This rescan did **not** run the application or fit production models.
 It traced the launcher, every active trainer, the model registry, both paper engines and all
 runtime Polymarket rule names, then executed the complete local workflow.
 
@@ -141,7 +141,7 @@ They remain paper/shadow evidence collectors. No test result grants real-order a
 
 | Check | Result |
 | --- | --- |
-| clean canonical branch before audit | `master == origin/master` at `033be8a` |
+| clean canonical branch before audit | clean local `master` at `971ba01`, two commits ahead of `origin/master` |
 | `python -m pytest -q` | 155 passed, 13 third-party warnings |
 | compile all backend Python | passed |
 | pyflakes across backend | passed |
@@ -157,7 +157,12 @@ They remain paper/shadow evidence collectors. No test result grants real-order a
 | crossing-head status | serviceable, no authority |
 | 1,000-day launcher dry validation | force heads/main, split 0.98, freeze after completion |
 | 1,000-day data/resource preflight | passed; 348 GB free, 1,301+ source days |
-| complete local CI workflow | all 217 gates passed in 899 seconds |
+| complete local CI workflow | all 216 gates passed in 694 seconds |
+| real one-horizon ensemble smoke | 13 functional checks passed; real OOF, save/load and zero prediction drift |
+| canonical DuckDB migration | passed; required identity and resolution columns are present |
+| recorder declaration audit | 10 declared recorders, no schema/unit drift; stopped state is expected while app is closed |
+| production HTTP/WebSocket surface | passed and fails closed before verified artifacts/feeds exist |
+| npm high-severity audit | 0 vulnerabilities |
 
 The workflow's feature-contract line remains advisory because the files currently on disk are
 the intentionally refused pre-retrain artifacts. Startup enforces strict identity and the

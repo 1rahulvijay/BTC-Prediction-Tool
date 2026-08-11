@@ -2,8 +2,9 @@
 
 ## Verdict
 
-The source tree is ready for the deliberate **1,000-day retrain** after this change set is
-committed. It is **not yet ready to serve as a production decision service**, because the current
+The clean source tree at `971ba01` is ready for the deliberate **1,000-day retrain**. The fixes
+are committed on local `master`; the branch is two commits ahead of `origin/master`. It is **not
+yet ready to serve as a production decision service**, because the current
 artifacts are legacy/incompatible and the deployment evidence gates are correctly closed.
 
 This distinction is intentional:
@@ -110,21 +111,31 @@ All are registered in GitHub invariants and the Windows `start.bat` selftest gat
 
 | Gate | Result |
 | --- | --- |
-| exact `start.bat` selftest-only sequence | passed after meta-fixture isolation fix |
+| clean tree / branch | clean local `master` at `971ba01`; two commits ahead of `origin/master` |
+| source-state registry | fresh: 9 sources hashed, 14 registry rows, 12 purposes |
+| exact `start.bat` selftest-only sequence | all invariant selftests passed |
+| launcher integrity | all labels/guards valid; all 105 invoked paths exist |
 | `python -m pytest -q` | 155 passed |
 | Python compileall | passed |
-| pyflakes on changed Python files | passed |
-| paper-trading integrity | passed |
-| open-position official settlement/crossing selftest | 23 checks passed |
-| B/C forward-readiness selftest | 42 checks passed |
-| Binance paper engine | passed |
-| production launcher dry-run | passed; canonical DB, 3-day warm-up, 1,000-day model identity |
-| 1,000-day resource/data preflight | passed; REBUILD mode, 344 GB free, 1,301+ source days |
-| frontend build/high-severity audit | passed inside local CI |
-| complete local workflow | source/runtime tests passed; generated source state still needs final regeneration |
+| pyflakes across `backend/` | passed |
+| complete local workflow | 216/216 gates passed in 694 seconds |
+| real ensemble train/save/load smoke | 13/13 functional checks passed; 21 OOF seat/bucket records, 12 artifacts, zero prediction drift after reload |
+| canonical DuckDB initialization | passed against `data/btc_duckdbs/analytics.duckdb`; required identity/resolution columns present |
+| recorder declaration audit | 10/10 declared stores readable; all `STALLED` because the app is closed; no schema/unit drift |
+| Binance paper engine | passed, including fills, fees, slippage, funding, recovery, rollback and risk gates |
+| Polymarket dynamic paper / equal-capital race | both passed |
+| settlement head | 37 checks passed; exchange proxy is prohibited from Polymarket EV pricing |
+| strategy registry | 18/18 Polymarket strategies logged, exposed and consistently named |
+| production HTTP/WebSocket surface | passed; readiness fails closed, admin mutation and foreign origins refused |
+| Vite production build | passed |
+| `npm audit --audit-level=high` | 0 vulnerabilities |
+| 1,000-day resource/data preflight | passed; REBUILD mode, 346 GB free, 1,301+ source days |
 
-The final workflow must be rerun after regenerating `SOURCE_STATE.*` and committing this exact
-source. Training refuses a dirty working tree, so the commit is part of the correctness contract.
+The standalone real-fit smoke printed its final explicit `PASS (13 checks)` after completing
+temporary-directory cleanup, but the external PTY wrapper reported status 1 after the final
+line and emitted no traceback. No model assertion failed and the same production contracts pass
+the workflow gates. This is recorded as a test-runner exit-status anomaly, not concealed as a
+second clean process exit and not used as the sole retrain-readiness evidence.
 
 ## What `start.bat` will do next
 
