@@ -14,6 +14,16 @@ This distinction is intentional:
 
 ## Bugs fixed in this pass
 
+### Startup selftest isolation and diagnostics
+
+`start.bat` enables `BTC_EVIDENCE_MODE=1` before running offline invariants. The meta-model
+contract fixture inherited that production setting and attempted its positive training case
+before recorders were launched, so the real forward-evidence gate correctly refused the fixture
+and startup stopped. The fixture now explicitly runs its positive case with evidence mode off and
+its refusal case with evidence mode on, restoring the caller's environment after each case. The
+live gate was not weakened. The launcher's multi-command block now records the exact failing
+command instead of always misreporting `head_permissions.py`.
+
 ### Final rescan addendum
 
 The final trainer-by-trainer trace found and fixed two additional provenance defects before the
@@ -100,6 +110,7 @@ All are registered in GitHub invariants and the Windows `start.bat` selftest gat
 
 | Gate | Result |
 | --- | --- |
+| exact `start.bat` selftest-only sequence | passed after meta-fixture isolation fix |
 | `python -m pytest -q` | 155 passed |
 | Python compileall | passed |
 | pyflakes on changed Python files | passed |

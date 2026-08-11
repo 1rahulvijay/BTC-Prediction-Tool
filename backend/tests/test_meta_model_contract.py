@@ -8,6 +8,7 @@ _bootstrap_runpy.run_path(str(_BootstrapPath(__file__).with_name("_bootstrap.py"
 
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 
@@ -31,6 +32,20 @@ CREATE TABLE predictions_5m (
     resolved BOOLEAN
 )
 """
+
+
+@contextmanager
+def evidence_mode(value: str):
+    """Isolate the fixture from the launcher's production evidence setting."""
+    previous = os.environ.get("BTC_EVIDENCE_MODE")
+    os.environ["BTC_EVIDENCE_MODE"] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("BTC_EVIDENCE_MODE", None)
+        else:
+            os.environ["BTC_EVIDENCE_MODE"] = previous
 
 
 def main() -> int:
@@ -60,20 +75,19 @@ def main() -> int:
         conn.close()
 
         meta = TrainedMetaModel()
-        result = meta.train(
-            str(path),
-            5,
-            release_id="release-under-test",
-            target_contract="first_touch_triple_barrier_v1",
-        )
+        with evidence_mode("0"):
+            result = meta.train(
+                str(path),
+                5,
+                release_id="release-under-test",
+                target_contract="first_touch_triple_barrier_v1",
+            )
         assert result.startswith("trained on 140 samples"), result
         assert meta.is_trained and meta.n_samples == 140
         assert meta.release_id == "release-under-test"
         assert meta.target_definition == "counterfactual_endpoint_net_after_decision_cost"
 
-        old_evidence = os.environ.get("BTC_EVIDENCE_MODE")
-        os.environ["BTC_EVIDENCE_MODE"] = "1"
-        try:
+        with evidence_mode("1"):
             blocked = TrainedMetaModel()
             message = blocked.train(
                 str(path),
@@ -86,11 +100,6 @@ def main() -> int:
                 },
             )
             assert "refused" in message and not blocked.is_trained, message
-        finally:
-            if old_evidence is None:
-                os.environ.pop("BTC_EVIDENCE_MODE", None)
-            else:
-                os.environ["BTC_EVIDENCE_MODE"] = old_evidence
 
         class BrokenModel:
             def predict_proba(self, _features):

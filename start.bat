@@ -421,60 +421,88 @@ if errorlevel 1 goto :selftest_failed_b
 python backend\tests\test_control_plane_security.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 echo [selftest] c. Head permissions - a head that cannot price may not price:
+set "BTC_SELFTEST_CURRENT=python backend\head_permissions.py --selftest"
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\quantile_safety.py"
 python backend\quantile_safety.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_training_window_namespace.py"
 python backend\tests\test_training_window_namespace.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_specialist_source_provenance.py"
 python backend\tests\test_specialist_source_provenance.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_feature_contract_optional.py"
 python backend\tests\test_feature_contract_optional.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\wait_for_forward_evidence.py --selftest"
 python backend\wait_for_forward_evidence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_production_launcher_contract.py"
 python backend\tests\test_production_launcher_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_terminal_outcome_relogging.py"
 python backend\tests\test_terminal_outcome_relogging.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_market_stream_ordering.py"
 python backend\tests\test_market_stream_ordering.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_ab_day_block_bootstrap.py"
 python backend\tests\test_ab_day_block_bootstrap.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_ab_bundle_scope.py"
 python backend\tests\test_ab_bundle_scope.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_probability_bucket_audit_contract.py"
 python backend\tests\test_probability_bucket_audit_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_model_serving_risk_contract.py"
 python backend\tests\test_model_serving_risk_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.binance_paper.test_engine"
 python -m backend.binance_paper.test_engine >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.binance_paper.test_model_consensus_probability_namespace"
 python -m backend.binance_paper.test_model_consensus_probability_namespace >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.binance_paper.test_period_loss_boundaries"
 python -m backend.binance_paper.test_period_loss_boundaries >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.binance_paper.test_post_fill_risk_budget"
 python -m backend.binance_paper.test_post_fill_risk_budget >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.binance_paper.test_sizing_exit_cost"
 python -m backend.binance_paper.test_sizing_exit_cost >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.quant_platform.test_kernel"
 python -m backend.quant_platform.test_kernel >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.quant_platform.test_research_validation"
 python -m backend.quant_platform.test_research_validation >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_meta_model_contract.py"
 python backend\tests\test_meta_model_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_model_bundle_completeness.py"
 python backend\tests\test_model_bundle_completeness.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_training_integrity_20260731.py"
 python backend\tests\test_training_integrity_20260731.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.trade_forecast.test_complete_trade_forecast"
 python -m backend.trade_forecast.test_complete_trade_forecast >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.trade_forecast.test_evidence_completion"
 python -m backend.trade_forecast.test_evidence_completion >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.trade_forecast.test_ledger_v2_end_to_end"
 python -m backend.trade_forecast.test_ledger_v2_end_to_end >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.trade_forecast.test_serving_integration"
 python -m backend.trade_forecast.test_serving_integration >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python -m backend.audit.recorder_evidence_check"
 python -m backend.audit.recorder_evidence_check >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 echo [selftest] d. Long-window preflight classification:
@@ -562,7 +590,7 @@ goto :selftest_abort
 echo [selftest] FAILED: python backend\model_registry.py --selftest (or model_artifacts.py)
 goto :selftest_abort
 :selftest_failed_c
-echo [selftest] FAILED: python backend\head_permissions.py --selftest
+echo [selftest] FAILED: %BTC_SELFTEST_CURRENT%
 goto :selftest_abort
 :selftest_failed_d
 echo [selftest] FAILED: python backend\preflight_longwindow.py --selftest

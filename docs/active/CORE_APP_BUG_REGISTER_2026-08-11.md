@@ -512,3 +512,7 @@ This register describes an earlier working-tree snapshot. Current status:
 - **DEC-2 remains fail-closed:** no existing artifact is promoted to Polymarket pricing authority
   by this pass. That requires a separately validated settlement-contract artifact and fresh
   official, artifact-attributed outcomes.
+- **Startup meta-contract isolation fixed:** the offline positive-training fixture no longer
+  inherits `BTC_EVIDENCE_MODE=1` from `start.bat`; the explicit dark-evidence case still proves
+  that live adaptation refuses stopped recorders. Startup also reports the exact command that
+  fails inside its multi-command head/model contract block.
