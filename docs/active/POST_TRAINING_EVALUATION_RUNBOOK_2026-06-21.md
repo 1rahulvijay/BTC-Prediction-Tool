@@ -83,8 +83,8 @@ Judge each horizon separately. A good overall ECE cannot hide a drifting 1m head
 ## Evaluation 2 - 5m/15m Retained-Call Precision
 
 ```powershell
-python backend\analyze_duckdb_metrics.py
-python backend\analyze_timeframe_performance.py --source pyth --hours 168 --last 250
+python backend\research\standalone\analyze_duckdb_metrics.py
+python backend\research\standalone\analyze_timeframe_performance.py --source pyth --hours 168 --last 250
 ```
 
 Read only the current model version and retained/actionable UP or DOWN calls. For each horizon capture:

@@ -184,7 +184,7 @@ python backend\target_contract.py --selftest
 python backend\settlement_head.py --selftest
 python -m backend.binance_paper.test_engine
 python backend\polymarket\model_dynamic_paper.py
-python backend\test_paper_trading_integrity.py
+python backend\tests\test_paper_trading_integrity.py
 python -m pytest -q
 python -m compileall -q backend
 python -m pyflakes backend

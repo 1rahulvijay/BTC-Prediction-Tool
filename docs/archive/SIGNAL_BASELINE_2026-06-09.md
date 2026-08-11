@@ -2,7 +2,7 @@
 
 First evidence snapshot, ~1-3h after the 30-day model finished training (`evidence-30d-v4`).
 **Samples are tiny — treat as a starting point, not a verdict.** Re-run
-`python backend/analyze_signals.py` in a few days and compare against this file.
+`python backend/research/standalone/analyze_signals.py` in a few days and compare against this file.
 
 ## Context
 - Model: 30-day train, `evidence-30d-v4`, completed 15:07 local.

@@ -54,8 +54,8 @@ the effect lives **sub-second**, where 1m bars average it away.
 
 ## Reproduce
 ```
-python backend/probe_impact_reversion.py --horizon 5 --drop 50 --shuffle-null 100
-python backend/probe_impact_reversion.py --selftest
-python backend/probe_impact_residual.py        # the |move|-timing sibling (also redundant)
-python backend/probe_l2_linecross.py           # the sub-second test (gated on the recorder)
+python backend/research/standalone/probe_impact_reversion.py --horizon 5 --drop 50 --shuffle-null 100
+python backend/research/standalone/probe_impact_reversion.py --selftest
+python backend/research/standalone/probe_impact_residual.py        # the |move|-timing sibling (also redundant)
+python backend/research/standalone/probe_l2_linecross.py           # the sub-second test (gated on the recorder)
 ```

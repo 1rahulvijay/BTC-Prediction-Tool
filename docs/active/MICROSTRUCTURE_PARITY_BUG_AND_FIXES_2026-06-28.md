@@ -24,10 +24,10 @@ ensemble** ~6 dead features. It also gave a **false-green "feed alive"** flag fo
 
 ## 1. How it was found (the probe + diagnostic chain)
 
-1. **`backend/probe_feature_parity.py`** — compares the LIVE feature vector (`feature_outcome_log`) to the
+1. **`backend/research/standalone/probe_feature_parity.py`** — compares the LIVE feature vector (`feature_outcome_log`) to the
    offline training matrix, per feature. Flag = **DEAD-IN-LIVE** (live std ≈ 0 while offline varies).
    Result: **6 features exactly 0 across 10,074 live rows.**
-2. **`backend/probe_trade_feed.py`** — independent WS to `btcusdt@aggTrade`: **296 trades/20s** → the
+2. **`backend/research/standalone/probe_trade_feed.py`** — independent WS to `btcusdt@aggTrade`: **296 trades/20s** → the
    endpoint delivers fine. So it's not the feed.
 3. **`[ws-rx]` counter** (data_ingestion) — `btcusdt@aggTrade` flowing (974→7,232) with **zero** parse/emit
    errors → the WS → emit → `handle_trade` → `process_trade` chain works.
@@ -130,7 +130,7 @@ each with a `--selftest`.
 1. **Restart** the app (picks up the CVD fix + the guard).
 2. The `[feat-diag]` line should now read `seq[-1][cvd_1m]` ≈ `of.cvd_1m` (non-zero) — CVD is no longer
    masked.
-3. After a few minutes, stop the app and run `python backend\probe_feature_parity.py` — `cvd_*` /
+3. After a few minutes, stop the app and run `python backend\research\standalone\probe_feature_parity.py` — `cvd_*` /
    `large_trade_*` should drop off the **DEAD-IN-LIVE** list (their live std > 0). `vpin` will read
    non-zero only **after ~1 h of continuous uptime** (750 BTC warmup, §3); a short run still shows it 0,
    which is expected — re-check parity on a log that spans a multi-hour session.

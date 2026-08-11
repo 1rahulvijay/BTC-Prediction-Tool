@@ -372,24 +372,24 @@ echo [selftest] b. Frozen-artifact pinning - no model swap mid-evidence-run:
 python backend\trade_forecast\freeze_guard.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b2. Quarantined prototypes + non-blocking feed callbacks:
-python backend\test_quarantine_and_feed.py >nul 2>&1
+python backend\tests\test_quarantine_and_feed.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\round_state_panel.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\feed_writer.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_regime_causal_filter.py >nul 2>&1
+python backend\tests\test_regime_causal_filter.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_endogenous_kelly.py >nul 2>&1
+python backend\tests\test_endogenous_kelly.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_kelly_scratch_semantics.py >nul 2>&1
+python backend\tests\test_kelly_scratch_semantics.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_kelly_scratch_handling.py >nul 2>&1
+python backend\tests\test_kelly_scratch_handling.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_feed_writer_load.py >nul 2>&1
+python backend\tests\test_feed_writer_load.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 echo [selftest] b3. Launcher integrity - every invoked path exists:
-python backend\test_launcher_integrity.py >nul 2>&1
+python backend\tests\test_launcher_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b3
 python tests\test_repository_layout.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b3
@@ -404,13 +404,13 @@ python backend\trading_authority.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\task_supervisor.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_close_only_authority.py >nul 2>&1
+python backend\tests\test_close_only_authority.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_polymarket_client_protocol.py >nul 2>&1
+python backend\tests\test_polymarket_client_protocol.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_feed_protocol_health.py >nul 2>&1
+python backend\tests\test_feed_protocol_health.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_institutional_feeds.py >nul 2>&1
+python backend\tests\test_institutional_feeds.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\verified_io.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
@@ -418,34 +418,34 @@ python backend\artifact_migration_status.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 python backend\control_auth.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
-python backend\test_control_plane_security.py >nul 2>&1
+python backend\tests\test_control_plane_security.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_b
 echo [selftest] c. Head permissions - a head that cannot price may not price:
 python backend\head_permissions.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python backend\quantile_safety.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_training_window_namespace.py >nul 2>&1
+python backend\tests\test_training_window_namespace.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_specialist_source_provenance.py >nul 2>&1
+python backend\tests\test_specialist_source_provenance.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_feature_contract_optional.py >nul 2>&1
+python backend\tests\test_feature_contract_optional.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python backend\wait_for_forward_evidence.py --selftest >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_production_launcher_contract.py >nul 2>&1
+python backend\tests\test_production_launcher_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_terminal_outcome_relogging.py >nul 2>&1
+python backend\tests\test_terminal_outcome_relogging.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_market_stream_ordering.py >nul 2>&1
+python backend\tests\test_market_stream_ordering.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_ab_day_block_bootstrap.py >nul 2>&1
+python backend\tests\test_ab_day_block_bootstrap.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_ab_bundle_scope.py >nul 2>&1
+python backend\tests\test_ab_bundle_scope.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_probability_bucket_audit_contract.py >nul 2>&1
+python backend\tests\test_probability_bucket_audit_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_model_serving_risk_contract.py >nul 2>&1
+python backend\tests\test_model_serving_risk_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python -m backend.binance_paper.test_engine >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
@@ -461,11 +461,11 @@ python -m backend.quant_platform.test_kernel >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python -m backend.quant_platform.test_research_validation >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_meta_model_contract.py >nul 2>&1
+python backend\tests\test_meta_model_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_model_bundle_completeness.py >nul 2>&1
+python backend\tests\test_model_bundle_completeness.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
-python backend\test_training_integrity_20260731.py >nul 2>&1
+python backend\tests\test_training_integrity_20260731.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python -m backend.trade_forecast.test_complete_trade_forecast >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
@@ -510,7 +510,7 @@ if errorlevel 1 goto :selftest_failed_g
 echo [selftest] h. Strategy registry consistency:
 python backend\research\audit_strategy_registry.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_h
-python backend\test_current_documentation_contract.py >nul 2>&1
+python backend\tests\test_current_documentation_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_h
 echo [selftest] i. Challenger promotion gates - no ungated model replacement:
 python backend\promote_challenger.py --selftest >nul 2>&1
@@ -539,9 +539,9 @@ python backend\model_promotion.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\polymarket\model_dynamic_paper.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
-python backend\test_paper_trading_integrity.py >nul 2>&1
+python backend\tests\test_paper_trading_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
-python backend\test_model_metrics_integrity.py >nul 2>&1
+python backend\tests\test_model_metrics_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m
 python backend\paper_competition.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_m

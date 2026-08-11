@@ -698,7 +698,7 @@ confirms §5z; the relearn the operator ran today (old code, finished 17:04, sav
 did NOT fix it, as predicted. 5m remains a DOWN-machine in the last 24h (156 DOWN / 24 UP).
 
 ### Tooling
-`backend/sign_truth_scorecard.py` — permanent measurement script (run with the app STOPPED):
+`backend/research/standalone/sign_truth_scorecard.py` — permanent measurement script (run with the app STOPPED):
 per-horizon sign-truth accuracy, 24h bias split, mirror split, regime feed old-vs-new
 comparison, freshness. This is THE yardstick for judging v4.
 
@@ -1060,7 +1060,7 @@ overlay arrives at the next start.bat after Binance publishes it.
 
 **Measurement protocol for today:** leave it running, no relearn clicks. Watch the
 accuracy panel's UP/DOWN lean split (bias check — visible within hours). Run
-`python backend/sign_truth_scorecard.py` (app stopped briefly) BEFORE ~02:00 tonight —
+`python backend/research/standalone/sign_truth_scorecard.py` (app stopped briefly) BEFORE ~02:00 tonight —
 the 24h auto-relearn fires ~02:40 and would reset the model era mid-measurement
 (alternative: set BTC_FREEZE_MODEL=1 to extend the window). Decision gates on the
 result: MODEL_ROSTER_PLAN.md §5.
@@ -1808,7 +1808,7 @@ DECISION-context recorder, which serves THREE no-retrain goals at once:
 ## 5bn. Model-noise diagnostic tool (2026-06-13) — read-only, no retrain
 
 Operator: "a systematic tool that tells me which feature/model is noise, what's ruining accuracy."
-Built `backend/diagnose_model.py` (standalone, read-only — run when the app is STOPPED). Reports:
+Built `backend/research/standalone/diagnose_model.py` (standalone, read-only — run when the app is STOPPED). Reports:
 1. **Horizon health** — committed sign-truth per horizon (the number that matters).
 2. **Weakest base models** — per-model COMMITTED (UP/DOWN) accuracy from `model_predictions` (now
    sign-truth-graded after §5ba); lowest = dead weight in stacker/agreement.
@@ -1861,7 +1861,7 @@ the honest limit (neither beats the 5m information ceiling; P(beat) stops you ov
 
 **Noise diagnostic:** `diagnose_model.py` (§5bn) is ready but needs the app FULLY STOPPED (DuckDB
 single-writer) — the running server still held the lock. Run it between sessions:
-`python backend/diagnose_model.py`.
+`python backend/research/standalone/diagnose_model.py`.
 
 ## 5bq. Data-quality audit + clean tool (2026-06-13) — offline, no retrain
 
@@ -2198,7 +2198,7 @@ the 5m ceiling is INFORMATIONAL, not a code bug** — retraining the same featur
   and the **specialist-ensemble architecture** (specialists per question + a rule-based composer first,
   shallow meta-stacker only after ≥500 resolved samples; the staged/guardrail build). Aligns with the
   proven thesis: selectivity/timing, not louder direction.
-- `backend/entropy_edge_probe.py` — the **decisive A15 test** (built + self-tested, NOT yet run on
+- `backend/research/standalone/entropy_edge_probe.py` — the **decisive A15 test** (built + self-tested, NOT yet run on
   real data). Same leak-free probe pattern as `depth_edge_probe.py`: builds 15-state order-flow Markov
   entropy from cached aggTrades and tests whether LOW entropy predicts BIGGER |move| (BIG_MOVE AUC +
   low-entropy lift), direction-invariant by construction. Run it AFTER the retrain (state-building over

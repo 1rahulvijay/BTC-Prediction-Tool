@@ -237,9 +237,9 @@ produces **no number**.
 ## 10. If you are a fresh session, start here
 
 ```
-1. python backend/run_ci_locally.py                  # must be green before anything
+1. python backend/tests/run_ci_locally.py            # must be green before anything
 2. python backend/research/verify_prereg_hashes.py   # 22/22 or stop
-3. python backend/test_artifact_serviceability.py    # currently 0/25
+3. python backend/tests/test_artifact_serviceability.py    # currently 0/25
 4. python backend/audit/recorder_evidence_check.py   # wired vs ever-ran
 5. python backend/datastore_identity.py --scan       # which store you are about to read
 ```

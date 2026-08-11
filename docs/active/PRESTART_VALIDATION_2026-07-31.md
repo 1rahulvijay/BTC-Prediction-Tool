@@ -66,7 +66,7 @@ imports, causing collection failure before genuine tests ran.
 - `tests/`;
 - `backend/venues/`.
 
-The broader invariant suite remains `python backend/run_ci_locally.py --all`; it executes the
+The broader invariant suite remains `python backend/tests/run_ci_locally.py --all`; it executes the
 standalone validation programs declared by the canonical GitHub workflow.
 
 ## Validation Evidence

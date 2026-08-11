@@ -1,7 +1,13 @@
 # OPEN DEFECTS AND FUTURE FIXES
 
-Status of every known defect. **Updated 2026-08-09. Base HEAD: `4907ada`; current working-tree
-remediation is documented in `CORRECTNESS_EVIDENCE_REMEDIATION_2026-08-09.md`.**
+Status of every known defect. **Updated 2026-08-11. Base HEAD: `4907ada`; current working-tree
+remediation is documented in `CORRECTNESS_EVIDENCE_REMEDIATION_2026-08-09.md` and
+`PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md`.**
+
+> **Current-status note (2026-08-11):** this document preserves the history of earlier findings.
+> The datastore-owner decision and the forward-EV outcome-status gap described near the end are
+> resolved in current source. The legacy model artifacts, stopped recorders and missing
+> liquidation stream remain operational readiness blockers until retraining/live collection.
 
 > **READ `SESSION_MASTER_RECORD_2026-08-09.md` FIRST.** The 2026-08-08/09 audit closed ~35
 > defects across six scans and measured seven alpha lanes to negative results. Three facts
@@ -358,7 +364,7 @@ returned False with no log at all** — a misconfigured directory was indistingu
 untrained model. Every path now records `self.load_refusal`, cleared at entry so a reload
 cannot report the previous attempt's cause, and readiness carries it beside the state.
 
-`backend/test_model_load_refusal_reason.py` — 8 checks, 5/5 mutation.
+`backend/tests/test_model_load_refusal_reason.py` — 8 checks, 5/5 mutation.
 
 ### What to do about the underlying state
 
@@ -410,11 +416,11 @@ variant and a hardcoded-cost variant.
 `geometry()` still reports `decided_stop_loss_usd` vs `approved_risk_usd`, which is now the
 detector for any future regression of this kind.
 
-### Known gap left in place
+### Forward-EV terminal status — resolved
 
-`forward_ev_ledger` has no `outcome_status` column, so a skipped economic resolution cannot be
-marked `ECONOMIC_OUTCOME_UNAVAILABLE` and is indistinguishable from not-yet-resolved. Skips are
-counted in `backend_state` and logged at WARNING meanwhile. Needs a migration.
+`forward_ev_ledger.outcome_status` now distinguishes `PENDING`, `RESOLVED`, and
+`ECONOMIC_OUTCOME_UNAVAILABLE`. A classification-only barrier substitution is closed as
+unavailable rather than remaining in the pending denominator.
 
 ### NEW — VERIFIED OPEN: two analytics stores disagree about history
 
@@ -432,10 +438,10 @@ past from one naming the archive — and neither is wrong on its own terms.
 instead of resolving to a default, and emits an identity (path, size, mtime, per-table rows and
 spans) so a run records which history it consumed. 3/0 mutation.
 
-**Still OPEN — an operator decision, not a code one.** Which store owns the write path must be
-declared via `BTC_CANONICAL_DB`; the resolver deliberately does not choose. Until it is
-declared, `resolve()` refuses. `database.DB_PATH` is NOT yet routed through it — doing so
-would change which store the running app writes to, which must be a deliberate act.
+**Resolved operationally 2026-08-11.** `data/btc_duckdbs/analytics.duckdb` is declared as the
+canonical store in `backend/audit/datastore_identity.py`, and `backend/database.py` routes the
+normal launcher path through that declaration. Explicit `BTC_DB_PATH` and genuinely redirected
+`BTC_DATA_DIR` values still win for deliberate production/snapshot and isolated-test use.
 
-**Do not start the 1,000-day retrain until this is declared.** A retrain reads whichever the
-default resolves to; 12–30 hours against an unstated history is an anecdote, not an experiment.
+The remaining pre-retrain requirement is to commit the exact source tree: `train_heads.py`
+correctly refuses dirty training so every published artifact has reproducible code provenance.

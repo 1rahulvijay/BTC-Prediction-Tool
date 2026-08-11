@@ -89,10 +89,10 @@ The wait is bounded and returns non-zero when evidence remains dark. It never en
 
 ## Regression coverage added
 
-- `backend/test_specialist_source_provenance.py`
-- `backend/test_feature_contract_optional.py`
+- `backend/tests/test_specialist_source_provenance.py`
+- `backend/tests/test_feature_contract_optional.py`
 - `backend/wait_for_forward_evidence.py --selftest`
-- `backend/test_production_launcher_contract.py`
+- `backend/tests/test_production_launcher_contract.py`
 
 All are registered in GitHub invariants and the Windows `start.bat` selftest gate.
 

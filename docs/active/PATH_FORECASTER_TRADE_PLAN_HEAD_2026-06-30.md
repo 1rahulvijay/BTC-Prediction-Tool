@@ -219,7 +219,7 @@ Two serving additions (additive, crash-safe; the frozen plan predictions are nev
 **1. Live metrics recording (the verifier's "ongoing live recording" step).** `_refresh_live` tracks the
 window's running high/low (`_tp_run_hi`/`_tp_run_lo`); at resolution `_log_path_plan_outcome` appends one
 row per round to `data/path_plan_outcomes.csv` (served plan + realized extremes: touched ±$50, round-trip,
-band coverage, net move). `backend/path_plan_scorecard.py` (read-only, `--selftest`) grades the LIVE log:
+band coverage, net move). `backend/research/standalone/path_plan_scorecard.py` (read-only, `--selftest`) grades the LIVE log:
 P(move≥$50) calibration, round-trip calibration, CHOP/TREND realized-round-trip separation, band coverage,
 and a per-`play` breakdown. Accumulates as the app runs — the production counterpart to the offline
 `path_plan_verifier.py`.
@@ -254,7 +254,7 @@ touch minute `tm` (the outcome is scanned strictly from `tm+1`, so features 0..t
 | `pre_opp_bps` | furthest OPPOSITE excursion before the touch | round-trip / chop context |
 | `pre_range_bps` | total high-low range before the touch | chop (wide) vs one-way (narrow) |
 
-**A/B verdict** (`backend/probe_fade_features_ab.py`, temporal 96/2/2, n≈150k–220k events):
+**A/B verdict** (`backend/research/standalone/probe_fade_features_ab.py`, temporal 96/2/2, n≈150k–220k events):
 
 | feature set | 5m OOS AUC | 15m OOS AUC |
 |---|---|---|

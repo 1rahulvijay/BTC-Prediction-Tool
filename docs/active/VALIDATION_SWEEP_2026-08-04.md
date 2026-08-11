@@ -166,7 +166,7 @@ Restart safety was mutation-proven at the *function* level. This exercises the p
 actually matters: a process killed with no cleanup — no flush, no `close_run`, no `finally` —
 and a successor picking the state back up from disk.
 
-`backend/test_crossing_recorder_crash_recovery.py`: run 35s, `SIGKILL`, inspect, restart 30s.
+`backend/tests/test_crossing_recorder_crash_recovery.py`: run 35s, `SIGKILL`, inspect, restart 30s.
 
 ```
 after kill   6 heartbeats, 0 crossings, 2 anchors, 1 run with no clean stop

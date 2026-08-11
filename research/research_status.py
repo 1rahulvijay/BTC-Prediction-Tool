@@ -16,7 +16,7 @@ WHY THIS EXISTS
 
 THE RULE
     Any study that joins a market STATE to an executable QUOTE must prove the state was
-    available at the decision timestamp. backend/test_causal_join_guard.py enforces that every
+    available at the decision timestamp. backend/tests/test_causal_join_guard.py enforces that every
     such script either declares a causal timestamp constraint or is registered here as
     RETRACTED.
 """

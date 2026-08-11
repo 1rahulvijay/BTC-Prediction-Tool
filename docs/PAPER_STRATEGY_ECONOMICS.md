@@ -162,7 +162,7 @@ python -m backend.binance_paper.test_strategy_economics
 python -m backend.binance_paper.test_engine
 python -m backend.binance_paper.api_selftest
 python -m backend.binance_paper.selftest
-python backend/run_ci_locally.py
+python backend/tests/run_ci_locally.py
 ```
 
 ## 8. Model-driven venue strategies

@@ -31,5 +31,5 @@ executables with their own `main()` entry points, not pytest modules. The
 complete launch and evidence-integrity gate remains:
 
 ```powershell
-python backend/run_ci_locally.py --all
+python backend/tests/run_ci_locally.py --all
 ```

@@ -53,7 +53,7 @@ Real orders remain disabled. Trading mode: PAPER / SHADOW ONLY.
 ## 2. What is implemented and verified
 
 ```bash
-python backend/run_ci_locally.py
+python backend/tests/run_ci_locally.py
 ```
 
 **70 of 70 gating steps pass** (389 s). Highlights, each an executable check rather than a claim:
@@ -69,7 +69,7 @@ python backend/run_ci_locally.py
 | feed writer drain / lifecycle / observability | `backend/feed_writer.py` | steps 38–39 |
 | causal HMM forward filtering, fold-local fitting | `backend/regime.py` | step 43 |
 | Kelly on empirical log-growth, day-block bootstrap | `backend/trading_simulator.py` | step 51 |
-| launcher integrity (stray control bytes, unmatched gotos) | `backend/test_launcher_integrity.py` | step 69 |
+| launcher integrity (stray control bytes, unmatched gotos) | `backend/tests/test_launcher_integrity.py` | step 69 |
 | research-claim audit (4 disqualifying patterns) | `backend/research/audit_research_claims.py` | step 64 |
 | docs match executable contracts | — | steps 59, 66, 67 |
 | preregistration hashes unchanged | — | step 68 |
@@ -125,7 +125,7 @@ single highest-value fix in this document, and the missing liveness alarm is the
 |---|---|
 | `STRICT_ARTIFACT_IDENTITY` default-on | **14 raw load calls** still deserialize before any hash check (`python backend/artifact_migration_status.py`). The flag cannot honestly default to 1 until that reaches 0. Heaviest: `polymarket_repricing_shadow_v1/live_shadow.py` (3), `event_execution_v1/run_campaign.py` (2), `train_360d_multitarget_forecaster.py` (2) |
 | remaining artifact migration | 39 raw saves / 14 raw loads across 45 files; must be re-saved **with manifests** before strict mode can be enabled |
-| independent CI | GitHub Actions has never executed a step — billing. `backend/run_ci_locally.py` is the only real gate, and it parses `invariants.yml` rather than duplicating commands so the two cannot drift |
+| independent CI | GitHub Actions has never executed a step — billing. `backend/tests/run_ci_locally.py` is the only real gate, and it parses `invariants.yml` rather than duplicating commands so the two cannot drift |
 
 ### 4.3 Deliberately not done
 
@@ -154,7 +154,7 @@ single highest-value fix in this document, and the missing liveness alarm is the
 Errors caught by measurement rather than review, each now guarded in code:
 
 - **`start.bat` could not launch** — two lines held a literal TAB byte where `\t` was intended.
-  Guarded by `backend/test_launcher_integrity.py`.
+  Guarded by `backend/tests/test_launcher_integrity.py`.
 - **Vacuous pass** — extraction found 0 invocations and printed `ALL PASS`. Guarded by
   `assert len(cmds) >= 20`, and now by the runner coverage check above.
 - **Unbounded accounting** — `capital += 1000.0 * bps` on fixed notional produced −212%, −834%,

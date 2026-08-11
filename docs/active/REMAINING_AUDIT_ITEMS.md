@@ -17,7 +17,7 @@ defects existed *because* an earlier fix was never mutation-tested:
 5. Register the test in **both** blocks of `.github/workflows/invariants.yml` (the
    `invariants` job *and* the `startbat` script). An unregistered test never runs.
 6. `python backend/audit/current_state.py` to refresh SOURCE_STATE, then
-   `python backend/run_ci_locally.py` — the only real gate; GitHub Actions has never run.
+   `python backend/tests/run_ci_locally.py` — the only real gate; GitHub Actions has never run.
 7. Commit with the tree clean. `code_dirty != False` makes every artifact refuse.
 
 Recurring traps that cost time this session, all real:
@@ -119,7 +119,7 @@ trade reconciliation, and a new feature-semantics version.
 columns when a REPLACE has an explicit column list; the observed damage signature was therefore
 `resolved=FALSE` while outcome fields could remain populated, not blank outcomes.
 
-Fenced by `backend/test_terminal_outcomes_not_replaceable.py`: REPLACE is now forbidden for every
+Fenced by `backend/tests/test_terminal_outcomes_not_replaceable.py`: REPLACE is now forbidden for every
 terminal evidence table, including dynamic f-strings and no-column statements. `KNOWN_UNFIXED`
 is empty and may not grow.
 
@@ -235,14 +235,14 @@ Uncommitted when this was written (`git status --porcelain`):
     backend/binance_paper/risk_engine.py
     backend/binance_paper/service.py
     backend/binance_paper/test_strategy_economics.py
-    backend/test_terminal_outcomes_not_replaceable.py
+    backend/tests/test_terminal_outcomes_not_replaceable.py
 
 That maps onto section 5 above (governor max/min, maintenance-margin liquidation, A/B
 bootstrap) plus section 1. **`KNOWN_UNFIXED` is now an empty set in the working tree**, so the
 other four `INSERT OR REPLACE` statements appear to have been repaired there. Section 1 above
 is therefore accurate as of HEAD and probably stale in the tree — verify with
 
-    python backend/test_terminal_outcomes_not_replaceable.py
+    python backend/tests/test_terminal_outcomes_not_replaceable.py
 
 before assuming either way. SOURCE_STATE was deliberately NOT regenerated for this append,
 because doing so would hash another session's in-flight code into a state document that does

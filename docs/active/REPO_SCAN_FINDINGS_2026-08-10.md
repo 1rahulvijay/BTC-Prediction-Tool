@@ -47,7 +47,7 @@ the findings — this is the same discipline the audit corrections section of
 
 ## 1. The terminal-outcome fence misses the more destructive half of the bug class
 
-`backend/test_terminal_outcomes_not_replaceable.py` enforces the `log_price_to_beat` rule
+`backend/tests/test_terminal_outcomes_not_replaceable.py` enforces the `log_price_to_beat` rule
 structurally. Its detector (`violations()`, lines 56-85) requires **all** of:
 
 - the SQL to be an `ast.Constant` (a plain string literal),
@@ -144,14 +144,14 @@ Core app:
     backend/binance_paper/test_sizing_exit_cost.py
     backend/quant_platform/test_kernel.py
     backend/quant_platform/test_research_validation.py
-    backend/test_5m_15m_30d.py
-    backend/test_algodesk_17_agents_30d.py
-    backend/test_crossing_recorder_crash_recovery.py
-    backend/test_deadfeatures_30d.py
-    backend/test_meta_model_contract.py
-    backend/test_model_bundle_completeness.py
-    backend/test_train_smoke_end_to_end.py
-    backend/test_training_integrity_20260731.py
+    backend/tests/test_5m_15m_30d.py
+    backend/tests/test_algodesk_17_agents_30d.py
+    backend/tests/test_crossing_recorder_crash_recovery.py
+    backend/tests/test_deadfeatures_30d.py
+    backend/tests/test_meta_model_contract.py
+    backend/tests/test_model_bundle_completeness.py
+    backend/tests/test_train_smoke_end_to_end.py
+    backend/tests/test_training_integrity_20260731.py
     backend/trade_forecast/test_complete_trade_forecast.py
     backend/trade_forecast/test_evidence_completion.py
     backend/trade_forecast/test_ledger_v2_end_to_end.py

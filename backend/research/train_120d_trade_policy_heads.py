@@ -48,7 +48,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 # Manifest written in the same step as the artifact; see
-# backend/test_trainers_write_manifests.py for why this is a gate.
+# backend/tests/test_trainers_write_manifests.py for why this is a gate.
 from verified_io import write_manifest as write_integrity_manifest
 
 ROOT = Path(__file__).resolve().parents[2]

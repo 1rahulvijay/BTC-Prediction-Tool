@@ -86,7 +86,7 @@ reopened at restore, both sides.
 its own, each side's evidence scope, and where the clock came from. A promotion decision
 that reads the verdict without them is claiming an experiment that was never run.
 
-*17 checks, 5/5 mutation.* `backend/test_ab_isolation_and_durability.py`
+*17 checks, 5/5 mutation.* `backend/tests/test_ab_isolation_and_durability.py`
 
 ---
 
@@ -239,9 +239,9 @@ gates in this scan were built.
 ## Tests
 
 ```text
-backend/test_ab_isolation_and_durability.py            17 checks   5/5 mutation
-backend/test_grade_provenance_and_funding_moment.py    17 checks   5/5 mutation
-backend/test_observed_window_and_restored_state.py     16 checks   7/7 mutation
+backend/tests/test_ab_isolation_and_durability.py            17 checks   5/5 mutation
+backend/tests/test_grade_provenance_and_funding_moment.py    17 checks   5/5 mutation
+backend/tests/test_observed_window_and_restored_state.py     16 checks   7/7 mutation
 ```
 
 All three registered in both CI jobs. Two mutants survived the first pass on the third

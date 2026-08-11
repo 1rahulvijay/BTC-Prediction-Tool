@@ -43,7 +43,7 @@ BACKEND = HERE.parent
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-import backtest_reversal_strategy as source_data  # noqa: E402
+from research.standalone import backtest_reversal_strategy as source_data  # noqa: E402
 
 WARSAW = ZoneInfo("Europe/Warsaw")
 EPS = 1e-9

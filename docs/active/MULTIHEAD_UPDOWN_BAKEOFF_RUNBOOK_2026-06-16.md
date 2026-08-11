@@ -17,7 +17,7 @@ This is research-only. It does not modify live app models, saved models, DuckDB 
 
 ```text
 backend/build_binance_updown_feature_dataset.py
-backend/run_updown_multihead_bakeoff.py
+backend/research/standalone/run_updown_multihead_bakeoff.py
 research\launchers\run_120d_updown_bakeoff.bat
 docs/active/MULTIHEAD_UPDOWN_BAKEOFF_RUNBOOK_2026-06-16.md
 ```
@@ -49,7 +49,7 @@ Get-Content data\logs\updown_bakeoff_120d.log -Wait
 ## Direct Python Command
 
 ```powershell
-python backend\run_updown_multihead_bakeoff.py `
+python backend\research\standalone\run_updown_multihead_bakeoff.py `
   --days 120 `
   --horizons 5 15 30 `
   --split 0.70 `
@@ -62,7 +62,7 @@ python backend\run_updown_multihead_bakeoff.py `
 Use this lighter version for a faster smoke run:
 
 ```powershell
-python backend\run_updown_multihead_bakeoff.py --days 14 --horizons 5 15 --split 0.70 --rebuild --max-train-rows 20000 --max-features 120
+python backend\research\standalone\run_updown_multihead_bakeoff.py --days 14 --horizons 5 15 --split 0.70 --rebuild --max-train-rows 20000 --max-features 120
 ```
 
 ---

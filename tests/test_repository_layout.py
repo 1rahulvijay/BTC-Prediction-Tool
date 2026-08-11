@@ -8,6 +8,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 RESEARCH_LAUNCHERS = REPO / "research" / "launchers"
 TEST_LAUNCHERS = REPO / "tests" / "launchers"
+BACKEND = REPO / "backend"
+BACKEND_TESTS = BACKEND / "tests"
+STANDALONE_RESEARCH = BACKEND / "research" / "standalone"
 ALLOWED_ROOT_BATCH = {
     "backfill.bat",
     "frontend.bat",
@@ -87,13 +90,48 @@ def main() -> int:
         if (REPO / stale).exists():
             problems.append(f"root ad-hoc script still present: {stale}")
 
+    backend_root_tests = sorted(path.name for path in BACKEND.glob("test_*.py"))
+    if backend_root_tests:
+        problems.append(f"backend root tests must live in backend/tests: {backend_root_tests}")
+    if not list(BACKEND_TESTS.glob("test_*.py")):
+        problems.append("no backend regression tests found in backend/tests")
+    standalone_scripts = sorted(
+        path for path in STANDALONE_RESEARCH.glob("*.py") if not path.name.startswith("_")
+    )
+    if not standalone_scripts:
+        problems.append("no standalone backend research scripts found")
+
+    duplicate_research = sorted(
+        path.name for path in standalone_scripts if (BACKEND / path.name).exists()
+    )
+    if duplicate_research:
+        problems.append(f"standalone research duplicated at backend root: {duplicate_research}")
+
+    misplaced_research = sorted(
+        path.name
+        for path in BACKEND.glob("*.py")
+        if path.name.startswith(("analyze_", "audit_hf"))
+    )
+    if misplaced_research:
+        problems.append(
+            "standalone backend research must live in backend/research/standalone: "
+            f"{misplaced_research}"
+        )
+
+    for core_name in ("server.py", "model.py", "train_heads.py", "price_to_beat.py"):
+        source = (BACKEND / core_name).read_text(encoding="utf-8")
+        if "research.standalone" in source:
+            problems.append(f"core runtime imports standalone research: backend/{core_name}")
+
     if problems:
         for problem in problems:
             print(f"FAIL {problem}")
         return 1
     print(
         "REPOSITORY LAYOUT PASS "
-        f"research_launchers={len(launchers)} test_launchers={len(test_launchers)}"
+        f"research_launchers={len(launchers)} test_launchers={len(test_launchers)} "
+        f"backend_tests={len(list(BACKEND_TESTS.glob('test_*.py')))} "
+        f"standalone_research={len(standalone_scripts)}"
     )
     return 0
 

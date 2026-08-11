@@ -191,7 +191,7 @@
     ]
   },
   "source_digests": {
-    ".github/workflows/invariants.yml": "ce652ab90dd82be866ad2b86fda843d2502fc3d2051d2156fe9737b54bb99c7b",
+    ".github/workflows/invariants.yml": "14871c308ff5ae045cebd5c3cb6f1a72a2b22746cd878aa653a4d3f0dbfcf3ad",
     "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
     "backend/auto_finetune.py": "8326f1e4ab48047d56c06090f853d8ef92dd70ea2d143907a340e50edb615040",
     "backend/features.py": "3fda9238456461b8142e28c5d04e241fcbb3ac8608d26a2e0812a9c4eda5ae8f",
@@ -199,7 +199,7 @@
     "backend/model_registry.py": "22ec0377c8c7f143c4dd0299eb3a16e8fe5bdd28762f70417e0b14700963b2ca",
     "backend/settlement_head.py": "dbb580e7caa8f2ae58c6f6f0327795dc63e2a4e92d0979761dcd85f9aab865b2",
     "backend/target_contract.py": "4b29e1ca7e1f7e714fba0bce685af0113e272ad9dfd790924046154e6a67c3ce",
-    "docs/active/OPEN_DEFECTS.md": "1254fc1f27e5cdbc68122e2e66324594e05f7107deae83b37f03733faf89cc4b"
+    "docs/active/OPEN_DEFECTS.md": "65175a27e1ec722a5f6b26a0aeea3b66c9e7a80cf7f74a28aecf4557ff9eed5f"
   },
   "target_contracts": {
     "known": [

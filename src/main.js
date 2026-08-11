@@ -3998,7 +3998,7 @@ function renderPMCore(data, cfg) {
       return `<span style="margin-right:1.2rem">${label}: <strong style="color:${w/n>=0.5?'#00e676':'#ff5252'}">${(w/n*100).toFixed(0)}%</strong> (${w}/${n})</span>`;
     };
     // The A/B/C setup grade does NOT reliably stratify DIRECTION — it is built from coin-flip
-    // order-flow agreement + an unconfirmed regime tier (rule #2 / backend/grade_scorecard.py), and
+    // order-flow agreement + an unconfirmed regime tier (rule #2 / backend/research/standalone/grade_scorecard.py), and
     // direction is a coin-flip with no stratifying input. So it is DEMOTED to a dim, clearly-labeled
     // EXPERIMENTAL sub-line and must not be read as a precision signal. The validated precision signal
     // is the ⚡ T3 P(Hold) late-entry setup (n / hold% / Wilson-LB, shown on the detailed card).

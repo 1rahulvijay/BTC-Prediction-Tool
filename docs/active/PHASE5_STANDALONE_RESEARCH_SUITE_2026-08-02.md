@@ -48,7 +48,7 @@ controls preserve action count, sign balance, UTC day and holding duration.
 | Python compile | PASS |
 | Pyflakes | PASS |
 | Phase 5 pytest | 4 passed |
-| Repository workflow gate | 84/84 steps pass (`backend/run_ci_locally.py --all`) |
+| Repository workflow gate | 84/84 steps pass (`backend/tests/run_ci_locally.py --all`) |
 | Frontend build and high-severity audit | PASS |
 | `git diff --check` | PASS |
 

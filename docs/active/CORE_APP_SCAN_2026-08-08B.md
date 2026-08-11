@@ -130,7 +130,7 @@ reopens a gate that closed by accident; the gate that closed **on purpose** stil
 ## Tests
 
 ```text
-backend/test_core_scan_band_and_verdict.py    22 checks   6/6 mutation
+backend/tests/test_core_scan_band_and_verdict.py    22 checks   6/6 mutation
 ```
 
 One assertion in `test_scan5_barrier_and_gates.py` had to be retargeted: it quoted
@@ -234,7 +234,7 @@ not use. The in-memory fallback for older rows was corrected the same way.
 ## Tests
 
 ```text
-backend/test_lean_hit_contract_truth.py    17 checks   7/7 mutation
+backend/tests/test_lean_hit_contract_truth.py    17 checks   7/7 mutation
 ```
 
 The source-extraction helper needed hardening **twice**, both times the same error — the
@@ -317,7 +317,7 @@ labelled `# median` and now is one.
 ## Tests
 
 ```text
-backend/test_expectancy_and_consensus.py    17 checks   5/5 mutation
+backend/tests/test_expectancy_and_consensus.py    17 checks   5/5 mutation
 ```
 
 The median test initially **reimplemented** the median rather than calling
@@ -405,6 +405,6 @@ agreement rate into the new one — 5.14's identity defect, one attribute over.
 ## Tests
 
 ```text
-backend/test_fixed_stake_and_ruin.py           14 checks   6/6 mutation
-backend/test_ab_isolation_and_durability.py    +5 checks (P1-C section)
+backend/tests/test_fixed_stake_and_ruin.py           14 checks   6/6 mutation
+backend/tests/test_ab_isolation_and_durability.py    +5 checks (P1-C section)
 ```

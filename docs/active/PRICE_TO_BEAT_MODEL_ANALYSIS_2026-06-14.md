@@ -20,13 +20,13 @@ features — adding features provably does nothing for direction.
 
 | Script | Question it answers | Verdict |
 |---|---|---|
-| `backend/entropy_edge_probe.py` | does order-flow Markov entropy time BTC moves? (A15) | ❌ no (AUC ~0.50) |
+| `backend/research/standalone/entropy_edge_probe.py` | does order-flow Markov entropy time BTC moves? (A15) | ❌ no (AUC ~0.50) |
 | `backend/edge_probe.py` | 17-hypothesis engine: which features carry direction vs time moves? | direction dead; timing real |
 | `backend/model_bakeoff.py` (+SGD, +`--label big_move`, +14 models) | every model family on direction AND timing | direction NOISE; timing SIGNAL |
 | `backend/seq_timing_probe.py` | do LSTM/GRU/Transformer/TCN beat tabular on timing? | ❌ no (sequence adds nothing) |
-| `backend/dwell_probe.py` | is "time spent up/down" predictable? | ❌ no (side 0.52, commit 0.51) |
-| `backend/final_analysis.py` | capstone: 14 models × 4 targets × 5m/15m on the research matrix | the tractability split |
-| `backend/expanded_matrix_analysis.py` | **145** engineered features × 14 models × 3 targets | direction still dead; timing saturated |
+| `backend/research/standalone/dwell_probe.py` | is "time spent up/down" predictable? | ❌ no (side 0.52, commit 0.51) |
+| `backend/research/standalone/final_analysis.py` | capstone: 14 models × 4 targets × 5m/15m on the research matrix | the tractability split |
+| `backend/research/standalone/expanded_matrix_analysis.py` | **145** engineered features × 14 models × 3 targets | direction still dead; timing saturated |
 | `backend/probes/probe_expected_move_cost_gate.py` (alt session, re-run) | does the timing gate survive cost as a directional trade? | ❌ −21.63 bps |
 | `backend/decision/composed_decision_backtest.py` (alt session, re-run) | does the full staged flow make money? | ❌ negative even at maker0 |
 

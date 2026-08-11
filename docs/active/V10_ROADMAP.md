@@ -33,10 +33,10 @@ commit to the keeper window.
    `del data\saved_models\beat_model.pkl  magnitude_model.pkl  path_model.pkl` and
    `del data\fingerprint_evidence.parquet`.
 3. **Run the analysis checklist** (each is read-only, no retrain):
-   - `python backend\diagnose_model.py` — §1 horizon health (did 5m move off ~50%?), §3 dead
+   - `python backend\research\standalone\diagnose_model.py` — §1 horizon health (did 5m move off ~50%?), §3 dead
      features (B1 has rows now), §5 grade (still inverted?).
-   - `python backend\sign_truth_scorecard.py` — 5m committed-lean sign-truth + UP/DOWN balance.
-   - `python backend\composed_decision_scorecard.py` — **the end-to-end metric** (does the gate
+   - `python backend\research\standalone\sign_truth_scorecard.py` — 5m committed-lean sign-truth + UP/DOWN balance.
+   - `python backend\research\standalone\composed_decision_scorecard.py` — **the end-to-end metric** (does the gate
      ladder improve, does the top tier clear break-even). The integration verdict.
    - `python backend\data_quality_audit.py --days 30` — was the window one-directional (bias)?
 4. **Restart** → `start.bat` rebuilds the 4 heads **leak-free** ([0/3] d, train-if-missing) and

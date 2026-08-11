@@ -161,7 +161,7 @@ python backend/venues/multi_venue_recorder.py --selftest PASS
 python backend/venues/test_collector_integrity.py        PASS
 python backend/phold_challenger.py --selftest             PASS
 python backend/monitoring/head_health.py --selftest      PASS
-python backend/test_paper_trading_integrity.py           PASS
+python backend/tests/test_paper_trading_integrity.py           PASS
 npm run build                                            PASS
 git diff --check                                         PASS
 development server module import                         PASS

@@ -33,8 +33,8 @@ up/down call.
 | `backend/live_keepers.py` | computes the 4 missing keepers live by **reusing `edge_probe` builders** (parity-proven) |
 | `backend/decision/` (package) | cost_gate, decision_composer, event_exits, drift_monitor, shadow_store, audit_selectivity_models, composed_decision_backtest, magnitude_research, phold_keeper_test, train_selectivity_models |
 | `backend/decision/shadow_store.py` | **separate** `data/execution_layer.duckdb` (never the live `analytics.duckdb`) |
-| `backend/test_5m_15m_30d.py` | 5m/15m × 30-day OOS scorecard (direction / timing / band) |
-| `backend/test_deadfeatures_30d.py` | dead-feature retirement test |
+| `backend/tests/test_5m_15m_30d.py` | 5m/15m × 30-day OOS scorecard (direction / timing / band) |
+| `backend/tests/test_deadfeatures_30d.py` | dead-feature retirement test |
 
 ### Config / pipeline
 - `BTC_TRAIN_SPLIT_FRAC=0.95` (clamped [0.5, 0.98]) — ensemble trains on ~all data, keeps a holdout for conformal+backtest.

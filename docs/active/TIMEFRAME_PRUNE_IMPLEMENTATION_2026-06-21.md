@@ -104,7 +104,7 @@ What it does, in order (leave it overnight, browser/IDE closed):
 - Boot log shows `MODEL_ARCH_VERSION ...3horizon-1-5-15...` and **"Model is FROZEN" + loads** on the
   *second* restart (proves the new bundle saved).
 - UI shows only **1m / 5m / 15m** tabs; price-to-beat cards only 5m/15m.
-- `python backend/analyze_timeframe_value.py --source pyth` → only {1,5,15} have new rows.
+- `python backend/research/standalone/analyze_timeframe_value.py --source pyth` → only {1,5,15} have new rows.
 - `python backend/calibration_monitor.py` → re-check 1m drift on the fresher model (the recalibration test).
 
 ---

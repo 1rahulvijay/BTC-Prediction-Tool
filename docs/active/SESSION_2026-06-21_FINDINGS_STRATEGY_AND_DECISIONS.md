@@ -21,7 +21,7 @@ profit until (C) is positive after costs on enough quote+outcome pairs.
 
 ## 1. Time-of-day / calendar analysis (the question: "when is the model best?")
 
-**Tooling:** `backend/analyze_timeframe_performance.py` — now source-aware (`--source pyth|binance`),
+**Tooling:** `backend/research/standalone/analyze_timeframe_performance.py` — now source-aware (`--source pyth|binance`),
 timezone-aware (`--tz Europe/Berlin`), with hourly, N-hour-block (`--block N`), per-day, day-of-week, and
 per-day repeatability sections. Report written to `TIMEFRAME_PERFORMANCE_<source>_<date>.md`.
 

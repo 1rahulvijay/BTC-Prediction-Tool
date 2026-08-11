@@ -77,10 +77,10 @@ profit is not.**
 ## Reproduce
 ```
 python backend/path_plan_verifier.py          # grade the path head's composed plan (calibration + CHOP/TREND)
-python backend/probe_first_touch_timing.py    # P(touch) $50 magnitude predictable; side = coin-flip
-python backend/probe_range_expansion.py       # BIG-window + vol-expansion predictable
+python backend/research/standalone/probe_first_touch_timing.py    # P(touch) $50 magnitude predictable; side = coin-flip
+python backend/research/standalone/probe_range_expansion.py       # BIG-window + vol-expansion predictable
 python backend/train_fade_model.py            # honest strict-label fade / reach-anchor model (v3-strict-honest)
-python backend/probe_fade_features_ab.py      # A/B: timing-only vs +touch-ctx vs +research on the HONEST label
+python backend/research/standalone/probe_fade_features_ab.py      # A/B: timing-only vs +touch-ctx vs +research on the HONEST label
 # NOTE: probe_post_touch_reversal.py / probe_fade_entry_exit.py held the inverted-label myth — superseded above
 ```
 

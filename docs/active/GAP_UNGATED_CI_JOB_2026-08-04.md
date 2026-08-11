@@ -19,7 +19,7 @@ So the commands unique to `startbat` were run by *neither*. There were **27**:
 
 ```
 backend/check_feature_contract.py               <- and it FAILS, see below
-backend/test_round_state_causal_contract.py     <- pins the P0-01 and P0-02 fixes
+backend/tests/test_round_state_causal_contract.py     <- pins the P0-01 and P0-02 fixes
 backend/datastore_identity.py                   backend/recorder_health.py
 research/research_status.py                     research/regime_labeler_v1.py
 research/regime_volatility_control_v1.py        research/tradability_head_v1.py
@@ -42,7 +42,7 @@ looked wired and was not.
 
 ## The fix
 
-`every_step()` in `backend/run_ci_locally.py` now walks **every job** in the workflow and dedupes
+`every_step()` in `backend/tests/run_ci_locally.py` now walks **every job** in the workflow and dedupes
 per **command** — `startbat` packs 99 commands into a single step while `invariants` lists them
 individually, so a step-level key would never match and the whole Windows block would re-run.
 `command_identity()` treats `python backend/x.py` and `python -m backend.x` as the same gate.

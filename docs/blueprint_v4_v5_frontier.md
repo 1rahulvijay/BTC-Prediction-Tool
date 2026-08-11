@@ -284,7 +284,7 @@ order. The repo already computes VWAP-style entry consumption and a conservative
 quantile, so the impact function is measurable from recorded book state rather than assumed.
 
 Implemented in this commit as `endogenous_kelly()` — see `backend/trading_simulator.py` and
-`backend/test_endogenous_kelly.py`. It remains research-only: live Kelly sizing stays disabled.
+`backend/tests/test_endogenous_kelly.py`. It remains research-only: live Kelly sizing stays disabled.
 
 ---
 

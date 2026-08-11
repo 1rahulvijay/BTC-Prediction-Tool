@@ -208,7 +208,7 @@ Self-tests:
 python backend\model_revision_ledger.py --selftest
 python backend\evidence_health_report.py --selftest
 python backend\open_position_action_recorder.py --selftest
-python backend\test_open_position_action_wiring.py
+python backend\tests\test_open_position_action_wiring.py
 python backend\audit\recorder_evidence_check.py --selftest
 python backend\research_data\candidate_evidence_builder.py --selftest
 ```

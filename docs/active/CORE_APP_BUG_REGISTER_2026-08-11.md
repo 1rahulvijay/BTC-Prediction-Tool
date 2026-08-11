@@ -31,11 +31,11 @@ logic, and the 5,092-line frontend beyond its numeric-default handling.
 | gate | result |
 | --- | --- |
 | `python -m pytest -q` | **155 passed**, 0 failed, 13 warnings |
-| `backend/test_terminal_outcomes_not_replaceable.py` | PASS (7 checks, 0 known-unfixed) |
+| `backend/tests/test_terminal_outcomes_not_replaceable.py` | PASS (7 checks, 0 known-unfixed) |
 | `backend/recorder_health.py --selftest` | PASS (29 checks) |
 | `backend/audit/recorder_evidence_check.py --selftest` | PASS (10 checks) |
 | `backend/binance_paper/*` (5 selftests, `-m` form) | all exit 0 |
-| `backend/run_ci_locally.py` | **PASS** — all 212 steps, 245 command executions, 629 s, exit 0 |
+| `backend/tests/run_ci_locally.py` | **PASS** — all 212 steps, 245 command executions, 629 s, exit 0 |
 
     LOCAL CI: PASS - every gating step in the workflow succeeded
 
@@ -479,7 +479,7 @@ ties DEC-2 directly to OPEN-1: the labels needed live in the store that has not 
    Polymarket-contract artifact.
 5. **OPEN-3, OPEN-4, OPEN-5** — three small, self-contained patches, all specified above.
 6. **OPEN-6** — read the 12 error strings.
-7. Re-run `backend/run_ci_locally.py` to completion and regenerate `SOURCE_STATE` with a clean tree.
+7. Re-run `backend/tests/run_ci_locally.py` to completion and regenerate `SOURCE_STATE` with a clean tree.
 
 Nothing in this register changes what a model learns. OPEN-1, OPEN-2 and DEC-1 change what
 evidence a retrain can see, which is upstream of that.

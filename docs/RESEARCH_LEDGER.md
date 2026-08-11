@@ -183,7 +183,7 @@ Consequences, none of which were visible before measuring:
   `source_manifest_hash`, `runtime_dependency_hash` and the artifact hash must all match the
   *current* training identity. A complete manifest with stale values is still refused.
 
-`backend/test_artifact_serviceability.py` now measures this on every CI run and ratchets: the
+`backend/tests/test_artifact_serviceability.py` now measures this on every CI run and ratchets: the
 count may rise, never silently fall.
 
 ### 4.2 The data was never measured - `2026-08-02`
@@ -1146,7 +1146,7 @@ running through `12:30:59`, on every row.
 
 Fixed: `causal_feature_ts_ms()` returns the last bar that had **closed** by the snapshot, with
 `bar_available_from_ms()` naming the availability rule. Pinned by
-`backend/test_round_state_causal_contract.py`, which reconstructs the old rule and requires it
+`backend/tests/test_round_state_causal_contract.py`, which reconstructs the old rule and requires it
 to fail the same assertion.
 
 **All v1 round-state metrics are non-causal.** The schema is bumped to
@@ -1489,10 +1489,10 @@ change is the ORDER: finish execution integrity before opening a new alpha lane.
 | gate | what it prevents |
 |---|---|
 | `research/research_status.py` | retracted numbers being rediscovered and quoted as evidence |
-| `backend/test_causal_join_guard.py` | a **new** quote↔state join without a causal timestamp rule |
-| `backend/test_trainers_write_manifests.py` | a trainer that dumps an artifact and writes no sidecar |
-| `backend/test_artifact_serviceability.py` | the gate above passing while **0 of 25** artifacts load |
-| `backend/test_naming_honesty.py` | `test_*.py` files that cannot fail |
+| `backend/tests/test_causal_join_guard.py` | a **new** quote↔state join without a causal timestamp rule |
+| `backend/tests/test_trainers_write_manifests.py` | a trainer that dumps an artifact and writes no sidecar |
+| `backend/tests/test_artifact_serviceability.py` | the gate above passing while **0 of 25** artifacts load |
+| `backend/tests/test_naming_honesty.py` | `test_*.py` files that cannot fail |
 | `run_all_sequence.py` coverage check | studies silently excluded from the runner |
 | pytest step | 86 tests that CI never ran |
 | `backend/research_data/causal_validation.py` | a dataset row using its own future |
@@ -1504,14 +1504,14 @@ change is the ORDER: finish execution integrity before opening a new alpha lane.
 | `backend/research/verify_prereg_hashes.py` | a preregistration edited after freezing, or one never registered |
 | `backend/bc_forward_readiness_report.py` | a sealed protocol being peeked at while it collects |
 | `SourceUnreadable` in the readiness report | an unreadable source printing as an honest empty one |
-| `backend/test_round_state_causal_contract.py` | a training join that reads the bar containing its own decision |
+| `backend/tests/test_round_state_causal_contract.py` | a training join that reads the bar containing its own decision |
 | `round_state_panel.version_is_compatible` | a retrain producing artifacts serving silently refuses |
 | `backend/datastore_identity.py --strict` | a correct query answered by the wrong database |
-| `backend/test_backtest_ohlc_honesty.py` | a hit rate graded against a neutral band derived from fabricated highs and lows |
-| `backend/test_no_snapshot_backcast.py` | today's order-flow value painted across every historical training row |
-| `backend/test_artifact_manifest_contract.py` | a writer and a reader that both pass their own tests and cannot read each other |
-| `backend/test_geometry_endpoint_wiring.py` | a zero-authority head acquiring authority through an import, checked by AST rather than grep |
-| `backend/test_oof_serving_parity.py` | the stacker being trained on seats that differ from the ones it is served |
+| `backend/tests/test_backtest_ohlc_honesty.py` | a hit rate graded against a neutral band derived from fabricated highs and lows |
+| `backend/tests/test_no_snapshot_backcast.py` | today's order-flow value painted across every historical training row |
+| `backend/tests/test_artifact_manifest_contract.py` | a writer and a reader that both pass their own tests and cannot read each other |
+| `backend/tests/test_geometry_endpoint_wiring.py` | a zero-authority head acquiring authority through an import, checked by AST rather than grep |
+| `backend/tests/test_oof_serving_parity.py` | the stacker being trained on seats that differ from the ones it is served |
 
 Each is negative-tested: it has been shown to *catch* a planted offender, not merely to pass.
 
@@ -1575,7 +1575,7 @@ does so in the *orchestrator*. **Launch the retrain through `train_heads.py`** �
 trainers individually produces artifacts that still cannot be served, and the run will look
 successful.
 
-Acceptance: `python backend/test_artifact_serviceability.py` reports a serviceable count above
+Acceptance: `python backend/tests/test_artifact_serviceability.py` reports a serviceable count above
 zero. It ratchets, so the number can rise and never silently fall.
 
 ### 6.3 What to collect, and what NOT to build
@@ -1634,9 +1634,9 @@ It cannot promote anything, and no amount of further analysis on it will.
 ## 8. Reproduce
 
 ```bash
-python backend/run_ci_locally.py                              # 96 gating steps, the only real CI
+python backend/tests/run_ci_locally.py                        # 96 gating steps, the only real CI
 python research/run_all_sequence.py --selftest                # every study is covered
-python backend/test_artifact_serviceability.py                # can serving load anything yet?
+python backend/tests/test_artifact_serviceability.py                # can serving load anything yet?
 python backend/audit/freeze_oracle_release.py --verify        # has the frozen champion drifted?
 python backend/audit/build_oracle_data_manifest.py            # what did the recorders capture?
 ```

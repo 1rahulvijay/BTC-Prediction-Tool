@@ -95,7 +95,7 @@ exist for. Legitimate next levers (same gates, no bending): more 1s history (bui
 1s), or live microstructure features once the 1s recorders accumulate months. The v3 "69%" figure is
 retracted as partly leak-inflated (touch-bar extremes contained post-entry movement).
 
-## KILLED: `TP_OR_SETTLE_5M_V1`  (tested 2026-07-02, `backend/probe_tp_or_settle.py`)
+## KILLED: `TP_OR_SETTLE_5M_V1`  (tested 2026-07-02, `backend/research/standalone/probe_tp_or_settle.py`)
 
 Operator idea: buy the leader EARLY, take profit at +20–50% of entry (a $1 bet → exit at 20–50c gain),
 otherwise ride to settlement (no stop-loss leg; spread crossed twice only on winners). Frozen spec:

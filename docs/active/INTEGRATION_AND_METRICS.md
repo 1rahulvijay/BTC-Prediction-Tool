@@ -39,7 +39,7 @@ different facet of the SAME bet:
 Per-component metrics existed; the **composition** had none — the number that says *"when the tool
 stacks its gates into one recommendation, does THAT bet win?"* Without it you can pass every part
 and lose as a whole. Built as a **read-only scorecard** (no serving change, no schema, no retrain):
-`backend/composed_decision_scorecard.py`. It reads gates already persisted on `price_to_beat`
+`backend/research/standalone/composed_decision_scorecard.py`. It reads gates already persisted on `price_to_beat`
 (`our_direction`, `lean_source`, `actionable`, `confluence_grade`, `late_entry`, resolved `hit`)
 and computes a **gate ladder**, each row adding one gate:
 

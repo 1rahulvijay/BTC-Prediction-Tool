@@ -1,6 +1,6 @@
 # AlgoDesk: Evolving to ML, DL, and RL Models
 
-> **SUPERSEDED `2026-08-04`.** This document describes `backend/algodesk_ml_rl_dl.py`, which is
+> **SUPERSEDED `2026-08-04`.** This document describes `backend/research/standalone/algodesk_ml_rl_dl.py`, which is
 > now **QUARANTINED** and raises `QuarantinedPrototype` on use. It simulated funding
 > (`8h price change * 0.05`) and open interest (`24h base volume * 3.5`), so the FUND, OI and
 > OIDIV results below are statements about momentum and volume, not funding and OI.
@@ -57,7 +57,7 @@ graph TB
 
 ## Data & Feature Engineering
 
-**File:** `backend/algodesk_ml_rl_dl.py` — **QUARANTINED.** Canonical: `research/algodesk/agents.py`
+**File:** `backend/research/standalone/algodesk_ml_rl_dl.py` — **QUARANTINED.** Canonical: `research/algodesk/agents.py`
 
 ### Context Features (Normalized)
 

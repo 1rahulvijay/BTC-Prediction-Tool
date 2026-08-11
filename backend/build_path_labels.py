@@ -24,7 +24,7 @@ from backfill_trade_features import download_day, load_aggtrades
 from train_beat_classifier import ticks_to_ohlc, build_beat_features, FEATURE_NAMES, resolve_dates
 from artifact_identity import multihead_training_identity
 
-# Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
+# Manifest written with the artifact; see backend/tests/test_trainers_write_manifests.py for
 # why an unmanifested artifact blocks the P(hold) calibrator.
 from verified_io import write_manifest as write_integrity_manifest
 

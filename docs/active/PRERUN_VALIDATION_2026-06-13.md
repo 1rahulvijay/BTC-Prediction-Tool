@@ -32,12 +32,12 @@ Run these with the app **stopped** (DuckDB single-writer) unless noted:
 1. **Did the heads clear their gates?** Check the start.bat console for each head's per-horizon
    SIGNAL/NOISE line, and that the `.pkl`s exist:
    `dir data\saved_models\*.pkl`  (beat_model, magnitude_model, path_model, persistence_model).
-2. **Model + feature noise:** `python backend\diagnose_model.py` →
+2. **Model + feature noise:** `python backend\research\standalone\diagnose_model.py` →
    - §1 horizon health (the real sign-truth) — did 5m move off ~50%? gate ≥56%.
    - §2 per-model — now reliable on post-restart rows (the §5ba fix is live) — any model trailing >3pts?
    - §3 dead features — B1 should have >200 rows now → which slots are ~0-variance (cut list).
    - §4 low-signal (SHAP) + §5 **grade validation** (did A/B/C start stratifying, or still inverted?).
-3. **Direction scorecard:** `python backend\sign_truth_scorecard.py` → 5m committed-lean sign-truth,
+3. **Direction scorecard:** `python backend\research\standalone\sign_truth_scorecard.py` → 5m committed-lean sign-truth,
    UP/DOWN balance (the gate number).
 4. **Data quality of the trained window:** `python backend\data_quality_audit.py --days 30` →
    especially up-bar fraction (was the 30d one-directional? = inherited bias).

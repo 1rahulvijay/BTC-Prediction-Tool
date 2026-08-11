@@ -154,7 +154,7 @@ cp data/btc_duckdbs/analytics.duckdb data/research_snapshots/analytics_<date>.du
 | `backend/research/executable_fill_engine.py --selftest` | 13 selftests. **Run this first, always.** If it fails, nothing downstream is trustworthy. |
 | `backend/research/validate_l2_snapshot.py` | Phase-2 data-quality gate |
 | `backend/research/run_oracle_executable_surface.py --horizon 15` | powered surface + null battery on deployment data (~40s) |
-| `backend/test_paper_trading_integrity.py` | paper-ledger accounting invariants |
+| `backend/tests/test_paper_trading_integrity.py` | paper-ledger accounting invariants |
 
 The fill engine is the **only** place a fill may be simulated. Do not write a second one — the
 whole point is that all tests share identical semantics. Its fast path (`net_path` +

@@ -85,22 +85,22 @@ jobs:
 
       # --- decision + deployment gates ------------------------------------------------------
       - name: Quarantined prototypes, fee formula, non-blocking feed
-        run: python backend/test_quarantine_and_feed.py
+        run: python backend/tests/test_quarantine_and_feed.py
 
       - name: Regime HMM causal forward filter (train/serve partition parity)
-        run: python backend/test_regime_causal_filter.py
+        run: python backend/tests/test_regime_causal_filter.py
 
       - name: Endogenous Kelly (own-order impact caps size)
-        run: python backend/test_endogenous_kelly.py
+        run: python backend/tests/test_endogenous_kelly.py
 
       - name: Kelly scratch semantics (argmax invariance; naming discipline)
-        run: python backend/test_kelly_scratch_semantics.py
+        run: python backend/tests/test_kelly_scratch_semantics.py
 
       - name: Kelly sizing (scratches are not losses; LCB gate)
-        run: python backend/test_kelly_scratch_handling.py
+        run: python backend/tests/test_kelly_scratch_handling.py
 
       - name: Feed writer load (REAL parquet handlers, measured capacity)
-        run: python backend/test_feed_writer_load.py
+        run: python backend/tests/test_feed_writer_load.py
 
       - name: Feed writer (bounded, counted, non-blocking)
         run: python backend/feed_writer.py --selftest
@@ -109,7 +109,7 @@ jobs:
       # invocations had been corrupted into control characters (`backend<FF>eed_writer.py`),
       # which aborted startup on every launch.
       - name: Launcher integrity (every invoked path exists)
-        run: python backend/test_launcher_integrity.py
+        run: python backend/tests/test_launcher_integrity.py
 
       - name: Repository launcher layout
         run: python tests/test_repository_layout.py
@@ -130,13 +130,13 @@ jobs:
         run: python backend/decision_snapshot.py --selftest
 
       - name: Decision price race (no live re-read after the freeze)
-        run: python backend/test_decision_price_race.py
+        run: python backend/tests/test_decision_price_race.py
 
       - name: Endpoint basis economic admissibility (a barrier is not PnL)
-        run: python backend/test_endpoint_basis_economic_admissibility.py
+        run: python backend/tests/test_endpoint_basis_economic_admissibility.py
 
       - name: Forward-EV resolves only from a genuine endpoint
-        run: python backend/test_forward_ev_endpoint_contract.py
+        run: python backend/tests/test_forward_ev_endpoint_contract.py
 
       - name: Period loss boundaries (an overnight loser still counts today)
         run: python -m backend.binance_paper.test_period_loss_boundaries
@@ -154,85 +154,85 @@ jobs:
         run: python backend/audit/datastore_identity.py --selftest
 
       - name: Feature schema hash accepts any iterable container
-        run: python backend/test_feature_schema_hash_containers.py
+        run: python backend/tests/test_feature_schema_hash_containers.py
 
       - name: Champion meta splits by round with a purge, not by snapshot row
-        run: python backend/test_champion_meta_split.py
+        run: python backend/tests/test_champion_meta_split.py
 
       - name: Keeper heads purge the label horizon in the shared trainer
-        run: python backend/test_keeper_head_purge.py
+        run: python backend/tests/test_keeper_head_purge.py
 
       - name: Path head purges every split boundary by the label horizon
-        run: python backend/test_path_head_purge.py
+        run: python backend/tests/test_path_head_purge.py
 
       - name: Selectivity target is bps from the fitting span, OOS purged
-        run: python backend/test_selectivity_target_contract.py
+        run: python backend/tests/test_selectivity_target_contract.py
 
       - name: Head authority is bound to an artifact sha, not a head name
         run: python backend/head_artifact_identity.py --selftest
 
       - name: Every specialist that changes a champion decision holds may_rank
-        run: python backend/test_champion_specialist_authority.py
+        run: python backend/tests/test_champion_specialist_authority.py
 
       - name: Row identity names the model that produced the row
-        run: python backend/test_row_identity_is_served_model.py
+        run: python backend/tests/test_row_identity_is_served_model.py
 
       - name: A release-pooled meta-model may not veto the current generation
-        run: python backend/test_meta_veto_requires_scoped_release.py
+        run: python backend/tests/test_meta_veto_requires_scoped_release.py
 
       - name: A settled round survives a re-log of its prediction
-        run: python backend/test_resolved_round_is_immutable.py
+        run: python backend/tests/test_resolved_round_is_immutable.py
 
       - name: No writer resets a terminal outcome through REPLACE
-        run: python backend/test_terminal_outcomes_not_replaceable.py
+        run: python backend/tests/test_terminal_outcomes_not_replaceable.py
 
       - name: P(Hold) reads only closed bars and purges by outcome end
-        run: python backend/test_persistence_causal_and_purged.py
+        run: python backend/tests/test_persistence_causal_and_purged.py
 
       - name: Regime forecast conserves probability mass
-        run: python backend/test_regime_forecast_conserves_mass.py
+        run: python backend/tests/test_regime_forecast_conserves_mass.py
 
       - name: Forward evidence gate (no adaptation while recorders are dark)
         run: python backend/forward_evidence_gate.py --selftest
 
       - name: P0-3/4/5 contracts (signal history, HMM restart, A/B symmetry)
-        run: python backend/test_p0_3_4_5_contracts.py
+        run: python backend/tests/test_p0_3_4_5_contracts.py
 
       - name: Feature semantics v5 (LVN, funding phase, lead-lag, regime alignment)
-        run: python backend/test_feature_semantics_v5.py
+        run: python backend/tests/test_feature_semantics_v5.py
 
       - name: Settlement head (the endpoint contract has a trained consumer)
         run: python backend/settlement_head.py --selftest
 
       - name: Settlement head wiring (reachable from the real train path)
-        run: python backend/test_settlement_head_wiring.py
+        run: python backend/tests/test_settlement_head_wiring.py
 
       - name: Nightly refit is candidate-only (never overwrites a serving artifact)
-        run: python backend/test_auto_finetune_candidate_only.py
+        run: python backend/tests/test_auto_finetune_candidate_only.py
 
       - name: OOF fold weights EXECUTED (not merely parsed)
-        run: python backend/test_oof_fold_weights_execute.py
+        run: python backend/tests/test_oof_fold_weights_execute.py
 
       - name: Target declaration consistency (docstring == code == registry == artifact)
-        run: python backend/test_target_declaration_consistency.py
+        run: python backend/tests/test_target_declaration_consistency.py
 
       - name: Promotion/activation boundary (a refusal may not activate)
-        run: python backend/test_promotion_activation_boundary.py
+        run: python backend/tests/test_promotion_activation_boundary.py
 
       - name: Health vocabulary + atomic temp paths
-        run: python backend/test_health_vocabulary_and_atomic_temp.py
+        run: python backend/tests/test_health_vocabulary_and_atomic_temp.py
 
       - name: Production preflight runs in-process; feeds keep alive
-        run: python backend/test_preflight_and_feed_keepalive.py
+        run: python backend/tests/test_preflight_and_feed_keepalive.py
 
       - name: Round-truth settlement labels (anchor-based, reconciled, causal)
         run: python backend/polymarket/round_truth.py --selftest
 
       - name: Backtest grades the contract the model trained on
-        run: python backend/test_backtest_target_contract.py
+        run: python backend/tests/test_backtest_target_contract.py
 
       - name: Calibration clears on release change; unlabelled maps refuse
-        run: python backend/test_calibration_release_binding.py
+        run: python backend/tests/test_calibration_release_binding.py
 
       - name: Current state doc is machine-generated and not stale
         run: python backend/audit/current_state.py --selftest
@@ -244,51 +244,51 @@ jobs:
         run: python backend/target_contract.py --selftest
 
       - name: Target contract parity end-to-end
-        run: python backend/test_target_contract_parity.py
+        run: python backend/tests/test_target_contract_parity.py
 
       - name: P1-1 one graded row describes one moment
-        run: python backend/test_resolution_observation_consistency.py
+        run: python backend/tests/test_resolution_observation_consistency.py
 
       - name: P1-3 per-model panel grades the trained contract
-        run: python backend/test_per_model_grading_contract.py
+        run: python backend/tests/test_per_model_grading_contract.py
 
       - name: P1-4 every directional seat respects the sample weights
-        run: python backend/test_sample_weight_coverage.py
+        run: python backend/tests/test_sample_weight_coverage.py
 
       - name: P0-1 regime routing follows the bundle, not the training run
-        run: python backend/test_hmm_bundle_binding.py
+        run: python backend/tests/test_hmm_bundle_binding.py
 
       - name: Backtest neutral band comes from REAL intrabar range
-        run: python backend/test_backtest_ohlc_honesty.py
+        run: python backend/tests/test_backtest_ohlc_honesty.py
 
       # A direct `python backend/server.py` booted healthy and could NEVER train: the window was
       # resolved at nine sites with five defaults, so the server used 30, the manifest said 60
       # and the identity contract was handed 0.
       - name: Training window is resolved once (server, train and save agree)
-        run: python backend/test_history_days_single_resolver.py
+        run: python backend/tests/test_history_days_single_resolver.py
 
       # Five guards that existed, were correct, and sat beside a path that never consulted
       # them: production preflight, neutral-band parity, calibration admissibility, surrogate
       # walk-forward, and promotion floors that admitted worse than a coin flip.
       - name: Core decision contracts (preflight, band parity, admissibility, baselines)
-        run: python backend/test_core_decision_contracts.py
+        run: python backend/tests/test_core_decision_contracts.py
 
       # The clearest model-to-action break: process_signal() read `direction` and nothing else,
       # so a WEAK_LEAN the decision layer refused to act on opened a simulated position.
       - name: Simulator entry authority (a lean is not an authorization)
-        run: python backend/test_simulator_entry_authority.py
+        run: python backend/tests/test_simulator_entry_authority.py
 
       # A terminal verification state that is never written, a code hash blind to the file
       # deciding WHICH question the labels answer, and a head disabled for the process
       # lifetime by one transient load failure.
       - name: Evidence durability and provenance (terminal states, code hash, loaders)
-        run: python backend/test_evidence_durability_and_provenance.py
+        run: python backend/tests/test_evidence_durability_and_provenance.py
 
       # The live isotonic map fitted on its OWN previous output, on rows that had already
       # survived the gates it is applied before; and a NEUTRAL prediction could carry a
       # position size and short-shaped stop/target.
       - name: Confidence calibrator population and NEUTRAL finalization
-        run: python backend/test_calibrator_and_neutral_finalization.py
+        run: python backend/tests/test_calibrator_and_neutral_finalization.py
 
       # ONE candle shape for every producer, and closure PROVEN rather than inferred. REST
       # emitted close_time and no is_closed; WS emitted is_closed and no close_time; consumers
@@ -300,94 +300,94 @@ jobs:
       # hmm_state=None, a misaligned valid_mask trained anyway, and the settlement head's
       # purge collapsed to the horizon because lookback was never passed.
       - name: Shadow HMM binding, mask fail-closed, settlement purge
-        run: python backend/test_shadow_hmm_mask_and_purge.py
+        run: python backend/tests/test_shadow_hmm_mask_and_purge.py
 
       # A delayed old exchange event received NOW scored feed_age_ms ~ 0 and became the
       # executable quote. Source age, transport lag and local age are now separate, and the
       # book must arrive in EXCHANGE order.
       - name: Book freshness and exchange ordering (source age, not receipt age)
-        run: python backend/test_book_freshness_and_ordering.py
+        run: python backend/tests/test_book_freshness_and_ordering.py
 
       # Coinbase staleness was enforced for the venue panel and bypassed by the feature vector;
       # Bybit/KuCoin shared one timestamp and retained stale prices into the consensus median.
       - name: Venue freshness is ONE rule (panel and features agree)
-        run: python backend/test_venue_freshness_shared_rule.py
+        run: python backend/tests/test_venue_freshness_shared_rule.py
 
       # _emit calls book callbacks synchronously inside the websocket read loop, so a slow
       # DuckDB write delayed the feed. Audit/telemetry writes now leave that thread; every
       # write that FEEDS A DECISION deliberately stays inline, and the test pins both halves.
       - name: Maintenance journal split (only decision-free writes are deferred)
-        run: python backend/test_maintenance_journal_split.py
+        run: python backend/tests/test_maintenance_journal_split.py
 
       # 2.1 keystone: the manifest described research_matrix_1m.parquet while train() was handed
       # in-memory arrays from freshly fetched klines - same row count, different data. Plus 1.7:
       # a prediction must state which question it answers and which release answered it.
       - name: Executed training identity + prediction contract columns
-        run: python backend/test_executed_training_identity.py
+        run: python backend/tests/test_executed_training_identity.py
 
       # A first-touch BARRIER is not a trade price - under that contract |move| is a constant by
       # construction, and four consumers were computing economics from it. Plus four gates that
       # recorded degraded evidence and passed anyway.
       - name: Scan-5 barrier price, seat band, and four fail-open gates
-        run: python backend/test_scan5_barrier_and_gates.py
+        run: python backend/tests/test_scan5_barrier_and_gates.py
 
       # An A/B test whose conditions are not controlled: the challenger was conditioned on the
       # incumbent's output and scored with the incumbent's track record, and the calendar clock
       # the promotion gate measures restarted with the process.
       - name: Scan-5 A/B isolation and durability
-        run: python backend/test_ab_isolation_and_durability.py
+        run: python backend/tests/test_ab_isolation_and_durability.py
 
       # A published win rate that grades a first-touch model by endpoint sign, and a funding
       # cashflow stamped with one moment and priced at another.
       - name: Scan-5 grade provenance and funding moment
-        run: python backend/test_grade_provenance_and_funding_moment.py
+        run: python backend/tests/test_grade_provenance_and_funding_moment.py
 
       # The interval a first-touch label actually watched (shifted, not shortened), the
       # percentile window that started empty on every boot, and the magnitude head's discarded sign.
       - name: Scan-5 / P0-15 / P0-9 observed window and restored state
-        run: python backend/test_observed_window_and_restored_state.py
+        run: python backend/tests/test_observed_window_and_restored_state.py
 
       # P0-14 consumer half: the calibration map pooled contracts and graded a first-touch
       # model by endpoint sign, because the column that could separate them did not exist yet.
       - name: Calibration is fitted under ONE declared contract
-        run: python backend/test_calibration_contract_filter.py
+        run: python backend/tests/test_calibration_contract_filter.py
 
       # A declared zero band was replaced by 8bps, and a label documented as "not a live gate"
       # was the only thing preventing every trade.
       - name: Core scan - grading band and verdict blockers
-        run: python backend/test_core_scan_band_and_verdict.py
+        run: python backend/tests/test_core_scan_band_and_verdict.py
 
       # The betting-accuracy column graded a first-touch model by the move sign, crediting a
       # win on the 46.6% of rows the contract graded NEUTRAL.
       - name: lean_hit is graded by the contract, and its thresholds share a namespace
-        run: python backend/test_lean_hit_contract_truth.py
+        run: python backend/tests/test_lean_hit_contract_truth.py
 
       # "Historical EV" was a linear rescaling of accuracy, because the |move| it averaged is
       # the barrier distance the contract chose. And the venue "median" was the upper middle.
       - name: Expectancy is a realised return, and the consensus is a median
-        run: python backend/test_expectancy_and_consensus.py
+        run: python backend/tests/test_expectancy_and_consensus.py
 
       # A fixed $250 paper stake, limits derived from it rather than absolute dollars sized
       # for a $10k account, and capital exhaustion as a named terminal state.
       - name: Fixed paper stake, scaled limits and a terminal ruin state
-        run: python backend/test_fixed_stake_and_ruin.py
+        run: python backend/tests/test_fixed_stake_and_ruin.py
 
       # The dead zone is applied at every site that turns two probabilities into a side, and
       # the measurement refuting it AS A REMEDY is pinned so nobody sets the knob.
       - name: Directional dead zone is not bypassed, and is not a remedy
-        run: python backend/test_directional_tilt_contract.py
+        run: python backend/tests/test_directional_tilt_contract.py
 
       # Readiness said UNAVAILABLE with no cause, across four refusals needing four different
       # actions - and one refusal path returned False with no log at all.
       - name: A refused model load names its reason
-        run: python backend/test_model_load_refusal_reason.py
+        run: python backend/tests/test_model_load_refusal_reason.py
 
       # Scan-6. Replay handed a fraction-taking grader a dollar amount and collapsed every row
       # to NEUTRAL while reporting GRADED_FIRST_TOUCH; the executed-identity flag compared two
       # incomparable hash domains; the control-relative gate recorded a criterion it never
       # enforced. Three of the five were introduced by earlier fixes in this same series.
       - name: Scan-6 replay units, executed identity, control gate, capital scaling
-        run: python backend/test_scan6_replay_identity_control.py
+        run: python backend/tests/test_scan6_replay_identity_control.py
 
       # The baseline any Polymarket pricing claim has to satisfy: monotone in distance, time
       # and volatility, symmetric about the anchor, refusing rather than fabricating certainty,
@@ -396,31 +396,31 @@ jobs:
         run: python backend/polymarket_fair_value.py
 
       - name: P1-5 OOF stacker is trained on the seats it is served
-        run: python backend/test_oof_serving_parity.py
+        run: python backend/tests/test_oof_serving_parity.py
 
       - name: Conditional offset v2 (reconstruction guard, init_score, noise floor)
         run: python research/conditional_offset_v2.py --selftest
 
       - name: Artifact manifest contract (what training writes, serving can read)
-        run: python backend/test_artifact_manifest_contract.py
+        run: python backend/tests/test_artifact_manifest_contract.py
 
       - name: No snapshot backcast (today's state never enters a historical row)
-        run: python backend/test_no_snapshot_backcast.py
+        run: python backend/tests/test_no_snapshot_backcast.py
 
       - name: Geometry endpoint head (ENDPOINT_ABOVE_ANCHOR, no authority)
         run: python backend/geometry_endpoint_head.py --selftest
 
       - name: Geometry endpoint wiring (real round fields, causal sigma, no authority)
-        run: python backend/test_geometry_endpoint_wiring.py
+        run: python backend/tests/test_geometry_endpoint_wiring.py
 
       - name: P1-6 uncertainty bands come from untouched rows
-        run: python backend/test_conformal_source_honesty.py
+        run: python backend/tests/test_conformal_source_honesty.py
 
       - name: P1-9 calibration binds to the serving bundle, not a file mtime
-        run: python backend/test_calibration_bundle_identity.py
+        run: python backend/tests/test_calibration_bundle_identity.py
 
       - name: P1-12 a derived price is not an independent venue
-        run: python backend/test_venue_independence.py
+        run: python backend/tests/test_venue_independence.py
 
       - name: Executable fill engine (every eligibility gate stated, and vetoing)
         run: python backend/research/executable_fill_engine.py --selftest
@@ -444,25 +444,25 @@ jobs:
         run: python backend/control_auth.py --selftest
 
       - name: Control-plane security over real HTTP
-        run: python backend/test_control_plane_security.py
+        run: python backend/tests/test_control_plane_security.py
 
       - name: Production preflight policy
         run: python backend/production_readiness.py --selftest
 
       - name: Specialist source provenance survives strict serving
-        run: python backend/test_specialist_source_provenance.py
+        run: python backend/tests/test_specialist_source_provenance.py
 
       - name: Optional model heads abstain without weakening present-artifact checks
-        run: python backend/test_feature_contract_optional.py
+        run: python backend/tests/test_feature_contract_optional.py
 
       - name: Forward-evidence startup wait is bounded and fail-closed
         run: python backend/wait_for_forward_evidence.py --selftest
 
       - name: Production launcher uses canonical data and safe startup ordering
-        run: python backend/test_production_launcher_contract.py
+        run: python backend/tests/test_production_launcher_contract.py
 
       - name: Production HTTP and WebSocket boundary
-        run: python backend/test_production_http_surface.py
+        run: python backend/tests/test_production_http_surface.py
 
       - name: Frozen-start model preflight entry point
         run: python backend/check_model_compatibility.py --selftest
@@ -477,13 +477,13 @@ jobs:
         run: python backend/task_supervisor.py --selftest
 
       - name: Close-only authority (a fault must not trap a position)
-        run: python backend/test_close_only_authority.py
+        run: python backend/tests/test_close_only_authority.py
 
       - name: Canonical Polymarket incremental protocol
-        run: python backend/test_polymarket_client_protocol.py
+        run: python backend/tests/test_polymarket_client_protocol.py
 
       - name: Feed protocol content health and quarantine
-        run: python backend/test_feed_protocol_health.py
+        run: python backend/tests/test_feed_protocol_health.py
 
       - name: Head permissions
         run: python backend/head_permissions.py --selftest
@@ -492,25 +492,25 @@ jobs:
         run: python backend/quantile_safety.py
 
       - name: Artifact training-window namespace
-        run: python backend/test_training_window_namespace.py
+        run: python backend/tests/test_training_window_namespace.py
 
       - name: Resolved outcomes survive duplicate logging
-        run: python backend/test_terminal_outcome_relogging.py
+        run: python backend/tests/test_terminal_outcome_relogging.py
 
       - name: Market stream ordering and directional sweep state
-        run: python backend/test_market_stream_ordering.py
+        run: python backend/tests/test_market_stream_ordering.py
 
       - name: A/B uncertainty uses UTC-day clusters
-        run: python backend/test_ab_day_block_bootstrap.py
+        run: python backend/tests/test_ab_day_block_bootstrap.py
 
       - name: A/B outcomes and economics are bundle scoped
-        run: python backend/test_ab_bundle_scope.py
+        run: python backend/tests/test_ab_bundle_scope.py
 
       - name: Probability-bucket audit cannot hide loader failures
-        run: python backend/test_probability_bucket_audit_contract.py
+        run: python backend/tests/test_probability_bucket_audit_contract.py
 
       - name: Serving risk features are name-bound and fail closed
-        run: python backend/test_model_serving_risk_contract.py
+        run: python backend/tests/test_model_serving_risk_contract.py
 
       - name: Binance paper deterministic execution contracts
         run: |
@@ -527,9 +527,9 @@ jobs:
 
       - name: Model artifact and training integrity contracts
         run: |
-          python backend/test_meta_model_contract.py
-          python backend/test_model_bundle_completeness.py
-          python backend/test_training_integrity_20260731.py
+          python backend/tests/test_meta_model_contract.py
+          python backend/tests/test_model_bundle_completeness.py
+          python backend/tests/test_training_integrity_20260731.py
 
       - name: Complete-trade serving and evidence contracts
         run: |
@@ -592,17 +592,17 @@ jobs:
       # look registered while never writing a row. This exercises the real database call with
       # the real argument shape and reads the rows back.
       - name: PM fair-value wiring actually logs (a silent except cannot hide a dead strategy)
-        run: python backend/test_pm_fair_value_wiring.py
+        run: python backend/tests/test_pm_fair_value_wiring.py
 
       - name: Model vote identity, committed accuracy, restart restore, and metrics regime
-        run: python backend/test_model_metrics_integrity.py
+        run: python backend/tests/test_model_metrics_integrity.py
 
       # 21 of 31 trainers wrote model artifacts with NO integrity manifest, which is why
       # artifacts fail identity and phold_challenger refuses to deploy any calibrator
       # (SOURCE_MODEL_REQUIRES_RETRAINING) - the live blocker on the frozen Polymarket
       # forward benchmark. A retrain that skips the manifest leaves it switched off silently.
       - name: Trainers write manifests (an unmanifested artifact blocks the calibrator)
-        run: python backend/test_trainers_write_manifests.py
+        run: python backend/tests/test_trainers_write_manifests.py
 
       # The gate above asks "did the trainer call a manifest writer?" and passes. This one asks
       # the question that decides whether anything can trade - "can serving LOAD the artifact?"
@@ -612,7 +612,7 @@ jobs:
       # provenance. So every trainer can pass while every artifact stays refused. A gate that
       # cannot tell those apart is vacuous, which is the defect class this repo keeps hitting.
       - name: Artifact serviceability (passing the manifest gate is not a loadable model)
-        run: python backend/test_artifact_serviceability.py
+        run: python backend/tests/test_artifact_serviceability.py
 
       # The July 4 build is the only benchmark with real forward exposure, so every challenger
       # is judged against it. That comparison is void if the champion's artifacts change
@@ -754,7 +754,7 @@ jobs:
       # controls and day-block bounds - because no check asked whether the inputs existed when
       # the decision was made. This is that check.
       - name: Causal join guard (a quote may not be priced with a state from its future)
-        run: python backend/test_causal_join_guard.py
+        run: python backend/tests/test_causal_join_guard.py
 
       # The guard above is a text check on research SQL. This is the structural fix: a ledger
       # that REFUSES a decision row whose state, quote or feature cutoff postdates the decision.
@@ -779,7 +779,7 @@ jobs:
         run: python backend/open_position_action_recorder.py --selftest
 
       - name: Open-position action recorder is reached by the live price-to-beat path
-        run: python backend/test_open_position_action_wiring.py
+        run: python backend/tests/test_open_position_action_wiring.py
 
       - name: Protocol B/C readiness counts only official causal outcomes
         run: python backend/bc_forward_readiness_report.py --selftest
@@ -791,7 +791,7 @@ jobs:
         run: python backend/polymarket/model_dynamic_paper.py
 
       - name: Paper trading restart and official settlement integrity
-        run: python backend/test_paper_trading_integrity.py
+        run: python backend/tests/test_paper_trading_integrity.py
 
       - name: Equal-capital Polymarket versus Binance paper accounting
         run: python backend/paper_competition.py
@@ -817,10 +817,10 @@ jobs:
         run: python -m backend.research.profit_campaign_v1.selftest
 
       - name: Kline timestamp unit contract (REST history vs live WS bar)
-        run: python backend/test_kline_time_contract.py
+        run: python backend/tests/test_kline_time_contract.py
 
       - name: Feature + model weight fixes (VWAP window, TCN per-sample weights)
-        run: python backend/test_feature_and_weight_fixes.py
+        run: python backend/tests/test_feature_and_weight_fixes.py
 
       - name: Round-state scoring fails closed on invalid artifact reload
         run: python backend/round_state_panel.py
@@ -851,7 +851,7 @@ jobs:
         run: python backend/research/check_doc_tables.py
 
       - name: Current documentation matches executable feature/model contracts
-        run: python backend/test_current_documentation_contract.py
+        run: python backend/tests/test_current_documentation_contract.py
 
       # --- preregistration integrity --------------------------------------------------------
       # A frozen protocol whose bytes changed is not a frozen protocol. This recomputes every
@@ -872,7 +872,7 @@ jobs:
       # which any runner records as OK. This fails on a NEW one, so the list cannot grow
       # silently. Self-tested: it verifies it can actually detect an offender before reporting.
       - name: Test naming honesty (a test_*.py must be able to fail)
-        run: python backend/test_naming_honesty.py
+        run: python backend/tests/test_naming_honesty.py
 
       - name: Every python file compiles
         run: python -m compileall -q backend
@@ -932,36 +932,36 @@ jobs:
           python -m backend.trade_forecast.test_serving_integration || exit /b 1
           python backend/trade_forecast/champion_resolver.py --selftest || exit /b 1
           python backend/trade_forecast/freeze_guard.py --selftest || exit /b 1
-          python backend/test_quarantine_and_feed.py || exit /b 1
+          python backend/tests/test_quarantine_and_feed.py || exit /b 1
           python backend/feed_writer.py --selftest || exit /b 1
-          python backend/test_feed_writer_load.py || exit /b 1
-          python backend/test_regime_causal_filter.py || exit /b 1
-          python backend/test_kelly_scratch_handling.py || exit /b 1
-          python backend/test_kelly_scratch_semantics.py || exit /b 1
-          python backend/test_endogenous_kelly.py || exit /b 1
-          python backend/test_launcher_integrity.py || exit /b 1
+          python backend/tests/test_feed_writer_load.py || exit /b 1
+          python backend/tests/test_regime_causal_filter.py || exit /b 1
+          python backend/tests/test_kelly_scratch_handling.py || exit /b 1
+          python backend/tests/test_kelly_scratch_semantics.py || exit /b 1
+          python backend/tests/test_endogenous_kelly.py || exit /b 1
+          python backend/tests/test_launcher_integrity.py || exit /b 1
           python tests/test_repository_layout.py || exit /b 1
           python backend/model_registry.py --selftest || exit /b 1
           python backend/model_artifacts.py --selftest || exit /b 1
           python backend/verified_io.py --selftest || exit /b 1
           python backend/artifact_migration_status.py --selftest || exit /b 1
           python backend/control_auth.py --selftest || exit /b 1
-          python backend/test_close_only_authority.py || exit /b 1
-          python backend/test_polymarket_client_protocol.py || exit /b 1
-          python backend/test_feed_protocol_health.py || exit /b 1
+          python backend/tests/test_close_only_authority.py || exit /b 1
+          python backend/tests/test_polymarket_client_protocol.py || exit /b 1
+          python backend/tests/test_feed_protocol_health.py || exit /b 1
           python backend/task_supervisor.py --selftest || exit /b 1
           python backend/trading_authority.py --selftest || exit /b 1
           python backend/order_lifecycle.py --selftest || exit /b 1
-          python backend/test_control_plane_security.py || exit /b 1
+          python backend/tests/test_control_plane_security.py || exit /b 1
           python backend/head_permissions.py --selftest || exit /b 1
           python backend/quantile_safety.py || exit /b 1
-          python backend/test_training_window_namespace.py || exit /b 1
-          python backend/test_terminal_outcome_relogging.py || exit /b 1
-          python backend/test_market_stream_ordering.py || exit /b 1
-          python backend/test_ab_day_block_bootstrap.py || exit /b 1
-          python backend/test_ab_bundle_scope.py || exit /b 1
-          python backend/test_probability_bucket_audit_contract.py || exit /b 1
-          python backend/test_model_serving_risk_contract.py || exit /b 1
+          python backend/tests/test_training_window_namespace.py || exit /b 1
+          python backend/tests/test_terminal_outcome_relogging.py || exit /b 1
+          python backend/tests/test_market_stream_ordering.py || exit /b 1
+          python backend/tests/test_ab_day_block_bootstrap.py || exit /b 1
+          python backend/tests/test_ab_bundle_scope.py || exit /b 1
+          python backend/tests/test_probability_bucket_audit_contract.py || exit /b 1
+          python backend/tests/test_model_serving_risk_contract.py || exit /b 1
           python -m backend.binance_paper.test_engine || exit /b 1
           python -m backend.binance_paper.test_model_consensus_probability_namespace || exit /b 1
           python -m backend.binance_paper.test_period_loss_boundaries || exit /b 1
@@ -969,9 +969,9 @@ jobs:
           python -m backend.binance_paper.test_sizing_exit_cost || exit /b 1
           python -m backend.quant_platform.test_kernel || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
-          python backend/test_meta_model_contract.py || exit /b 1
-          python backend/test_model_bundle_completeness.py || exit /b 1
-          python backend/test_training_integrity_20260731.py || exit /b 1
+          python backend/tests/test_meta_model_contract.py || exit /b 1
+          python backend/tests/test_model_bundle_completeness.py || exit /b 1
+          python backend/tests/test_training_integrity_20260731.py || exit /b 1
           python -m backend.trade_forecast.test_complete_trade_forecast || exit /b 1
           python -m backend.trade_forecast.test_evidence_completion || exit /b 1
           python -m backend.trade_forecast.test_ledger_v2_end_to_end || exit /b 1
@@ -991,15 +991,15 @@ jobs:
           python backend/model_revision_ledger.py --selftest || exit /b 1
           python backend/evidence_health_report.py --selftest || exit /b 1
           python backend/open_position_action_recorder.py --selftest || exit /b 1
-          python backend/test_open_position_action_wiring.py || exit /b 1
+          python backend/tests/test_open_position_action_wiring.py || exit /b 1
           python backend/research_data/candidate_evidence_builder.py --selftest || exit /b 1
           python -m backend.quant_platform.test_research_validation || exit /b 1
           python research/maker_lever_test.py --selftest || exit /b 1
           python -m backend.research.hierarchical_ensemble_v1.selftest || exit /b 1
           python -m backend.research.forecast_adapters_v1.selftest || exit /b 1
           python -m backend.research.profit_campaign_v1.selftest || exit /b 1
-          python backend/test_kline_time_contract.py || exit /b 1
-          python backend/test_feature_and_weight_fixes.py || exit /b 1
+          python backend/tests/test_kline_time_contract.py || exit /b 1
+          python backend/tests/test_feature_and_weight_fixes.py || exit /b 1
           python backend/report_master_runtime_state.py --selftest || exit /b 1
           python backend/phold_calibrator.py --selftest || exit /b 1
           python backend/check_feature_contract.py
@@ -1008,89 +1008,89 @@ jobs:
           python backend/research/verify_prereg_hashes.py || exit /b 1
           python research/phase5d/admission.py --selftest || exit /b 1
           python research/research_status.py --selftest || exit /b 1
-          python backend/test_round_state_causal_contract.py || exit /b 1
+          python backend/tests/test_round_state_causal_contract.py || exit /b 1
           python backend/target_contract.py --selftest || exit /b 1
           python backend/settlement_head.py --selftest || exit /b 1
-          python backend/test_settlement_head_wiring.py || exit /b 1
-          python backend/test_auto_finetune_candidate_only.py || exit /b 1
-          python backend/test_oof_fold_weights_execute.py || exit /b 1
-          python backend/test_target_declaration_consistency.py || exit /b 1
-          python backend/test_promotion_activation_boundary.py || exit /b 1
-          python backend/test_health_vocabulary_and_atomic_temp.py || exit /b 1
-          python backend/test_preflight_and_feed_keepalive.py || exit /b 1
+          python backend/tests/test_settlement_head_wiring.py || exit /b 1
+          python backend/tests/test_auto_finetune_candidate_only.py || exit /b 1
+          python backend/tests/test_oof_fold_weights_execute.py || exit /b 1
+          python backend/tests/test_target_declaration_consistency.py || exit /b 1
+          python backend/tests/test_promotion_activation_boundary.py || exit /b 1
+          python backend/tests/test_health_vocabulary_and_atomic_temp.py || exit /b 1
+          python backend/tests/test_preflight_and_feed_keepalive.py || exit /b 1
           python backend/polymarket/round_truth.py --selftest || exit /b 1
-          python backend/test_backtest_target_contract.py || exit /b 1
-          python backend/test_calibration_release_binding.py || exit /b 1
+          python backend/tests/test_backtest_target_contract.py || exit /b 1
+          python backend/tests/test_calibration_release_binding.py || exit /b 1
           python backend/audit/current_state.py --selftest || exit /b 1
           python backend/audit/current_state.py --check || exit /b 1
-          python backend/test_feature_semantics_v5.py || exit /b 1
-          python backend/test_p0_3_4_5_contracts.py || exit /b 1
+          python backend/tests/test_feature_semantics_v5.py || exit /b 1
+          python backend/tests/test_p0_3_4_5_contracts.py || exit /b 1
           python backend/forward_evidence_gate.py --selftest || exit /b 1
           python backend/decision_snapshot.py --selftest || exit /b 1
-          python backend/test_decision_price_race.py || exit /b 1
-          python backend/test_endpoint_basis_economic_admissibility.py || exit /b 1
-          python backend/test_forward_ev_endpoint_contract.py || exit /b 1
+          python backend/tests/test_decision_price_race.py || exit /b 1
+          python backend/tests/test_endpoint_basis_economic_admissibility.py || exit /b 1
+          python backend/tests/test_forward_ev_endpoint_contract.py || exit /b 1
           python -m backend.binance_paper.test_period_loss_boundaries || exit /b 1
           python -m backend.binance_paper.test_post_fill_risk_budget || exit /b 1
           python -m backend.binance_paper.test_model_consensus_probability_namespace || exit /b 1
           python -m backend.binance_paper.test_sizing_exit_cost || exit /b 1
           python backend/audit/datastore_identity.py --selftest || exit /b 1
-          python backend/test_feature_schema_hash_containers.py || exit /b 1
-          python backend/test_champion_meta_split.py || exit /b 1
-          python backend/test_keeper_head_purge.py || exit /b 1
-          python backend/test_path_head_purge.py || exit /b 1
-          python backend/test_selectivity_target_contract.py || exit /b 1
+          python backend/tests/test_feature_schema_hash_containers.py || exit /b 1
+          python backend/tests/test_champion_meta_split.py || exit /b 1
+          python backend/tests/test_keeper_head_purge.py || exit /b 1
+          python backend/tests/test_path_head_purge.py || exit /b 1
+          python backend/tests/test_selectivity_target_contract.py || exit /b 1
           python backend/head_artifact_identity.py --selftest || exit /b 1
-          python backend/test_champion_specialist_authority.py || exit /b 1
-          python backend/test_row_identity_is_served_model.py || exit /b 1
-          python backend/test_meta_veto_requires_scoped_release.py || exit /b 1
-          python backend/test_resolved_round_is_immutable.py || exit /b 1
-          python backend/test_terminal_outcomes_not_replaceable.py || exit /b 1
-          python backend/test_persistence_causal_and_purged.py || exit /b 1
-          python backend/test_regime_forecast_conserves_mass.py || exit /b 1
+          python backend/tests/test_champion_specialist_authority.py || exit /b 1
+          python backend/tests/test_row_identity_is_served_model.py || exit /b 1
+          python backend/tests/test_meta_veto_requires_scoped_release.py || exit /b 1
+          python backend/tests/test_resolved_round_is_immutable.py || exit /b 1
+          python backend/tests/test_terminal_outcomes_not_replaceable.py || exit /b 1
+          python backend/tests/test_persistence_causal_and_purged.py || exit /b 1
+          python backend/tests/test_regime_forecast_conserves_mass.py || exit /b 1
           python -m backend.binance_paper.independence --selftest || exit /b 1
           python -m backend.binance_paper.sample_window --selftest || exit /b 1
           python backend/cross_window_recorder.py --selftest || exit /b 1
           python -m backend.binance_paper.post_fill_geometry --selftest || exit /b 1
-          python backend/test_target_contract_parity.py || exit /b 1
-          python backend/test_resolution_observation_consistency.py || exit /b 1
-          python backend/test_per_model_grading_contract.py || exit /b 1
-          python backend/test_sample_weight_coverage.py || exit /b 1
-          python backend/test_venue_independence.py || exit /b 1
-          python backend/test_hmm_bundle_binding.py || exit /b 1
-          python backend/test_backtest_ohlc_honesty.py || exit /b 1
-          python backend/test_history_days_single_resolver.py || exit /b 1
-          python backend/test_core_decision_contracts.py || exit /b 1
-          python backend/test_simulator_entry_authority.py || exit /b 1
-          python backend/test_evidence_durability_and_provenance.py || exit /b 1
-          python backend/test_calibrator_and_neutral_finalization.py || exit /b 1
+          python backend/tests/test_target_contract_parity.py || exit /b 1
+          python backend/tests/test_resolution_observation_consistency.py || exit /b 1
+          python backend/tests/test_per_model_grading_contract.py || exit /b 1
+          python backend/tests/test_sample_weight_coverage.py || exit /b 1
+          python backend/tests/test_venue_independence.py || exit /b 1
+          python backend/tests/test_hmm_bundle_binding.py || exit /b 1
+          python backend/tests/test_backtest_ohlc_honesty.py || exit /b 1
+          python backend/tests/test_history_days_single_resolver.py || exit /b 1
+          python backend/tests/test_core_decision_contracts.py || exit /b 1
+          python backend/tests/test_simulator_entry_authority.py || exit /b 1
+          python backend/tests/test_evidence_durability_and_provenance.py || exit /b 1
+          python backend/tests/test_calibrator_and_neutral_finalization.py || exit /b 1
           python backend/kline_schema.py --selftest || exit /b 1
-          python backend/test_shadow_hmm_mask_and_purge.py || exit /b 1
-          python backend/test_book_freshness_and_ordering.py || exit /b 1
-          python backend/test_venue_freshness_shared_rule.py || exit /b 1
-          python backend/test_maintenance_journal_split.py || exit /b 1
-          python backend/test_executed_training_identity.py || exit /b 1
-          python backend/test_scan5_barrier_and_gates.py || exit /b 1
-          python backend/test_ab_isolation_and_durability.py || exit /b 1
-          python backend/test_grade_provenance_and_funding_moment.py || exit /b 1
-          python backend/test_observed_window_and_restored_state.py || exit /b 1
-          python backend/test_calibration_contract_filter.py || exit /b 1
-          python backend/test_core_scan_band_and_verdict.py || exit /b 1
-          python backend/test_lean_hit_contract_truth.py || exit /b 1
-          python backend/test_expectancy_and_consensus.py || exit /b 1
-          python backend/test_fixed_stake_and_ruin.py || exit /b 1
-          python backend/test_directional_tilt_contract.py || exit /b 1
-          python backend/test_model_load_refusal_reason.py || exit /b 1
-          python backend/test_scan6_replay_identity_control.py || exit /b 1
+          python backend/tests/test_shadow_hmm_mask_and_purge.py || exit /b 1
+          python backend/tests/test_book_freshness_and_ordering.py || exit /b 1
+          python backend/tests/test_venue_freshness_shared_rule.py || exit /b 1
+          python backend/tests/test_maintenance_journal_split.py || exit /b 1
+          python backend/tests/test_executed_training_identity.py || exit /b 1
+          python backend/tests/test_scan5_barrier_and_gates.py || exit /b 1
+          python backend/tests/test_ab_isolation_and_durability.py || exit /b 1
+          python backend/tests/test_grade_provenance_and_funding_moment.py || exit /b 1
+          python backend/tests/test_observed_window_and_restored_state.py || exit /b 1
+          python backend/tests/test_calibration_contract_filter.py || exit /b 1
+          python backend/tests/test_core_scan_band_and_verdict.py || exit /b 1
+          python backend/tests/test_lean_hit_contract_truth.py || exit /b 1
+          python backend/tests/test_expectancy_and_consensus.py || exit /b 1
+          python backend/tests/test_fixed_stake_and_ruin.py || exit /b 1
+          python backend/tests/test_directional_tilt_contract.py || exit /b 1
+          python backend/tests/test_model_load_refusal_reason.py || exit /b 1
+          python backend/tests/test_scan6_replay_identity_control.py || exit /b 1
           python backend/polymarket_fair_value.py || exit /b 1
-          python backend/test_oof_serving_parity.py || exit /b 1
+          python backend/tests/test_oof_serving_parity.py || exit /b 1
           python research/conditional_offset_v2.py --selftest || exit /b 1
-          python backend/test_artifact_manifest_contract.py || exit /b 1
-          python backend/test_no_snapshot_backcast.py || exit /b 1
+          python backend/tests/test_artifact_manifest_contract.py || exit /b 1
+          python backend/tests/test_no_snapshot_backcast.py || exit /b 1
           python backend/geometry_endpoint_head.py --selftest || exit /b 1
-          python backend/test_geometry_endpoint_wiring.py || exit /b 1
-          python backend/test_conformal_source_honesty.py || exit /b 1
-          python backend/test_calibration_bundle_identity.py || exit /b 1
+          python backend/tests/test_geometry_endpoint_wiring.py || exit /b 1
+          python backend/tests/test_conformal_source_honesty.py || exit /b 1
+          python backend/tests/test_calibration_bundle_identity.py || exit /b 1
           python backend/research/executable_fill_engine.py --selftest || exit /b 1
           python backend/model_metrics_logger.py --selftest || exit /b 1
           python backend/datastore_identity.py --selftest || exit /b 1
@@ -1124,7 +1124,7 @@ jobs:
           python backend/bc_forward_readiness_report.py --selftest || exit /b 1
           python backend/model_promotion.py || exit /b 1
           python backend/polymarket/model_dynamic_paper.py || exit /b 1
-          python backend/test_paper_trading_integrity.py || exit /b 1
+          python backend/tests/test_paper_trading_integrity.py || exit /b 1
           python backend/paper_competition.py || exit /b 1
           python -m backend.binance_paper.selftest || exit /b 1
           python -m backend.binance_paper.api_selftest || exit /b 1

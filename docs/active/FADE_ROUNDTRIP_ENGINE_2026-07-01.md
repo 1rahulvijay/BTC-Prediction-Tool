@@ -64,7 +64,7 @@ The reversal backtest (`REVERSAL_STRATEGY_BACKTEST`) showed reversals cluster by
 live: each round's open time gets a `window_quality` **STRONG / OK / WEAK** chip (🕐 on the card). It informs *how
 selective to be*, it does **not** gate the fade — consistent with the project's earlier finding that the evening
 edge is partly selection bias. Regenerate after a data-window shift with
-`python backend/backtest_reversal_strategy.py --source matrix --export-windows`.
+`python backend/research/standalone/backtest_reversal_strategy.py --source matrix --export-windows`.
 
 ## start.bat wiring (confirmed)
 `start.bat` → `train_heads.py` (version-aware). The `fade` head now retrains automatically when its

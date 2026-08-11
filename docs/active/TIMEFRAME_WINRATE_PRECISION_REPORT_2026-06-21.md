@@ -7,8 +7,8 @@ All numbers are measured this session and cited to their source script/doc — n
 **Sources:**
 [TIMEFRAME_PERFORMANCE_pyth_2026-06-21.md](TIMEFRAME_PERFORMANCE_pyth_2026-06-21.md) (win rates) ·
 [CEILING_BREAK_EXPERIMENTS_2026-06-21.md](CEILING_BREAK_EXPERIMENTS_2026-06-21.md) (precision) ·
-[analyze_timeframe_value.py](../../backend/analyze_timeframe_value.py) (elimination logic) ·
-[analyze_timeframe_performance.py](../../backend/analyze_timeframe_performance.py).
+[analyze_timeframe_value.py](../../backend/research/standalone/analyze_timeframe_value.py) (elimination logic) ·
+[analyze_timeframe_performance.py](../../backend/research/standalone/analyze_timeframe_performance.py).
 
 ---
 
@@ -135,7 +135,7 @@ Flat: every calendar day 47.5–51.5%, every weekday 47.5–50.4%, all Wilson-LB
 
 ## 5. Timeframe elimination — verdict
 
-Logic ([analyze_timeframe_value.py](../../backend/analyze_timeframe_value.py)): a horizon earns its keep
+Logic ([analyze_timeframe_value.py](../../backend/research/standalone/analyze_timeframe_value.py)): a horizon earns its keep
 only via **(1)** a tradeable Polymarket market, **(2)** a real directional edge (model Wilson-LB > 50%,
 n ≥ 200 — empty, per §1/§2), or **(3)** fastest-feedback density. Else REMOVE.
 

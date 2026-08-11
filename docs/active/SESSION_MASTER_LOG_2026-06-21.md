@@ -118,7 +118,7 @@ Code-complete + validated (compile + pyflakes + node + import). Activates on the
 ## 5. New scripts built this session (all read-only, self-tested)
 | Script | Purpose |
 |---|---|
-| `backend/analyze_timeframe_value.py` | per-horizon KEEP/REMOVE verdict (tradeable / edge / feedback / cost) |
+| `backend/research/standalone/analyze_timeframe_value.py` | per-horizon KEEP/REMOVE verdict (tradeable / edge / feedback / cost) |
 | `backend/champion_v2_shadow.py` | tests regime + meta-skip vs P(Hold) baseline (leak-free, round-level) |
 | (earlier) `analyze_timeframe_performance.py`, `run_ceiling_break_experiments.py`, `microstructure_recorder.py`, `calibration_monitor.py`, `regime_gate_shadow.py`, `fallback_abstain_shadow.py`, `analyze_pm_recorder.py` | timeframe/time-of-day, ceiling-break, L2 recorder, calibration, shadows, edge proof |
 

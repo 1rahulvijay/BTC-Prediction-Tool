@@ -29,7 +29,7 @@ import urllib.request
 
 import numpy as np
 
-# Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
+# Manifest written with the artifact; see backend/tests/test_trainers_write_manifests.py for
 # why an unmanifested artifact blocks the P(hold) calibrator.
 from verified_io import write_manifest as write_integrity_manifest
 

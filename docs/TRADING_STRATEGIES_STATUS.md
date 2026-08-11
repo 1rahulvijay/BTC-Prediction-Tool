@@ -93,7 +93,7 @@ evidence previously cited for them is retracted. They must earn new forward evid
 
 | check | result |
 |---|---|
-| `backend/run_ci_locally.py` | **79/79 passed** |
+| `backend/tests/run_ci_locally.py` | **79/79 passed** |
 | `python -m pytest -q` | **100 passed** |
 | `research/run_all_sequence.py --selftest` | frontier=7, uncovered=0 |
 | Polymarket module selftest | 13 checks |
@@ -119,5 +119,5 @@ to serving (`BTC_APPLY_PHOLD_CALIBRATION` unset).
 python -m backend.polymarket_paper.calibrated_fair_value --selftest
 python -m backend.polymarket_paper.calibrated_fair_value --measured-only
 python -m backend.binance_paper.test_strategy_economics
-python backend/run_ci_locally.py
+python backend/tests/run_ci_locally.py
 ```

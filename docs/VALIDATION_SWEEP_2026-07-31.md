@@ -13,7 +13,7 @@ passes" gets said about a system that cannot serve.
 
 | check | command | result |
 |---|---|---|
-| CI gate | `python backend/run_ci_locally.py` | **72/72** (231 s) |
+| CI gate | `python backend/tests/run_ci_locally.py` | **72/72** (231 s) |
 | pytest suites | `python -m pytest -q` | **86 passed** (was 5 collected) |
 | compilation | `python -m compileall -q backend research microstructure` | exit 0 |
 | frontend | `npm run build` | 597 ms, 370 kB / 113 kB gzip |
@@ -117,7 +117,7 @@ research studies: they load data, compute statistics, write a markdown report. N
 can fail, so any runner records `OK`, and a reader seeing 30 green test files believes 30 things
 were verified when 14 verified nothing.
 
-New gate: `backend/test_naming_honesty.py`. Every `test_*.py` must either contain a way to fail
+New gate: `backend/tests/test_naming_honesty.py`. Every `test_*.py` must either contain a way to fail
 (assert / raise / failing exit path) or be listed in an explicit `STUDIES` set. A **new**
 zero-assertion test file fails CI, so the list cannot grow silently. It also fails on a **stale**
 entry — a declared study whose file no longer exists — because a list that outlives its files
@@ -134,7 +134,7 @@ reports anything.
 | item | why |
 |---|---|
 | 3 files excluded from pytest collection (`test_serving_integration`, `test_120d_conditional_ev_pipeline`, `test_120d_trade_policy_heads`) | They fail pytest **collection** on relative imports (`attempted relative import beyond top-level package`) that resolve correctly under `python -m`, which is how CI already runs them, where they pass. Rewriting those imports to satisfy pytest would risk the invocation CI actually depends on. They are gated — just not by this step. |
-| `backend/test_feed_writer_load.py` excluded from pytest | CI runs it as a script, where `main()` executes all seven test functions **plus** `run_sustained_rate()` — a strict superset of what pytest collects. Including it doubled the pytest step from 7 s to 54 s for zero extra coverage. Its fixture collision is fixed regardless. |
+| `backend/tests/test_feed_writer_load.py` excluded from pytest | CI runs it as a script, where `main()` executes all seven test functions **plus** `run_sustained_rate()` — a strict superset of what pytest collects. Including it doubled the pytest step from 7 s to 54 s for zero extra coverage. Its fixture collision is fixed regardless. |
 | 5 scripts exceeding a 420 s timeout | `test_180d_anchor_roundtrip_strategy`, `test_180d_decision_heads`, `test_180d_path_dynamics`, `test_180d_round_state_and_stopping`, `test_5m_15m_30d`. Long research studies, not unit tests. They belong in an operator-run lane, not a CI gate that must stay minutes long. |
 | 2 scripts failing on missing Kaggle data | `test_polymarket_structural_edges`, `test_virtue_complexity_late_leader` — `FileNotFoundError` on `Kaggle Data/archive (7).zip`. Missing **input**, not a code defect, and both fail **loudly**, which is the correct behaviour. |
 | 14 studies not renamed to `study_*.py` | The clean fix is a wide rename across files owned by work in flight. The declared-list gate is the honest intermediate and blocks new offenders today. |
@@ -188,9 +188,9 @@ confidence bounds, a complete cost model and forward shadow evidence.
 ## 8. Reproduce
 
 ```bash
-python backend/run_ci_locally.py
+python backend/tests/run_ci_locally.py
 python -m pytest -q
-python backend/test_naming_honesty.py
+python backend/tests/test_naming_honesty.py
 python backend/check_feature_contract.py
 python backend/production_readiness.py
 python research/run_all_sequence.py

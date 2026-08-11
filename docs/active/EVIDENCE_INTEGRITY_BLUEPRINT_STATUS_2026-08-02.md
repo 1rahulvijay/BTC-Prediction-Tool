@@ -61,7 +61,7 @@ serving-serviceable artifacts  0
 
 The next full retrain must run through `backend/train_heads.py` and the normal launcher so full
 provenance manifests are written. Running individual trainers writes integrity sidecars only and
-does not make artifacts serviceable. After retraining, rerun `backend/test_artifact_serviceability.py`.
+does not make artifacts serviceable. After retraining, rerun `backend/tests/test_artifact_serviceability.py`.
 
 ## Blueprint Reconciliation
 

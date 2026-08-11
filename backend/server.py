@@ -5447,10 +5447,9 @@ async def main_loop():
                 # never read it. Rows without a genuine endpoint stay UNRESOLVED rather than
                 # resolving with barrier economics.
                 #
-                # FOLLOW-UP: `forward_ev_ledger` has no `outcome_status` column, so this cannot
-                # yet mark the row ECONOMIC_OUTCOME_UNAVAILABLE and distinguish "no endpoint
-                # ever existed" from "not resolved yet". That needs a migration; logged at
-                # WARNING so the skips are visible rather than silent in the meantime.
+                # `forward_ev_ledger.outcome_status` distinguishes a permanently unavailable
+                # economic outcome from one that is merely pending. Barrier substitutions are
+                # therefore closed as ECONOMIC_OUTCOME_UNAVAILABLE below, never left pending.
                 _ep_basis = str(v.get("endpoint_price_basis") or "")
                 if _ep_basis != "ENDPOINT":
                     logger.warning(
@@ -6350,7 +6349,7 @@ async def api_historical_replay(limit: int = 50):
 async def get_scorecard():
     """Sign-truth scorecard via the live process — Windows DuckDB locks are exclusive
     (outside processes can't even COPY the file), so the app itself serves the
-    measurement. Same era-filtered queries as backend/sign_truth_scorecard.py."""
+    measurement. Same era-filtered queries as backend/research/standalone/sign_truth_scorecard.py."""
     def _run():
         era = 0
         try:

@@ -100,16 +100,16 @@ rsi = round(pos * 100)                        // simplified RSI proxy (0-100)
 
 ### File
 
-`backend/test_algodesk_17_agents_30d.py`
+`backend/tests/test_algodesk_17_agents_30d.py`
 
 ### Usage
 
 ```powershell
 # Default: 30 days, all 7 pairs, 5x leverage
-python backend/test_algodesk_17_agents_30d.py
+python backend/tests/test_algodesk_17_agents_30d.py
 
 # Custom: 14 days, BTC+ETH only, 10x leverage
-python backend/test_algodesk_17_agents_30d.py --test-days 14 --pairs BTCUSDT,ETHUSDT --leverage 10
+python backend/tests/test_algodesk_17_agents_30d.py --test-days 14 --pairs BTCUSDT,ETHUSDT --leverage 10
 ```
 
 ### Backtest Parameters
