@@ -23,6 +23,7 @@ Usage:  python backend/train_heads.py        (start.bat calls this)
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -76,7 +77,9 @@ def _source_paths(head: dict) -> dict[str, str]:
             DATA_DIR, "persistence_dataset.parquet"
         )
     elif head["name"] == "round_state":
-        state_dir = os.path.join(DATA_DIR, "research", "round_state")
+        state_dir = os.path.join(
+            DATA_DIR, "research", "round_state_stopping_180d_30s"
+        )
         paths.update({
             "round_state_late_snapshots": os.path.join(
                 state_dir, "late_snapshots.parquet"
@@ -133,6 +136,19 @@ def _source_snapshot(head: dict) -> tuple[tuple[str, str, int | None, int | None
 
 def _artifact_training_receipt(path: str) -> dict | None:
     """Return a trainer-owned in-memory X/Y receipt when the source is generated dynamically."""
+    receipt_path = f"{path}.training_source_identity.json"
+    try:
+        with open(receipt_path, encoding="utf-8") as handle:
+            receipt = json.load(handle)
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("executed_identity_recorded") is True
+            and receipt.get("training_dataset_sha256")
+            and receipt.get("artifact_sha256") == hash_file(path)
+        ):
+            return receipt
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        pass
     try:
         value = _verified_load(path)
     except Exception:
@@ -209,7 +225,12 @@ def _identity_changes(before: dict, after: dict) -> list[str]:
 
 def _remove_artifact_family(path: str) -> None:
     """Remove a declined staged artifact so an incumbent copy cannot masquerade as fresh."""
-    for candidate in (path, f"{path}.integrity.json", f"{path}.manifest.json"):
+    for candidate in (
+        path,
+        f"{path}.integrity.json",
+        f"{path}.manifest.json",
+        f"{path}.training_source_identity.json",
+    ):
         try:
             if os.path.isfile(candidate):
                 os.remove(candidate)
@@ -337,7 +358,8 @@ def main():
          "cmd": [PY, os.path.join("backend", "build_path_labels.py"), "--days", DAYS],
          "receipt": True},
         {"name": "fingerprints", "out": os.path.join(DATA_DIR, "fingerprint_evidence.parquet"), "ver": None,
-         "cmd": [PY, os.path.join("backend", "build_fingerprints_historical.py"), "--days", DAYS]},
+         "cmd": [PY, os.path.join("backend", "build_fingerprints_historical.py"), "--days", DAYS],
+         "receipt": True},
     ]
 
     # These heads have NOISE / insufficient-data GATES: they legitimately exit 0 WITHOUT writing an
@@ -388,8 +410,7 @@ def main():
                 failures.append((h["name"], f"exit={result.returncode}"))
             elif optional and (after_mtime is None or (before_mtime is not None and after_mtime <= before_mtime)):
                 # exit 0 but no fresh artifact: a noise-gated head that correctly declined to save.
-                if h["out"].startswith(SM + os.sep):
-                    _remove_artifact_family(h["out"])
+                _remove_artifact_family(h["out"])
                 print(f"[heads] OK    {h['name']:16} (exit 0; noise/data gate -> not saved, valid)")
             elif after_mtime is None:
                 failures.append((h["name"], "expected output missing"))

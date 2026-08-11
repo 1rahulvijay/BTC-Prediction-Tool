@@ -20,6 +20,7 @@ import os
 
 import numpy as np
 
+from artifact_identity import atomic_write_json, hash_file, multihead_training_identity
 from train_beat_classifier import (build_beat_features, beat_labels, FEATURE_NAMES,
                                     _ohlc_for_dates, resolve_dates)
 
@@ -65,12 +66,14 @@ def main():
     X = build_beat_features(O, H, L, C, T)
 
     rows = []
+    receipt_heads = {}
     for h in HORIZONS:
         y = beat_labels(O, C, h)
         Xs, ys = X[:-1], y[1:]          # ANTI-LEAKAGE (see beat head): features[t] -> window t+1
         m = ys >= 0
         if m.sum() < 200:
             continue
+        receipt_heads[str(h)] = (Xs[m], ys[m], T[:-1][m])
         cells = fingerprints(Xs[m], ys[m])
         for (vb, ms, rb, vs), (n, w) in cells.items():
             rate = w / n
@@ -89,6 +92,12 @@ def main():
     if save:
         os.makedirs(DATA_DIR, exist_ok=True)
         df.to_parquet(OUT_PATH, index=False)
+        receipt = multihead_training_identity(receipt_heads)
+        receipt["artifact_sha256"] = hash_file(OUT_PATH)
+        atomic_write_json(
+            f"{OUT_PATH}.training_source_identity.json",
+            receipt,
+        )
         print(f"\nWrote {len(df)} cells -> {OUT_PATH}")
     else:
         print(f"\n[validate] {len(df)} cells (not written)")

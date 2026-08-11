@@ -2,6 +2,10 @@
 
 ## Production
 
+- **[FINAL_RETRAIN_RESCAN_2026-08-11.md](active/FINAL_RETRAIN_RESCAN_2026-08-11.md)** -
+  final trainer, model, head and paper-strategy trace before the 1,000-day run; includes the
+  last provenance fixes and the complete executed validation result.
+
 - **[PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md](active/PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md)** -
   strict specialist provenance, optional-head abstention, canonical production datastore,
   recorder startup ordering, validation results, the 1,000-day runbook, and remaining

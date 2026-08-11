@@ -14,6 +14,20 @@ This distinction is intentional:
 
 ## Bugs fixed in this pass
 
+### Final rescan addendum
+
+The final trainer-by-trainer trace found and fixed two additional provenance defects before the
+overnight run:
+
+- round-state declared `data/research/round_state/` while its trainer reads
+  `data/research/round_state_stopping_180d_30s/`; a successful fit would have failed stamping;
+- historical fingerprint evidence reconstructed OHLC from aggregate trades but was stamped as
+  research-matrix-trained; it now emits an exact aligned trainer-owned receipt bound to the
+  output parquet hash.
+
+See `FINAL_RETRAIN_RESCAN_2026-08-11.md` for the complete model/head/strategy inventory and the
+217-step validation result.
+
 ### 1. Specialist retrains could finish and still be rejected
 
 `train_heads.py` stamped specialist artifacts from the generic research-matrix identity while
