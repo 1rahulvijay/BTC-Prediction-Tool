@@ -37,6 +37,7 @@ from backfill_trade_features import download_day, load_aggtrades, _daterange as 
 # artifact fails identity enforcement - which disables
 # PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 from verified_io import write_manifest as write_integrity_manifest
+from artifact_identity import multihead_training_identity
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
@@ -179,7 +180,7 @@ def main():
     X = build_beat_features(O, H, L, C, T)
     print(f"\nFeature matrix: {X.shape}; {len(C)} bars over {len(dates)} day(s)")
 
-    models, passed = {}, []
+    models, passed, receipt_heads = {}, [], {}
     print(f"\n{'h':>3} {'n':>7} {'AUC':>6} {'acc':>6} {'base':>6} {'calib@.6':>14}  verdict")
     for h in HORIZONS:
         y = beat_labels(O, C, h)
@@ -189,6 +190,7 @@ def main():
         Xs, ys = X[:-1], y[1:]
         m = ys >= 0
         Xv, yv = Xs[m], ys[m]
+        receipt_heads[str(h)] = (Xv, yv, T[:-1][m])
         if len(yv) < 300 or len(np.unique(yv)) < 2:
             print(f"{h:>3} {len(yv):>7}  (insufficient)"); continue
         # TEMPORAL split (no shuffle — train past, test unseen future)
@@ -214,7 +216,9 @@ def main():
     print(f"\n{len(passed)}/{len(HORIZONS)} horizons cleared the noise gates: {passed}")
     if save and models:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-        joblib.dump({"models": models, "features": FEATURE_NAMES, "horizons": passed}, OUT_PATH)
+        receipt = multihead_training_identity(receipt_heads)
+        joblib.dump({"models": models, "features": FEATURE_NAMES, "horizons": passed,
+                     "training_source_identity": receipt}, OUT_PATH)
         write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH} ({len(passed)} horizons). Wire P(beat) into the Polymarket card next.")
     elif save:

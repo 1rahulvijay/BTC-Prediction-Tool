@@ -91,9 +91,10 @@ information or guarantee income.
 
 ## Remaining limitations
 
-- Non-matrix specialist trainers still need trainer-owned source manifests. The shared
-  orchestrator cannot truthfully infer a DuckDB query snapshot or dependency artifact after the
-  fact. This remains a provenance blocker for promoting those heads solely from generic metadata.
+- **Resolved 2026-08-11:** non-matrix specialist trainers now emit trainer-owned executed-data
+  receipts. File-backed heads attest exact source bytes; dynamic heads attest aligned in-memory
+  feature/label rows; champion-meta attests its exact joined frame. Strict serving refuses a new
+  head that cannot provide that receipt. See `PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md`.
 - Depth20 queue/cancel/spoof fields are snapshot estimates, not sequenced L2 event truth. They are
   not active ensemble features and must remain research-only until an event-level recorder and
   reconciliation tests exist.

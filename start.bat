@@ -427,6 +427,14 @@ python backend\quantile_safety.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python backend\test_training_window_namespace.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+python backend\test_specialist_source_provenance.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_feature_contract_optional.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\wait_for_forward_evidence.py --selftest >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+python backend\test_production_launcher_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
 python backend\test_terminal_outcome_relogging.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 python backend\test_market_stream_ordering.py >nul 2>&1

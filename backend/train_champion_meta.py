@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 import duckdb
+from artifact_identity import dataframe_training_identity
 import joblib
 import numpy as np
 import pandas as pd
@@ -225,6 +226,10 @@ def main():
         # artifact hashes and the champion policy hash at write time.
         "release_pooling": "UNMITIGATED_NO_IDENTITY_COLUMNS",
         "release_scoped": False,
+        "training_source_identity": dataframe_training_identity(
+            df,
+            columns=["round_id", "ts", *NUMERIC, *CATEGORICAL, "actual_direction"],
+        ),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     joblib.dump(bundle, OUT)

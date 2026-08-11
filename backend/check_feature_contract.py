@@ -48,11 +48,19 @@ MODELS = os.path.join(DATA, "saved_models")
 from model_registry import REGISTRY  # noqa: E402
 
 ARTIFACTS = [entry.filename for entry in REGISTRY]
-SERVING_ARTIFACTS = [
+REQUIRED_SERVING_ARTIFACTS = [
     entry.filename
     for entry in REGISTRY
-    if entry.required_for_serving or entry.may_price or entry.may_rank or entry.may_size
+    if entry.required_for_serving
 ]
+OPTIONAL_SERVING_ARTIFACTS = [
+    entry.filename
+    for entry in REGISTRY
+    if not entry.required_for_serving and (entry.may_price or entry.may_rank or entry.may_size)
+]
+# Backwards-compatible inventory name for reports. Enforcement uses the required/optional
+# distinction above; callers that only need the complete inventory can keep importing this.
+SERVING_ARTIFACTS = [*REQUIRED_SERVING_ARTIFACTS, *OPTIONAL_SERVING_ARTIFACTS]
 
 
 def _manifest(path: str) -> dict | None:
@@ -202,21 +210,31 @@ def enforce_serving() -> int:
     counts: dict[str, int] = {}
     print(f"  {'artifact':<32}{'verdict':<36}detail")
     print("  " + "-" * 80)
-    for name in SERVING_ARTIFACTS:
+    required = set(REQUIRED_SERVING_ARTIFACTS)
+    checked = [*REQUIRED_SERVING_ARTIFACTS, *OPTIONAL_SERVING_ARTIFACTS]
+    blocking = 0
+    for name in checked:
         code, detail = verdict_for(os.path.join(MODELS, name))
-        counts[code or "OK"] = counts.get(code or "OK", 0) + 1
-        print(f"  {name:<32}{(code or 'OK'):<36}{detail[:30]}")
+        if name not in required and code == MODEL_UNAVAILABLE_MISSING:
+            verdict = "OPTIONAL_ABSENT"
+            detail = "noise/data-gated optional head; serving may abstain"
+        else:
+            verdict = code or "OK"
+            blocking += int(code is not None)
+        counts[verdict] = counts.get(verdict, 0) + 1
+        print(f"  {name:<32}{verdict:<36}{detail[:30]}")
 
     total = sum(counts.values())
-    ok = counts.get("OK", 0)
+    ok = counts.get("OK", 0) + counts.get("OPTIONAL_ABSENT", 0)
     print()
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     print()
-    if ok == total:
-        print(f"  PASS - all {total} active serving artifacts prove their identity. Serving may load.")
+    if blocking == 0:
+        print(f"  PASS - all {total} required/present artifacts prove their identity. Serving may load.")
         return 0
     print(f"  BLOCKED - only {ok}/{total} artifacts are serviceable.")
-    print("  Serving must return MODEL_UNAVAILABLE_* and produce NO prediction for the rest.")
+    print("  Required artifacts and optional artifacts that are present must be serviceable.")
+    print("  A noise-gated optional artifact may be absent; its feature must abstain explicitly.")
     print("  Retrain with manifests; this script never retrains or promotes.")
     return 1
 

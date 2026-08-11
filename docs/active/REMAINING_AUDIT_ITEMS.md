@@ -201,13 +201,11 @@ before editing, the way every other entry here was confirmed.
   used for stops and expected range. Gate each quantile against its own unconditional
   baseline; add the horizon purge; guarantee q10 <= q50 <= q90 per served row or
   monotone-project.
-- **R3 — per-head provenance.** `train_heads.py` stamps specialist artifacts with one generic
-  `current_training_identity()` derived from the research matrix, but persistence trains on
-  `persistence_dataset.parquet`, champion_meta on `champion_snapshots` + `price_to_beat`,
-  round_state on its own parquets. A manifest can therefore name a dataset the head never
-  read. Each trainer should emit its own source manifest and `train_heads` validate it. Also
-  make trainer import failure explicit (`TRAINER_IMPORT_FAILED`) rather than `None`, which is
-  currently indistinguishable from a legacy unversioned trainer.
+- **R3 — per-head provenance (resolved 2026-08-11).** `train_heads.py` now requires an
+  executed-source receipt. File-backed heads attest exact source bytes; dynamically assembled
+  archive heads attest aligned in-memory feature/label rows; champion-meta attests its exact
+  joined frame. Source mutation, missing receipts and trainer import/version failures block
+  publication.
 - **R4 — training-window namespace.** Keeper version tags derive from `BTC_HISTORICAL_DAYS` /
   `BTC_BACKFILL_DAYS` rather than `BTC_MODEL_TRAINING_DAYS`. Harmless when all three are 1000,
   but `start_instant.bat` deliberately sets `BTC_HISTORICAL_DAYS=3` with
@@ -274,8 +272,7 @@ Local CI green, 233 checks, tree clean at commit time. Fixed and mutation-tested
 
 ### Still open at `7077bc0`
 
-R1 (signed-quantile CQR validated on its own calibration slice), R2 (magnitude gates q50
-only), R3 (per-head provenance stamped from the research matrix regardless of what the head
-actually read), plus sections 2-4 above. R1-R3 are **unverified by me** — confirm at file:line
-first. Three audit claims did not survive measurement this session and one recommended fix
-made things measurably worse, so verification is not ceremony here.
+R1 (signed-quantile CQR) and R2 (per-quantile magnitude gates) were resolved in the next repair
+batch; R3 (per-head provenance) was resolved on 2026-08-11. Sections 2-4 above remain historical
+handoff context unless a newer validation document explicitly closes them. Three audit claims did
+not survive measurement in this session, so verification is not ceremony here.

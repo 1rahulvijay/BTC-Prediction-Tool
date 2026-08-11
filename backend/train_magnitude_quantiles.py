@@ -28,6 +28,7 @@ from train_beat_classifier import (build_beat_features, FEATURE_NAMES,
 # PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1.
 from verified_io import write_manifest as write_integrity_manifest
 from quantile_safety import monotone_quantiles, purged_train_test_slices
+from artifact_identity import multihead_training_identity
 
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data")
@@ -71,7 +72,7 @@ def main():
     X = build_beat_features(O, H, L, C, T)
     print(f"\nFeature matrix {X.shape}; {len(C)} bars")
 
-    models, passed = {}, []
+    models, passed, receipt_heads = {}, [], {}
     print(f"\n{'h':>3} {'n':>7} {'pinball_q50':>12} {'base_q50':>10}  mono  verdict")
     for h in HORIZONS:
         y = abs_move_pct(O, C, h)
@@ -79,6 +80,7 @@ def main():
         Xs, ys = X[:-1], y[1:]
         m = ys >= 0
         Xv, yv = Xs[m], ys[m]
+        receipt_heads[str(h)] = (Xv, yv, T[:-1][m])
         if len(yv) < 400:
             print(f"{h:>3} {len(yv):>7}  (insufficient)"); continue
         _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)
@@ -123,8 +125,9 @@ def main():
     print(f"\n{len(passed)}/{len(HORIZONS)} horizons beat the flat baseline: {passed}")
     if save and models:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+        receipt = multihead_training_identity(receipt_heads)
         joblib.dump({"models": models, "quantiles": list(QUANTILES), "features": FEATURE_NAMES,
-                     "horizons": passed}, OUT_PATH)
+                     "horizons": passed, "training_source_identity": receipt}, OUT_PATH)
         write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH} — P50/band is now conditional, not flat.")
     elif save:

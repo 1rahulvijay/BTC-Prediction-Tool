@@ -449,6 +449,18 @@ jobs:
       - name: Production preflight policy
         run: python backend/production_readiness.py --selftest
 
+      - name: Specialist source provenance survives strict serving
+        run: python backend/test_specialist_source_provenance.py
+
+      - name: Optional model heads abstain without weakening present-artifact checks
+        run: python backend/test_feature_contract_optional.py
+
+      - name: Forward-evidence startup wait is bounded and fail-closed
+        run: python backend/wait_for_forward_evidence.py --selftest
+
+      - name: Production launcher uses canonical data and safe startup ordering
+        run: python backend/test_production_launcher_contract.py
+
       - name: Production HTTP and WebSocket boundary
         run: python backend/test_production_http_surface.py
 

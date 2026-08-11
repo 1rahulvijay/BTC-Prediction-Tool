@@ -432,6 +432,19 @@ def current_training_identity(
     return identity
 
 
+def _array_hash(value) -> str | None:
+    if value is None:
+        return None
+    import numpy as _np
+
+    arr = _np.ascontiguousarray(_np.asarray(value))
+    digest = hashlib.sha256()
+    digest.update(str(arr.dtype).encode())
+    digest.update(str(arr.shape).encode())
+    digest.update(arr.tobytes())
+    return digest.hexdigest()
+
+
 def executed_training_identity(X, Y, *, valid_mask=None, regime_labels=None,
                                decision_timestamps=None) -> dict[str, Any]:
     """Hash the arrays the model is ACTUALLY about to train on.
@@ -455,37 +468,171 @@ def executed_training_identity(X, Y, *, valid_mask=None, regime_labels=None,
     """
     import numpy as _np
 
-    def _arr_hash(a) -> str | None:
-        if a is None:
-            return None
-        arr = _np.ascontiguousarray(_np.asarray(a))
-        h = hashlib.sha256()
-        h.update(str(arr.dtype).encode())
-        h.update(str(arr.shape).encode())
-        # The BYTES, not a summary. A mean or a min/max collides trivially and would let two
-        # different training sets certify as one.
-        h.update(arr.tobytes())
-        return h.hexdigest()
-
     x = _np.asarray(X)
     per_horizon = {}
     for key in sorted((Y or {}).keys(), key=lambda k: str(k)):
         per_horizon[str(key)] = {
-            "labels_sha256": _arr_hash((Y or {})[key]),
+            "labels_sha256": _array_hash((Y or {})[key]),
             "rows": int(len(_np.asarray((Y or {})[key]))),
-            "valid_mask_sha256": _arr_hash((valid_mask or {}).get(key)),
+            "valid_mask_sha256": _array_hash((valid_mask or {}).get(key)),
         }
     ts = None if decision_timestamps is None else _np.asarray(decision_timestamps)
     return {
-        "executed_feature_matrix_sha256": _arr_hash(x),
+        "executed_feature_matrix_sha256": _array_hash(x),
         "executed_rows": int(x.shape[0]) if x.ndim else 0,
         "executed_shape": list(x.shape),
         "executed_labels": per_horizon,
-        "executed_regime_labels_sha256": _arr_hash(
+        "executed_regime_labels_sha256": _array_hash(
             None if regime_labels is None else _np.asarray(list(regime_labels), dtype=object).astype("U")),
-        "executed_decision_ts_sha256": _arr_hash(ts),
+        "executed_decision_ts_sha256": _array_hash(ts),
         "executed_first_ts_ms": int(ts.min()) if ts is not None and ts.size else None,
         "executed_last_ts_ms": int(ts.max()) if ts is not None and ts.size else None,
+    }
+
+
+def source_file_training_identity(
+    source_files: dict[str, str | os.PathLike[str]],
+) -> dict[str, Any]:
+    """Attest the immutable files a standalone trainer actually read.
+
+    The main ensemble can hash its in-memory X/Y arrays with
+    :func:`executed_training_identity`. Several specialist heads instead read their own
+    Parquet files (persistence and round-state are the important examples). Stamping those
+    artifacts with only the generic research-matrix identity named data they did not train on,
+    while leaving ``executed_identity_recorded=False``. Strict serving then rejected the new
+    artifact even after a successful overnight fit.
+
+    This receipt hashes every source byte and refuses a file that changes while it is being
+    hashed. ``training_dataset_sha256`` is the aggregate digest required by the serving
+    manifest; the legacy matrix fields remain alongside it as the compatibility basis used by
+    existing loaders.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    for label, raw_path in sorted(source_files.items()):
+        path = Path(raw_path).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"training source {label!r} is missing: {path}")
+        before = path.stat()
+        digest = hash_file(path)
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError(f"training source changed while hashing: {path}")
+        entries[str(label)] = {
+            "path": str(path),
+            "sha256": digest,
+            "size": int(after.st_size),
+            "mtime_ns": int(after.st_mtime_ns),
+        }
+    manifest_hash = hash_json(entries)
+    return {
+        "executed_identity_recorded": True,
+        "executed_feature_matrix_sha256": manifest_hash,
+        "executed_rows": None,
+        "executed_shape": None,
+        "executed_labels": {},
+        "executed_source_kind": "immutable_file_set",
+        "executed_source_files": entries,
+        "executed_source_manifest_hash": manifest_hash,
+        "training_dataset_sha256": manifest_hash,
+        "executed_matrix_comparison_basis": (
+            "SPECIALIST_SOURCE_ATTESTATION: exact source-file bytes; "
+            "not compared to the generic research-matrix parquet digest"
+        ),
+        "executed_matches_matrix": None,
+        "executed_rows_match_matrix_rows": None,
+    }
+
+
+def dataframe_training_identity(frame, *, columns: Iterable[str] | None = None) -> dict[str, Any]:
+    """Canonical receipt for a mixed numeric/categorical pandas training frame."""
+    import pandas as _pd
+
+    selected = frame if columns is None else frame.loc[:, [str(c) for c in columns]]
+    schema = [(str(name), str(dtype)) for name, dtype in selected.dtypes.items()]
+    row_hashes = _pd.util.hash_pandas_object(
+        selected, index=False, categorize=True
+    ).to_numpy(dtype="uint64", copy=False)
+    digest = hashlib.sha256()
+    digest.update(hash_json(schema).encode("ascii"))
+    digest.update(str(tuple(selected.shape)).encode("ascii"))
+    digest.update(row_hashes.tobytes())
+    value = digest.hexdigest()
+    return {
+        "executed_identity_recorded": True,
+        "executed_feature_matrix_sha256": value,
+        "executed_rows": int(len(selected)),
+        "executed_shape": [int(v) for v in selected.shape],
+        "executed_labels": {},
+        "executed_source_kind": "canonical_pandas_frame",
+        "executed_source_schema": schema,
+        "executed_source_manifest_hash": value,
+        "training_dataset_sha256": value,
+        "executed_matrix_comparison_basis": (
+            "SPECIALIST_FRAME_ATTESTATION: pandas canonical row hashes; "
+            "not compared to the generic research-matrix parquet digest"
+        ),
+        "executed_matches_matrix": None,
+        "executed_rows_match_matrix_rows": None,
+    }
+
+
+def multihead_training_identity(head_data: dict[Any, tuple[Any, Any, Any | None]]) -> dict[str, Any]:
+    """Attest exact aligned feature/label rows for independently filtered model heads.
+
+    Specialist archive trainers build a different valid-row set for each horizon. Hashing the
+    unshifted common source array is not an executed-data receipt: it includes rows no head
+    evaluated and can omit the feature/label alignment applied before fitting. Each mapping value
+    is ``(X, y, decision_timestamps_or_none)`` after that alignment and validity filtering.
+    """
+    import numpy as _np
+
+    heads: dict[str, dict[str, Any]] = {}
+    first_ts: list[int] = []
+    last_ts: list[int] = []
+    for raw_key in sorted(head_data, key=lambda value: str(value)):
+        x_raw, y_raw, ts_raw = head_data[raw_key]
+        x = _np.asarray(x_raw)
+        y = _np.asarray(y_raw)
+        if len(x) != len(y):
+            raise ValueError(
+                f"head {raw_key!r} feature/label rows differ: {len(x)} != {len(y)}"
+            )
+        ts = None if ts_raw is None else _np.asarray(ts_raw)
+        if ts is not None and len(ts) != len(y):
+            raise ValueError(
+                f"head {raw_key!r} timestamp/label rows differ: {len(ts)} != {len(y)}"
+            )
+        heads[str(raw_key)] = {
+            "features_sha256": _array_hash(x),
+            "labels_sha256": _array_hash(y),
+            "decision_ts_sha256": _array_hash(ts),
+            "rows": int(len(y)),
+            "feature_shape": [int(value) for value in x.shape],
+            "label_shape": [int(value) for value in y.shape],
+        }
+        if ts is not None and ts.size:
+            first_ts.append(int(ts.min()))
+            last_ts.append(int(ts.max()))
+    value = hash_json(heads)
+    return {
+        "executed_identity_recorded": True,
+        "executed_feature_matrix_sha256": value,
+        "executed_rows": int(sum(row["rows"] for row in heads.values())),
+        "executed_shape": None,
+        "executed_labels": {
+            key: {"labels_sha256": row["labels_sha256"], "rows": row["rows"]}
+            for key, row in heads.items()
+        },
+        "executed_source_kind": "aligned_multihead_arrays",
+        "executed_heads": heads,
+        "executed_first_ts_ms": min(first_ts) if first_ts else None,
+        "executed_last_ts_ms": max(last_ts) if last_ts else None,
+        "training_dataset_sha256": value,
+        "executed_matrix_comparison_basis": (
+            "SPECIALIST_MULTIHEAD_ATTESTATION: exact aligned candidate rows per head"
+        ),
+        "executed_matches_matrix": None,
+        "executed_rows_match_matrix_rows": None,
     }
 
 

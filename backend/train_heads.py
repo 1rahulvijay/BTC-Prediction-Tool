@@ -35,6 +35,7 @@ from artifact_identity import (
     current_training_identity,
     hash_file,
     resolve_history_days,
+    source_file_training_identity,
     training_identity_issues,
     write_artifact_manifest,
 )
@@ -54,6 +55,7 @@ os.makedirs(SM, exist_ok=True)
 PY = sys.executable
 DAYS = str(resolve_history_days())
 TRAIN_LEGACY_MISSING = os.environ.get("BTC_TRAIN_LEGACY_HEADS", "0") == "1"
+_SOURCE_RECEIPT_CACHE: dict[tuple, dict] = {}
 
 
 def _requested_days() -> int:
@@ -63,8 +65,41 @@ def _requested_days() -> int:
         return 60
 
 
-def _head_identity(head: dict) -> dict:
+MATRIX_PATH = os.path.join(DATA_DIR, "research_matrix_1m.parquet")
+
+
+def _source_paths(head: dict) -> dict[str, str]:
+    """The files this trainer reads, not the file most other trainers read."""
+    paths = {"research_matrix": MATRIX_PATH}
+    if head["name"] == "persistence":
+        paths["persistence_dataset"] = os.path.join(
+            DATA_DIR, "persistence_dataset.parquet"
+        )
+    elif head["name"] == "round_state":
+        state_dir = os.path.join(DATA_DIR, "research", "round_state")
+        paths.update({
+            "round_state_late_snapshots": os.path.join(
+                state_dir, "late_snapshots.parquet"
+            ),
+            "round_state_transition_drought": os.path.join(
+                state_dir, "transition_drought.parquet"
+            ),
+        })
+    return paths
+
+
+def _head_identity(head: dict, *, executed: dict | None = None) -> dict:
     trainer_path = head["cmd"][1] if len(head.get("cmd") or []) > 1 else __file__
+    if executed is None:
+        paths = _source_paths(head)
+        cache_key = tuple(
+            (label, os.path.abspath(path), os.path.getsize(path), os.stat(path).st_mtime_ns)
+            for label, path in sorted(paths.items())
+        )
+        executed = _SOURCE_RECEIPT_CACHE.get(cache_key)
+        if executed is None:
+            executed = source_file_training_identity(paths)
+            _SOURCE_RECEIPT_CACHE[cache_key] = executed
     return current_training_identity(
         requested_days=_requested_days(),
         code_paths=[
@@ -74,7 +109,40 @@ def _head_identity(head: dict) -> dict:
             os.path.join(ROOT, "backend", "model_contract.py"),
         ],
         full_refit=False,
+        executed=executed,
     )
+
+
+def _source_snapshot(head: dict) -> tuple[tuple[str, str, int | None, int | None], ...]:
+    """Cheap mutation guard for trainer-owned source files.
+
+    Optional trainers are allowed to decline when a source is absent, so this function records
+    absence instead of raising. A successful trainer must still produce a complete source set;
+    :func:`_head_identity` enforces that before the artifact can be stamped.
+    """
+    snapshot = []
+    for label, raw_path in sorted(_source_paths(head).items()):
+        path = os.path.abspath(raw_path)
+        try:
+            stat = os.stat(path)
+            snapshot.append((label, path, int(stat.st_size), int(stat.st_mtime_ns)))
+        except FileNotFoundError:
+            snapshot.append((label, path, None, None))
+    return tuple(snapshot)
+
+
+def _artifact_training_receipt(path: str) -> dict | None:
+    """Return a trainer-owned in-memory X/Y receipt when the source is generated dynamically."""
+    try:
+        value = _verified_load(path)
+    except Exception:
+        return None
+    receipt = value.get("training_source_identity") if isinstance(value, dict) else None
+    if not isinstance(receipt, dict) or receipt.get("executed_identity_recorded") is not True:
+        return None
+    if not receipt.get("training_dataset_sha256"):
+        return None
+    return receipt
 
 
 def _git_commit() -> str:
@@ -112,9 +180,13 @@ def _training_cutoff(identity: dict) -> str:
 def _identity_status(head: dict) -> tuple[bool, list[str]]:
     if not os.path.exists(head["out"]):
         return False, ["artifact is missing"]
-    return artifact_compatibility(
-        head["out"], _head_identity(head), strict=True
-    )
+    try:
+        expected = _head_identity(head)
+    except Exception as exc:
+        return False, [
+            f"current training source is unavailable: {type(exc).__name__}: {exc}"
+        ]
+    return artifact_compatibility(head["out"], expected, strict=True)
 
 
 def _identity_changes(before: dict, after: dict) -> list[str]:
@@ -254,13 +326,16 @@ def main():
          "cmd": [PY, os.path.join("backend", "train_activity_keeper.py")]},
         # legacy heads — retrain only if MISSING (no version tag)
         {"name": "champion_meta", "out": os.path.join(SM, "champion_meta_model.pkl"), "ver": champ_ver,
-         "cmd": [PY, os.path.join("backend", "train_champion_meta.py")]},
+         "cmd": [PY, os.path.join("backend", "train_champion_meta.py")], "receipt": True},
         {"name": "beat", "out": os.path.join(SM, "beat_model.pkl"), "ver": None,
-         "cmd": [PY, os.path.join("backend", "train_beat_classifier.py"), "--days", DAYS]},
+         "cmd": [PY, os.path.join("backend", "train_beat_classifier.py"), "--days", DAYS],
+         "receipt": True},
         {"name": "magnitude", "out": os.path.join(SM, "magnitude_model.pkl"), "ver": None,
-         "cmd": [PY, os.path.join("backend", "train_magnitude_quantiles.py"), "--days", DAYS]},
+         "cmd": [PY, os.path.join("backend", "train_magnitude_quantiles.py"), "--days", DAYS],
+         "receipt": True},
         {"name": "path", "out": os.path.join(SM, "path_model.pkl"), "ver": None,
-         "cmd": [PY, os.path.join("backend", "build_path_labels.py"), "--days", DAYS]},
+         "cmd": [PY, os.path.join("backend", "build_path_labels.py"), "--days", DAYS],
+         "receipt": True},
         {"name": "fingerprints", "out": os.path.join(DATA_DIR, "fingerprint_evidence.parquet"), "ver": None,
          "cmd": [PY, os.path.join("backend", "build_fingerprints_historical.py"), "--days", DAYS]},
     ]
@@ -298,7 +373,13 @@ def main():
         if args.dry_run:
             continue
         before_mtime = os.path.getmtime(h["out"]) if os.path.exists(h["out"]) else None
-        training_identity = _head_identity(h)
+        # Dynamic archive trainers construct X/Y inside the subprocess, so their exact receipt
+        # exists only after those arrays are built. File-backed trainers are also stamped only
+        # after a successful fit: doing it here would make an optional missing source raise before
+        # the trainer can cleanly exercise its own insufficient-data gate.
+        before_identity = current_training_identity(requested_days=_requested_days())
+        source_before = None if h.get("receipt") else _source_snapshot(h)
+        training_identity = None
         optional = h["name"] in OPTIONAL_HEADS
         try:
             result = subprocess.run(h["cmd"], cwd=ROOT, check=False, env=os.environ.copy())
@@ -315,8 +396,36 @@ def main():
             elif args.force and before_mtime is not None and after_mtime <= before_mtime:
                 failures.append((h["name"], "forced run did not refresh output"))
             else:
+                if h.get("receipt"):
+                    receipt = _artifact_training_receipt(h["out"])
+                    if receipt is None:
+                        failures.append((
+                            h["name"],
+                            "trainer did not emit an exact training_source_identity receipt",
+                        ))
+                        print(
+                            f"[heads] FAIL  {h['name']:16} "
+                            "(missing trainer-owned source receipt; artifact not stamped)"
+                        )
+                        continue
+                    training_identity = _head_identity(h, executed=receipt)
+                else:
+                    source_after = _source_snapshot(h)
+                    if source_after != source_before:
+                        failures.append((
+                            h["name"],
+                            "trainer-owned source files changed during fit",
+                        ))
+                        print(
+                            f"[heads] FAIL  {h['name']:16} "
+                            "(trainer-owned source changed during fit; artifact not stamped)"
+                        )
+                        continue
+                    training_identity = _head_identity(h)
+                assert training_identity is not None
                 identity_changes = _identity_changes(
-                    training_identity, _head_identity(h)
+                    before_identity,
+                    current_training_identity(requested_days=_requested_days()),
                 )
                 if identity_changes:
                     failures.append((
@@ -348,7 +457,7 @@ def main():
                         ),
                         "training_cutoff": _training_cutoff(training_identity),
                         "training_dataset_sha256": training_identity.get(
-                            "training_data_hash"
+                            "training_dataset_sha256"
                         ),
                         "code_commit": _git_commit(),
                         "code_dirty": _git_dirty(),

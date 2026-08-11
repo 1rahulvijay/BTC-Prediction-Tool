@@ -22,6 +22,7 @@ import numpy as np
 
 from backfill_trade_features import download_day, load_aggtrades
 from train_beat_classifier import ticks_to_ohlc, build_beat_features, FEATURE_NAMES, resolve_dates
+from artifact_identity import multihead_training_identity
 
 # Manifest written with the artifact; see backend/test_trainers_write_manifests.py for
 # why an unmanifested artifact blocks the P(hold) calibrator.
@@ -127,8 +128,17 @@ def main():
     print(f"\n{len(passed)}/{len(HORIZONS)} horizons cleared the gate: {passed}")
     if save and models:
         os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
+        receipt_heads = {
+            str(h): (
+                np.concatenate(agg[h][0]),
+                np.concatenate(agg[h][1]),
+                None,
+            )
+            for h in HORIZONS if agg[h][0] and agg[h][1]
+        }
+        receipt = multihead_training_identity(receipt_heads)
         joblib.dump({"models": models, "classes": CLASSES, "features": FEATURE_NAMES,
-                     "horizons": passed}, OUT_PATH)
+                     "horizons": passed, "training_source_identity": receipt}, OUT_PATH)
         write_integrity_manifest(OUT_PATH)
         print(f"Saved {OUT_PATH}")
     elif save:

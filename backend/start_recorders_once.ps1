@@ -2,7 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $root "data"
-$python = (Get-Command python.exe -ErrorAction Stop).Source
+$pythonCommand = if ($env:BTC_PYTHON_EXE) { $env:BTC_PYTHON_EXE } else { "python.exe" }
+if (Test-Path -LiteralPath $pythonCommand) {
+    $python = (Resolve-Path -LiteralPath $pythonCommand -ErrorAction Stop).Path
+} else {
+    $python = (Get-Command $pythonCommand -ErrorAction Stop).Source
+}
 $null = New-Item -ItemType Directory -Path $data -Force
 $env:PYTHONPATH = "$root\backend;$root\backend\polymarket;$root"
 $env:BTC_DATA_DIR = $data

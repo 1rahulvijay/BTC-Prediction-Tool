@@ -2,6 +2,10 @@
 
 ## Production
 
+- **[PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md](active/PRODUCTION_AND_RETRAIN_READINESS_2026-08-11.md)** -
+  strict specialist provenance, optional-head abstention, canonical production datastore,
+  recorder startup ordering, validation results, the 1,000-day runbook, and remaining
+  operational gates.
 - **[PAPER_COMPETITION_500_V2_2026-08-09.md](active/PAPER_COMPETITION_500_V2_2026-08-09.md)** -
   equal-capital Polymarket Champion versus Binance model-consensus paper experiment; isolated
   ledgers, exact risk/accounting contract, realized-after-cost ranking, UI/API semantics and

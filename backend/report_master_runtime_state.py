@@ -68,12 +68,24 @@ def collect() -> dict:
 
     # --- artifacts -----------------------------------------------------------------
     try:
-        from check_feature_contract import MODELS, SERVING_ARTIFACTS, verdict_for
+        from check_feature_contract import (
+            MODELS,
+            OPTIONAL_SERVING_ARTIFACTS,
+            SERVING_ARTIFACTS,
+            MODEL_UNAVAILABLE_MISSING,
+            verdict_for,
+        )
         rows, counts = [], {}
+        blocking = 0
         for name in SERVING_ARTIFACTS:
             code, detail = verdict_for(os.path.join(MODELS, name))
-            counts[code or "SERVICEABLE"] = counts.get(code or "SERVICEABLE", 0) + 1
-            rows.append({"artifact": name, "verdict": code or "SERVICEABLE",
+            if name in OPTIONAL_SERVING_ARTIFACTS and code == MODEL_UNAVAILABLE_MISSING:
+                verdict = "OPTIONAL_ABSENT"
+            else:
+                verdict = code or "SERVICEABLE"
+                blocking += int(code is not None)
+            counts[verdict] = counts.get(verdict, 0) + 1
+            rows.append({"artifact": name, "verdict": verdict,
                          "detail": detail})
         st["artifacts"] = {
             "total": len(SERVING_ARTIFACTS),
@@ -81,7 +93,7 @@ def collect() -> dict:
             "by_verdict": counts,
             "detail": rows,
         }
-        st["serving_status"] = ("MODELS_READY" if counts.get("SERVICEABLE", 0) == len(SERVING_ARTIFACTS)
+        st["serving_status"] = ("MODELS_READY" if blocking == 0
                                 else "DEGRADED_MODEL_BLOCKED")
     except Exception as exc:
         st["artifacts"] = {"error": f"{type(exc).__name__}: {exc}"}
