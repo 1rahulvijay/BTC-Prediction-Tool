@@ -276,3 +276,69 @@ R1 (signed-quantile CQR) and R2 (per-quantile magnitude gates) were resolved in 
 batch; R3 (per-head provenance) was resolved on 2026-08-11. Sections 2-4 above remain historical
 handoff context unless a newer validation document explicitly closes them. Three audit claims did
 not survive measurement in this session, so verification is not ceremony here.
+
+---
+
+## CORRECTION — I documented DuckDB's REPLACE semantics wrongly (measured 2026-08-10)
+
+My commit messages for `price_to_beat` and `forward_ev_ledger`, and the docstrings in
+`test_resolved_round_is_immutable.py` / `test_terminal_outcomes_not_replaceable.py`, state that
+`INSERT OR REPLACE` reverted every OMITTED column to its default — `actual_price -> NULL`,
+`actual_direction -> NULL`, `hit -> NULL`, `move -> NULL`, `settlement_source -> NULL`.
+
+That is false on DuckDB 1.4.4. Measured:
+
+    CREATE TABLE t(id VARCHAR PRIMARY KEY, pred VARCHAR, actual DOUBLE, resolved BOOLEAN)
+    INSERT INTO t VALUES ('r1','UP',100.5,TRUE)
+
+    INSERT OR REPLACE INTO t (id, pred, resolved) VALUES ('r1','DOWN',FALSE)
+      -> ('r1','DOWN',100.5,False)     actual SURVIVED; only NAMED columns were written
+
+    INSERT OR REPLACE INTO t VALUES ('r2','DOWN',NULL,FALSE)     -- no column list
+      -> ('r2','DOWN',None,False)      actual WIPED
+
+With a column list, unnamed columns survive; without one, the whole row is rewritten. SQLite
+wipes either way, which is probably where the wrong belief came from.
+
+**What this changes:** the FIX stands and was necessary — `resolved` was a NAMED column
+hard-coded to FALSE, and flipping it TRUE->FALSE corrupts every resolver and health query that
+filters on it. `test_resolved_round_is_immutable.py` asserts all six fields including
+`resolved`, so it catches the real defect. Only the stated blast radius was overstated.
+
+**What this enables — run before the retrain:**
+
+    SELECT count(*) FROM price_to_beat
+     WHERE resolved = FALSE AND actual_price IS NOT NULL;
+
+Any such row is a settled outcome wearing an unresolved flag: real damage, silently excluded
+from training labels. Zero means the bug never fired in production. This is checkable now and
+was not while the wrong signature was documented.
+
+**Also note:** `test_terminal_outcomes_not_replaceable.py` keys on a statement naming a
+terminal column AND hard-coding FALSE/NULL. Given the above, that catches the bounded
+column-list form. A REPLACE with NO column list rewrites everything and may not match its
+regex — verify that case is covered.
+
+## Core-app scan surface (computed 2026-08-10)
+
+A deep scan should target what the server actually imports, not `backend/` at large:
+**65 modules, 45,926 lines** reachable transitively from `server.py`. Five files are ~43% of it:
+
+    6480  server.py          decision authority, lifespan, endpoints
+    4066  database.py        persistence, every terminal-outcome writer
+    3959  model.py           ensemble, import-time GPU probes
+    3345  price_to_beat.py   round lifecycle, freeze mode, head identity
+    1773  features.py        feature construction
+
+For contrast: `backend/` holds 570 python files, 148 tests and 123 trainers. Scanning all of
+it is how the previous audits produced findings that did not survive measurement.
+
+## Not yet recorded anywhere else
+
+- **Repo reorganisation is wanted**: move `backend/test_*.py` (101 files at top level) under a
+  tests folder, trainers under research. BLOCKED while another session holds ~40 uncommitted
+  files including `invariants.yml`. Coupling to update in ONE commit: 294 path-pinned lines in
+  `invariants.yml` (both blocks), 66 in `start.bat`, 58 tests doing
+  `sys.path.insert(0, BACKEND)`, and `tests/test_repository_layout.py` which pins the old shape.
+- The handoff loop above says `python backend/run_ci_locally.py`; the parallel session moved it
+  to `backend/tests/run_ci_locally.py`.
