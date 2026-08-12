@@ -26,6 +26,7 @@ set "BTC_REQUIRE_COMPLETE_TRADE=1"
 set "BTC_REQUIRE_POLYMARKET_FEED=1"
 set "BTC_REQUIRE_PROTOCOL_HEALTH=1"
 if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=3"
+if not defined BTC_SERVING_WARMUP_DAYS set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
 REM The 3-day value above is only the live candle warm-up. Artifact identity must remain the
 REM actual trained window or strict serving will reject a valid 1000-day bundle as a 3-day mismatch.
 if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=1000"

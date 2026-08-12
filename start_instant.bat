@@ -25,6 +25,7 @@ REM     a few hours of trailing bars, so loading 3 days (instead of 100-150) is 
 REM     near-instant. A tiny one-time kline fetch (~a few seconds) is still needed to have live
 REM     data to serve - that is unavoidable for a live feed, but it is small, not the big backfill.
 set "BTC_HISTORICAL_DAYS=3"
+set "BTC_SERVING_WARMUP_DAYS=3"
 REM --- Artifact identity remains the full training window. BTC_HISTORICAL_DAYS above controls
 REM     only the small live candle warm-up in this launcher; using 3 for BOTH values made the
 REM     strict preflight reject a valid 1000-day model as a window mismatch.

@@ -1,6 +1,13 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 set "PROJECT_ROOT=%~dp0"
 cd /d "%PROJECT_ROOT%"
+REM Keep preflight, trainers, recorders and Uvicorn on one interpreter. If a project virtual
+REM environment exists it wins; otherwise the operator's PATH Python remains the explicit
+REM fallback. start_recorders_once.ps1 consumes the same BTC_PYTHON_EXE value.
+if not defined BTC_PYTHON_EXE if exist "%PROJECT_ROOT%.venv\Scripts\python.exe" set "BTC_PYTHON_EXE=%PROJECT_ROOT%.venv\Scripts\python.exe"
+if not defined BTC_PYTHON_EXE set "BTC_PYTHON_EXE=python.exe"
+if exist "%BTC_PYTHON_EXE%" for %%I in ("%BTC_PYTHON_EXE%") do set "PATH=%%~dpI;%PATH%"
 set "PYTHONPATH=%PROJECT_ROOT%backend;%PROJECT_ROOT%"
 REM All app-generated files (DuckDB, signal_history.pkl, saved_models, cache) live under
 REM this project's data\ folder. IMPORTANT: keep OneDrive sync OFF for the Documents folder
@@ -56,6 +63,9 @@ REM can rebuild from local coverage; files are cached and reused by all builders
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
 if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1000"
+REM A retrain builds its in-memory sequences from the full requested window. Frozen launchers
+REM override this to a small serving-only warm-up; start.bat must never inherit that override.
+set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
 REM Keep model provenance separate from the small candle window used by instant/production boot.
 if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
@@ -68,6 +78,13 @@ set "BTC_RETRAIN_COMPLETION_MARKER=%BTC_DATA_DIR%\saved_models\full_retrain_%BTC
 if "%BTC_FORCE_FULL_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
 REM Backward-compatible alias retained for older operator notes/scripts.
 if "%BTC_FORCE_360_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
+if exist "%BTC_RETRAIN_COMPLETION_MARKER%" (
+    python backend\validate_retrain_marker.py --marker "%BTC_RETRAIN_COMPLETION_MARKER%" --days %BTC_HISTORICAL_DAYS%
+    if errorlevel 1 (
+        echo [mode] Stale or incomplete retrain marker removed. A complete retrain is required.
+        del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
+    )
+)
 if exist "%BTC_RETRAIN_COMPLETION_MARKER%" (
     set "BTC_FORCE_HEAD_RETRAIN=0"
     set "BTC_FORCE_MAIN_RETRAIN=0"
@@ -237,21 +254,6 @@ if "%BTC_VALIDATE_STARTUP%"=="1" (
     echo [validate] full_refit_after_gate=%BTC_FULL_REFIT_AFTER_GATE% min_calls=%BTC_PROMOTION_MIN_DIRECTIONAL_CALLS% min_precision=%BTC_PROMOTION_MIN_DIRECTIONAL_PRECISION% max_ece=%BTC_PROMOTION_MAX_ECE%
     echo [validate] marker=%BTC_RETRAIN_COMPLETION_MARKER%
     exit /b 0
-)
-
-REM Stop an existing app BEFORE any multi-day data/model work. The old guard exited here,
-REM making the later port-8000 killer unreachable. start.bat is an explicit relaunch command;
-REM browser refreshes never invoke it. Set BTC_AUTO_STOP_EXISTING_APP=0 to warn and abort instead.
-if not defined BTC_AUTO_STOP_EXISTING_APP set "BTC_AUTO_STOP_EXISTING_APP=1"
-powershell -NoProfile -Command "$p = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if (-not $p) { exit 0 }; $p | ForEach-Object { Write-Host ('[preflight] port {0} is held by PID {1}' -f $_.LocalPort,$_.OwningProcess) }; if ('%BTC_AUTO_STOP_EXISTING_APP%' -ne '1') { exit 2 }; $p.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500; $left = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if ($left) { exit 3 }"
-if errorlevel 3 (
-    echo [preflight] ERROR: existing frontend/backend could not be stopped.
-    exit /b 1
-)
-if errorlevel 2 (
-    echo [preflight] ERROR: frontend/backend already active and auto-stop is disabled.
-    echo             Close them manually or set BTC_AUTO_STOP_EXISTING_APP=1.
-    exit /b 1
 )
 
 REM Long-window disk guard. The 1000d rebuild still needs working space for the temporary pruned
@@ -429,6 +431,33 @@ python backend\quantile_safety.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_training_window_namespace.py"
 python backend\tests\test_training_window_namespace.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_retrain_marker_contract.py"
+python backend\tests\test_retrain_marker_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_serving_warmup_namespace.py"
+python backend\tests\test_serving_warmup_namespace.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_startup_model_side_effects.py"
+python backend\tests\test_startup_model_side_effects.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_artifact_readiness_required.py"
+python backend\tests\test_artifact_readiness_required.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_websocket_broadcast_contract.py"
+python backend\tests\test_websocket_broadcast_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_database_async_retry_contract.py"
+python backend\tests\test_database_async_retry_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_database_health_contract.py"
+python backend\tests\test_database_health_contract.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_array_hash_streaming.py"
+python backend\tests\test_array_hash_streaming.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_release_cycle_atomicity.py"
+python backend\tests\test_release_cycle_atomicity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_specialist_source_provenance.py"
 python backend\tests\test_specialist_source_provenance.py >nul 2>&1
@@ -642,6 +671,22 @@ exit /b 1
 
 :selftests_done
 
+REM Validation is complete. Only now stop an existing app, immediately before the first
+REM recorder/data/model side effect. A failed preflight/selftest no longer creates downtime.
+REM Browser refreshes never invoke this launcher. Set BTC_AUTO_STOP_EXISTING_APP=0 to abort
+REM instead of replacing an existing frontend/backend.
+if not defined BTC_AUTO_STOP_EXISTING_APP set "BTC_AUTO_STOP_EXISTING_APP=1"
+powershell -NoProfile -Command "$p = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if (-not $p) { exit 0 }; $p | ForEach-Object { Write-Host ('[launch] port {0} is held by PID {1}' -f $_.LocalPort,$_.OwningProcess) }; if ('%BTC_AUTO_STOP_EXISTING_APP%' -ne '1') { exit 2 }; $p.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500; $left = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if ($left) { exit 3 }"
+if errorlevel 3 (
+    echo [launch] ERROR: existing frontend/backend could not be stopped.
+    exit /b 1
+)
+if errorlevel 2 (
+    echo [launch] ERROR: frontend/backend already active and auto-stop is disabled.
+    echo          Close them manually or set BTC_AUTO_STOP_EXISTING_APP=1.
+    exit /b 1
+)
+
 echo Starting BTC Quantum Trader...
 
 REM Start all ten standalone forward collectors once. The PowerShell helper detects existing
@@ -718,7 +763,7 @@ echo [1/3] Checking dependencies...
 python -c "import duckdb" >nul 2>&1
 if %errorlevel% neq 0 (
     echo Installing duckdb...
-    pip install duckdb
+    python -m pip install duckdb
 )
 
 echo [2/3] Starting Frontend Server (Vite)...

@@ -64,7 +64,13 @@ import round_state_panel
 from trade_forecast import live_forecaster as complete_trade_forecaster
 import model_metrics_logger        # separate DuckDB; logs every model's live output (crash-safe)
 from exchange_verifier import PerVenueVerifier
-from model import MultiModelEnsemble, CascadeMonitor, MODEL_ARCH_VERSION, MODEL_DIR
+from model import (
+    MultiModelEnsemble,
+    CascadeMonitor,
+    MODEL_ARCH_VERSION,
+    MODEL_DIR,
+    SEMANTIC_CODE_PATHS,
+)
 import model_promotion
 from backtester import Backtester
 from prediction_verifier import PredictionVerifier
@@ -134,6 +140,17 @@ from artifact_identity import resolve_history_days_verbose as _resolve_history_d
 
 HISTORICAL_DAYS, HISTORICAL_DAYS_SOURCE = _resolve_history_days_verbose()
 HISTORICAL_DAYS = max(1, HISTORICAL_DAYS)
+# Training provenance and live warm-up answer different questions. Frozen/production launchers
+# intentionally load only a few days of candles while validating a 1000-day artifact. The old
+# shared resolver let BTC_MODEL_TRAINING_DAYS override both, so an "instant" boot fetched all
+# 1000 days. start.bat sets both knobs to the same full span for an actual retrain.
+SERVING_WARMUP_DAYS = max(
+    1,
+    _env_int(
+        "BTC_SERVING_WARMUP_DAYS",
+        _env_int("BTC_HISTORICAL_DAYS", HISTORICAL_DAYS),
+    ),
+)
 #: P0-5: the hard floor of untouched candles below which no backtest is reported.
 BACKTEST_MIN_HELD_OUT = 500
 BACKTEST_MAX_ROWS = max(0, _env_int("BTC_BACKTEST_MAX_ROWS", 12000))
@@ -141,7 +158,7 @@ HISTORICAL_CACHE_VERSION = 1
 HISTORICAL_CACHE_REFRESH_MAX_GAP_SECONDS = max(
     60, _env_int("BTC_HISTORICAL_CACHE_REFRESH_MAX_GAP_SECONDS", 12 * 60 * 60)
 )
-MAX_KLINES = HISTORICAL_DAYS * 24 * 60 + 1500
+MAX_KLINES = SERVING_WARMUP_DAYS * 24 * 60 + 1500
 # All app-generated files live under <project>/data (override with BTC_DATA_DIR).
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(PROJECT_ROOT, "data")
@@ -337,7 +354,7 @@ FULL_REFIT_SHADOW_MANIFEST = os.path.join(DATA_DIR, "saved_models", "full_refit_
 # UI impact. Raising this (e.g. 3-4s) cuts inference CPU proportionally on a constrained box.
 MAIN_LOOP_SEC = max(1.0, float(os.getenv("BTC_MAIN_LOOP_SEC", "2.0")))
 BACKTEST_CACHE_PATH = os.path.join(DATA_DIR, "saved_models", "backtest_cache.json")
-BACKTEST_CACHE_VERSION = 2
+BACKTEST_CACHE_VERSION = 3
 
 
 def _fresh_status() -> dict:
@@ -363,11 +380,15 @@ def _write_retrain_completion_marker(trained_model, deployment_state: str = "act
         return False
     try:
         payload = {
+            "schema_version": 2,
             "completed_at": time.time(),
             "historical_days": HISTORICAL_DAYS,
             "model_arch": MODEL_ARCH_VERSION,
             "horizons": list(trained_model.horizons),
             "model_features": int(trained_model.model_num_features),
+            "feature_schema_hash": str(
+                getattr(trained_model, "model_feature_schema_hash", "") or ""
+            ),
             "train_split_frac": float(trained_model.train_split_frac),
             "model_bundle_id": str(getattr(trained_model, "model_bundle_id", "")),
             "model_dir": str(getattr(trained_model, "model_dir", "")),
@@ -572,10 +593,12 @@ async def lifespan(app: FastAPI):
     cross_asset_client.on("cross_asset_kline", handle_cross_asset_kline)
 
     logger.info("Starting background tasks...")
-    logger.info("Discovering Polymarket Markets...")
-    # Gamma discovery uses requests. Keep that blocking HTTP call off the event
-    # loop so startup WebSocket/price tasks are not delayed by a slow response.
-    await asyncio.to_thread(polymarket_client.discover_markets)
+    async def _polymarket_discover_and_connect():
+        # Discovery is part of the supervised Polymarket worker. A slow Gamma response must
+        # not postpone Binance/Pyth startup or the FastAPI lifespan becoming available.
+        logger.info("Discovering Polymarket Markets...")
+        await asyncio.to_thread(polymarket_client.discover_markets)
+        await polymarket_client.connect_ws()
     # OWNED, NOT DETACHED. These were bare create_task calls with no retained handle: the loop
     # keeps only a WEAK reference, so a task could be garbage-collected mid-flight, an exception
     # inside one was never observed, and shutdown never awaited any of them. A dead feed then
@@ -591,7 +614,7 @@ async def lifespan(app: FastAPI):
         ("coinbase_ws", coinbase_client.connect, TASK_BEST_EFFORT),
         ("binance_futures_ws", futures_ws_client.connect, TASK_CRITICAL),
         ("binance_paper_service", binance_paper_service.run, TASK_IMPORTANT),
-        ("polymarket_ws", polymarket_client.connect_ws, TASK_IMPORTANT),
+        ("polymarket_ws", _polymarket_discover_and_connect, TASK_IMPORTANT),
         ("cross_asset_ws", cross_asset_client.connect, TASK_BEST_EFFORT),
     ):
         SUPERVISOR.spawn(_name, _factory, criticality=_crit)
@@ -684,6 +707,18 @@ async def add_security_headers(request: Request, call_next):
 
 # Connected Frontend Clients
 clients: list[WebSocket] = []
+_broadcast_lock = None
+_broadcast_lock_loop = None
+
+
+def _get_broadcast_lock() -> asyncio.Lock:
+    """One send stream per event loop; concurrent producers may not write one WS at once."""
+    global _broadcast_lock, _broadcast_lock_loop
+    loop = asyncio.get_running_loop()
+    if _broadcast_lock is None or _broadcast_lock_loop is not loop:
+        _broadcast_lock = asyncio.Lock()
+        _broadcast_lock_loop = loop
+    return _broadcast_lock
 
 # Global State
 rest_client = BinanceRESTClient()
@@ -900,6 +935,24 @@ ab_runner = ABTestRunner(
     primary=ModelVariant("baseline_v9", model),
     challenger=ModelVariant("challenger_cat_v1", challenger_model),
 )
+SERVING_RELEASE_GENERATION = 0
+
+
+def _mark_serving_release_change(reason: str) -> int:
+    """Advance the release epoch and clear only per-cycle A/B scratch state."""
+    global SERVING_RELEASE_GENERATION
+    SERVING_RELEASE_GENERATION += 1
+    ab_runner.last_by_horizon.clear()
+    ab_runner.challenger_cascade.clear()
+    ab_runner._last_cascade_obj = False
+    logger.info(
+        "[MODEL RELEASE] generation=%s reason=%s primary=%s challenger=%s",
+        SERVING_RELEASE_GENERATION,
+        reason,
+        getattr(ab_runner.primary, "model_bundle_id", None),
+        getattr(ab_runner.challenger, "model_bundle_id", None),
+    )
+    return SERVING_RELEASE_GENERATION
 
 
 def restore_full_refit_shadow() -> bool:
@@ -930,6 +983,7 @@ def restore_full_refit_shadow() -> bool:
         )
         ab_runner.enabled = True
         restored = ab_runner.restore_from_db()
+        _mark_serving_release_change("restore-full-refit-shadow")
         logger.info(
             "[PROMOTION] Restored full-refit live shadow %s (%s resolved outcomes).",
             shadow.model_bundle_id,
@@ -1105,29 +1159,32 @@ async def pyth_price_poller():
 
     last_error_log = 0.0
     last_stale_log = 0.0
-    while True:
-        try:
-            # wait_for guards the await itself: even if the worker thread wedged, the poller
-            # keeps cycling and logging instead of parking forever on a dead future.
-            price = await asyncio.wait_for(
-                loop.run_in_executor(_PYTH_FETCH_POOL, _fetch), timeout=15.0)
-            if price and price > 0:
-                data_state["pyth_price"] = price
-                data_state["pyth_price_ts"] = time.time()
-                data_state["feed_timestamps_ms"]["pyth_price"] = int(time.time() * 1000)
-        except Exception as exc:
+    try:
+        while True:
+            try:
+                # wait_for guards the await itself: even if the worker thread wedged, the poller
+                # keeps cycling and logging instead of parking forever on a dead future.
+                price = await asyncio.wait_for(
+                    loop.run_in_executor(_PYTH_FETCH_POOL, _fetch), timeout=15.0)
+                if price and price > 0:
+                    data_state["pyth_price"] = price
+                    data_state["pyth_price_ts"] = time.time()
+                    data_state["feed_timestamps_ms"]["pyth_price"] = int(time.time() * 1000)
+            except Exception as exc:
+                now = time.time()
+                if now - last_error_log >= 30.0:
+                    logger.warning("Pyth price poll failed; retrying: %s", exc)
+                    last_error_log = now
+            # loud staleness watchdog: if the anchor is >60s old, say so every 60s -- a silent
+            # freeze must never be silent again.
             now = time.time()
-            if now - last_error_log >= 30.0:
-                logger.warning("Pyth price poll failed; retrying: %s", exc)
-                last_error_log = now
-        # loud staleness watchdog: if the anchor is >60s old, say so every 60s -- a silent
-        # freeze must never be silent again.
-        now = time.time()
-        age = now - float(data_state.get("pyth_price_ts") or 0)
-        if age > 60.0 and now - last_stale_log >= 60.0:
-            logger.error("Pyth anchor STALE for %.0fs (poller alive, feed not updating)", age)
-            last_stale_log = now
-        await asyncio.sleep(0.75)   # fresher anchor for the price-to-beat panel (was 1.5s)
+            age = now - float(data_state.get("pyth_price_ts") or 0)
+            if age > 60.0 and now - last_stale_log >= 60.0:
+                logger.error("Pyth anchor STALE for %.0fs (poller alive, feed not updating)", age)
+                last_stale_log = now
+            await asyncio.sleep(0.75)   # fresher anchor for the price-to-beat panel (was 1.5s)
+    finally:
+        session.close()
 
 
 async def price_to_beat_ticker():
@@ -1276,18 +1333,19 @@ async def broadcast(message: dict):
         msg_str = json.dumps(message, default=_json_serialize, allow_nan=False)
     except (ValueError, TypeError):
         msg_str = json.dumps(_sanitize_nonfinite(message), default=_json_serialize, allow_nan=False)
-    disconnected = []
-    # Iterate a snapshot: main_loop and fast_price_broadcaster both call broadcast(),
-    # so the live `clients` list can be mutated mid-iteration by the other coroutine.
-    for ws in list(clients):
-        try:
-            await ws.send_text(msg_str)
-        except Exception:
-            disconnected.append(ws)
-
-    for ws in disconnected:
-        if ws in clients:
-            clients.remove(ws)
+    # Several producers publish concurrently. Starlette does not promise that concurrent
+    # send_text calls on the same socket are safe, and the former serial loop let one stalled
+    # browser delay every other client indefinitely. Serialize messages globally, but fan a
+    # message out concurrently with a finite per-client deadline.
+    async with _get_broadcast_lock():
+        snapshot = list(clients)
+        results = await asyncio.gather(
+            *(asyncio.wait_for(ws.send_text(msg_str), timeout=2.0) for ws in snapshot),
+            return_exceptions=True,
+        )
+        for ws, result in zip(snapshot, results):
+            if isinstance(result, BaseException) and ws in clients:
+                clients.remove(ws)
 
 
 def _json_serialize(obj):
@@ -1634,6 +1692,10 @@ def _save_backtest_cache(results: dict) -> None:
                     # a retrain's startup path loaded the PREVIOUS model's backtest and
                     # skipped running a fresh one — the UI showed stale stats as current.
                     "model_arch": MODEL_ARCH_VERSION,
+                    "model_bundle_id": str(getattr(model, "model_bundle_id", "") or ""),
+                    "feature_schema_hash": str(
+                        getattr(model, "model_feature_schema_hash", "") or ""
+                    ),
                     "results": results,
                 },
                 f,
@@ -1657,6 +1719,17 @@ def _load_backtest_cache() -> bool:
             logger.info("[BACKTEST] Cache is for a different model arch (%s) — discarding; "
                         "a fresh backtest will run for the current model.",
                         payload.get("model_arch"))
+            return False
+        current_bundle = str(getattr(model, "model_bundle_id", "") or "")
+        current_schema = str(getattr(model, "model_feature_schema_hash", "") or "")
+        if not current_bundle or payload.get("model_bundle_id") != current_bundle:
+            logger.info(
+                "[BACKTEST] Cache belongs to bundle %s, current bundle is %s; discarding.",
+                payload.get("model_bundle_id"), current_bundle or "UNAVAILABLE",
+            )
+            return False
+        if payload.get("feature_schema_hash") != current_schema:
+            logger.info("[BACKTEST] Cache feature schema differs from current bundle; discarding.")
             return False
         backend_state["last_backtest"] = payload.get("results")
         backend_state["last_backtest_time"] = payload.get("saved_at", time.time())
@@ -2518,9 +2591,35 @@ async def train_model(target_model=None, promotion_pipeline: bool = False, incum
                     # The writer takes an IDENTITY dict, not a day count - the same shape the
                     # ensemble bundle uses, so this artifact reads through the identical
                     # provenance path check_feature_contract consults.
-                    from artifact_identity import (current_training_identity,
-                                                   write_artifact_manifest as _write_manifest)
-                    _identity = current_training_identity(requested_days=HISTORICAL_DAYS)
+                    from artifact_identity import (
+                        current_training_identity,
+                        executed_training_identity,
+                        write_artifact_manifest as _write_manifest,
+                    )
+                    _settlement_executed = executed_training_identity(
+                        # X was already byte-hashed by target_model.train(). Re-hashing a
+                        # 1000-day memmap here materializes another multi-GB byte string for
+                        # no new information. Hash only this head's distinct labels/timestamps,
+                        # then bind the exact feature-array receipt recorded by the ensemble.
+                        np.empty((0, 0), dtype=np.float32),
+                        Ysettle[_SETTLEMENT_CONTRACT],
+                        decision_timestamps=_settlement_ts,
+                    )
+                    _ensemble_identity = getattr(target_model, "training_identity", {}) or {}
+                    for _key in (
+                        "executed_feature_matrix_sha256",
+                        "executed_rows",
+                        "executed_shape",
+                    ):
+                        if _ensemble_identity.get(_key) is not None:
+                            _settlement_executed[_key] = _ensemble_identity[_key]
+                    _identity = current_training_identity(
+                        requested_days=HISTORICAL_DAYS,
+                        feature_names=target_model.model_feature_names,
+                        code_paths=SEMANTIC_CODE_PATHS(),
+                        full_refit=bool(getattr(target_model, "full_refit", False)),
+                        executed=_settlement_executed,
+                    )
                     _write_manifest(_settle_path, _identity,
                                     artifact_type="settlement_head")
                 except Exception as _mf:
@@ -3351,6 +3450,7 @@ async def relearn_models_background(reason: str = "manual"):
             )
             ab_runner.enabled = True
             ab_runner.reset_comparisons()
+            _mark_serving_release_change("install-full-refit-shadow")
             _write_retrain_completion_marker(
                 shadow_model,
                 deployment_state="shadow",
@@ -3427,6 +3527,7 @@ async def relearn_models_background(reason: str = "manual"):
         # incumbent's derived adaptive maps on the very next cycle.
         _reset_adaptive_state_for_release("retrain-swap")
         ab_runner.primary = ModelVariant(f"baseline_{int(time.time())}", model)
+        _mark_serving_release_change("activate-bootstrap-candidate")
         _write_retrain_completion_marker(model)
         _set_status(
             "relearn_status",
@@ -4161,8 +4262,10 @@ async def main_loop():
     boot_started = time.time()
     # The SOURCE is logged, not just the number. The window silently disagreeing with the matrix
     # manifest is what made startup training fail 90s later with a message naming neither.
-    logger.info("[BOOT] Startup warm-up begins. historical_days=%s (from %s)",
-                HISTORICAL_DAYS, HISTORICAL_DAYS_SOURCE)
+    logger.info(
+        "[BOOT] Startup warm-up begins. serving_days=%s training_identity_days=%s (from %s)",
+        SERVING_WARMUP_DAYS, HISTORICAL_DAYS, HISTORICAL_DAYS_SOURCE,
+    )
     logger.info(
         "[BOOT] Model is %s. %s",
         "FROZEN (no auto/scheduled retraining)" if MODEL_FROZEN else "AUTO-IMPROVE (will retrain)",
@@ -4178,24 +4281,24 @@ async def main_loop():
         {
             "type": "status",
             "step": "step-data",
-            "msg": f"Fetching {HISTORICAL_DAYS}-day historical data...",
+            "msg": f"Fetching {SERVING_WARMUP_DAYS}-day live warm-up data...",
         }
     )
     step_t0 = time.time()
-    logger.info("[BOOT 1/7] Loading %s days of 1m Binance candles...", HISTORICAL_DAYS)
-    klines = await _fetch_historical_cached("1m", HISTORICAL_DAYS)
+    logger.info("[BOOT 1/7] Loading %s days of 1m Binance candles...", SERVING_WARMUP_DAYS)
+    klines = await _fetch_historical_cached("1m", SERVING_WARMUP_DAYS)
     data_state["klines"] = klines
     logger.info("[BOOT 1/7] Loaded %s 1m candles in %.1fs", len(klines), time.time() - step_t0)
 
     # Also fetch multi-timeframe klines
     step_t0 = time.time()
-    logger.info("[BOOT 2/7] Loading %s days of 5m candles...", HISTORICAL_DAYS)
-    klines_5m = await _fetch_historical_cached("5m", HISTORICAL_DAYS)
+    logger.info("[BOOT 2/7] Loading %s days of 5m candles...", SERVING_WARMUP_DAYS)
+    klines_5m = await _fetch_historical_cached("5m", SERVING_WARMUP_DAYS)
     data_state["klines_5m"] = klines_5m
     logger.info("[BOOT 2/7] Loaded %s 5m candles in %.1fs", len(klines_5m), time.time() - step_t0)
     step_t0 = time.time()
-    logger.info("[BOOT 3/7] Loading %s days of 15m candles...", HISTORICAL_DAYS)
-    klines_15m = await _fetch_historical_cached("15m", HISTORICAL_DAYS)
+    logger.info("[BOOT 3/7] Loading %s days of 15m candles...", SERVING_WARMUP_DAYS)
+    klines_15m = await _fetch_historical_cached("15m", SERVING_WARMUP_DAYS)
     data_state["klines_15m"] = klines_15m
     logger.info("[BOOT 3/7] Loaded %s 15m candles in %.1fs", len(klines_15m), time.time() - step_t0)
 
@@ -4720,6 +4823,7 @@ async def main_loop():
 
             predictions = []
             meta_contexts = {}
+            _cycle_release_generation = SERVING_RELEASE_GENERATION
             if model.is_trained:
                 acc_cache = verifier.get_accuracy_summary()
                 cascade_data = {}
@@ -4768,6 +4872,16 @@ async def main_loop():
                         None, ab_runner.predict, h, seq, decision_state, acc_cache,
                         cascade_data
                     )
+                    if SERVING_RELEASE_GENERATION != _cycle_release_generation:
+                        logger.warning(
+                            "[MODEL RELEASE] Discarding inference cycle: release changed "
+                            "mid-cycle (%s -> %s).",
+                            _cycle_release_generation,
+                            SERVING_RELEASE_GENERATION,
+                        )
+                        predictions.clear()
+                        cascade_data.clear()
+                        break
                     p["regime"] = regime.get("regime", "UNKNOWN")
                     p["modelRawDirection"] = p.get(
                         "modelRawDirection",
@@ -4931,6 +5045,10 @@ async def main_loop():
                     except Exception as revision_error:
                         # Research evidence must fail visibly but cannot take down live serving.
                         logger.error("[REVISION LEDGER] cycle rejected: %s", revision_error)
+
+            if SERVING_RELEASE_GENERATION != _cycle_release_generation:
+                predictions.clear()
+                meta_contexts.clear()
 
             # FSR-PPO mothballed in v6 (R3): a challenger strategy layer is premature
             # until the core model proves its edge. Re-enable with BTC_FSR_PPO=1 —
@@ -5395,6 +5513,7 @@ async def main_loop():
                         ab_runner.challenger = None
                         ab_runner.enabled = False
                         ab_runner.reset_comparisons()
+                        _mark_serving_release_change("promote-full-refit-shadow")
 
                 # Feed the CascadeMonitor — grade the RAW lean against the CONTRACT'S
                 # OUTCOME, not the `hit` column and not the move sign.
@@ -6077,6 +6196,9 @@ def _system_health_snapshot() -> dict:
             status = complete_trade.get(name) or {}
             if not status.get("loaded") or status.get("bundle_verified") is not True:
                 blockers.append(f"complete_trade_{name}_unavailable")
+    database_health = database.health_status()
+    if not database_health.get("healthy"):
+        blockers.append("database_writer_unavailable")
     return {
         "trust_state": "DATA_OK" if not blockers else "DO_NOT_TRUST",
         "blockers": blockers,
@@ -6101,7 +6223,7 @@ def _system_health_snapshot() -> dict:
             "round_state": round_state_status,
         },
         "database_writer": {
-            "status": "HEALTHY" if os.access(DATA_DIR, os.W_OK) else "BLOCKED",
+            **database_health,
             "data_directory": os.path.relpath(DATA_DIR, PROJECT_ROOT),
             "analytics_db": os.path.relpath(database.DB_PATH, PROJECT_ROOT),
         },
@@ -6445,9 +6567,11 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008, reason="origin not allowed")
         return
     await websocket.accept()
-    clients.append(websocket)
     try:
+        # Do not expose the socket to concurrent broadcasters until its handshake message is
+        # complete; otherwise the first payload and "connected" can race on the same transport.
         await websocket.send_text(json.dumps({"type": "connected"}))
+        clients.append(websocket)
         while True:
             # Broadcast-only socket: inbound text is read to keep the connection
             # alive / detect disconnects, and intentionally discarded.

@@ -1,4 +1,5 @@
 import duckdb
+import asyncio
 import os
 import time
 import json
@@ -45,15 +46,14 @@ def _resolve_db_path() -> str:
         != os.path.normcase(os.path.join(repo, "data")))
     if redirected:
         return os.path.join(_DATA_DIR, "analytics.duckdb")
-    try:
-        from audit.datastore_identity import CANONICAL_RELATIVE_PATH as _canon
-        if _canon:
-            candidate = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _canon)
-            if os.path.exists(candidate):
-                return candidate
-    except Exception:
-        pass
+    # The declaration is a correctness dependency. Import/schema failures must not silently
+    # redirect writes into a sibling DuckDB and split the evidence history.
+    from audit.datastore_identity import CANONICAL_RELATIVE_PATH as _canon
+    if _canon:
+        candidate = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _canon)
+        if os.path.exists(candidate):
+            return candidate
     return os.path.join(_DATA_DIR, 'analytics.duckdb')
 
 
@@ -68,6 +68,11 @@ def _connect(read_only: bool = False, retries: int = 6, backoff: float = 0.25):
     briefly hold the file handle; without a retry those writes are silently lost. After
     exhausting retries we raise so the caller's own try/except degrades gracefully."""
     last = None
+    try:
+        asyncio.get_running_loop()
+        on_event_loop = True
+    except RuntimeError:
+        on_event_loop = False
     for i in range(retries):
         try:
             conn = duckdb.connect(DB_PATH, read_only=read_only)
@@ -83,8 +88,48 @@ def _connect(read_only: bool = False, retries: int = 6, backoff: float = 0.25):
             return conn
         except Exception as e:
             last = e
+            # Synchronous callers in an async request/task must fail fast. Sleeping here
+            # freezes price broadcasts and feed keepalives; callers that need lock retries
+            # must execute this helper through asyncio.to_thread/run_in_executor.
+            if on_event_loop:
+                break
             time.sleep(backoff * (i + 1))
     raise last
+
+
+def health_status() -> dict:
+    """Prove the canonical DuckDB is queryable and contains the live prediction schema."""
+    conn = None
+    required = {"predictions_5m", "predictions_15m"}
+    try:
+        conn = _connect(retries=1)
+        scalar = conn.execute("SELECT 1").fetchone()
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='main'"
+            ).fetchall()
+        }
+        missing = sorted(required - tables)
+        if scalar != (1,) or missing:
+            return {
+                "status": "BLOCKED",
+                "healthy": False,
+                "path": DB_PATH,
+                "reason": f"missing required tables: {missing}" if missing else "SELECT 1 failed",
+            }
+        return {"status": "HEALTHY", "healthy": True, "path": DB_PATH, "reason": None}
+    except Exception as exc:
+        return {
+            "status": "BLOCKED",
+            "healthy": False,
+            "path": DB_PATH,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # ANCHOR connection: held open for the process lifetime (created in init_db, never used
@@ -310,12 +355,12 @@ def init_db():
             outcome_status VARCHAR DEFAULT 'PENDING'
         )
     """)
-    # Idempotent for databases created before the column existed.
-    try:
-        conn.execute(
-            "ALTER TABLE forward_ev_ledger ADD COLUMN outcome_status VARCHAR DEFAULT 'PENDING'")
-    except Exception:
-        pass  # column already exists
+    # Idempotent without hiding corruption, lock failures, permission errors, or an invalid
+    # schema behind an "already exists" assumption.
+    conn.execute(
+        "ALTER TABLE forward_ev_ledger ADD COLUMN IF NOT EXISTS "
+        "outcome_status VARCHAR DEFAULT 'PENDING'"
+    )
     conn.execute("""
         CREATE TABLE IF NOT EXISTS polymarket_markets (
             market_id VARCHAR PRIMARY KEY,
@@ -3373,7 +3418,7 @@ def fetch_ab_variant_profit_stats(variant: str, model_bundle_id: str) -> dict:
     timeframes = [5, 15]   # pruned 2026-06-21: dropped 3/7/10/30 (no market, coin-flip)
     union_sql = " UNION ALL ".join([
         f"""
-        SELECT id, horizon, binance_price, actual_move, resolved
+        SELECT id, horizon, binance_price, endpoint_move, endpoint_price_basis, resolved
         FROM predictions_{tf}m
         """ for tf in timeframes
     ])
@@ -3382,7 +3427,7 @@ def fetch_ab_variant_profit_stats(variant: str, model_bundle_id: str) -> dict:
     try:
         conn = _connect()
         df = conn.execute(f"""
-            SELECT a.variant, a.direction, p.actual_move, p.binance_price
+            SELECT a.variant, a.direction, p.endpoint_move, p.binance_price
             FROM ab_results a
             JOIN ({union_sql}) p
               ON p.id = a.pred_id AND p.horizon = a.horizon
@@ -3390,7 +3435,8 @@ def fetch_ab_variant_profit_stats(variant: str, model_bundle_id: str) -> dict:
               AND a.variant = ?
               AND a.model_bundle_id = ?
               AND p.resolved = TRUE
-              AND p.actual_move IS NOT NULL
+              AND p.endpoint_move IS NOT NULL
+              AND p.endpoint_price_basis = 'ENDPOINT'
               AND p.binance_price IS NOT NULL
         """, (variant, model_bundle_id)).df()
         for r in df.to_dict("records"):
@@ -3409,7 +3455,7 @@ def fetch_ab_variant_profit_stats(variant: str, model_bundle_id: str) -> dict:
             row["resolved"] += 1
             if direction not in ("UP", "DOWN"):
                 continue
-            actual_move = float(r.get("actual_move") or 0.0)
+            actual_move = float(r.get("endpoint_move") or 0.0)
             price = float(r.get("binance_price") or 0.0)
             sign = 1.0 if direction == "UP" else -1.0
             pnl = sign * actual_move - (price * cost_floor)

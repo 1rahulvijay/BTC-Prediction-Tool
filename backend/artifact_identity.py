@@ -437,11 +437,28 @@ def _array_hash(value) -> str | None:
         return None
     import numpy as _np
 
-    arr = _np.ascontiguousarray(_np.asarray(value))
+    arr = _np.asarray(value)
     digest = hashlib.sha256()
     digest.update(str(arr.dtype).encode())
     digest.update(str(arr.shape).encode())
-    digest.update(arr.tobytes())
+    # X can be a 1000-day sequence memmap. arr.tobytes() materializes the ENTIRE tensor as
+    # one Python bytes object (tens of GB), defeating the memmap and exhausting a 16 GB host
+    # before fitting starts. Stream contiguous storage directly; for a non-contiguous view,
+    # copy bounded row chunks rather than the complete tensor. The byte order and therefore
+    # the digest remain identical to C-order ndarray.tobytes().
+    chunk_bytes = 8 * 1024 * 1024
+    if arr.flags.c_contiguous:
+        view = memoryview(arr).cast("B")
+        for offset in range(0, view.nbytes, chunk_bytes):
+            digest.update(view[offset:offset + chunk_bytes])
+    elif arr.ndim == 0:
+        digest.update(_np.ascontiguousarray(arr).tobytes())
+    else:
+        bytes_per_row = max(1, int(arr[0:1].size * arr.dtype.itemsize))
+        rows_per_chunk = max(1, chunk_bytes // bytes_per_row)
+        for start in range(0, int(arr.shape[0]), rows_per_chunk):
+            block = _np.ascontiguousarray(arr[start:start + rows_per_chunk])
+            digest.update(memoryview(block).cast("B"))
     return digest.hexdigest()
 
 

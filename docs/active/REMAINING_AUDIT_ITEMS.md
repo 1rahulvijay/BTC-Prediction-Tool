@@ -1,5 +1,10 @@
 # Remaining audit items — handoff
 
+> Historical ledger (2026-08-10). Do not use this file alone to decide whether
+> the current application is retrain-ready. The current reconciled status,
+> resolved findings, validation evidence, and residual risks are recorded in
+> [RETRAIN_READINESS_AND_AUDIT_RECONCILIATION_2026-08-12.md](RETRAIN_READINESS_AND_AUDIT_RECONCILIATION_2026-08-12.md).
+
 Written 2026-08-10 at `9478850`. Everything below was **verified present**, not inferred from
 an audit. Line numbers are from that commit; re-confirm before editing.
 

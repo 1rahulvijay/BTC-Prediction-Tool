@@ -64,6 +64,11 @@ class SupervisedTask:
         self.last_error: str | None = None
         self.last_exit_at: float | None = None
         self._recent_restarts: list[float] = []
+        # The wrapper task remains alive while it sleeps between worker restarts.  Treating
+        # wrapper liveness as worker health made a crashed critical feed look healthy during
+        # exactly the interval in which it was producing no data.
+        self.worker_running = False
+        self.state = "PENDING"
 
     @property
     def flapping(self) -> bool:
@@ -83,10 +88,13 @@ class SupervisedTask:
         self._recent_restarts = [t for t in self._recent_restarts if t >= cutoff]
 
     def status(self) -> dict[str, Any]:
+        healthy = self.alive and self.worker_running and not self.flapping
         return {
             "name": self.name,
             "criticality": self.criticality,
             "alive": self.alive,
+            "worker_running": self.worker_running,
+            "state": self.state,
             "restarts": self.restarts,
             "flapping": self.flapping,
             "uptime_s": round(time.time() - self.started_at, 1) if self.started_at else None,
@@ -94,7 +102,7 @@ class SupervisedTask:
             "last_exit_age_s": (
                 round(time.time() - self.last_exit_at, 1) if self.last_exit_at else None
             ),
-            "healthy": self.alive and not self.flapping,
+            "healthy": healthy,
         }
 
 
@@ -112,6 +120,13 @@ class TaskSupervisor:
         A coroutine FACTORY, not a coroutine: a coroutine object can only be awaited once, so a
         restart needs a fresh one. Passing the object would restart the task exactly zero times
         while appearing to support restarts."""
+        if self._stopping:
+            if any(entry.alive for entry in self._tasks.values()):
+                raise RuntimeError("task supervisor is shutting down")
+            # FastAPI lifespan tests and in-process restarts reuse the module-global owner.
+            # A completed shutdown must not make every later spawn silently inert.
+            self._tasks.clear()
+            self._stopping = False
         if name in self._tasks and self._tasks[name].alive:
             return self._tasks[name]
         entry = SupervisedTask(name, factory, criticality, restart)
@@ -123,20 +138,28 @@ class TaskSupervisor:
     async def _run(self, entry: SupervisedTask) -> None:
         while not self._stopping:
             try:
+                entry.worker_running = True
+                entry.state = "RUNNING"
                 await entry.factory()
                 entry.last_exit_at = time.time()
                 entry.last_error = "returned unexpectedly"
             except asyncio.CancelledError:
+                entry.state = "STOPPED"
                 raise
             except BaseException as exc:            # noqa: BLE001 - a supervisor survives anything
                 entry.last_exit_at = time.time()
                 entry.last_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                entry.worker_running = False
             if not entry.restart or self._stopping:
+                entry.state = "STOPPED" if self._stopping else "FAILED"
                 return
             entry.note_restart()
+            entry.state = "FLAPPING" if entry.flapping else "RESTARTING"
             try:
                 await asyncio.sleep(RESTART_DELAY_S)
             except asyncio.CancelledError:
+                entry.state = "STOPPED"
                 raise
 
     def status(self) -> dict[str, Any]:
@@ -162,6 +185,10 @@ class TaskSupervisor:
             task.cancel()
         if pending:
             await asyncio.wait(pending, timeout=timeout)
+        for entry in self._tasks.values():
+            entry.worker_running = False
+            if not (entry.task and not entry.task.done()):
+                entry.state = "STOPPED"
         stuck = [e.name for e in self._tasks.values() if e.task and not e.task.done()]
         return {"cancelled": len(pending), "stuck": stuck, "clean": not stuck}
 
@@ -204,6 +231,9 @@ async def _selftest() -> int:
     RESTART_DELAY_S = 0.01
     try:
         crashed = supervisor.spawn("crasher", crasher, criticality=IMPORTANT)
+        await asyncio.sleep(0.005)
+        chk(crashed.status()["healthy"] is False,
+            "a wrapper sleeping before restart is not reported as a healthy worker")
         await asyncio.sleep(0.15)
         chk(len(crashes) > 1, f"the task was restarted after crashing ({len(crashes)} runs)")
         chk(crashed.restarts > 0, f"restarts are counted ({crashed.restarts})")
@@ -247,6 +277,20 @@ async def _selftest() -> int:
 
     await fatal.shutdown(timeout=1.0)
     await lenient.shutdown(timeout=1.0)
+
+    print("a completed supervisor can own a second application lifespan")
+    second_beats = []
+
+    async def second_heartbeat() -> None:
+        while True:
+            second_beats.append(1)
+            await asyncio.sleep(0.01)
+
+    second = supervisor.spawn("second_heartbeat", second_heartbeat, criticality=CRITICAL)
+    await asyncio.sleep(0.05)
+    chk(second.worker_running and supervisor.status()["healthy"],
+        "spawn after shutdown starts a real worker")
+    await supervisor.shutdown(timeout=1.0)
 
     print("\nTASK SUPERVISOR", "PASS" if ok else "FAIL")
     return 0 if ok else 1

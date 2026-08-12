@@ -43,6 +43,9 @@ ARTIFACTS = [
     for entry in REGISTRY
     if entry.required_for_serving or entry.may_price or entry.may_rank or entry.may_size
 ]
+REQUIRED_ARTIFACTS = {
+    entry.filename for entry in REGISTRY if entry.required_for_serving
+}
 
 
 def main() -> int:
@@ -98,12 +101,14 @@ def main() -> int:
     print("\nSERVING gate (which heads would load):")
     print(f"  {'artifact':<32}{'manifest':<10}{'loads':<8} reason")
     print("  " + "-" * 84)
-    loadable = missing = no_manifest = 0
+    loadable = missing = missing_required = no_manifest = 0
     for name in ARTIFACTS:
         p = os.path.join(MODELS, name)
         if not os.path.exists(p):
-            print(f"  {name:<32}{'-':<10}{'ABSENT':<8}")
+            required = name in REQUIRED_ARTIFACTS
+            print(f"  {name:<32}{'-':<10}{('MISSING' if required else 'OPTIONAL'):<8}")
             missing += 1
+            missing_required += int(required)
             continue
         has_man = os.path.exists(artifact_manifest_path(p))
         no_manifest += (not has_man)
@@ -114,10 +119,10 @@ def main() -> int:
 
     total = len(ARTIFACTS) - missing
     print(f"\n  {loadable}/{total} present artifacts would load"
-          f"   ({no_manifest} lack a manifest)")
+          f"   ({no_manifest} lack a manifest; {missing_required} required missing)")
 
     print("\nVERDICT")
-    if no_manifest == 0 and loadable == total:
+    if missing_required == 0 and no_manifest == 0 and loadable == total:
         print("  READY - every artifact proves its training data.")
         print("  Set BTC_STRICT_ARTIFACT_IDENTITY=1 in start.bat; the gate is now meaningful.")
         return 0

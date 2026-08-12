@@ -326,34 +326,53 @@ except ImportError:
     HAS_CATBOOST = False
     logger.warning("CatBoost not installed. Ensemble will skip CatBoost.")
 
-# Probe XGBoost CUDA once at import (same pattern as the LightGBM probe above —
-# pip xgboost wheels ship GPU support but need an NVIDIA/CUDA device; OpenCL-only
-# GPUs serve LightGBM but not XGBoost). Falls back to CPU silently and safely.
+# CUDA capability checks deliberately run inside train(), not at import. Preflights and API
+# startup may import this module without initializing a GPU runtime or fitting an estimator.
 XGB_DEVICE = "cpu"
-try:
-    import numpy as _np_xprobe
-    _xp = xgb.XGBClassifier(n_estimators=1, tree_method="hist", device="cuda",
-                            verbosity=0)
-    _xp.fit(_np_xprobe.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
-    XGB_DEVICE = "cuda"
-    logger.info("XGBoost CUDA support detected — training with device='cuda'.")
-except Exception:
-    XGB_DEVICE = "cpu"
-    logger.info("XGBoost CUDA not available — training on CPU.")
-
-# Probe CatBoost GPU once at import (CUDA-only, like XGBoost).
 CAT_DEVICE = "CPU"
-if HAS_CATBOOST:
-    try:
-        import numpy as _np_cprobe
-        _cp = CatBoostClassifier(iterations=1, task_type="GPU", devices="0",
-                                 verbose=False, allow_writing_files=False)
-        _cp.fit(_np_cprobe.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
-        CAT_DEVICE = "GPU"
-        logger.info("CatBoost GPU support detected — training with task_type='GPU'.")
-    except Exception:
-        CAT_DEVICE = "CPU"
-        logger.info("CatBoost GPU not available — training on CPU.")
+_TRAINING_DEVICES_PROBED = False
+
+
+def _probe_training_devices() -> tuple[str, str]:
+    """Probe optional CUDA learners once, when (and only when) training has begun."""
+    global XGB_DEVICE, CAT_DEVICE, _TRAINING_DEVICES_PROBED
+    if _TRAINING_DEVICES_PROBED:
+        return XGB_DEVICE, CAT_DEVICE
+    _TRAINING_DEVICES_PROBED = True
+
+    xgb_request = os.environ.get("BTC_XGB_DEVICE", "auto").strip().lower()
+    if xgb_request not in {"cpu", "auto", "cuda", "gpu"}:
+        logger.warning("Unknown BTC_XGB_DEVICE=%r; using CPU.", xgb_request)
+        xgb_request = "cpu"
+    if xgb_request != "cpu":
+        try:
+            probe = xgb.XGBClassifier(
+                n_estimators=1, tree_method="hist", device="cuda", verbosity=0
+            )
+            probe.fit(np.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
+            XGB_DEVICE = "cuda"
+            logger.info("XGBoost CUDA support detected; training with device='cuda'.")
+        except Exception as exc:
+            XGB_DEVICE = "cpu"
+            logger.info("XGBoost CUDA unavailable; training on CPU (%s).", exc)
+
+    cat_request = os.environ.get("BTC_CAT_DEVICE", "auto").strip().lower()
+    if cat_request not in {"cpu", "auto", "cuda", "gpu"}:
+        logger.warning("Unknown BTC_CAT_DEVICE=%r; using CPU.", cat_request)
+        cat_request = "cpu"
+    if HAS_CATBOOST and cat_request != "cpu":
+        try:
+            probe = CatBoostClassifier(
+                iterations=1, task_type="GPU", devices="0", verbose=False,
+                allow_writing_files=False,
+            )
+            probe.fit(np.zeros((6, 2)), [0, 1, 2, 0, 1, 2])
+            CAT_DEVICE = "GPU"
+            logger.info("CatBoost GPU support detected; training with task_type='GPU'.")
+        except Exception as exc:
+            CAT_DEVICE = "CPU"
+            logger.info("CatBoost GPU unavailable; training on CPU (%s).", exc)
+    return XGB_DEVICE, CAT_DEVICE
 
 # Availability probe only. Serialization goes through verified_io via _atomic_joblib_dump
 # and _verified_joblib_load, so joblib is never imported or called directly in this module -
@@ -907,6 +926,7 @@ class MultiModelEnsemble:
                 "training-data identity contract failed before training: "
                 + "; ".join(identity_issues)
             )
+        _probe_training_devices()
         n_samples, lookback, n_features = X.shape
         X_model = self._select_model_features(X)
         _, _, model_n_features = X_model.shape
@@ -3643,6 +3663,7 @@ class MultiModelEnsemble:
                 extra={
                     "artifact_files": saved_files,
                     "model_arch_version": MODEL_ARCH_VERSION,
+                    "model_feature_schema_hash": self.model_feature_schema_hash,
                     "model_bundle_id": self.model_bundle_id,
                     "horizons": [int(h) for h in self.horizons],
                     "direction_max_samples": DIRECTION_MAX_SAMPLES,

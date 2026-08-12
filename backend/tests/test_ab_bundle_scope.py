@@ -22,9 +22,10 @@ def main() -> int:
         try:
             with db._connect() as con:
                 con.execute("""INSERT INTO predictions_5m
-                    (id, timestamp, horizon, binance_price, actual_move, resolved)
-                    VALUES ('old', 1000, 5, 100.0, -10.0, TRUE),
-                           ('new', 2000, 5, 100.0,  10.0, TRUE)""")
+                    (id, timestamp, horizon, binance_price, actual_move, endpoint_move,
+                     endpoint_price_basis, resolved)
+                    VALUES ('old', 1000, 5, 100.0, 999.0, -10.0, 'ENDPOINT', TRUE),
+                           ('new', 2000, 5, 100.0, -999.0, 10.0, 'ENDPOINT', TRUE)""")
 
             for pred_id, timestamp, bundle, primary_direction, challenger_direction in (
                 ("old", 1000, "old_bundle", "UP", "DOWN"),
@@ -50,6 +51,10 @@ def main() -> int:
             assert set(profit) == {"challenger"}, profit
             row = profit["challenger"]
             assert row["trades"] == 1 and row["expectancy_usd"] > 0, row
+            # Observation-time actual_move deliberately has the opposite sign. Economic
+            # promotion must use the canonical horizon endpoint, not a later verification
+            # observation that happened to resolve the row.
+            assert row["expectancy_usd"] < 10.0, row
         finally:
             db.close_db()
 

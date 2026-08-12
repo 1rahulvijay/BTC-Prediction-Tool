@@ -13,9 +13,14 @@ $env:PYTHONPATH = "$root\backend;$root\backend\polymarket;$root"
 $env:BTC_DATA_DIR = $data
 $script:RecorderFailures = @()
 
-function Test-RecorderProcess([string]$pattern) {
+function Test-RecorderProcess([string]$scriptPath) {
+    $escapedScript = [regex]::Escape([System.IO.Path]::GetFullPath($scriptPath))
+    $expectedPython = [System.IO.Path]::GetFullPath($python)
     foreach ($process in Get-CimInstance Win32_Process -Filter "Name='python.exe'") {
-        if ($process.CommandLine -and $process.CommandLine -match $pattern) {
+        $samePython = $process.ExecutablePath -and (
+            [System.IO.Path]::GetFullPath($process.ExecutablePath) -ieq $expectedPython
+        )
+        if ($samePython -and $process.CommandLine -and $process.CommandLine -match $escapedScript) {
             return $true
         }
     }
@@ -29,13 +34,21 @@ function Start-Recorder(
     [string]$stdoutName,
     [string]$stderrName
 ) {
-    if (Test-RecorderProcess $pattern) {
+    if ($arguments.Count -lt 2) {
+        throw "Recorder $name has no script argument"
+    }
+    $launchArguments = @($arguments)
+    $scriptPath = (Resolve-Path -LiteralPath (Join-Path $root $launchArguments[1]) -ErrorAction Stop).Path
+    # Use an absolute script path in the child command line. Duplicate detection can now prove
+    # repo identity instead of matching another checkout's recorder by basename.
+    $launchArguments[1] = $scriptPath
+    if (Test-RecorderProcess $scriptPath) {
         Write-Host "[recorder] $name already running; duplicate skipped."
         return
     }
     try {
         $stderrPath = Join-Path $data $stderrName
-        $process = Start-Process -FilePath $python -ArgumentList $arguments `
+        $process = Start-Process -FilePath $python -ArgumentList $launchArguments `
             -WorkingDirectory $root -WindowStyle Hidden `
             -RedirectStandardOutput (Join-Path $data $stdoutName) `
             -RedirectStandardError $stderrPath -PassThru
