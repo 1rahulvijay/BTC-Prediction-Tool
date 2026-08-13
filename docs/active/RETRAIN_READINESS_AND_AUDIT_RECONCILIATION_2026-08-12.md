@@ -124,3 +124,11 @@ into the overnight path:
 
 Do not interpret the UI as model-ready while training is running. Keep both venues paper-only until
 fresh forward evidence clears their separate economic gates; passing code tests cannot create alpha.
+
+## 2026-08-13 Runtime Follow-up
+
+The first 1,000-day attempt exposed a previously unobserved cross-process conflict: the 04:00
+`BTC_AutoFinetune` scheduled task rebuilt the canonical matrix to its old 360-day fallback while
+specialist heads were fitting. Provenance checks rejected the transaction and serving artifacts were
+not changed. The full diagnosis, measured partial results, fix and rerun instructions are in
+[TRAINING_PIPELINE_CONCURRENCY_INCIDENT_2026-08-13.md](TRAINING_PIPELINE_CONCURRENCY_INCIDENT_2026-08-13.md).

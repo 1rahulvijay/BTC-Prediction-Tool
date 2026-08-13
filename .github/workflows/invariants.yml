@@ -210,6 +210,9 @@ jobs:
       - name: Nightly refit is candidate-only (never overwrites a serving artifact)
         run: python backend/tests/test_auto_finetune_candidate_only.py
 
+      - name: Canonical training pipeline is single-writer across full and nightly jobs
+        run: python backend/tests/test_training_pipeline_lease.py
+
       - name: OOF fold weights EXECUTED (not merely parsed)
         run: python backend/tests/test_oof_fold_weights_execute.py
 
@@ -1013,6 +1016,7 @@ jobs:
           python backend/settlement_head.py --selftest || exit /b 1
           python backend/tests/test_settlement_head_wiring.py || exit /b 1
           python backend/tests/test_auto_finetune_candidate_only.py || exit /b 1
+          python backend/tests/test_training_pipeline_lease.py || exit /b 1
           python backend/tests/test_oof_fold_weights_execute.py || exit /b 1
           python backend/tests/test_target_declaration_consistency.py || exit /b 1
           python backend/tests/test_promotion_activation_boundary.py || exit /b 1

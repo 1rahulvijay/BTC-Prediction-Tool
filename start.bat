@@ -441,6 +441,9 @@ if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_startup_model_side_effects.py"
 python backend\tests\test_startup_model_side_effects.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_training_pipeline_lease.py"
+python backend\tests\test_training_pipeline_lease.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_artifact_readiness_required.py"
 python backend\tests\test_artifact_readiness_required.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
@@ -671,6 +674,16 @@ exit /b 1
 
 :selftests_done
 
+REM The nightly candidate job and the full retrain both rewrite the canonical matrix. Own one
+REM process-backed lease before stopping an existing app or starting any data-side effects.
+set "BTC_TRAINING_PIPELINE_TOKEN_FILE=%BTC_DATA_DIR%\.full_retrain_pipeline.token.json"
+python backend\training_pipeline_lease.py begin --role full_retrain --days %BTC_HISTORICAL_DAYS% --token-file "%BTC_TRAINING_PIPELINE_TOKEN_FILE%"
+if errorlevel 1 (
+    echo [launch] ERROR: another job is rebuilding or recalibrating the canonical training matrix.
+    echo          The existing app was not stopped. Wait for that job, then run start.bat again.
+    exit /b 1
+)
+
 REM Validation is complete. Only now stop an existing app, immediately before the first
 REM recorder/data/model side effect. A failed preflight/selftest no longer creates downtime.
 REM Browser refreshes never invoke this launcher. Set BTC_AUTO_STOP_EXISTING_APP=0 to abort
@@ -678,10 +691,12 @@ REM instead of replacing an existing frontend/backend.
 if not defined BTC_AUTO_STOP_EXISTING_APP set "BTC_AUTO_STOP_EXISTING_APP=1"
 powershell -NoProfile -Command "$p = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if (-not $p) { exit 0 }; $p | ForEach-Object { Write-Host ('[launch] port {0} is held by PID {1}' -f $_.LocalPort,$_.OwningProcess) }; if ('%BTC_AUTO_STOP_EXISTING_APP%' -ne '1') { exit 2 }; $p.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500; $left = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 3000,8000 }); if ($left) { exit 3 }"
 if errorlevel 3 (
+    python backend\training_pipeline_lease.py end --token-file "%BTC_TRAINING_PIPELINE_TOKEN_FILE%" >nul 2>&1
     echo [launch] ERROR: existing frontend/backend could not be stopped.
     exit /b 1
 )
 if errorlevel 2 (
+    python backend\training_pipeline_lease.py end --token-file "%BTC_TRAINING_PIPELINE_TOKEN_FILE%" >nul 2>&1
     echo [launch] ERROR: frontend/backend already active and auto-stop is disabled.
     echo          Close them manually or set BTC_AUTO_STOP_EXISTING_APP=1.
     exit /b 1
@@ -745,6 +760,7 @@ if errorlevel 1 (
         call :run_head_training
     )
 )
+python backend\training_pipeline_lease.py end --token-file "%BTC_TRAINING_PIPELINE_TOKEN_FILE%"
 if "%BTC_OVERNIGHT_TRAIN_ALL%"=="1" if not "%BTC_HEAD_RETRAIN_COMPLETE%"=="1" (
     echo [0/3] ERROR: the %BTC_HISTORICAL_DAYS%d matrix or a required specialist head failed.
     echo       Main-ensemble training will NOT start against incomplete inputs.

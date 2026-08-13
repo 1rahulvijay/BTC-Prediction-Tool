@@ -135,16 +135,65 @@ def main() -> int:
           "the TEST side keeps every row it started with - trimming the scored set is how a "
           "purge turns into a better-looking number")
 
-    # 3. The shipped trainer must actually apply that rule, not merely describe it.
+    # 3. BOTH shipped splits must apply the rule, not merely describe it.
+    #
+    # main() is the BASE model - the one that produces the headline TEST AUC and the T3
+    # precision table. _train_keeper_model is its twin. The keeper was purged first and the
+    # base was left behind for two days, which is exactly the failure mode a per-function
+    # check catches and a whole-file grep does not: the string "_outcome_end" was already in
+    # the file, so any search for it passed while the base split still leaked.
     src = (BACKEND / "train_persistence_model.py").read_text(encoding="utf-8", errors="replace")
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.FunctionDef) and n.name == "_train_keeper_model")
-    body = ast.unparse(fn)
-    check("_outcome_end" in body and "horizon" in body,
-          "the keeper split computes an outcome end from the horizon rather than partitioning "
-          "on window start alone")
-    check(body.count("_outcome_end <= tr_cut") == 1 and body.count("_outcome_end <= ca_cut") == 1,
-          "and applies it to BOTH the train and calibration partitions")
+    tree = ast.parse(src)
+    for fname, label, frame in (("_train_keeper_model", "keeper twin", "kdf"),
+                                ("main", "BASE model", "df")):
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == fname)
+        body = ast.unparse(fn)
+        check(body.count("_outcome_end <= tr_cut") == 1
+              and body.count("_outcome_end <= ca_cut") == 1,
+              f"the {label} ({fname}) applies the purge to BOTH the train and calibration "
+              f"partitions")
+
+        # EVALUATE the shipped expression. Asserting `"horizon" in body` is not enough: main()
+        # mentions horizon elsewhere for per-horizon reporting, so replacing the outcome-end
+        # formula with a fixed 5 minutes passed that check. Mutation testing found it.
+        oe_expr = None
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and getattr(node.targets[0], "id", "") == "_outcome_end"):
+                oe_expr = ast.unparse(node.value)
+        assert oe_expr, f"{fname} no longer computes _outcome_end"
+        probe = pd.DataFrame({"window_start_ms": [0, 0], "horizon": [5, 15]})
+        got = eval(oe_expr, {frame: probe, "np": np, "pd": pd})
+        check(list(got) == [5 * MIN, 15 * MIN],
+              f"and the {label}'s outcome end is driven by each row's OWN horizon "
+              f"({list(got)} == [{5*MIN}, {15*MIN}]) - a fixed width silently under-purges "
+              f"every 15m round")
+
+    # 4. BEHAVIOURAL, on the real boundary geometry that made this leak invisible.
+    #
+    # Windows are 5 minutes apart; a cut is safe only when it lands on a 15-minute mark, which
+    # one window in three does. At the shipped sf=0.98 on the live dataset tr_cut WAS aligned
+    # (0 straddling rows) while ca_cut was not (59 rows). Checking only tr_cut, as I first did,
+    # reports a clean bill on a split that is leaking at the other end.
+    # A 5m round opens on every 5-minute mark; a 15m round ONLY on 15-minute marks. Modelling
+    # 15m rounds at every 5-minute mark instead makes every cut straddle and hides the real
+    # geometry - my first version of this fixture did exactly that and asserted the opposite
+    # of what the live data shows.
+    grid = np.arange(0, 45) * 5 * MIN + start
+    recs = [(t, 5) for t in grid] + [(t, 15) for t in grid if (t - start) % (15 * MIN) == 0]
+    rows = pd.DataFrame(recs, columns=["window_start_ms", "horizon"])
+    oe = rows["window_start_ms"] + rows["horizon"].astype("int64") * MIN
+    unaligned = start + 20 * MIN                       # a 5m mark that is NOT a 15m mark
+    aligned = start + 30 * MIN                         # a 15m mark
+    straddle_unaligned = ((rows["window_start_ms"] < unaligned) & (oe > unaligned)).sum()
+    straddle_aligned = ((rows["window_start_ms"] < aligned) & (oe > aligned)).sum()
+    check(straddle_unaligned > 0,
+          f"at a cut that is NOT 15m-aligned, {straddle_unaligned} row(s) straddle it - this is "
+          f"the common case, since only one window in three is aligned")
+    check(straddle_aligned == 0,
+          "while a 15m-aligned cut has none - which is why a single lucky boundary made the "
+          "unpurged split look correct")
 
     print(f"\nPERSISTENCE CAUSAL AND PURGED: PASS ({CHECKS} checks)")
     return 0

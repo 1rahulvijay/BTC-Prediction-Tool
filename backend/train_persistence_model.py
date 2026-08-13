@@ -176,15 +176,35 @@ def main():
     df = df.dropna(subset=FEATURES + ["label"])
     print(f"loaded {len(df):,} snapshots, base hold-rate {df['label'].mean()*100:.1f}%")
 
-    # TEMPORAL, leak-free split BY WINDOW (snapshots in a window share the outcome).
+    # TEMPORAL split BY WINDOW (snapshots in a window share the outcome), PURGED BY OUTCOME END.
+    #
+    # Splitting on window_start alone is not leak-free, despite the label this block used to
+    # carry. A round's outcome is decided at window_start + horizon, so a 15m round opening
+    # inside one partition can resolve inside the next. The keeper twin below was fixed first
+    # and this - the BASE model, the one that produces the headline TEST AUC and the T3
+    # precision table - was left behind.
+    #
+    # Measured on the live 14.6M-row dataset: windows are spaced 5 minutes, and only a cut
+    # landing on a 15-minute boundary is safe by accident. One window in three is 15m-aligned,
+    # so two runs in three leak. At the shipped sf=0.98, tr_cut happened to be aligned (0
+    # straddling rows) while ca_cut was NOT: 59 calibration rows resolved inside the test span,
+    # at exactly the boundary where the isotonic map is fitted before test scoring.
+    #
+    # 59 of 290,454 is small, and the honest reading is that it barely moves the AUC. It is
+    # fixed because relying on cut alignment is relying on luck, and because a purged twin
+    # beside an unpurged base is the kind of inconsistency that gets read as "already handled".
     wins = np.sort(df["window_start_ms"].unique())
     n = len(wins)
     _sf = min(max(float(os.environ.get("BTC_TRAIN_SPLIT_FRAC", "0.98")), 0.5), 0.98)  # 98/2: fit+cal=sf, test=1-sf
     tr_cut, ca_cut = wins[int(n * (2 * _sf - 1))], wins[int(n * _sf)]
-    tr = df[df["window_start_ms"] < tr_cut]
-    ca = df[(df["window_start_ms"] >= tr_cut) & (df["window_start_ms"] < ca_cut)]
+    _outcome_end = df["window_start_ms"] + df["horizon"].astype("int64") * 60_000
+    tr = df[(df["window_start_ms"] < tr_cut) & (_outcome_end <= tr_cut)]
+    ca = df[(df["window_start_ms"] >= tr_cut) & (df["window_start_ms"] < ca_cut)
+            & (_outcome_end <= ca_cut)]
     te = df[df["window_start_ms"] >= ca_cut]
-    print(f"split (by window, temporal): train={len(tr):,}  calib={len(ca):,}  test={len(te):,}")
+    _dropped = len(df) - len(tr) - len(ca) - len(te)
+    print(f"split (by window, temporal, PURGED): train={len(tr):,}  calib={len(ca):,}  "
+          f"test={len(te):,}  (dropped {_dropped:,} rows whose outcome crossed a boundary)")
 
     Xtr, ytr = tr[FEATURES].values, tr["label"].values
     clf = HistGradientBoostingClassifier(

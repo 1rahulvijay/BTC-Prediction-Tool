@@ -41,6 +41,10 @@ import subprocess
 import sys
 import time
 
+from artifact_identity import resolve_history_days
+from training_pipeline_lease import acquire as acquire_pipeline_lease
+from training_pipeline_lease import release as release_pipeline_lease
+
 BACKEND = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BACKEND)
 DATA_DIR = os.environ.get("BTC_DATA_DIR") or os.path.join(ROOT, "data")
@@ -54,12 +58,11 @@ LOCK_PATH = os.path.join(DATA_DIR, "model_candidates", ".refit.lock")
 PY = sys.executable
 
 # The matrix + cheap heads recalibrate on the SAME window as the main retrain, so every head stays
-# consistent (operator choice 2026-06-23). Defaults to 360d. The scheduled task does NOT set
-# BTC_HISTORICAL_DAYS, so without this explicit window the matrix step silently fell back to
-# build_research_matrix's 60d default and recalibrated the band/selectivity/P(Hold) on 60d while the
-# main model trained on 360d -- the bug this fixes. (The task's --days flag only sizes the incremental
-# backfill append; it never reached the matrix step, which has supports_days=False.)
-FULL_DAYS = int(os.environ.get("BTC_HISTORICAL_DAYS") or 360)
+# consistent with the canonical matrix and serving bundle. The scheduled task has no launcher
+# environment, so a literal fallback (formerly 360) can overwrite a wider matrix during a retrain.
+# The shared resolver uses the explicit model/history environment first and otherwise the matrix
+# manifest, which is the only durable statement of the currently requested training window.
+FULL_DAYS = resolve_history_days()
 
 # (label, script-relative-to-backend, extra-args, supports_--auto/--days)
 BACKFILL = [
@@ -125,25 +128,15 @@ def snapshot_serving():
 
 
 def _acquire_lock():
-    """Exclusive, O_EXCL-based. Returns the fd, or None when another run holds it."""
-    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
-    try:
-        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return None
-    os.write(fd, f"pid={os.getpid()} started={time.time():.0f}".encode())
-    return fd
+    """Exclusive local candidate lock with dead-owner recovery."""
+    return acquire_pipeline_lease(
+        "nightly_candidate_bundle", days=FULL_DAYS, path=LOCK_PATH
+    )
 
 
-def _release_lock(fd) -> None:
-    try:
-        os.close(fd)
-    except Exception:
-        pass
-    try:
-        os.remove(LOCK_PATH)
-    except Exception:
-        pass
+def _release_lock(lock) -> None:
+    if lock:
+        release_pipeline_lease(lock, path=LOCK_PATH)
 
 
 def serving_mutations(before) -> list:
@@ -245,13 +238,24 @@ def main():
         print(f"  REFUSED: another refit holds {LOCK_PATH}. Two concurrent runs would each "
               f"snapshot the other's intermediate bytes as the original.")
         return 2
-    before = snapshot_serving()
-    os.environ["BTC_MODEL_OUTPUT_DIR"] = candidate_dir
-    print(f"  output -> {candidate_dir}")
-    print("  serving artifacts are NOT modified; promotion is a separate, gated act.")
-
+    pipeline_lease = acquire_pipeline_lease(
+        "nightly_recalibration", days=FULL_DAYS
+    )
+    if pipeline_lease is None:
+        _release_lock(lock)
+        print(
+            "  SKIPPED: a full retrain or another canonical-data job owns the training "
+            "pipeline lease. Nightly calibration will try again at its next schedule."
+        )
+        return 0
+    before = None
+    guard = {"captured": [], "restored": [], "unchanged": []}
     ok = run = 0
     try:
+        before = snapshot_serving()
+        os.environ["BTC_MODEL_OUTPUT_DIR"] = candidate_dir
+        print(f"  output -> {candidate_dir}")
+        print("  serving artifacts are NOT modified; promotion is a separate, gated act.")
         for label, script, extra, sd in steps:
             res = _run(label, script, extra, sd, a.days)
             if res is not None:
@@ -276,7 +280,9 @@ def main():
     finally:
         # Runs on failure and on interrupt too: a half-finished job must never leave a
         # partially-rewritten serving directory behind.
-        guard = protect_serving(before, candidate_dir)
+        if before is not None:
+            guard = protect_serving(before, candidate_dir)
+        release_pipeline_lease(pipeline_lease)
         _release_lock(lock)
 
     if guard["captured"]:
