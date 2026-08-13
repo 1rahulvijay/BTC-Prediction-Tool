@@ -6,7 +6,7 @@ and must earn its way into the app rather than being wired in because a metric l
 **Nothing in the serving path may import from here, and no lane may import serving code.**
 Verified in both directions.
 
-## Status — 5 lanes run 2026-08-13
+## Status — 7 lanes run 2026-08-13
 
 | lane | question | verdict | report |
 |---|---|---|---|
@@ -15,6 +15,8 @@ Verified in both directions.
 | `spot_perp_basis` | does extreme basis revert past costs? | **CLOSE** — 15x too small | [REPORT](spot_perp_basis/REPORT.md) |
 | `time_phase_alpha` | does clock phase carry structure? | **NO EFFECT** | [REPORT](time_phase_alpha/REPORT.md) |
 | `polymarket_residual` | when is the market's price wrong? | **CLOSE** as taker — model is behind the market | [REPORT](polymarket_residual/REPORT.md) |
+| `poly_fullset_arb` | is YES+NO ever under $1 all-in? | **REAL, NEGLIGIBLE** — $43.82 / 10 days | [REPORT](poly_fullset_arb/REPORT.md) |
+| `hedged_poly_mm` | does maker quoting pay? | **INCONCLUSIVE** — upper bound only, no fill data | [REPORT](poly_fullset_arb/REPORT.md) |
 
 ## What the five lanes say together
 
@@ -42,6 +44,22 @@ What is NOT closed on that venue: maker economics (zero platform fee plus a reba
 the taker fee is what kills the lane above), full-set `Ask_YES + Ask_NO < 1` arbitrage, and the
 residual formulation `logit(p_true) = logit(p_market) + f(X)` — which has never been fitted, and
 is the structurally right move now that the market is measured as the stronger forecaster.
+
+5. **Full-set arbitrage is real and tiny.** `ask_UP + ask_DOWN` sits at a median 1.0100.
+   Gross parity violations occur in 0.390% of snapshots; after the 2.79c two-leg taker fee only
+   **0.076%** survive — 114 opportunities totalling **$43.82** across ten days at top-of-book.
+   Mechanically sound, worth a background scanner, too small to fund anything.
+
+6. **The maker lane is inconclusive, and its best-looking number is not a strategy result.**
+   The bid side sits ~1.3c below parity with a tight interval — but that PnL does not depend on
+   the outcome at all (both legs held is a complete set worth $1), so the bootstrap measures
+   quote stability, not proven edge. Capturing it needs BOTH legs to fill, which is exactly what
+   quote-only data cannot show. One-sided fills carry full directional risk and both intervals
+   span zero.
+
+   Everything in that lane is an **upper bound**: guaranteed fill, no adverse selection, no
+   queue. Decisive only if it had lost. It did not, so the next step is measuring toxicity —
+   shadow-post quotes, record real fills, and mark out the fill price at +1s/+5s/+30s.
 
 ## The bar
 

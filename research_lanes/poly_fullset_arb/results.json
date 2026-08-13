@@ -1,0 +1,46 @@
+{
+  "fullset_arb": {
+    "n_snapshots": 149064,
+    "gross_sum_median": 1.01,
+    "gross_sum_min": 0.69,
+    "pct_gross_below_1": 0.0039043632265335694,
+    "pct_net_below_1": 0.0007647721783931734,
+    "best_net_edge": 0.27839500000000006,
+    "median_fee_both_legs": 0.027909000000000003,
+    "n_executable": 114,
+    "executable_edge_mean": 0.018243834035087735,
+    "executable_size_median": 12.524999999999999,
+    "executable_dollar_pnl_total": 43.82149866460003
+  },
+  "hedged_maker_upper_bound": {
+    "bid_up_only": {
+      "ev": -0.01130429211613803,
+      "lcb": -0.0411875154487939,
+      "ucb": 0.016825696048698772,
+      "n_rows": 149064,
+      "n_rounds": 921
+    },
+    "bid_down_only": {
+      "ev": 0.02398758251489293,
+      "lcb": -0.0037086290905083115,
+      "ucb": 0.05501662325845016,
+      "n_rows": 149064,
+      "n_rounds": 921
+    },
+    "two_sided_both_filled": {
+      "ev": 0.012683290398754906,
+      "lcb": 0.010684309217736018,
+      "ucb": 0.016005693073411695,
+      "n_rows": 149064,
+      "n_rounds": 921
+    },
+    "up_spread_median": 0.010000000000000009,
+    "up_spread_p25": 0.010000000000000009,
+    "up_spread_p75": 0.010000000000000009,
+    "rebate_share_modelled": 0.2,
+    "note": "upper bound: no adverse selection, no queue position, guaranteed fill"
+  },
+  "n_rows": 149064,
+  "n_rounds": 921,
+  "n_days": 10
+}
