@@ -59,8 +59,9 @@ serviceable bundle:
 
 ## Required Next Action
 
-Run `start.bat` again from the canonical repository. It will rebuild the canonical matrix to 1,000
-days from cached sources and start a new transactional head run. If the 04:00 scheduled task fires
+Run `start.bat` again from the canonical repository. The operator subsequently selected a 900-day
+window, so it will rebuild the canonical matrix to 900 days from cached sources and start a new
+transactional head run. If the 04:00 scheduled task fires
 during training, it will log `SKIPPED` and will not touch the matrix. No completion marker exists, so
 the launcher will correctly force the full retrain.
 

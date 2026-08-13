@@ -2,7 +2,7 @@
 
 ## Verdict
 
-The clean source tree at `971ba01` is ready for the deliberate **1,000-day retrain**. The fixes
+The source tree is ready for the deliberate **900-day retrain** selected on 2026-08-13. The fixes
 are committed on local `master`; the branch is two commits ahead of `origin/master`. It is **not
 yet ready to serve as a production decision service**, because the current
 artifacts are legacy/incompatible and the deployment evidence gates are correctly closed.
@@ -129,7 +129,7 @@ All are registered in GitHub invariants and the Windows `start.bat` selftest gat
 | production HTTP/WebSocket surface | passed; readiness fails closed, admin mutation and foreign origins refused |
 | Vite production build | passed |
 | `npm audit --audit-level=high` | 0 vulnerabilities |
-| 1,000-day resource/data preflight | passed; REBUILD mode, 346 GB free, 1,301+ source days |
+| 900-day resource/data preflight | passed; REBUILD mode, source coverage exceeds the request |
 
 The standalone real-fit smoke printed its final explicit `PASS (13 checks)` after completing
 temporary-directory cleanup, but the external PTY wrapper reported status 1 after the final
@@ -141,8 +141,8 @@ second clean process exit and not used as the sole retrain-readiness evidence.
 
 The validated launcher state is:
 
-- `BTC_HISTORICAL_DAYS=1000`
-- `BTC_MODEL_TRAINING_DAYS=1000`
+- `BTC_HISTORICAL_DAYS=900`
+- `BTC_MODEL_TRAINING_DAYS=900`
 - `BTC_TRAIN_SPLIT_FRAC=0.98`
 - no completion marker, so heads and the main model are forced once;
 - specialist heads train transactionally in a staging bundle;
@@ -169,7 +169,7 @@ Current diagnostics correctly report:
 These are not reasons to weaken the checks. Required actions are:
 
 1. Commit this exact code.
-2. Run `start.bat` and allow the 1,000-day retrain to finish.
+2. Run `start.bat` and allow the 900-day retrain to finish.
 3. Confirm the completion marker exists and strict artifact checks pass.
 4. Accumulate fresh bundle-attributed paper outcomes and recorder evidence.
 5. Retrain/promote complete-trade champions only through their separate evidence gates.

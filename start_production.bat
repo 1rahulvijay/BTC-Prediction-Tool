@@ -28,8 +28,8 @@ set "BTC_REQUIRE_PROTOCOL_HEALTH=1"
 if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=3"
 if not defined BTC_SERVING_WARMUP_DAYS set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
 REM The 3-day value above is only the live candle warm-up. Artifact identity must remain the
-REM actual trained window or strict serving will reject a valid 1000-day bundle as a 3-day mismatch.
-if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=1000"
+REM actual trained window or strict serving will reject a valid 900-day bundle as a 3-day mismatch.
+if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=900"
 if not defined BTC_ALLOWED_ORIGINS set "BTC_ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000"
 set "BTC_ENABLE_LIVE_TRADING=0"
 set "BTC_ENABLE_REAL_ORDERS=0"

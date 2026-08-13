@@ -28,8 +28,8 @@ set "BTC_HISTORICAL_DAYS=3"
 set "BTC_SERVING_WARMUP_DAYS=3"
 REM --- Artifact identity remains the full training window. BTC_HISTORICAL_DAYS above controls
 REM     only the small live candle warm-up in this launcher; using 3 for BOTH values made the
-REM     strict preflight reject a valid 1000-day model as a window mismatch.
-if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=1000"
+REM     strict preflight reject a valid 900-day model as a window mismatch.
+if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=900"
 REM --- The measured 5m margin experiment increased UP skew as the margin widened. Keep the
 REM     serving distribution unchanged; correct persistent bias in training/calibration.
 set "BTC_DIR_MARGIN_5=0"

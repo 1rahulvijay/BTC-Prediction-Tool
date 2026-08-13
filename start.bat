@@ -51,18 +51,18 @@ REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sa
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
 REM head (big-move/up/down/drop/activity and path/round-state forecasters). Set the window here and every
 REM model retrains on it. Long windows are resumable through the daily-file cache; the current
-REM 1000d window reuses the existing source-complete backfills and remains a long training run.
-REM 1000d current executable window (operator choice 2026-07-31).
+REM 900d window reuses the existing source-complete backfills and remains a long training run.
+REM 900d current executable window (operator choice 2026-08-13).
 REM Do not describe this artifact as a 1265d, 1500d, or full-2022-bear model. Made safer by the bps-label upgrade
 REM (labels remain comparable across price levels) and the
 REM VALIDATED-REFIT flow (each head measures on its untouched recent tail,
 REM then -- gate permitting -- refits production on all rows with rotated calibration; candidate test
-REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~20 recent days
-REM genuinely unseen by the candidates. Existing derived sources already exceed 1000d, so the launcher
+REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~18 recent days
+REM genuinely unseen by the candidates. Existing derived sources already exceed 900d, so the launcher
 REM can rebuild from local coverage; files are cached and reused by all builders afterwards.
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=1000"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=900"
 REM A retrain builds its in-memory sequences from the full requested window. Frozen launchers
 REM override this to a small serving-only warm-up; start.bat must never inherit that override.
 set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
@@ -158,7 +158,7 @@ REM freeze during each ~4.6h retrain. To improve the model, retrain manually (PO
 REM or set this to 0 briefly) when you can leave it overnight with the IDE/browser closed.
 REM FROZEN means no scheduled retraining after this deliberate startup build. The current saved
 REM v11 model is incompatible with v14, so the missing completion marker forces one evaluated
-REM 1,000d replacement despite freeze mode. Later boots load the completed compatible bundle.
+REM 900d replacement despite freeze mode. Later boots load the completed compatible bundle.
 set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
@@ -191,7 +191,7 @@ if not defined BTC_LGB_DEVICE set "BTC_LGB_DEVICE=cpu"
 REM Reject model/head artifacts whose requested days, source/data hash, end timestamp,
 REM feature schema, or artifact bytes differ from the current matrix contract.
 REM
-REM 2026-07-26 -- WHY THIS IS 0 UNTIL THE CURRENT 1000d BUNDLE EXISTS:
+REM 2026-07-26 -- WHY THIS WAS 0 UNTIL A CURRENT LONG-WINDOW BUNDLE EXISTED:
 REM   Sidecar manifests are written only by the NEW training path. Every artifact currently on
 REM   disk predates it, so with strict=1 all six are refused at load and the app serves with
 REM   NO heads at all (measured: P(hold), path, fade, signed-quantile, round-state, keepers).
@@ -199,7 +199,7 @@ REM   Back-filling manifests is NOT a fix: artifact_compatibility compares every
 REM   CURRENT training identity, so a manifest recording their real 400d provenance is refused
 REM   anyway, and one recording the current identity would be a lie about what trained them.
 REM   The honest state is "identity is not yet enforced because no artifact can satisfy it".
-REM   The 1000d run writes real manifests; AFTER it completes, set this back to 1 and the gate
+REM   A complete retrain writes real manifests; after it completes, the gate
 REM   becomes meaningful instead of merely fatal. Verify with:
 REM     python backend/verify_artifact_identity.py
 REM   2026-08-04 (P0-8): the reasoning above described a TEMPORARY state that became the
@@ -256,7 +256,7 @@ if "%BTC_VALIDATE_STARTUP%"=="1" (
     exit /b 0
 )
 
-REM Long-window disk guard. The 1000d rebuild still needs working space for the temporary pruned
+REM Long-window disk guard. The 900d rebuild still needs working space for the temporary pruned
 REM sequence memmap, staged bundles and parquet rewrites even when source coverage already exists.
 for /f %%G in ('powershell -NoProfile -Command "[math]::Floor((Get-PSDrive -Name C).Free / 1GB)"') do set "BTC_FREE_DISK_GB=%%G"
 for /f %%G in ('powershell -NoProfile -Command "@(Get-ChildItem -LiteralPath '%BTC_DATA_DIR%\backfill_cache' -Filter 'BTCUSDT*aggTrades-*.csv' -File -ErrorAction SilentlyContinue).Count"') do set "BTC_BACKFILL_CACHE_FILES=%%G"
@@ -273,7 +273,7 @@ REM rebuild needs NO bulk download even with an empty cache. Three modes, each w
 REM   REBUILD     derived parquets already span the window  -> 80GB
 REM   RESUME      >=1000 daily CSVs cached                  -> 80GB
 REM   FIRST_BUILD neither                                   -> 300GB
-REM   python backend\preflight_longwindow.py --days 1000     (explain the current verdict)
+REM   python backend\preflight_longwindow.py --days 900      (explain the current verdict)
 REM   python backend\preflight_longwindow.py --selftest
 REM === ARTIFACT IDENTITY LAUNCH GATE (P0-8) ==============================
 REM Strict identity does NOT make the app refuse on its own. verify_artifact_identity is
@@ -568,8 +568,10 @@ echo [selftest] g. Collector evidence integrity - D1-D5:
 python backend\venues\test_collector_integrity.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_g
 echo [selftest] h. Strategy registry consistency:
+set "BTC_SELFTEST_CURRENT=python backend\research\audit_strategy_registry.py"
 python backend\research\audit_strategy_registry.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_h
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_current_documentation_contract.py"
 python backend\tests\test_current_documentation_contract.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_h
 echo [selftest] i. Challenger promotion gates - no ungated model replacement:
@@ -637,7 +639,7 @@ goto :selftest_abort
 echo [selftest] FAILED: python backend\venues\test_collector_integrity.py
 goto :selftest_abort
 :selftest_failed_h
-echo [selftest] FAILED: python backend\research\audit_strategy_registry.py
+echo [selftest] FAILED: %BTC_SELFTEST_CURRENT%
 goto :selftest_abort
 
 :selftest_failed_i

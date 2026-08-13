@@ -2,12 +2,12 @@
 
 Date: 2026-08-12  
 Scope: current `master`, reconciled against the three external audits supplied on 2026-08-12.  
-Operational target: one 1,000-day evaluated retrain, 98/2 temporal split, gated full-data refit,
+Operational target: one 900-day evaluated retrain, 98/2 temporal split, gated full-data refit,
 paper/shadow trading only.
 
 ## Honest Verdict
 
-The source tree is ready to **attempt** the 1,000-day retrain. This means the launcher preflight,
+The source tree is ready to **attempt** the 900-day retrain. This means the launcher preflight,
 invariant tests, data-coverage check, memory-bounded sequence path, artifact provenance, staged
 publication, paper-accounting contracts, and serving refusal paths execute successfully.
 
@@ -52,9 +52,9 @@ Real order routing remains unavailable and disabled.
     real query against the canonical DuckDB and requires both live prediction tables.
 14. **Datastore fallback:** an import/declaration failure could silently redirect persistence to a
     sibling `analytics.duckdb`. The canonical declaration now fails loudly instead of falling back.
-15. **Frozen boot fetched 1,000 days:** training identity overrode the intended 3-day live warm-up.
-    Training identity and serving warm-up are separate; `start.bat` uses 1,000/1,000, while frozen and
-    production launchers use 1,000-day identity with a 3-day warm-up.
+15. **Frozen boot fetched the full training window:** training identity overrode the intended 3-day
+    live warm-up. Training identity and serving warm-up are separate; `start.bat` uses 900/900,
+    while frozen and production launchers use 900-day identity with a 3-day warm-up.
 16. **Recorder duplicate identity:** duplicate detection matched a script basename from any checkout.
     Recorder processes now use and match the exact Python executable and absolute repository script.
 17. **Pyth resource lifetime:** the persistent HTTP session is explicitly closed on cancellation.
@@ -112,9 +112,9 @@ into the overnight path:
 
 ## What The Next `start.bat` Run Will Do
 
-1. Validate the 1,000-day configuration, disk, source coverage, and invariant suite.
+1. Validate the 900-day configuration, disk, source coverage, and invariant suite.
 2. Start forward-data recorders.
-3. Incrementally refresh/reuse cached sources and rebuild the 1,000-day research matrix.
+3. Incrementally refresh/reuse cached sources and rebuild the 900-day research matrix.
 4. Enforce matrix/training identity before fitting.
 5. Train specialist heads transactionally, one by one.
 6. Start the UI/backend and train the main candidate in the background.
