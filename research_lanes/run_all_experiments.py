@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LANES = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 DEFAULT_OUTPUT = DATA / "research" / "alpha_lab_campaigns"
+CANONICAL_REPORT = ROOT / "docs" / "active" / "STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md"
 
 
 PROPOSAL_COVERAGE = [
@@ -55,7 +56,7 @@ PROPOSAL_COVERAGE = [
     ("Capacity curve / capital efficiency", "Phase 5 #36; Phase 5B #80-81", "PARTIAL_DATA_BLOCKED"),
     ("Edge half-life / alpha decay", "Phase 5 #30; Phase 5B #49-50", "DATA_BLOCKED"),
     ("Alpha portfolio / opportunity auction", "Phase 5 #28-29; Phase 5B #80-81", "DATA_BLOCKED"),
-    ("Complete-set arbitrage", "Phase 5 #26; dedicated complete-set research", "PARTIAL_DATA_BLOCKED"),
+    ("Complete-set arbitrage", "POLY_FULLSET_ARB_V1", "TESTED_NEGLIGIBLE"),
     ("Last-seconds convergence / P(flip) / anchor touch", "Phase 5B #48,69-70; Phase 5C", "TESTED_DIAGNOSTIC"),
     ("Market-prior residual fair value", "POLY_MARKET_PRIOR_RESIDUAL_V1", "TESTED"),
     ("Buy now vs wait", "Phase 5 #33; Phase 5B #76", "TESTED"),
@@ -153,6 +154,49 @@ def _status_counts(payload: dict[str, Any]) -> Counter:
     return Counter(str(row.get("status") or "NO_REPORT") for row in payload.get("experiments", []))
 
 
+def _clean_cell(value: Any, limit: int = 220) -> str:
+    text = " ".join(str(value or "").replace("|", "/").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _experiment_ledger(
+    title: str,
+    suite: dict[str, Any],
+    run_root: Path,
+    suite_directory: str,
+) -> list[str]:
+    lines = [
+        f"### {title}",
+        "",
+        "| experiment | result | conclusion |",
+        "|---|---|---|",
+    ]
+    for row in suite.get("experiments", []):
+        report_value = row.get("report")
+        if report_value:
+            report_path = Path(report_value)
+        else:
+            report_path = run_root / suite_directory / str(row.get("experiment")) / "report.json"
+        payload: dict[str, Any] = {}
+        if report_path.is_file():
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+        experiment = payload.get("experiment_id") or row.get("experiment_id") or row.get("experiment")
+        status = payload.get("status") or row.get("status") or "NO_REPORT"
+        conclusion = payload.get("summary")
+        if not conclusion:
+            reasons = payload.get("reasons") or []
+            conclusion = reasons[0] if reasons else "No report was produced."
+        lines.append(
+            f"| `{_clean_cell(experiment, 100)}` | `{_clean_cell(status, 50)}` | "
+            f"{_clean_cell(conclusion)} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _read_alpha_metrics(run_root: Path) -> dict[str, Any]:
     result: dict[str, Any] = {}
     matrix = LANES / "matrix_lanes_results.json"
@@ -161,6 +205,12 @@ def _read_alpha_metrics(run_root: Path) -> dict[str, Any]:
         result["matrix_lanes"] = json.loads(matrix.read_text(encoding="utf-8"))
     if cost.is_file():
         result["cost_clearance"] = json.loads(cost.read_text(encoding="utf-8"))
+    prior = LANES / "polymarket_residual" / "results.json"
+    fullset = LANES / "poly_fullset_arb" / "results.json"
+    if prior.is_file():
+        result["pm_prior_comparison"] = json.loads(prior.read_text(encoding="utf-8"))
+    if fullset.is_file():
+        result["pm_fullset"] = json.loads(fullset.read_text(encoding="utf-8"))
     pm_dir = run_root / "polymarket_residual"
     metrics_path = pm_dir / "probability_metrics.csv"
     actions_path = pm_dir / "action_metrics.csv"
@@ -190,8 +240,10 @@ def _render_report(
     lines = [
         "# Standalone Alpha Laboratory - Complete Campaign",
         "",
-        f"Run: `{run_id}`  ",
-        f"Git: `{identity['commit']}` ({'dirty' if identity['dirty'] else 'clean at launch'})  ",
+        f"Run: `{run_id}`",
+        "",
+        f"Git: `{identity['commit']}` ({'dirty' if identity['dirty'] else 'clean at launch'})",
+        "",
         "Authority: `RESEARCH_ONLY`; no serving, paper, or live strategy was modified",
         "",
         "## Executive Verdict",
@@ -240,9 +292,22 @@ def _render_report(
         "source, execution arm, independent history, or settlement join needed by the frozen "
         "question was unavailable.",
         "",
-        "## New Alpha Lanes",
-        "",
     ])
+    lines.extend(_experiment_ledger("Phase 5 - all 42 results", phase5, run_root, "phase5"))
+    lines.extend(_experiment_ledger("Phase 5B - all 46 results", phase5b, run_root, "phase5b"))
+    phase5c = [row for row in commands if row["label"].startswith("phase5c_")]
+    lines.extend([
+        "### Phase 5C - all path diagnostics",
+        "",
+        "| diagnostic | process | reported conclusion |",
+        "|---|---|---|",
+    ])
+    for row in phase5c:
+        lines.append(
+            f"| `{row['label'].removeprefix('phase5c_')}` | "
+            f"{'PASS' if row['returncode'] == 0 else 'FAIL'} | {_clean_cell(row['last_line'])} |"
+        )
+    lines.extend(["", "## New Alpha Lanes", ""])
     cost = alpha.get("cost_clearance", {})
     if cost:
         lines.extend([
@@ -299,6 +364,25 @@ def _render_report(
             "- Verdict: **market remains champion; no residual promotion**.",
             "",
         ])
+    fullset = alpha.get("pm_fullset", {})
+    if fullset:
+        arb = fullset.get("fullset_arb", {})
+        maker = fullset.get("hedged_maker_upper_bound", {})
+        lines.extend([
+            "### Polymarket Complete Set and Maker Upper Bound",
+            "",
+            f"- Full-set all-in opportunities: {int(arb.get('n_executable', 0))}; rate "
+            f"{arb.get('pct_net_below_1', float('nan')):.3%}; theoretical top-of-book total "
+            f"${arb.get('executable_dollar_pnl_total', float('nan')):.2f} across "
+            f"{int(fullset.get('n_days', 0))} days.",
+            "- Verdict: mechanically real but economically negligible; stale/crossed-book "
+            "artifacts can only reduce the realizable total.",
+            f"- Two-sided maker upper-bound EV: "
+            f"{maker.get('two_sided_both_filled', {}).get('ev', float('nan')):+.4f} per share, "
+            "but both-leg fill probability, queue position and adverse-selection markout are "
+            "unobserved. This is **not a strategy result**.",
+            "",
+        ])
     lines.extend([
         "## Proposal Coverage",
         "",
@@ -347,11 +431,34 @@ def main() -> int:
     parser.add_argument("--maximum-rows", type=int, default=100_000)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
+        "--render-existing",
+        type=Path,
+        help="regenerate Markdown for an existing campaign without rerunning experiments",
+    )
+    parser.add_argument(
         "--skip-frozen-suites",
         action="store_true",
         help="run only the newer lanes; existing canonical frozen-suite results remain referenced",
     )
     args = parser.parse_args()
+
+    if args.render_existing:
+        run_root = args.render_existing.resolve()
+        summary = json.loads((run_root / "campaign_summary.json").read_text(encoding="utf-8"))
+        phase5 = _load_summary(Path(summary["phase5_summary"]))
+        phase5b = _load_summary(Path(summary["phase5b_summary"]))
+        alpha = dict(summary["alpha"])
+        alpha.update(_read_alpha_metrics(run_root))
+        report = _render_report(
+            str(summary["run_id"]), run_root, summary["identity"], summary["commands"],
+            phase5, phase5b, alpha, summary["inputs"],
+        )
+        report_path = run_root / "MASTER_RESULTS.md"
+        report_path.write_text(report, encoding="utf-8", newline="\n")
+        (LANES / "LATEST_RESULTS.md").write_text(report, encoding="utf-8", newline="\n")
+        CANONICAL_REPORT.write_text(report, encoding="utf-8", newline="\n")
+        print(f"Regenerated {report_path}")
+        return 0
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_root = args.output_root.resolve() / run_id
@@ -404,7 +511,13 @@ def main() -> int:
     commands.append(_run("matrix_lanes", [
         python, "research_lanes/run_matrix_lanes.py",
     ], run_root))
-    commands.append(_run("polymarket_residual", [
+    commands.append(_run("polymarket_prior_comparison", [
+        python, "research_lanes/polymarket_residual/run.py",
+    ], run_root))
+    commands.append(_run("polymarket_fullset_maker", [
+        python, "research_lanes/poly_fullset_arb/run.py",
+    ], run_root))
+    commands.append(_run("polymarket_residual_offset", [
         python, "research/polymarket_market_prior_residual_v1/run.py",
         "--snapshots", str(snapshots),
         "--settlements", str(settlements),
@@ -439,6 +552,7 @@ def main() -> int:
     report_path = run_root / "MASTER_RESULTS.md"
     report_path.write_text(report, encoding="utf-8", newline="\n")
     (LANES / "LATEST_RESULTS.md").write_text(report, encoding="utf-8", newline="\n")
+    CANONICAL_REPORT.write_text(report, encoding="utf-8", newline="\n")
     (LANES / "latest_run.json").write_text(
         json.dumps({"run_id": run_id, "run_root": str(run_root), "report": str(report_path)}, indent=2)
         + "\n",

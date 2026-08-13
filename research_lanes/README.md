@@ -6,7 +6,7 @@ and must earn its way into the app rather than being wired in because a metric l
 **Nothing in the serving path may import from here, and no lane may import serving code.**
 Verified in both directions.
 
-## Status — 7 lanes run 2026-08-13
+## Status — 12 lanes run 2026-08-13
 
 | lane | question | verdict | report |
 |---|---|---|---|
@@ -60,6 +60,44 @@ is the structurally right move now that the market is measured as the stronger f
    Everything in that lane is an **upper bound**: guaranteed fill, no adverse selection, no
    queue. Decisive only if it had lost. It did not, so the next step is measuring toxicity —
    shadow-post quotes, record real fills, and mark out the fill price at +1s/+5s/+30s.
+
+---
+
+## Batch 2 — five further lanes, 2026-08-13
+
+Appended, not revised. Full detail in [BATCH_2_REPORT.md](BATCH_2_REPORT.md).
+
+| lane | verdict |
+|---|---|
+| `MARKET_DISAGREEMENT_RESOLUTION_V1` | **CLOSE** — model loses disagreements, worse the bigger |
+| `MFE_MAE_DISTRIBUTION_V1` | **CLOSES A CAVEAT** — payoff symmetric, stops/targets don't help |
+| `STATE_VALUE_ATLAS_V1` | **UNDERPOWERED** — no cell separates |
+| `POLY_STALE_QUOTE_V1` | **NO EFFECT**, and barely testable with this capture |
+| `IMPACT_ASYMMETRY_V1` | **REAL, NEGLIGIBLE** — 0.056 bps |
+
+**The standout.** When the model disagrees with the market, it wins less than half the time at
+every magnitude, and less often as the gap widens:
+
+| \|residual\| | model win rate | 95% CI |
+|---|---:|---|
+| 0.02-0.05 | 0.397 | [0.378, 0.417] |
+| 0.05-0.08 | 0.353 | [0.330, 0.375] |
+| 0.08-0.12 | 0.333 | [0.303, 0.360] |
+| 0.12-0.20 | 0.309 | [0.271, 0.352] |
+| 0.20-1.00 | 0.331 | [0.266, 0.399] |
+
+No interval touches 0.5. A 15-cent disagreement means the market is right ~7 times in 10. A
+large model-vs-market gap is **evidence against the model**, which is why any residual model
+must anchor on the market price and be regularised hard toward it.
+
+**A batch-1 caveat is now closed.** `BINANCE_COST_CLEARANCE_V1` left "asymmetric payoffs" open
+as a possible escape. Measured: mean MFE **7.97** bps, mean MAE **7.99** bps, touch-both 2.9%.
+Symmetric. A tight stop with a wide target does not rescue cost clearance.
+
+**A method note worth keeping.** The state-value atlas produced five cells with 9-13 cent gaps
+— all with intervals spanning zero, on 37-124 rounds each. They are the largest of 43 noisy
+estimates, so the maximum is biased upward. Point estimates alone would have read as five
+confident edges. None survives its interval.
 
 ## The bar
 

@@ -1,6 +1,6 @@
 # Standalone Alpha Laboratory - Complete Campaign
 
-Run: `20260813T060341Z`  
+Run: `20260813T060933Z`  
 Git: `582a343acf04e7c1d47e8ee168259780920de987` (dirty)  
 Authority: `RESEARCH_ONLY`; no serving, paper, or live strategy was modified
 
@@ -14,26 +14,26 @@ Accuracy or AUC alone is not treated as profit. A test is promotable only when i
 
 | stage | result | seconds | log |
 |---|---:|---:|---|
-| phase5_42 | FAIL | 108.6 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5_42.log` |
-| phase5b_46 | PASS | 131.0 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5b_46.log` |
-| phase5c_brier_decomposition_market_vs_model | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_brier_decomposition_market_vs_model.log` |
-| phase5c_effect_size_to_cost_ratio | PASS | 0.3 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_effect_size_to_cost_ratio.log` |
-| phase5c_effective_independent_sample_size | PASS | 17.0 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_effective_independent_sample_size.log` |
-| phase5c_jump_vs_diffusion_decomposition | PASS | 1.1 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_jump_vs_diffusion_decomposition.log` |
-| phase5c_last_crossing_timing_distribution | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_last_crossing_timing_distribution.log` |
-| phase5c_mfe_mae_joint_distribution | PASS | 1.6 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_mfe_mae_joint_distribution.log` |
-| phase5c_near_settlement_terminal_margin | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_near_settlement_terminal_margin.log` |
-| phase5c_probability_monotonicity | PASS | 0.8 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_probability_monotonicity.log` |
-| phase5c_volatility_clustering_half_life | PASS | 0.9 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/phase5c_volatility_clustering_half_life.log` |
-| binance_cost_clearance | PASS | 25.4 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/binance_cost_clearance.log` |
-| matrix_lanes | PASS | 9.1 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/matrix_lanes.log` |
-| polymarket_residual | PASS | 8.0 | `data/research/alpha_lab_campaigns/20260813T060341Z/logs/polymarket_residual.log` |
+| phase5_42 | PASS | 102.9 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5_42.log` |
+| phase5b_46 | PASS | 128.1 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5b_46.log` |
+| phase5c_brier_decomposition_market_vs_model | PASS | 0.6 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_brier_decomposition_market_vs_model.log` |
+| phase5c_effect_size_to_cost_ratio | PASS | 0.3 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_effect_size_to_cost_ratio.log` |
+| phase5c_effective_independent_sample_size | PASS | 16.4 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_effective_independent_sample_size.log` |
+| phase5c_jump_vs_diffusion_decomposition | PASS | 0.9 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_jump_vs_diffusion_decomposition.log` |
+| phase5c_last_crossing_timing_distribution | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_last_crossing_timing_distribution.log` |
+| phase5c_mfe_mae_joint_distribution | PASS | 1.4 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_mfe_mae_joint_distribution.log` |
+| phase5c_near_settlement_terminal_margin | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_near_settlement_terminal_margin.log` |
+| phase5c_probability_monotonicity | PASS | 0.7 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_probability_monotonicity.log` |
+| phase5c_volatility_clustering_half_life | PASS | 0.9 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/phase5c_volatility_clustering_half_life.log` |
+| binance_cost_clearance | PASS | 23.0 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/binance_cost_clearance.log` |
+| matrix_lanes | PASS | 8.7 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/matrix_lanes.log` |
+| polymarket_residual | PASS | 7.3 | `data/research/alpha_lab_campaigns/20260813T060933Z/logs/polymarket_residual.log` |
 
 ## Frozen Suite Results
 
 | suite | experiments | status counts |
 |---|---:|---|
-| Phase 5 | 42 | BLOCKED_DATA=28, FAIL_NO_EDGE=1, FAIL_UNSTABLE=1, INSUFFICIENT_SAMPLE=11, NO_REPORT=1 |
+| Phase 5 | 42 | BLOCKED_DATA=29, FAIL_NO_EDGE=1, FAIL_UNSTABLE=1, INSUFFICIENT_SAMPLE=11 |
 | Phase 5B | 46 | BLOCKED_DATA=20, FAIL_NO_EDGE=7, FAIL_UNSTABLE=17, INSUFFICIENT_SAMPLE=2 |
 
 These are real-data campaign statuses. `BLOCKED_DATA` is an honest result: the causal source, execution arm, independent history, or settlement join needed by the frozen question was unavailable.
@@ -56,9 +56,9 @@ The measured result remains structural: below roughly 30 minutes, ordinary held-
 
 The previous zero-overlap conclusion was a data-identity bug: it queried an older DuckDB table instead of the paired recorder exports. The corrected join uses only Polymarket CLOB/Gamma outcomes.
 
-- Market prior: Brier 0.1016, log loss 0.3174.
-- Full residual: Brier 0.1140, log loss 0.3692.
-- Residual executable actions: 189; net PnL +0.300 shares; round/day-block lower bound -0.0589 per action.
+- Market prior: Brier 0.1017, log loss 0.3177.
+- Full residual: Brier 0.1160, log loss 0.3804.
+- Residual executable actions: 191; net PnL +0.265 shares; round/day-block lower bound -0.0583 per action.
 - Verdict: **market remains champion; no residual promotion**.
 
 ## Proposal Coverage
@@ -108,10 +108,10 @@ Every distinct proposal in the three supplied reviews is mapped below. A proposa
 
 ## Data Identity
 
-- PM snapshot rows at copy: 154,370
-- PM settlement rows at copy: 3,193
-- PM snapshots SHA-256: `680b254723726076a50389d2415bc09950be13504e77e222accf315a1bbb80aa`
-- PM settlements SHA-256: `add240cb8b7482634c4700a4c23c561003e42d633bade3b2db807da045d0e153`
+- PM snapshot rows at copy: 154,743
+- PM settlement rows at copy: 3,196
+- PM snapshots SHA-256: `d674656f98686f82687e97e62dd373097f905fa21a54b094d438585aca91bb1e`
+- PM settlements SHA-256: `44886948ca623665c6341c1c240c08b804ad329f39b56480a386b8864ff7dd71`
 - Live DuckDB databases were not stopped or copied. Lock-blocked tests fail closed.
 
 ## What To Do Next
