@@ -99,6 +99,14 @@ Symmetric. A tight stop with a wide target does not rescue cost clearance.
 estimates, so the maximum is biased upward. Point estimates alone would have read as five
 confident edges. None survives its interval.
 
+## Complete test inventory
+
+[TEST_INVENTORY.md](TEST_INVENTORY.md) lists **every** experiment proposed across both design
+documents: 12 that ran with linked reports, 24 blocked by data the repo has never captured, and
+16 runnable but not yet reached. It also records why the Polymarket atlas **cannot** be
+backfilled from any API — historical executable bid/ask and L2 depth are not published
+products, so only forward recording produces them.
+
 ## The bar
 
 A lane is promotable only when the **lower confidence bound of net EV is positive** — not when
