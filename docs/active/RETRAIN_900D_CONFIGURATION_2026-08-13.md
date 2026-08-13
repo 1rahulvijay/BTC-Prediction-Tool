@@ -1,12 +1,13 @@
 # 900-Day Retrain Configuration
 
 Date: 2026-08-13  
-Status: configured and validated before launch; retrain not started by this change.
+Status: validated but deferred until the 30-day pipeline smoke completes.
 
 ## Decision
 
-The next complete training run uses **900 days**, not 1,000 days. This is a committed launcher
-default, so opening a new shell cannot silently restore the old window.
+The release-target training run uses **900 days**, not 1,000 days. On 2026-08-13 the operator chose
+to run a 30-day full-pipeline smoke first. The current `start.bat` default is therefore temporarily
+30 days; this document remains the exact restoration contract after the smoke succeeds.
 
 ## Canonical Runtime Contract
 

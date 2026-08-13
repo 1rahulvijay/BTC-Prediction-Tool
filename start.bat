@@ -51,28 +51,30 @@ REM validate the v7 pipeline + heads. Bump to 60 for the keeper once 30 looks sa
 REM SINGLE KNOB: this also drives the 1m research matrix (step c2) and therefore EVERY specialist
 REM head (big-move/up/down/drop/activity and path/round-state forecasters). Set the window here and every
 REM model retrains on it. Long windows are resumable through the daily-file cache; the current
-REM 900d window reuses the existing source-complete backfills and remains a long training run.
-REM 900d current executable window (operator choice 2026-08-13).
+REM 30d is the current full-pipeline SMOKE window (operator choice 2026-08-13). It exercises
+REM builders, every required head, main training, holdout gates, staged publication and reload
+REM before committing the laptop to the planned 900d run. It is not a production-quality window.
 REM Do not describe this artifact as a 1265d, 1500d, or full-2022-bear model. Made safer by the bps-label upgrade
 REM (labels remain comparable across price levels) and the
 REM VALIDATED-REFIT flow (each head measures on its untouched recent tail,
 REM then -- gate permitting -- refits production on all rows with rotated calibration; candidate test
-REM metrics are preserved in every bundle as the honest record). The 98/2 split leaves ~18 recent days
-REM genuinely unseen by the candidates. Existing derived sources already exceed 900d, so the launcher
+REM metrics are preserved in every bundle as the honest record). This smoke run uses 95/5 so its
+REM holdout has enough rows to exercise the unchanged 1,000-row promotion gate. The later 900d run
+REM must restore 0.98. Existing derived sources already exceed 900d, so that later launcher run
 REM can rebuild from local coverage; files are cached and reused by all builders afterwards.
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
-if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=900"
+set "BTC_HISTORICAL_DAYS=30"
 REM A retrain builds its in-memory sequences from the full requested window. Frozen launchers
 REM override this to a small serving-only warm-up; start.bat must never inherit that override.
 set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
 REM Keep model provenance separate from the small candle window used by instant/production boot.
-if not defined BTC_MODEL_TRAINING_DAYS set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
+set "BTC_MODEL_TRAINING_DAYS=%BTC_HISTORICAL_DAYS%"
 REM === DATA BACKFILL WINDOW (DAYS) =======================================
 REM ONE knob for ALL three offline data builders (trade-features, persistence, cross-venue).
 REM Defaults to the training window so a single change covers both. Want 60/90 days of data?
 REM set BTC_BACKFILL_DAYS=60  (or 90) here or in the environment — all scripts follow it.
-if not defined BTC_BACKFILL_DAYS set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
+set "BTC_BACKFILL_DAYS=%BTC_HISTORICAL_DAYS%"
 REM One-shot full retrain: marker is written only after all heads and the main ensemble save.
 set "BTC_RETRAIN_COMPLETION_MARKER=%BTC_DATA_DIR%\saved_models\full_retrain_%BTC_HISTORICAL_DAYS%d_complete.json"
 if "%BTC_FORCE_FULL_RETRAIN%"=="1" if exist "%BTC_RETRAIN_COMPLETION_MARKER%" del /q "%BTC_RETRAIN_COMPLETION_MARKER%"
@@ -103,7 +105,7 @@ REM A holdout is MANDATORY — code clamps this to [0.50, 0.98]. 0.95 = "use alm
 REM data" (operator 2026-06-14, wanted ~100%) while keeping ~5% recent rows to keep the
 REM expected-drop/up bands honest. Literal 1.0 would make the bands too narrow + backtest
 REM in-sample, so it is intentionally not allowed.
-if not defined BTC_TRAIN_SPLIT_FRAC set "BTC_TRAIN_SPLIT_FRAC=0.98"
+set "BTC_TRAIN_SPLIT_FRAC=0.95"
 REM === EVALUATE -> FULL REFIT -> LIVE SHADOW =============================
 REM The 98%% candidate must pass its untouched 2%% tail before a second model is fit on
 REM all rows. The full-data model is staged, reloaded, smoke-tested, then installed as a
@@ -158,7 +160,8 @@ REM freeze during each ~4.6h retrain. To improve the model, retrain manually (PO
 REM or set this to 0 briefly) when you can leave it overnight with the IDE/browser closed.
 REM FROZEN means no scheduled retraining after this deliberate startup build. The current saved
 REM v11 model is incompatible with v14, so the missing completion marker forces one evaluated
-REM 900d replacement despite freeze mode. Later boots load the completed compatible bundle.
+REM 30d smoke replacement despite freeze mode. Later boots load it only for smoke validation;
+REM it must be superseded by the planned 900d/0.98 release before deployment evaluation.
 set "BTC_FREEZE_MODEL=1"
 REM Heavy prediction loop interval (s). 3 = ~33%% less inference CPU than 2, with no
 REM visible UI change (live price/charts/Polymarket run on separate fast tickers).
@@ -246,7 +249,7 @@ REM set "BTC_SGD_MAX_ITER=250"
 REM set "BTC_QUANTILE_REGIME_SCOPE=NONE"
 
 if "%BTC_VALIDATE_STARTUP%"=="1" (
-    echo [validate] days=%BTC_HISTORICAL_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
+    echo [validate] days=%BTC_HISTORICAL_DAYS% model_days=%BTC_MODEL_TRAINING_DAYS% backfill=%BTC_BACKFILL_DAYS% split=%BTC_TRAIN_SPLIT_FRAC%
     echo [validate] paper_race=$%BTC_PAPER_COMPETITION_BANKROLL_USD% each binance_paper=%BTC_ENABLE_BINANCE_PAPER% auto_start=%BTC_BINANCE_PAPER_AUTO_START%
     echo [validate] paper_race_db=%BTC_BINANCE_PAPER_DB% poly=%BTC_PAPER_COMPETITION_POLY_RULE% binance=%BTC_PAPER_COMPETITION_BINANCE_STRATEGY%
     echo [validate] force_heads=%BTC_FORCE_HEAD_RETRAIN% force_main=%BTC_FORCE_MAIN_RETRAIN% frozen=%BTC_FREEZE_MODEL%

@@ -28,21 +28,16 @@ def main() -> int:
     assert 'set "btc_enable_live_trading=0"' in text
     assert 'set "btc_binance_live=0"' in text
     assert 'set "btc_polymarket_live=0"' in text
-    assert 'if not defined btc_historical_days set "btc_historical_days=900"' in training
+    assert 'set "btc_historical_days=30"' in training
     assert 'set "btc_serving_warmup_days=%btc_historical_days%"' in training
-    assert (
-        'if not defined btc_model_training_days '
-        'set "btc_model_training_days=%btc_historical_days%"'
-    ) in training
-    assert (
-        'if not defined btc_backfill_days '
-        'set "btc_backfill_days=%btc_historical_days%"'
-    ) in training
+    assert 'set "btc_model_training_days=%btc_historical_days%"' in training
+    assert 'set "btc_backfill_days=%btc_historical_days%"' in training
     assert (
         r'set "btc_retrain_completion_marker=%btc_data_dir%\saved_models\full_retrain_'
         r'%btc_historical_days%d_complete.json"'
     ) in training
-    assert 'set "btc_model_training_days=900"' in instant
+    assert 'set "btc_train_split_frac=0.95"' in training
+    assert 'set "btc_model_training_days=30"' in instant
     assert 'set "btc_model_training_days=900"' in text
     assert "btc_model_training_days=900" in production_env
     assert 'set "btc_python_exe=%python_exe%"' in text

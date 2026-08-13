@@ -35,7 +35,7 @@ The application is **not currently model-serving ready**:
 - the saved main ensemble is incompatible with the current v14 contract;
 - all 11 standalone serving artifacts lack current identity manifests;
 - calibration is inactive while compatible source models are unavailable;
-- the 900-day retrain and validated full-refit shadow flow have not completed.
+- the temporary 30-day full-pipeline smoke retrain has not completed; the 900-day release follows it.
 
 The application is **not real-money production ready**:
 
@@ -70,7 +70,7 @@ forecast is guaranteed correct or a strategy is profitable.
 | live direction horizons | 5m and 15m |
 | default deep seat | TCN |
 | main architecture | `2026-07-31-v14-pruned63-864622d65e85-2horizon-5-15-rf-persist-split98-classbal-simw-tcnbal-purged-vrts-session-136-tcn` |
-| configured historical window | 900 days |
+| configured historical window | 30 days |
 | evaluation split | recent 2%, after purging |
 | production refit | all accepted data after the untouched-tail gate |
 | current serving status | `DEGRADED_MODEL_BLOCKED` |
@@ -307,7 +307,8 @@ runs; `audit_research_claims.py` currently flags 10 of 31 legacy scripts for exp
 
 **Why not ready:** saved artifacts predate v4/v3 semantics and current manifests.
 
-**How:** run the 900-day retrain, evaluate the purged recent 2%, generate OOF calibration, refit
+**How:** first run the 30-day/95-5 pipeline smoke; then restore 900-day/98-2, evaluate the purged
+recent 2%, generate OOF calibration, refit
 accepted production models on all data, write staged verified bundles, smoke-test, and keep the
 full-data main refit in live shadow until its forward promotion gate passes.
 
@@ -396,4 +397,5 @@ gate and staged smoke test. Do not manually copy artifacts into the active direc
 python backend\production_readiness.py --mode paper
 ```
 
-The 900-day training run is a prerequisite, not proof of accuracy or profit.
+The 30-day run proves pipeline execution only. The later 900-day training run is itself a
+prerequisite, not proof of accuracy or profit.

@@ -2,7 +2,8 @@
 
 ## Verdict
 
-The source tree is ready for the deliberate **900-day retrain** selected on 2026-08-13. The fixes
+The source tree is ready for a deliberate **30-day full-pipeline smoke retrain** selected on
+2026-08-13. A 900-day evaluated release remains the next step after the smoke succeeds. The fixes
 are committed on local `master`; the branch is two commits ahead of `origin/master`. It is **not
 yet ready to serve as a production decision service**, because the current
 artifacts are legacy/incompatible and the deployment evidence gates are correctly closed.
@@ -129,7 +130,8 @@ All are registered in GitHub invariants and the Windows `start.bat` selftest gat
 | production HTTP/WebSocket surface | passed; readiness fails closed, admin mutation and foreign origins refused |
 | Vite production build | passed |
 | `npm audit --audit-level=high` | 0 vulnerabilities |
-| 900-day resource/data preflight | passed; REBUILD mode, source coverage exceeds the request |
+| 30-day smoke preflight | passed; `SHORT_WINDOW`, no long-build disk gate required |
+| planned 900-day resource/data preflight | passed; `REBUILD`, source coverage exceeds the request |
 
 The standalone real-fit smoke printed its final explicit `PASS (13 checks)` after completing
 temporary-directory cleanup, but the external PTY wrapper reported status 1 after the final
@@ -141,9 +143,9 @@ second clean process exit and not used as the sole retrain-readiness evidence.
 
 The validated launcher state is:
 
-- `BTC_HISTORICAL_DAYS=900`
-- `BTC_MODEL_TRAINING_DAYS=900`
-- `BTC_TRAIN_SPLIT_FRAC=0.98`
+- `BTC_HISTORICAL_DAYS=30`
+- `BTC_MODEL_TRAINING_DAYS=30`
+- `BTC_TRAIN_SPLIT_FRAC=0.95`
 - no completion marker, so heads and the main model are forced once;
 - specialist heads train transactionally in a staging bundle;
 - the active bundle swaps only after required heads and strict manifests pass;
@@ -169,14 +171,16 @@ Current diagnostics correctly report:
 These are not reasons to weaken the checks. Required actions are:
 
 1. Commit this exact code.
-2. Run `start.bat` and allow the 900-day retrain to finish.
-3. Confirm the completion marker exists and strict artifact checks pass.
-4. Accumulate fresh bundle-attributed paper outcomes and recorder evidence.
-5. Retrain/promote complete-trade champions only through their separate evidence gates.
-6. Restore the missing liquidation stream or keep liquidation-dependent research blocked.
-7. Create `.venv-prod` (or `.venv`) from pinned requirements and set distinct 32+ character
+2. Run `start.bat` and allow the 30-day pipeline smoke to finish.
+3. Confirm the 30-day marker, staged artifacts, strict load and live inference all work.
+4. Restore 900 days with a 0.98 split, rerun validation, and complete the evaluated release.
+5. Accumulate fresh 900-day-bundle-attributed paper outcomes and recorder evidence.
+6. Retrain/promote complete-trade champions only through their separate evidence gates.
+7. Restore the missing liquidation stream or keep liquidation-dependent research blocked.
+8. Create `.venv-prod` (or `.venv`) from pinned requirements and set distinct 32+ character
    `BTC_ADMIN_TOKEN` and `BTC_CONTROL_TOKEN` values outside the repository.
-8. Run `start_production.bat`; do not bypass a failed readiness item.
+9. Run `start_production.bat`; do not bypass a failed readiness item. It remains pinned to the
+   900-day artifact identity and rejects the temporary smoke model.
 
 ## Accuracy and profitability boundary
 
