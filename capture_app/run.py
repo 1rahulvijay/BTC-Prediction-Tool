@@ -25,6 +25,9 @@ sys.path.insert(0, str(APP))
 from recorder.storage import (  # noqa: E402
     dir_size_bytes, enforce_cap, is_archived, mark_archived, partitions, write_status,
 )
+from recorder.futures import (  # noqa: E402
+    futures_depth, futures_trades, liquidations, mark_funding, open_interest,
+)
 from recorder.settlements import poll_settlements  # noqa: E402
 from recorder.streams import binance_depth, binance_trades, polymarket_books  # noqa: E402
 
@@ -50,6 +53,22 @@ async def _record() -> int:
         tasks.append(binance_depth(sym, DATA, stop))
     if CONFIG.get("streams", {}).get("binance_trades", True):
         tasks.append(binance_trades(sym, DATA, stop))
+    # FUTURES. Separate host from spot, and the instrument the paper lane actually trades.
+    # Five blocked lanes need data that exists only here; spot alone would leave them blocked
+    # while looking like progress.
+    S = CONFIG.get("streams", {})
+    if S.get("futures_depth", True):
+        tasks.append(futures_depth(sym, DATA, stop))
+    if S.get("futures_trades", True):
+        tasks.append(futures_trades(sym, DATA, stop))
+    if S.get("futures_mark", True):
+        tasks.append(mark_funding(sym, DATA, stop))
+    if S.get("futures_liquidations", True):
+        tasks.append(liquidations(DATA, stop,
+                                  symbol_filter=CONFIG.get("liquidation_symbol_filter")))
+    if S.get("futures_open_interest", True):
+        tasks.append(open_interest(sym, DATA, stop,
+                                   int(CONFIG.get("open_interest_poll_seconds", 60))))
     if CONFIG.get("streams", {}).get("polymarket_book", True):
         tasks.append(polymarket_books(DATA, stop))
     # Settlements run in the SAME process as the quotes deliberately. Two jobs with independent
@@ -87,8 +106,9 @@ def status() -> int:
         return 1
     now, bad = time.time(), []
     print(f"{'stream':<22}{'rows':>12}{'files':>8}{'gaps':>7}{'age':>9}  state")
-    for name in ("binance_depth", "binance_trades", "polymarket_book",
-                 "polymarket_settlement"):
+    for name in ("binance_depth", "binance_trades", "futures_depth", "futures_trades",
+                 "futures_mark", "futures_liquidations", "futures_open_interest",
+                 "polymarket_book", "polymarket_settlement"):
         p = STATE / f"{name}.json"
         if not p.exists():
             print(f"{name:<22}{'-':>12}{'-':>8}{'-':>7}{'-':>9}  NEVER_STARTED")

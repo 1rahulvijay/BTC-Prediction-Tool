@@ -9,7 +9,14 @@
     "binance_depth": true,
     "binance_trades": true,
     "polymarket_book": true,
-    "polymarket_settlement": true
+    "polymarket_settlement": true,
+    "futures_depth": true,
+    "futures_trades": true,
+    "futures_mark": true,
+    "futures_liquidations": true,
+    "futures_open_interest": true
   },
-  "settlement_poll_seconds": 300
+  "settlement_poll_seconds": 300,
+  "liquidation_symbol_filter": null,
+  "open_interest_poll_seconds": 60
 }

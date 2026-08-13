@@ -12,26 +12,36 @@ program that happens to live in the same repository.
 
 ## Measured, not estimated
 
-A 60-second live capture against Binance:
+Rates from live captures this session. **All nine streams:**
 
-| stream | rows/min | bytes/row | |
-|---|---:|---:|---|
-| `binance_depth` | 8,357 | 6.8 | zstd parquet |
-| `binance_trades` | 210 | 25.3 | |
+| stream | rows/min | MB/day |
+|---|---:|---:|
+| `futures_depth` | 31,173 | **305** |
+| `polymarket_book` | ~2,000 | 130 |
+| `binance_depth` (spot) | 8,357 | 82 |
+| `futures_trades` | ~300 | 11 |
+| `binance_trades` (spot) | 210 | 8 |
+| `futures_mark` | 60 | 3 |
+| `futures_liquidations`, `futures_open_interest`, `polymarket_settlement` | low | <1 |
+| **TOTAL** | | **~539 MB/day** |
 
-| projection | |
-|---|---:|
-| **90 MB / day** | depth + trades, BTCUSDT |
-| **2.7 GB / 30 days** | |
-| **8.1 GB / 90 days** | |
-| **~278 days** | retained locally on 30 GB with 5 GB headroom |
+| horizon | size | |
+|---|---:|---|
+| 30 days | 16.2 GB | fits |
+| 60 days | 32.4 GB | **exceeds a 30 GB disk** |
+| 90 days | 48.5 GB | |
 
-**Full-fidelity diff L2 fits comfortably in the free tier.** The 500 GB/quarter figure people
-quote is for all symbols and uncompressed; one symbol with zstd is two orders of magnitude
-smaller. There is no reason to throttle.
+**A 25 GB cap holds about 46 days locally.** So the 2–3 month target is reachable only with
+rotation to object storage — which is what `--archive-older-than` plus the disk guard are for.
+Upload weekly, mark archived, let the guard reclaim. The data is never lost; it just stops
+living on the box.
 
-Polymarket books add on top and vary with how many rounds are live; it is small relative to
-depth.
+Dropping spot depth saves 82 MB/day and buys ~9 more days. Not worth it: perp-spot basis needs
+both legs, and basis is an input to several open lanes.
+
+**Full-fidelity diff L2 is still the right call.** Throttling would halve the volume and
+permanently foreclose fill inference, which is the one open question left. Rotation solves
+capacity; throttling solves nothing and costs the answer.
 
 ## Run it
 
@@ -156,8 +166,47 @@ than modelling:
 
 | stream | unblocks |
 |---|---|
+### Verified on live data
+
+| check | result |
+|---|---|
+| spot depth sequencing | 0 gaps over 95s |
+| futures depth sequencing | 0 gaps over 45s **after fixing the `pu` rule** |
+| **book reconstruction, futures** | 1,043 bid / 1,006 ask levels, best 63,850.1 / 63,850.2, **not crossed** |
+| **book reconstruction, spot** | 111 bid / 100 ask levels, spread 0.01, **not crossed** |
+| partition rotation | 3 hour-partitions, archived-only deletion, `keep_hours` honoured |
+| settlement logic | 13 checks — parsing, six refusal paths, write-once across restart |
+
+Replaying the recorded diffs produces a coherent, uncrossed book. That is the prerequisite for
+fill inference, and it is now demonstrated rather than assumed.
+
+**Futures continuity uses `pu`, not the spot rule.** On spot, consecutive events satisfy
+`U == prev_u + 1`. On USD-M futures they do not — the stream carries an explicit `pu` and the
+contract is `pu == prev_u`. The first version applied the spot rule to futures and reported
+**962 gaps in 95 seconds that did not exist**, which would have made every futures book look
+unusable. Measured on a live message pair: spot rule `False`, `pu` rule `True`. Fixed, and gaps
+went 962 → 0.
+
+### Not verified from the dev machine
+
+`futures_trades` (`@aggTrade`) and `futures_mark` (`@markPrice@1s`) **time out from this
+network**, in isolation, while `futures_depth` on the same host works. The stream names match
+Binance's documented format and the code path is shared with streams that do work, so this looks
+like a local/regional block rather than a defect — but it is unproven. **Confirm on the GCP box**
+that both show climbing row counts in `--status`; if they stay at zero while `futures_depth`
+climbs, check `state/futures_*.json` for `last_error`.
+
+Polymarket is in the same position: Gamma returns 403 here, so discovery and settlement parsing
+are logic-tested only.
+
+## What each stream unblocks
+
 | `binance_depth` + `binance_trades` | fill inference — the measurement that decides `HEDGED_POLY_MM_V1`, the only lane whose upper bound has not failed. Also order-flow surprise, book elasticity, replenishment, vacuum distance, cancellation toxicity |
 | `polymarket_book` + `polymarket_settlement` | the state-value atlas (underpowered at 10 days), the residual re-run, any second-era check, executable size for full-set arb. **Recorded together, which is the fix for the zero-intersection failure** |
+| `futures_liquidations` | `LIQUIDATION_EXHAUSTION_V1` |
+| `futures_open_interest` | `POSITIONING_STATE_MACHINE_V1`, `FUNDING_OI_CROWDING_V1` |
+| `futures_mark` | `FUNDING_BASIS_CARRY_V1` (the actual rate and its **next funding time**, read not assumed), `MARK_INDEX_LAST_DISLOCATION_V1` |
+| `futures_depth` + `binance_depth` | `MICROBASIS_REVERSION_V1` — a perp-spot spread needs both legs |
 
 ## Configuration
 
