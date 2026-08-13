@@ -1,0 +1,13 @@
+{
+  "_comment": "Standalone capture. No credentials belong in this file, ever.",
+  "binance_symbol": "BTCUSDT",
+  "data_dir": null,
+  "cap_gb": 25,
+  "protect_recent_hours": 6,
+  "stale_seconds": 300,
+  "streams": {
+    "binance_depth": true,
+    "binance_trades": true,
+    "polymarket_book": true
+  }
+}
