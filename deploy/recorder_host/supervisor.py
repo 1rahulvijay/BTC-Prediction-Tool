@@ -44,10 +44,24 @@ CHECK_S = 15
 BACKOFF_MAX_S = 300
 
 
-def load_manifest() -> list[dict]:
+def load_manifest(max_tier: int | None = None) -> list[dict]:
+    """Recorders to run, optionally capped by tier.
+
+    Tiers exist because a 1 GB free VM cannot host all seven. Each Python+DuckDB recorder is
+    roughly 80-150 MB resident, so seven is 700 MB-1 GB before the OS - and an OOM-killed
+    recorder is precisely the silent hole this supervisor exists to prevent. Better to run
+    three streams reliably than seven that the kernel reaps at 3am.
+
+    Tier 1 is chosen by what it UNBLOCKS, not by what is cheapest.
+    """
     if not MANIFEST.exists():
         raise SystemExit(f"missing manifest: {MANIFEST}")
-    return json.loads(MANIFEST.read_text(encoding="utf-8"))["recorders"]
+    rs = json.loads(MANIFEST.read_text(encoding="utf-8"))["recorders"]
+    if max_tier is not None:
+        rs = [r for r in rs if int(r.get("tier", 1)) <= max_tier]
+        if not rs:
+            raise SystemExit(f"no recorders at tier <= {max_tier}")
+    return rs
 
 
 def _beat_path(name: str) -> Path:
@@ -70,8 +84,8 @@ def write_beat(name: str, **fields) -> None:
     tmp.replace(p)          # atomic: a torn heartbeat reads as corrupt, not as healthy
 
 
-def run() -> int:
-    recorders = load_manifest()
+def run(max_tier: int | None = None) -> int:
+    recorders = load_manifest(max_tier)
     procs: dict[str, subprocess.Popen] = {}
     backoff: dict[str, float] = {r["name"]: 1.0 for r in recorders}
     next_try: dict[str, float] = {r["name"]: 0.0 for r in recorders}
@@ -127,9 +141,9 @@ def run() -> int:
     return 0
 
 
-def status() -> int:
+def status(max_tier: int | None = None) -> int:
     """Print liveness. Exit nonzero if ANY stream is stale - that is the alerting hook."""
-    recorders = load_manifest()
+    recorders = load_manifest(max_tier)
     now = time.time()
     bad = []
     print(f"{'recorder':<34}{'alive':>7}{'age':>10}{'restarts':>10}  state")
@@ -163,11 +177,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--max-tier", type=int, default=None,
+                    help="run/check only recorders at or below this tier "
+                         "(1 = minimum viable on a 1GB box)")
     a = ap.parse_args()
     if a.status:
-        return status()
+        return status(a.max_tier)
     if a.run:
-        return run()
+        return run(a.max_tier)
     ap.print_help()
     return 2
 

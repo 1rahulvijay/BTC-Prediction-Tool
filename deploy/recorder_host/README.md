@@ -59,16 +59,41 @@ Then a cron entry that actually tells you:
 
 ## Where to host it
 
-| option | verdict |
-|---|---|
-| **Oracle Cloud Always Free** | **best** — 4 ARM cores, 24 GB RAM, 200 GB block storage, no 12-month clock |
-| Fly.io / Render free tiers | sleep on idle — unusable for persistent WebSockets |
-| GitHub Actions | 6-hour job cap — not a 24/7 host |
-| AWS / GCP free tier | 12 months then billed |
+**Oracle ARM Always Free is effectively unobtainable.** The A1.Flex shapes return "Out of host
+capacity" in most regions for weeks at a time, and the workaround people converge on is
+upgrading to Pay As You Go — which is no longer free. Do not plan around it.
 
-Oracle does reclaim instances it judges idle, and people lose them. **Treat the VM as
-disposable and the data as the asset**: sync to object storage on a schedule (Cloudflare R2 has
-a free tier with no egress charge), so losing the box costs hours, not months.
+| option | free forever? | spec | verdict |
+|---|---|---|---|
+| **GCP `e2-micro` Always Free** | **yes** | 1 vCPU, 1 GB, 30 GB disk | **best remaining** — us-west1 / us-central1 / us-east1 only |
+| **Oracle AMD Always Free** | yes | 2 x 1 GB micro | usually *available* when ARM is not, and you already have the account |
+| Fly.io / Render / Railway | no | — | free tiers sleep or now require a card |
+| AWS free tier | 12 months | — | then billed |
+| **your own hardware** | yes | whatever you have | most robust; a Pi 4 or an old laptop is enough |
+| Hetzner CX22 | ~EUR 4/mo | 2 vCPU, 4 GB | if free keeps failing, this ends the problem permanently |
+
+### 1 GB will not run all seven — and that is a correctness issue, not a comfort one
+
+Each Python + DuckDB recorder is roughly 80-150 MB resident. Seven is 700 MB-1 GB before the
+OS, so a 1 GB box swaps or gets OOM-killed. **An OOM-killed recorder is exactly the silent hole
+this supervisor exists to prevent** — you would reproduce the 35-day gap, just with a different
+cause.
+
+Run a subset chosen by what it unblocks:
+
+```bash
+python deploy/recorder_host/supervisor.py --run    --max-tier 1   # ~3 processes, fits 1 GB
+python deploy/recorder_host/supervisor.py --status --max-tier 1   # alert on the same subset
+```
+
+| tier | recorders | needs | why this cut |
+|---|---|---|---|
+| **1** | `binance_l2_sequenced`, `pm_quotes_settlements`, `btc_ticks` | ~1 GB | sequenced L2 + ticks is the fill inference that decides `HEDGED_POLY_MM_V1`, the only lane whose upper bound has not failed. PM quotes+settlements is the pair whose gap blocked the residual lane. |
+| 2 | adds `pm_l2`, `funding_basis` | ~2 GB | PM ladder depth for executable size; the real funding schedule rather than an assumed 8h cycle |
+| 3 | adds `multi_venue`, `deribit_options` | ~4 GB + disk | venue breadth and the option chain. `deribit_options` alone is 644 MB of the current 1.3 GB — do not put it on a 30 GB disk without a retention policy |
+
+If you can only run one tier, run tier 1 on GCP `e2-micro` and keep tier 3 on your own machine
+where disk is cheap.
 
 ## Storage, from this repo's actual accumulated data
 

@@ -13,48 +13,97 @@
     {
       "name": "pm_quotes_settlements",
       "why": "PM book + settlement. The pair whose 35-day gap blocked POLYMARKET_RESIDUAL_V1.",
-      "unblocks": ["STATE_VALUE_ATLAS_V1", "POLYMARKET_RESIDUAL_V1", "second-era checks"],
-      "args": ["backend/polymarket/live_btc_updown_recorder.py"]
+      "unblocks": [
+        "STATE_VALUE_ATLAS_V1",
+        "POLYMARKET_RESIDUAL_V1",
+        "second-era checks"
+      ],
+      "args": [
+        "backend/polymarket/live_btc_updown_recorder.py"
+      ],
+      "tier": 1
     },
     {
       "name": "pm_l2",
       "why": "Polymarket ladder depth. Required for any executable-size or maker study.",
-      "unblocks": ["HEDGED_POLY_MM_V1", "POLY_FULLSET_ARB_V1 executable size"],
-      "args": ["backend/polymarket/l2_recorder.py"]
+      "unblocks": [
+        "HEDGED_POLY_MM_V1",
+        "POLY_FULLSET_ARB_V1 executable size"
+      ],
+      "args": [
+        "backend/polymarket/l2_recorder.py"
+      ],
+      "tier": 2
     },
     {
       "name": "binance_l2_sequenced",
       "why": "Sequenced depth updates. The single biggest unblocker - eight lanes need it.",
       "unblocks": [
-        "ORDER_FLOW_SURPRISE_V1", "BOOK_ELASTICITY_V1", "LIQUIDITY_REPLENISHMENT_V1",
-        "LIQUIDITY_VACUUM_DISTANCE_V1", "CANCELLATION_TOXICITY_V1",
+        "ORDER_FLOW_SURPRISE_V1",
+        "BOOK_ELASTICITY_V1",
+        "LIQUIDITY_REPLENISHMENT_V1",
+        "LIQUIDITY_VACUUM_DISTANCE_V1",
+        "CANCELLATION_TOXICITY_V1",
         "MAKER_MARKOUT_SURFACE_V1 fill inference"
       ],
-      "args": ["backend/venues/binance_l2_recorder.py"]
+      "args": [
+        "backend/venues/binance_l2_recorder.py"
+      ],
+      "tier": 1
     },
     {
       "name": "btc_ticks",
       "why": "Trade prints at tick resolution. Pairs with L2 to infer whether a resting quote filled.",
-      "unblocks": ["EDGE_HALF_LIFE_V1", "SUB_SECOND_BTC_TO_PM_REPRICING_V1"],
-      "args": ["backend/btc_tick_recorder.py"]
+      "unblocks": [
+        "EDGE_HALF_LIFE_V1",
+        "SUB_SECOND_BTC_TO_PM_REPRICING_V1"
+      ],
+      "args": [
+        "backend/btc_tick_recorder.py"
+      ],
+      "tier": 1
     },
     {
       "name": "multi_venue",
       "why": "Second and third venue. Nothing about cross-venue leadership is testable without it.",
-      "unblocks": ["INFORMATION_LEADER_V1", "SYNCHRONIZED_SHOCK_V1", "FUNDING_DISPERSION_V1"],
-      "args": ["backend/venues/multi_venue_recorder.py"]
+      "unblocks": [
+        "INFORMATION_LEADER_V1",
+        "SYNCHRONIZED_SHOCK_V1",
+        "FUNDING_DISPERSION_V1"
+      ],
+      "args": [
+        "backend/venues/multi_venue_recorder.py"
+      ],
+      "tier": 3
     },
     {
       "name": "funding_basis",
       "why": "Funding schedule and basis. Needed for carry, and the schedule must be READ, not assumed 8h.",
-      "unblocks": ["FUNDING_BASIS_CARRY_V1", "FUNDING_OI_CROWDING_V1"],
-      "args": ["backend/funding_recorder.py"]
+      "unblocks": [
+        "FUNDING_BASIS_CARRY_V1",
+        "FUNDING_OI_CROWDING_V1"
+      ],
+      "args": [
+        "backend/funding_recorder.py"
+      ],
+      "tier": 2
     },
     {
       "name": "deribit_options",
       "why": "Option chain. The only independent probability source available.",
-      "unblocks": ["OPTIONS_IV_VS_REALIZED_V1", "CROSS_MARKET_PROBABILITY_TRIANGULATION_V1"],
-      "args": ["backend/venues/deribit_option_chain_recorder.py"]
+      "unblocks": [
+        "OPTIONS_IV_VS_REALIZED_V1",
+        "CROSS_MARKET_PROBABILITY_TRIANGULATION_V1"
+      ],
+      "args": [
+        "backend/venues/deribit_option_chain_recorder.py"
+      ],
+      "tier": 3
     }
-  ]
+  ],
+  "_tiers": {
+    "1": "MINIMUM VIABLE on a 1GB box (~3 processes). Unblocks the fill inference that decides HEDGED_POLY_MM_V1, plus the PM pair whose 35-day gap blocked the residual lane.",
+    "2": "Adds PM ladder depth and the real funding schedule. Wants ~2GB.",
+    "3": "Venue breadth and the option chain. deribit_options alone is 644MB of the current 1.3GB store - do not run it on a 30GB disk without a retention policy."
+  }
 }
