@@ -1,0 +1,89 @@
+{
+  "matrix_days": 360,
+  "rows": 518400,
+  "span_days": 360.0,
+  "shipped_cost_bps": 12.0,
+  "by_horizon": [
+    {
+      "h": "1m",
+      "median": "2.4",
+      "mean": "3.8",
+      "mean LCB": "3.6",
+      "P(|move|>12bps)": "5.3%",
+      "break-even acc": "IMPOSSIBLE",
+      "base rate up": "48.3%"
+    },
+    {
+      "h": "2m",
+      "median": "3.5",
+      "mean": "5.5",
+      "mean LCB": "5.2",
+      "P(|move|>12bps)": "10.9%",
+      "break-even acc": "IMPOSSIBLE",
+      "base rate up": "49.2%"
+    },
+    {
+      "h": "3m",
+      "median": "4.3",
+      "mean": "6.8",
+      "mean LCB": "6.4",
+      "P(|move|>12bps)": "15.6%",
+      "break-even acc": "IMPOSSIBLE",
+      "base rate up": "49.5%"
+    },
+    {
+      "h": "5m",
+      "median": "5.6",
+      "mean": "8.7",
+      "mean LCB": "8.3",
+      "P(|move|>12bps)": "23.0%",
+      "break-even acc": "IMPOSSIBLE",
+      "base rate up": "49.5%"
+    },
+    {
+      "h": "10m",
+      "median": "8.0",
+      "mean": "12.4",
+      "mean LCB": "11.7",
+      "P(|move|>12bps)": "34.9%",
+      "break-even acc": "IMPOSSIBLE",
+      "base rate up": "49.6%"
+    },
+    {
+      "h": "15m",
+      "median": "9.8",
+      "mean": "15.2",
+      "mean LCB": "14.4",
+      "P(|move|>12bps)": "42.4%",
+      "break-even acc": "91.7%",
+      "base rate up": "49.7%"
+    },
+    {
+      "h": "30m",
+      "median": "13.8",
+      "mean": "21.4",
+      "mean LCB": "20.3",
+      "P(|move|>12bps)": "55.1%",
+      "break-even acc": "79.6%",
+      "base rate up": "49.9%"
+    },
+    {
+      "h": "60m",
+      "median": "19.5",
+      "mean": "30.2",
+      "mean LCB": "28.7",
+      "P(|move|>12bps)": "65.9%",
+      "break-even acc": "70.9%",
+      "base rate up": "49.9%"
+    },
+    {
+      "h": "120m",
+      "median": "27.5",
+      "mean": "42.8",
+      "mean LCB": "40.5",
+      "P(|move|>12bps)": "74.8%",
+      "break-even acc": "64.8%",
+      "base rate up": "50.1%"
+    }
+  ]
+}
