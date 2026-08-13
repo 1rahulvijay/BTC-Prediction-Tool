@@ -108,7 +108,10 @@ def _revision_report(
         "warnings": [],
     }
     if not db_path.exists():
-        section["warnings"].append("revision database does not exist; restart the backend")
+        section["warnings"].append(
+            "revision database does not exist; waiting for the first prediction from an "
+            "active, serviceable main-model release"
+        )
         return section
 
     import duckdb

@@ -537,3 +537,70 @@ The failed transaction was deliberately not resumed in place. Commit the exact f
 clean, then run `start.bat` again. Cached matrix and backfills will be reused. Require the 30-day
 completion marker, strict identity validation, atomic bundle swap, and main-ensemble completion
 before considering the smoke successful or changing the requested window to 900 days.
+
+## Completed 30-Day Retry Outcome - 2026-08-13
+
+The corrected retry completed the full specialist-head transaction. The persistence regression
+did not recur: the base P(Hold) production refit completed, the inferior keeper was rejected, the
+staged specialist bundle passed validation, and the specialist transaction swapped atomically.
+
+The main direction candidate then completed training and holdout evaluation. It was correctly
+rejected rather than published:
+
+| Horizon | Holdout rows | Directional calls | Direction precision | Brier | Prior Brier | Result |
+|---|---:|---:|---:|---:|---:|---|
+| 5m | 2,087 | 475 | 36.63% | 0.5141 | 0.5466 | reject: precision below 50% |
+| 15m | 2,077 | 1,571 | 42.01% | 0.6616 | 0.6557 | reject: precision below 50% and no Brier skill |
+
+The 5m overall accuracy of 62.72% is not a contradictory success: it is dominated by NEUTRAL
+classification. The economically relevant directional calls were only 36.63% correct. At 15m,
+overall accuracy was 39.91% and directional precision was 42.01%. Neither candidate is safe to
+serve or use for capital decisions.
+
+The canonical evidence is:
+
+```text
+data/saved_models/promotion_reports/eval30_1786641950_b088aa31.json
+```
+
+No main bundle manifest and no `full_retrain_30d_complete.json` marker were written. That is the
+required fail-closed behavior. Specialist heads remain independently usable according to their own
+permissions and gates; the main ensemble remains unavailable. Do not lower the promotion gates to
+force a model into service.
+
+### Useful specialist evidence retained
+
+- P(Hold) base test AUC: `0.7365`; P(Hold)>=0.93 realized hold: `97.5%` at `17.2%` coverage.
+- path forecaster touch AUC: 5m `0.779/0.830`; 15m `0.737/0.784`.
+- big-drop AUC: 5m `0.750`; 15m `0.760`.
+- activity AUC: 5m `0.802`; 15m `0.788`.
+- champion meta holdout AUC: `0.7471`, with round-cluster lower bound `0.7375`.
+- beat-direction classifier: 5m `0.514`, 15m `0.541`; classified as noise and not saved.
+- round-state heads below their frozen gates remained unsupported/shadow rather than being forced.
+
+These are prediction diagnostics, not executable-profit proof.
+
+### Post-run correctness fixes
+
+The run exposed two observational issues, both corrected without changing model gates:
+
+1. Protocol C residual, partial-fill and settlement coverage mixed action-row numerators with a
+   snapshot denominator, allowing impossible values above 100%. All three now count distinct
+   snapshots, and the self-test enforces the closed interval `[0, 1]`.
+2. Binance futures `aggTrade` WebSocket subscriptions are silent from this host even though the
+   book stream and REST aggregate trades are live. Core futures CVD now uses the working raw
+   `trade` WebSocket, while aggregate trade intensity uses a nonblocking, deduplicated REST poll.
+   This preserves signed-flow and aggregate-count semantics instead of calling missing data a
+   quiet market. The isolated live smoke observed both sources advancing with no poll error.
+
+The missing model-revision database warning now accurately says it is waiting for the first
+prediction from an active, serviceable main model. Restarting without such a model cannot create
+revision evidence.
+
+### Next training decision
+
+The 30-day run proved the mechanics but did not produce a promotable main ensemble. The next
+candidate may use the preflighted 900-day window to improve regime coverage and thin OOF folds,
+but 900 days is not a promise of better accuracy. It must pass the same untouched-tail precision,
+probability and identity gates. Until then, the app remains paper-only and model-dependent actions
+must continue to refuse when the main ensemble is unavailable.

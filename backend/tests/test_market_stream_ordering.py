@@ -59,6 +59,26 @@ def test_perp_trade_ordering() -> None:
     }, "second finalized bar excludes rejected volume")
 
 
+def test_perp_aggregate_trade_parser() -> None:
+    parsed = BinanceFuturesWebSocketClient._parse_aggregate_trade({
+        "a": 123, "p": "63317.30", "q": "0.239", "m": True,
+        "T": 1_786_647_512_549,
+    })
+    check(parsed == (123, 63317.30, 0.239, True, 1_786_647_512_549),
+          "REST aggregate trades preserve id, price, size, side and exchange time")
+    for bad in (
+        {"a": -1, "p": "63317.30", "q": "0.239", "m": True, "T": 1},
+        {"a": 1, "p": "0", "q": "0.239", "m": True, "T": 1},
+        {"a": 1, "p": "63317.30", "q": "0", "m": True, "T": 1},
+    ):
+        try:
+            BinanceFuturesWebSocketClient._parse_aggregate_trade(bad)
+            check(False, "unreachable")
+        except ValueError:
+            pass
+    check(True, "invalid futures aggregate trades fail closed")
+
+
 def _trade(price: float, timestamp: int, *, is_buy: bool) -> dict:
     return {
         "price": price,
@@ -102,6 +122,7 @@ def test_directional_sweep_state() -> None:
 
 def main() -> int:
     test_perp_trade_ordering()
+    test_perp_aggregate_trade_parser()
     test_directional_sweep_state()
     print("\nMarket stream ordering: PASS")
     return 0

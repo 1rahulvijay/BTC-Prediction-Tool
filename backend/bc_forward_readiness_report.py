@@ -274,14 +274,19 @@ def _position_counts(db: Path | None = None) -> dict:
                 GROUP BY position_snapshot_id
                 HAVING count(DISTINCT action) = {len(ACTION_ARMS)})""",
             list(ACTION_ARMS)).fetchone()[0]
+        # These are snapshot-coverage diagnostics. Counting action-arm rows here and dividing
+        # by `any_arm` (a snapshot count) allowed a five-arm capture to report 500% coverage.
+        # Per-arm coverage is already exposed separately, so use the denominator's unit here.
         residual, partial = con.execute("""
-            SELECT count(*) FILTER (WHERE up_shares_after IS NOT NULL
-                                      AND down_shares_after IS NOT NULL),
-                   count(*) FILTER (WHERE execution_json IS NOT NULL
-                                      AND execution_json LIKE '%partial%')
+            SELECT count(DISTINCT position_snapshot_id) FILTER (
+                       WHERE up_shares_after IS NOT NULL
+                         AND down_shares_after IS NOT NULL),
+                   count(DISTINCT position_snapshot_id) FILTER (
+                       WHERE execution_json IS NOT NULL
+                         AND execution_json LIKE '%partial%')
             FROM open_position_action_arms WHERE complete""").fetchone()
         settled = con.execute("""
-            SELECT count(DISTINCT position_snapshot_id || ':' || action)
+            SELECT count(DISTINCT position_snapshot_id)
             FROM open_position_action_outcomes
             WHERE lower(settlement_source) LIKE 'official:%'
         """).fetchone()[0]
@@ -839,6 +844,14 @@ def selftest() -> int:
     check(not any(forbidden_reason(k) for k in iter_keys(report)),
           "the REAL report contains no performance-shaped key at ANY depth")
     check(report["C"]["status"] in STATUSES, "Protocol C emits a declared status")
+    check(report["C"]["residual_inventory_coverage"] == 1.0,
+          "residual-inventory coverage counts snapshots, never action rows")
+    check(report["C"]["settlement_coverage"] == 1.0,
+          "settlement coverage counts resolved snapshots, never resolved action rows")
+    check(all(0.0 <= float(report["C"][key]) <= 1.0 for key in (
+              "partial_fill_frequency", "residual_inventory_coverage",
+              "settlement_coverage")),
+          "snapshot-normalized Protocol C diagnostics remain within [0, 1]")
     check(report["B"]["measurement"] in {"WIRED", "NOT_WIRED"},
           "Protocol B reports the measured schema state rather than fabricating counts")
     check(set(ACTION_ARMS) == {"HOLD", "EXIT", "REDUCE_50", "SWITCH", "LOCK"},

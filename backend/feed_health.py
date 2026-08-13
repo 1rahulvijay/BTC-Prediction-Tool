@@ -24,7 +24,7 @@ import urllib.request
 STREAMS = [
     ("SPOT aggTrade (CVD/vpin)",   "wss://stream.binance.com:9443/ws/btcusdt@aggTrade", "p"),
     ("SPOT depth20 (OBI/walls)",   "wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms", None),
-    ("FUTURES aggTrade (perp/A4)", "wss://fstream.binance.com/ws/btcusdt@aggTrade", "p"),
+    ("FUTURES trade (perp/A4 CVD)", "wss://fstream.binance.com/ws/btcusdt@trade", "p"),
     ("FUTURES forceOrder (liq)",   "wss://fstream.binance.com/ws/btcusdt@forceOrder", None),
     ("Coinbase (premium)",         "wss://ws-feed.exchange.coinbase.com", None),
 ]

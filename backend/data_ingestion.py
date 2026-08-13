@@ -262,10 +262,17 @@ class BinanceWebSocketClient:
 
 
 class BinanceFuturesWebSocketClient:
-    """Connects to Binance Futures WebSocket stream for Liquidations."""
+    """Live Binance USD-M book, liquidation, trade-flow and intensity feed.
+
+    On this host the futures ``aggTrade`` WebSocket accepts a subscription but emits no
+    messages, while ``trade`` and the REST aggregate-trade endpoint remain live. Raw trades
+    therefore drive CVD, while a low-rate REST poll preserves the aggregate-message-count
+    semantics consumed by the paper strategies.
+    """
 
     FUTURES_WS = "wss://fstream.binance.com/stream"
-    STREAMS = ["btcusdt@forceOrder", "btcusdt@aggTrade", "btcusdt@bookTicker"]
+    FUTURES_AGG_REST = "https://fapi.binance.com/fapi/v1/aggTrades"
+    STREAMS = ["btcusdt@forceOrder", "btcusdt@trade", "btcusdt@bookTicker"]
 
     def __init__(self):
         self.ws = None
@@ -283,13 +290,18 @@ class BinanceFuturesWebSocketClient:
         self._pb_cvd = 0.0
         self._pb_vol = 0.0
         self._pb_last = 0.0
+        self._last_perp_trade_id = None
         self._last_perp_agg_trade_id = None
         self.last_perp_bar = None
         self.last_book = None
         self.last_book_receive_ts_ms = None
         self.book_message_count = 0
+        self.last_perp_trade_receive_ts_ms = None
+        self.perp_trade_message_count = 0
         self.last_agg_trade_receive_ts_ms = None
         self.agg_trade_message_count = 0
+        self.last_agg_trade_poll_error = ""
+        self._aggregate_trade_task = None
         self.protocol_health = _ProtocolHealth("binance_futures_ws")
 
     def on(self, event: str, callback: Callable):
@@ -315,9 +327,14 @@ class BinanceFuturesWebSocketClient:
             "last_book_receive_ts_ms": self.last_book_receive_ts_ms,
             "book_message_count": int(self.book_message_count),
             "book_age_ms": age(self.last_book_receive_ts_ms),
+            "perp_trade_transport": "trade_ws+aggTrades_rest",
+            "last_perp_trade_receive_ts_ms": self.last_perp_trade_receive_ts_ms,
+            "perp_trade_message_count": int(self.perp_trade_message_count),
+            "perp_trade_age_ms": age(self.last_perp_trade_receive_ts_ms),
             "last_agg_trade_receive_ts_ms": self.last_agg_trade_receive_ts_ms,
             "agg_trade_message_count": int(self.agg_trade_message_count),
             "agg_trade_age_ms": age(self.last_agg_trade_receive_ts_ms),
+            "last_agg_trade_poll_error": self.last_agg_trade_poll_error,
             "last_completed_perp_cvd_bar_ts_ms": (
                 int(self.last_perp_bar["ts"]) if self.last_perp_bar else None
             ),
@@ -337,8 +354,8 @@ class BinanceFuturesWebSocketClient:
         if agg_trade_id is not None:
             agg_trade_id = int(agg_trade_id)
             if (
-                self._last_perp_agg_trade_id is not None
-                and agg_trade_id <= self._last_perp_agg_trade_id
+                self._last_perp_trade_id is not None
+                and agg_trade_id <= self._last_perp_trade_id
             ):
                 return False
 
@@ -347,7 +364,7 @@ class BinanceFuturesWebSocketClient:
             self._pb_ms = bar
         elif bar < self._pb_ms:
             if agg_trade_id is not None:
-                self._last_perp_agg_trade_id = agg_trade_id
+                self._last_perp_trade_id = agg_trade_id
             return False
         elif bar > self._pb_ms:
             self.last_perp_bar = {
@@ -362,8 +379,87 @@ class BinanceFuturesWebSocketClient:
         self._pb_vol += qty
         self._pb_last = price
         if agg_trade_id is not None:
-            self._last_perp_agg_trade_id = agg_trade_id
+            self._last_perp_trade_id = agg_trade_id
         return True
+
+    @staticmethod
+    def _parse_aggregate_trade(data: dict) -> tuple[int, float, float, bool, int]:
+        """Validate one public ``/fapi/v1/aggTrades`` observation."""
+        trade_id = int(data["a"])
+        price = float(data["p"])
+        qty = float(data["q"])
+        is_buyer_maker = bool(data["m"])
+        trade_ts = int(data["T"])
+        if (
+            trade_id < 0
+            or not math.isfinite(price)
+            or not math.isfinite(qty)
+            or price <= 0
+            or qty <= 0
+            or trade_ts <= 0
+        ):
+            raise ValueError("invalid BTCUSDT perpetual aggregate trade")
+        return trade_id, price, qty, is_buyer_maker, trade_ts
+
+    async def _poll_aggregate_trade_counts(self) -> None:
+        """Maintain true aggregate-trade intensity without blocking the event loop.
+
+        CVD comes from the real-time raw-trade WebSocket. This poll only advances the
+        cumulative aggregate count used by 60-second intensity features. It seeds from the
+        latest venue id without counting the initial backlog, then requests causally newer ids.
+        """
+        poll_seconds = max(
+            1.0, float(os.environ.get("BTC_FUTURES_AGG_POLL_SECONDS", "2.0"))
+        )
+        timeout = aiohttp.ClientTimeout(total=8)
+        backoff = poll_seconds
+        last_error_log = 0.0
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            while self.running:
+                try:
+                    params: dict[str, int | str] = {"symbol": "BTCUSDT", "limit": 1000}
+                    if self._last_perp_agg_trade_id is not None:
+                        params["fromId"] = int(self._last_perp_agg_trade_id) + 1
+                    async with session.get(self.FUTURES_AGG_REST, params=params) as response:
+                        response.raise_for_status()
+                        payload = await response.json()
+                    if not isinstance(payload, list):
+                        raise ValueError("aggregate-trade response is not a list")
+
+                    parsed = sorted(
+                        (self._parse_aggregate_trade(row) for row in payload),
+                        key=lambda row: row[0],
+                    )
+                    if self._last_perp_agg_trade_id is None:
+                        # The initial response is historical backlog. Establish the causal
+                        # watermark without calling old trades newly received intensity.
+                        if parsed:
+                            self._last_perp_agg_trade_id = parsed[-1][0]
+                    else:
+                        accepted = [
+                            row for row in parsed
+                            if row[0] > int(self._last_perp_agg_trade_id)
+                        ]
+                        if accepted:
+                            self._last_perp_agg_trade_id = accepted[-1][0]
+                            self.last_agg_trade_receive_ts_ms = int(time.time() * 1000)
+                            self.agg_trade_message_count += len(accepted)
+                    self.last_agg_trade_poll_error = ""
+                    backoff = poll_seconds
+                    await asyncio.sleep(poll_seconds)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.last_agg_trade_poll_error = f"{type(exc).__name__}: {exc}"
+                    now = time.monotonic()
+                    if now - last_error_log >= 60.0:
+                        last_error_log = now
+                        logger.warning(
+                            "Binance futures aggregate-trade REST poll failed: %s",
+                            self.last_agg_trade_poll_error,
+                        )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 1.5, 30.0)
 
     @staticmethod
     def _parse_book_ticker(data: dict, received_at_ms: int) -> dict:
@@ -400,6 +496,10 @@ class BinanceFuturesWebSocketClient:
     async def connect(self):
         self.running = True
         url = f"{self.FUTURES_WS}?streams={'/'.join(self.STREAMS)}"
+        if self._aggregate_trade_task is None or self._aggregate_trade_task.done():
+            self._aggregate_trade_task = asyncio.create_task(
+                self._poll_aggregate_trade_counts()
+            )
 
         while self.running:
             try:
@@ -430,13 +530,14 @@ class BinanceFuturesWebSocketClient:
                                         "time": o.get("T"),
                                     },
                                 )
-                            elif stream == "btcusdt@aggTrade":
-                                self.last_agg_trade_receive_ts_ms = int(time.time() * 1000)
-                                self.agg_trade_message_count += 1
+                            elif stream == "btcusdt@trade":
+                                received_at_ms = int(time.time() * 1000)
+                                self.last_perp_trade_receive_ts_ms = received_at_ms
+                                self.perp_trade_message_count += 1
                                 self._ingest_perp_trade(
                                     float(data["p"]), float(data["q"]),
                                     bool(data["m"]), int(data["T"]),
-                                    int(data["a"]),
+                                    int(data["t"]),
                                 )
                             elif stream == "btcusdt@bookTicker":
                                 received_at_ms = int(time.time() * 1000)
@@ -462,6 +563,8 @@ class BinanceFuturesWebSocketClient:
     def stop(self):
         self.running = False
         self.protocol_health.connected = False
+        if self._aggregate_trade_task is not None and not self._aggregate_trade_task.done():
+            self._aggregate_trade_task.cancel()
 
 
 # ──────────────────────────────────────────────
