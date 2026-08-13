@@ -20,7 +20,7 @@ import pandas as pd
 
 LANES = Path(__file__).resolve().parent
 sys.path.insert(0, str(LANES))
-from common.scorecard import day_block_bootstrap, day_index, forward_abs_move_bps, md_table  # noqa: E402
+from common.scorecard import day_block_bootstrap, day_index, forward_abs_move_bps  # noqa: E402
 
 REPO = LANES.parent
 MATRIX = REPO / "data" / "research_matrix_1m.parquet"
