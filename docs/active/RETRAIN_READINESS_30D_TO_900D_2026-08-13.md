@@ -134,3 +134,317 @@ marker, and the 98/2 split to 900-day values. Existing daily cache files are reu
   bundle-scoped evidence clears their predeclared gates.
 - A clean Git commit is mandatory before training so artifact manifests can record reproducible
   code provenance. Training from a dirty tree remains blocked intentionally.
+
+## Complete Runtime Configuration At Commit 773b61c
+
+The validated repository state is:
+
+| Item | Value |
+|---|---|
+| Branch | `master` |
+| Commit | `773b61c` |
+| Working tree after commit | clean |
+| Default training window | 30 days |
+| Default 30-day split | 95% fit / 5% untouched tail |
+| 900-day split | 98% fit / 2% untouched tail |
+| Main horizons | 5m and 15m |
+| Raw application features | 136 |
+| Main-model features | 63 |
+| Feature selection | `KEEP,PARITY-FIX` |
+| Direction sample cap | 40,000 |
+| TCN sample cap | 25,000 |
+| Training threads | 8 |
+| LightGBM device | CPU |
+| Scheduled relearning after boot | frozen |
+| Startup backtest | disabled |
+| Strict artifact identity | enabled |
+| Real-money conclusion | not authorized by this validation |
+
+`BTC_FREEZE_MODEL=1` means the deliberate startup retrain still runs when the completion marker is
+absent, but scheduled retraining stays disabled after the trained bundle is available. A browser
+refresh does not invoke `start.bat` and does not restart training.
+
+## Main Ensemble Inventory
+
+The main direction ensemble fits and serves these seven base seats where the dependency is
+installed and the horizon/regime has a valid fitted artifact:
+
+| Seat | Role |
+|---|---|
+| XGBoost | nonlinear boosted-tree direction model |
+| LightGBM | diverse boosted-tree direction model, CPU on this laptop |
+| CatBoost | noise-tolerant boosted-tree direction model |
+| HistGradientBoosting | CPU histogram-tree baseline/diversifier |
+| Logistic Regression | linear sanity-check model |
+| Random Forest | bagged-tree diversity and variance control |
+| TCN deep model | temporal sequence representation |
+
+The ensemble also persists class priors, move-size state, conformal residuals, calibrated stackers,
+feature-reference state, HMM regime state, model-feature schema, bundle metadata, and an architecture
+version. Bundle completeness tests require all mandatory support artifacts. A version marker is
+written last so an interrupted save cannot look complete.
+
+The 30-day smoke does not change the measured research conclusion that endpoint direction is hard
+and often near coin-flip. The ensemble must abstain when its probability, calibration, economic,
+head-health, or evidence gates do not support a call.
+
+## Specialist-Head Inventory
+
+With no valid 30-day completion marker, `start.bat` sets `BTC_FORCE_HEAD_RETRAIN=1`. The forced,
+transactional dry run confirmed that all fourteen requested specialist jobs are scheduled:
+
+| Head | Primary output or purpose |
+|---|---|
+| `selectivity` | predicts whether a base call is worth retaining |
+| `signed_quantile` | signed move/range quantiles and calibrated uncertainty |
+| `persistence` | price-to-beat leader-hold probability |
+| `path_forecaster` | touch, path, range, and round-trip forecasts |
+| `round_state` | flip, shock, opportunity, and round-state heads |
+| `bigmove` | probability of a meaningful absolute move |
+| `bigdrop` | downside tail-risk specialist |
+| `directional` | specialist directional keeper |
+| `activity` | market-activity/volatility specialist |
+| `champion_meta` | combines admissible specialist evidence |
+| `beat` | price-to-beat classifier research/serving artifact |
+| `magnitude` | move-magnitude quantiles |
+| `path` | historical tick-path label/model artifact |
+| `fingerprints` | historical similar-state evidence |
+
+The non-forced dry run correctly skipped a missing legacy `beat` artifact, but the actual first
+30-day launch is forced and therefore schedules `beat` as shown above. Optional heads may legally
+decline to save when their predeclared noise or data gate fails. That is an abstention, not a
+training crash. Mandatory heads may not disappear or fail identity validation.
+
+## Transactional Training And Publication Flow
+
+The launch path is fail-closed and ordered as follows:
+
+1. Resolve 30 or 900 days into historical, model-training, warm-up, backfill, split, and marker
+   namespaces.
+2. Run disk/data preflight and all startup invariant tests.
+3. Acquire the process-backed full-retrain lease so another job cannot rewrite the matrix.
+4. Detect any existing frontend/backend immediately before side effects; replace them only under
+   the configured launcher policy.
+5. Start or deduplicate all enabled recorders.
+6. Incrementally update trade-feature, persistence, and cross-venue derived data.
+7. Build the requested research matrix and require source coverage, monthly quality, official
+   OHLC parity, timestamp validity, and exact manifest/hash identity.
+8. Train all specialist heads into a copied staging bundle.
+9. Require every mandatory staged artifact to pass integrity and provenance checks.
+10. Move the incumbent bundle to a timestamped rollback directory and atomically replace it with
+    the complete staged bundle.
+11. Release the training lease. If required head training failed, stop before main-ensemble
+    training.
+12. Start the frontend and backend. The backend performs the forced main-ensemble candidate fit
+    because no completion marker exists.
+13. Evaluate the candidate on the untouched tail and apply predeclared promotion gates.
+14. If the validated-refit flow is admitted, refit the production challenger on all eligible rows,
+    retain OOF/calibration evidence, smoke-load it, and keep it under live shadow verification.
+15. Write the completion marker only after the required heads and main model have completed their
+    publication contract.
+
+Training failures preserve the previous matrix and incumbent serving bundle. They do not stamp
+stale artifacts as current, create a false completion marker, or partially swap a model directory.
+
+## Forward Recorder Inventory
+
+`start.bat` calls `backend/start_recorders_once.ps1`. It matches the exact Python executable and
+absolute script path, skips an already-running duplicate, starts missing processes hidden, and
+redirects each process to its own stdout/stderr log. The ten enabled recorder families are:
+
+| Recorder | Evidence captured |
+|---|---|
+| Polymarket quote and settlement | market quotes, round identity, official outcomes |
+| Polymarket exact L2 and VWAP | depth ladders and size-specific executable prices |
+| Fast Binance BTC tick stream | sub-second reference trades on the same host clock |
+| Cross-exchange microstructure | synchronized venue microstructure snapshots |
+| Multi-venue event-time collector | Binance spot/perp, Bybit, and Coinbase event-time data |
+| Binance funding and basis | immutable settled funding plus basis observations |
+| Binance sequenced L2 | snapshot/diff order-book reconstruction and gap evidence |
+| High-frequency anchor crossings | touch/cross/first-passage evidence |
+| Polymarket cross-window observations | synchronized 5m/15m dominance observations |
+| Deribit BTC option chain | per-strike implied-volatility and straddle evidence |
+
+These recorders use public market data and do not create trading authority. Recorder liveness,
+continuity, timestamps, schema, and gaps remain separate from model correctness.
+
+## Paper Trading Configuration
+
+The validated launcher configures a comparison with two independent paper bankrolls:
+
+| Lane | Configuration |
+|---|---|
+| Polymarket | `$500`, rule `CHAMPION_DYNAMIC_PAPER_V1` |
+| Binance derivatives | `$500`, strategy `model_consensus` |
+| Binance paper auto-start | enabled |
+| Competition store | `data/binance_paper_competition_500.duckdb` |
+
+Paper accounting, entry/exit cost inclusion, liquidation handling, fixed bankroll isolation,
+position persistence, official outcome handling, degraded-model exits, and rollback behavior were
+covered by the startup invariant suite. This proves accounting/control behavior against test
+fixtures. It does not prove either strategy has positive expected value.
+
+## Exact Validation Evidence
+
+### Research matrix
+
+The real 30-day build covered 2026-07-13 00:00 UTC through 2026-08-11 23:59 UTC. The stale fixed
+reference covered only 2026-07-01 through 2026-07-04 and therefore had zero overlap. The corrected
+selector chose an overlapping official cache and measured 37,928 matching minutes.
+
+The following properties were directly inspected after publication:
+
+- 43,200 rows and 43,200 unique timestamps;
+- timestamps monotonic increasing;
+- 47 matrix columns;
+- no infinite numeric cells;
+- 30 null cells confined to the unresolved five-minute future-label tail;
+- 100% trade-feature join coverage;
+- 100% cross-venue join coverage;
+- two monthly quality partitions passed;
+- matrix manifest requested exactly 30 days and described the parquet hash on disk;
+- official OHLC median and p99 absolute difference both 0.0 USD.
+
+### Startup invariants
+
+The full post-integration `BTC_SELFTEST_ONLY=1` startup suite passed these groups:
+
+- complete-trade label, M0, builder, execution, and serving contracts;
+- durable ledger V2 and evidence completion;
+- frozen-artifact and champion promotion behavior;
+- feed callback, feed-writer, regime, Kelly, and launcher integrity;
+- model registry, artifact bundle, order lifecycle, authority, and task supervision;
+- control-plane security and verified deserialization;
+- head permissions, quantile safety, window namespaces, marker contract, and startup side effects;
+- training lease, artifact readiness, websocket payload, DuckDB retry, and DB health;
+- release atomicity, specialist provenance, meta-model, bundle completeness, and training integrity;
+- Binance paper engine, probability namespace, period loss, post-fill risk, sizing, and exit cost;
+- multi-venue schema, venue admissibility, L2/tick/crossing/funding/recorder health;
+- collector D1-D5 evidence integrity;
+- strategy registry and documentation consistency;
+- challenger gates, quant-platform kernel, research validation, paper evidence, settlement,
+  degraded exits, and model rollback.
+
+### Additional checks
+
+- `python -m compileall -q backend`: passed;
+- `python backend/build_research_matrix.py --selftest`: passed;
+- `python backend/verify_artifact_identity.py --training-only`: `READY TO RETRAIN`;
+- forced transactional specialist dry run: all fourteen jobs scheduled, exit 0;
+- `npm.cmd run build`: passed with Vite;
+- `python -m unittest discover -s capture_app/tests -v`: 21/21 passed;
+- changed capture/research Python files: compilation and Pyflakes passed;
+- research JSON artifacts: 12/12 parsed;
+- `git diff --check`: passed before commit;
+- secret-pattern scan over changed source/documentation: no embedded key pattern found;
+- repository committed cleanly on `master` as `773b61c`.
+
+## Expected 30-Day Console Flow
+
+The first normal launch should show these broad states:
+
+```text
+[mode] No completion marker. Forcing one full 30d retrain.
+[preflight] ... mode=SHORT_WINDOW ... OK
+[selftest] All invariant selftests passed.
+[recorder] ... running or already active
+[0/3] a/b/c ... incremental source updates
+[0/3] c2 ... research matrix
+Official OHLC parity: passed=True overlap>=100
+Joined source coverage: trade_features>=98%, crossvenue>=98%
+[0/3] d ... specialized heads
+[heads] transactional staging=...
+[heads] active bundle swapped atomically; rollback=...
+[TRAIN] ... main ensemble training
+```
+
+The exact model-training messages vary by installed dependencies and by optional heads that
+legitimately decline their noise gate. The run is not complete merely because the frontend opens.
+Completion is represented by the validated marker and a loadable identity-compatible bundle.
+
+## Post-30-Day Verification
+
+After training finishes, check:
+
+```powershell
+Test-Path .\data\saved_models\full_retrain_30d_complete.json
+python backend\validate_retrain_marker.py `
+  --marker data\saved_models\full_retrain_30d_complete.json --days 30
+python backend\verify_artifact_identity.py
+python backend\check_feature_contract.py
+```
+
+Also confirm in the UI and logs:
+
+- backend boot/model bundle identifiers are current;
+- recorder health advances rather than only showing processes alive;
+- no model or head is silently serving an old window;
+- 5m and 15m predictions resolve into DuckDB;
+- Polymarket and Binance paper trades remain isolated at `$500` each;
+- action, direction, target error, and realized PnL are reported separately;
+- insufficient live sample counts remain warnings rather than confident scorecards.
+
+Do not proceed to the 900-day run if the 30-day marker, strict identity, bundle reload, or forward
+recording checks fail.
+
+## Post-900-Day Verification
+
+After launching with `BTC_HISTORICAL_DAYS=900`, require:
+
+```powershell
+Test-Path .\data\saved_models\full_retrain_900d_complete.json
+python backend\validate_retrain_marker.py `
+  --marker data\saved_models\full_retrain_900d_complete.json --days 900
+python backend\verify_artifact_identity.py
+python backend\check_feature_contract.py
+```
+
+Then compare the 900-day candidate with the incumbent using the untouched tail and subsequent
+bundle-scoped forward paper evidence. Do not promote it because it used more history. More history
+can improve regime coverage while also diluting recent relationships; measured gates decide.
+
+## Tested Versus Not Yet Executed
+
+| Item | Status |
+|---|---|
+| Stale official-cache defect | fixed and regression-tested |
+| Real 30-day research matrix | built and validated |
+| Exact 30-day startup configuration | validated |
+| Exact 900-day startup configuration | validated |
+| 900-day disk/source preflight | passed |
+| All startup invariant tests | passed twice, including final post-integration run |
+| All fourteen specialist jobs | forced transactional dry run passed |
+| Actual 30-day specialist fits | not executed by this audit |
+| Actual 30-day main-ensemble fit | not executed by this audit |
+| Actual 900-day matrix build | not executed by this audit |
+| Actual 900-day specialist/main fit | not executed by this audit |
+| Forward profitability proof | not established |
+| Real-money authorization | not granted |
+
+## Failure Interpretation
+
+- `Official OHLC parity ... overlap=0`: reference selection/availability problem; do not call it a
+  price mismatch without an overlapping comparison.
+- `passed=False` with real overlap and excessive median/p99 differences: genuine data-integrity
+  failure; stop and preserve the previous matrix.
+- source coverage below 98% or monthly gate failure: do not train specialists on the incomplete
+  matrix.
+- dirty Git tree: commit the intended code or stop; do not bypass strict provenance for a keeper
+  artifact.
+- optional head exits 0 without an artifact: valid noise/data abstention when explicitly labeled.
+- mandatory head missing or nonzero exit: no transactional swap and no completion marker.
+- frontend available while training continues: UI availability is not model readiness.
+- recorder process alive but timestamps/row counts stale: data is not healthy.
+- high backtest accuracy without live cost-adjusted evidence: not promotion evidence.
+
+## Final Readiness Statement
+
+At commit `773b61c`, the repository is mechanically ready for the operator to start the 30-day
+full-pipeline smoke. The specific blocker shown in the original log is fixed, the real matrix now
+passes, and the launch/training contracts are synchronized. The 900-day path is configuration- and
+resource-ready but remains unexecuted.
+
+No finite audit can prove that no undiscovered bug exists. No software validation can guarantee
+accuracy or profit. The valid claim is narrower: all exercised code, data, transaction, accounting,
+identity, publication, and launcher gates passed, and the expensive model fits are now the next
+step rather than another code change.

@@ -122,3 +122,11 @@ These tests are registered in GitHub invariants and the local `start.bat` selfte
 Long-running historical scorecards, the deliberate recorder crash/kill drill, and the end-to-end
 training smoke are retained as manual research/integration tests. Running them on every app start
 would train against large local data or kill a recorder process; they are not silent CI contracts.
+
+## 2026-08-13 Retrain Readiness Addendum
+
+The later 30-day matrix failure, its stale official-reference root cause, the overlap-aware parity
+fix, the complete post-integration validation, and the one-knob 30-day-to-900-day runbook are
+documented in [RETRAIN_READINESS_30D_TO_900D_2026-08-13.md](RETRAIN_READINESS_30D_TO_900D_2026-08-13.md).
+That document is the current operational source for the next retrain. The repository was committed
+cleanly on `master` as `773b61c`; the actual 30-day and 900-day model fits remain operator actions.
