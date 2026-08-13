@@ -1,0 +1,1101 @@
+{
+  "run": {
+    "created_utc": "2026-08-13T07:27:03.170550+00:00",
+    "matrix": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\research_matrix_1m.parquet",
+    "round_matrix": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\research\\binance_updown_features.parquet",
+    "pm_snapshots": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\pm_export_snapshots.parquet",
+    "pm_settlements": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\pm_export_settlements.parquet",
+    "cost_bps": 12.0,
+    "family_size": 96,
+    "family_alpha": 0.0005208333333333333,
+    "authority": "RESEARCH_ONLY"
+  },
+  "resolution_source_basis": {
+    "description": "Recorded Pyth/Chainlink reference is compared with the latest causally completed Binance minute close and a basis-derived perpetual price. Official PM settlement outcomes are used; this is an input-selection diagnostic, not a trading strategy.",
+    "joined_rows": 133967,
+    "joined_rounds": 779,
+    "price_sources": {
+      "pyth": 106790,
+      "polymarket_chainlink_rtds_reference": 23342,
+      "pyth_display_fallback": 3831
+    },
+    "resolution_sources": {
+      "polymarket_gamma": 115612,
+      "polymarket_clob": 18355
+    },
+    "rows": [
+      {
+        "horizon_m": 5,
+        "seconds_left": 300,
+        "n_rounds": 568,
+        "recorded_reference_accuracy": {
+          "rate": 0.4876760563380282,
+          "lcb": 0.44678968140954956,
+          "ucb": 0.5287280143999192,
+          "n": 568
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.4876760563380282,
+          "lcb": 0.44678968140954956,
+          "ucb": 0.5287280143999192,
+          "n": 568
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.4876760563380282,
+          "lcb": 0.44678968140954956,
+          "ucb": 0.5287280143999192,
+          "n": 568
+        },
+        "recorded_vs_spot_conflicts": 0,
+        "recorded_reference_wins_conflict": {
+          "rate": null,
+          "lcb": null,
+          "ucb": null,
+          "n": 0
+        }
+      },
+      {
+        "horizon_m": 5,
+        "seconds_left": 120,
+        "n_rounds": 560,
+        "recorded_reference_accuracy": {
+          "rate": 0.7660714285714286,
+          "lcb": 0.7292691372550166,
+          "ucb": 0.7992480916972282,
+          "n": 560
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.5303571428571429,
+          "lcb": 0.48895469017909027,
+          "ucb": 0.5713459332584142,
+          "n": 560
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.5875,
+          "lcb": 0.5462651064767998,
+          "ucb": 0.6275425728430659,
+          "n": 560
+        },
+        "recorded_vs_spot_conflicts": 268,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.746268656716418,
+          "lcb": 0.6909426649979115,
+          "ucb": 0.7946342297819898,
+          "n": 268
+        }
+      },
+      {
+        "horizon_m": 5,
+        "seconds_left": 60,
+        "n_rounds": 523,
+        "recorded_reference_accuracy": {
+          "rate": 0.8011472275334608,
+          "lcb": 0.7647976535432597,
+          "ucb": 0.8331050177719894,
+          "n": 523
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.5315487571701721,
+          "lcb": 0.48870728010999903,
+          "ucb": 0.5739301425992177,
+          "n": 523
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.5889101338432122,
+          "lcb": 0.5462413789996046,
+          "ucb": 0.6302822668172785,
+          "n": 523
+        },
+        "recorded_vs_spot_conflicts": 255,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.7764705882352941,
+          "lcb": 0.7214479159714634,
+          "ucb": 0.8232867789152937,
+          "n": 255
+        }
+      },
+      {
+        "horizon_m": 5,
+        "seconds_left": 30,
+        "n_rounds": 438,
+        "recorded_reference_accuracy": {
+          "rate": 0.8287671232876712,
+          "lcb": 0.7906662205346986,
+          "ucb": 0.8611510823177264,
+          "n": 438
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.502283105022831,
+          "lcb": 0.45564153514409644,
+          "ucb": 0.5488849739034899,
+          "n": 438
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.5570776255707762,
+          "lcb": 0.510261276336393,
+          "ucb": 0.6029014498532641,
+          "n": 438
+        },
+        "recorded_vs_spot_conflicts": 221,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.8235294117647058,
+          "lcb": 0.7678656910101898,
+          "ucb": 0.8681376108698893,
+          "n": 221
+        }
+      },
+      {
+        "horizon_m": 5,
+        "seconds_left": 15,
+        "n_rounds": 336,
+        "recorded_reference_accuracy": {
+          "rate": 0.7946428571428571,
+          "lcb": 0.7482336792094627,
+          "ucb": 0.8343906963819893,
+          "n": 336
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.4880952380952381,
+          "lcb": 0.43508436363434777,
+          "ucb": 0.5413752575538763,
+          "n": 336
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.5148809523809523,
+          "lcb": 0.46157567281734435,
+          "ucb": 0.5678498006973753,
+          "n": 336
+        },
+        "recorded_vs_spot_conflicts": 177,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.7909604519774012,
+          "lcb": 0.7251931441186115,
+          "ucb": 0.8443660723448572,
+          "n": 177
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 600,
+        "n_rounds": 191,
+        "recorded_reference_accuracy": {
+          "rate": 0.7068062827225131,
+          "lcb": 0.6386779792636262,
+          "ucb": 0.7667795821606281,
+          "n": 191
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.5445026178010471,
+          "lcb": 0.4736905410072664,
+          "ucb": 0.613559820311877,
+          "n": 191
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.6073298429319371,
+          "lcb": 0.536609866735217,
+          "ucb": 0.6738174752697756,
+          "n": 191
+        },
+        "recorded_vs_spot_conflicts": 65,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.7384615384615385,
+          "lcb": 0.6204896660217755,
+          "ucb": 0.8298194493968086,
+          "n": 65
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 300,
+        "n_rounds": 187,
+        "recorded_reference_accuracy": {
+          "rate": 0.8288770053475936,
+          "lcb": 0.768414103702214,
+          "ucb": 0.8760994614743512,
+          "n": 187
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.6203208556149733,
+          "lcb": 0.549001138251079,
+          "ucb": 0.6867965075452255,
+          "n": 187
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.7112299465240641,
+          "lcb": 0.64253902530385,
+          "ucb": 0.7714168417607731,
+          "n": 187
+        },
+        "recorded_vs_spot_conflicts": 59,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.8305084745762712,
+          "lcb": 0.7153653834518579,
+          "ucb": 0.9052426214366236,
+          "n": 59
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 120,
+        "n_rounds": 171,
+        "recorded_reference_accuracy": {
+          "rate": 0.9181286549707602,
+          "lcb": 0.8672763103864775,
+          "ucb": 0.9506068478550395,
+          "n": 171
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.6374269005847953,
+          "lcb": 0.5630832875631495,
+          "ucb": 0.7057314567539925,
+          "n": 171
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.7251461988304093,
+          "lcb": 0.6538391520090502,
+          "ucb": 0.7865594716594587,
+          "n": 171
+        },
+        "recorded_vs_spot_conflicts": 60,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.9,
+          "lcb": 0.7985030550748896,
+          "ucb": 0.9533578005427642,
+          "n": 60
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 60,
+        "n_rounds": 141,
+        "recorded_reference_accuracy": {
+          "rate": 0.8936170212765957,
+          "lcb": 0.8318898466298974,
+          "ucb": 0.9344645708855124,
+          "n": 141
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.6028368794326241,
+          "lcb": 0.5203745403938856,
+          "ucb": 0.6798441812993296,
+          "n": 141
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.7021276595744681,
+          "lcb": 0.6220952037693758,
+          "ucb": 0.7714381457655645,
+          "n": 141
+        },
+        "recorded_vs_spot_conflicts": 55,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.8727272727272727,
+          "lcb": 0.7598272515317739,
+          "ucb": 0.9369586958251979,
+          "n": 55
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 30,
+        "n_rounds": 109,
+        "recorded_reference_accuracy": {
+          "rate": 0.908256880733945,
+          "lcb": 0.8393131069442974,
+          "ucb": 0.9494031111880226,
+          "n": 109
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.6238532110091743,
+          "lcb": 0.5301571256769941,
+          "ucb": 0.7091163337564064,
+          "n": 109
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.7431192660550459,
+          "lcb": 0.6538035762098546,
+          "ucb": 0.8158813626779313,
+          "n": 109
+        },
+        "recorded_vs_spot_conflicts": 43,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.8604651162790697,
+          "lcb": 0.7273612340557432,
+          "ucb": 0.9344436573228605,
+          "n": 43
+        }
+      },
+      {
+        "horizon_m": 15,
+        "seconds_left": 15,
+        "n_rounds": 82,
+        "recorded_reference_accuracy": {
+          "rate": 0.926829268292683,
+          "lcb": 0.8494197580293277,
+          "ucb": 0.9660356854852388,
+          "n": 82
+        },
+        "completed_binance_spot_accuracy": {
+          "rate": 0.5975609756097561,
+          "lcb": 0.489362574712238,
+          "ucb": 0.6970272409482342,
+          "n": 82
+        },
+        "derived_perpetual_accuracy": {
+          "rate": 0.7317073170731707,
+          "lcb": 0.6270357058464716,
+          "ucb": 0.81564010634715,
+          "n": 82
+        },
+        "recorded_vs_spot_conflicts": 33,
+        "recorded_reference_wins_conflict": {
+          "rate": 0.9090909090909091,
+          "lcb": 0.7642705646564897,
+          "ucb": 0.968596628950737,
+          "n": 33
+        }
+      }
+    ],
+    "authority": "DIAGNOSTIC_ONLY",
+    "promotable_configurations": 0
+  },
+  "spot_perp_flow_disagreement": {
+    "description": "Strong, opposite-sign spot/perpetual CVD states; each venue's sign is scored independently after 12 bps.",
+    "split_day": 20568,
+    "train_spot_abs_p75": 5.3916,
+    "train_perp_abs_p75": 32.508,
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n_disagreements": 1800,
+        "spot_flow_direction": {
+          "point": -12.235137769998769,
+          "lcb": -13.587526664528584,
+          "ucb": -10.828230918584191,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": -0.21119281280393415,
+          "win_rate_after_cost": 0.20222222222222222,
+          "promotable": false
+        },
+        "perp_flow_direction": {
+          "point": -11.764862230001231,
+          "lcb": -13.104066901177136,
+          "ucb": -10.36183438101067,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": 0.21119281280393415,
+          "win_rate_after_cost": 0.21055555555555555,
+          "promotable": false
+        },
+        "mean_absolute_move_bps": 13.758331985920945,
+        "baseline_absolute_move_bps": 7.546795041895829
+      },
+      {
+        "horizon_m": 15,
+        "n_disagreements": 1800,
+        "spot_flow_direction": {
+          "point": -12.079113326343876,
+          "lcb": -14.028050542098507,
+          "ucb": -10.088621840129447,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": -0.2515027017801259,
+          "win_rate_after_cost": 0.28055555555555556,
+          "promotable": false
+        },
+        "perp_flow_direction": {
+          "point": -11.920886673656128,
+          "lcb": -13.817025178994701,
+          "ucb": -9.975717719297004,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": 0.2515027017801259,
+          "win_rate_after_cost": 0.29777777777777775,
+          "promotable": false
+        },
+        "mean_absolute_move_bps": 21.71599026177833,
+        "baseline_absolute_move_bps": 13.093123130454298
+      },
+      {
+        "horizon_m": 30,
+        "n_disagreements": 1800,
+        "spot_flow_direction": {
+          "point": -11.557089354371302,
+          "lcb": -14.592612938838059,
+          "ucb": -8.446990393445907,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": -0.15887982495846684,
+          "win_rate_after_cost": 0.33666666666666667,
+          "promotable": false
+        },
+        "perp_flow_direction": {
+          "point": -12.442910645628698,
+          "lcb": -15.274280364844715,
+          "ucb": -9.507532526394039,
+          "n": 1800,
+          "n_days": 108,
+          "gross_bps": 0.15887982495846684,
+          "win_rate_after_cost": 0.3472222222222222,
+          "promotable": false
+        },
+        "mean_absolute_move_bps": 30.399436249949513,
+        "baseline_absolute_move_bps": 18.599727125231986
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "funding_study": {
+    "description": "Actual hours-to-funding resets define 270 events. The rate model uses only T-30m features. Event trades are conditioned on a train-frozen extreme premium and pay 12 bps.",
+    "events": 270,
+    "train_events": 186,
+    "test_events": 84,
+    "next_funding_rate": {
+      "model_mae_bps": 0.22245309869726276,
+      "naive_current_rate_mae_bps": 0.11450476190476187,
+      "mae_improvement_naive_minus_model": {
+        "point": -0.1079483367925009,
+        "lcb": -0.18481549027810498,
+        "ucb": -0.03772828936617734,
+        "n": 84,
+        "n_days": 28
+      },
+      "promotable": false,
+      "authority": "DIAGNOSTIC_ONLY"
+    },
+    "train_extreme_premium_abs_threshold": 0.0005814850000000001,
+    "event_rows": [
+      {
+        "phase": "PRE_30M_UNWIND",
+        "point": -9.475171595279162,
+        "lcb": -40.57835667969418,
+        "ucb": 18.524869853488656,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": 0.5787001331595624,
+        "win_rate_after_cost": 0.26666666666666666,
+        "promotable": false
+      },
+      {
+        "phase": "PRE_15M_UNWIND",
+        "point": -5.963228907199735,
+        "lcb": -32.006138977093855,
+        "ucb": 26.692055763936352,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": 3.623865152114399,
+        "win_rate_after_cost": 0.3333333333333333,
+        "promotable": false
+      },
+      {
+        "phase": "PRE_5M_UNWIND",
+        "point": -6.108639386903025,
+        "lcb": -18.28184123002017,
+        "ucb": 11.192407296546032,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": 6.316572595750358,
+        "win_rate_after_cost": 0.3333333333333333,
+        "promotable": false
+      },
+      {
+        "phase": "PRE_1M_UNWIND",
+        "point": -7.1771526726374,
+        "lcb": -12.934961977139134,
+        "ucb": -0.17529782587265547,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": 4.579624452197617,
+        "win_rate_after_cost": 0.06666666666666667,
+        "promotable": false
+      },
+      {
+        "phase": "POST_1M_REVERSAL",
+        "point": -10.938634467659005,
+        "lcb": -15.976050307894257,
+        "ucb": -6.712218688402037,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": 1.4044102230554116,
+        "win_rate_after_cost": 0.0,
+        "promotable": false
+      },
+      {
+        "phase": "POST_5M_REVERSAL",
+        "point": -14.723084740333809,
+        "lcb": -24.784584781890068,
+        "ucb": -6.949676882561728,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": -2.323898237174124,
+        "win_rate_after_cost": 0.0,
+        "promotable": false
+      },
+      {
+        "phase": "POST_15M_REVERSAL",
+        "point": -29.230173096025965,
+        "lcb": -59.1773210412543,
+        "ucb": -11.410725095056849,
+        "n": 15,
+        "n_days": 12,
+        "gross_bps": -14.420342683867899,
+        "win_rate_after_cost": 0.0,
+        "promotable": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "psychological_levels": {
+    "description": "First crossing after a 30-minute cooldown; continuation enters after the observed close and pays 12 bps.",
+    "rows": [
+      {
+        "level_step_usd": 100,
+        "horizon_m": 5,
+        "failure_rate": 0.677059097254537,
+        "point": -12.2250602891891,
+        "lcb": -12.920260055975405,
+        "ucb": -11.524626513548295,
+        "n": 4298,
+        "n_days": 109,
+        "gross_bps": -0.19824109934865963,
+        "win_rate_after_cost": 0.10120986505351326,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 100,
+        "horizon_m": 15,
+        "failure_rate": 0.8057235923685435,
+        "point": -12.486934728221618,
+        "lcb": -13.429288763300708,
+        "ucb": -11.30451211574232,
+        "n": 4298,
+        "n_days": 109,
+        "gross_bps": -0.44592572107755246,
+        "win_rate_after_cost": 0.19218241042345277,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 100,
+        "horizon_m": 30,
+        "failure_rate": 0.8633930649290202,
+        "point": -12.458616731213473,
+        "lcb": -13.809405558147128,
+        "ucb": -10.840901355223838,
+        "n": 4297,
+        "n_days": 109,
+        "gross_bps": -0.3947813222516601,
+        "win_rate_after_cost": 0.2550616709332092,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 500,
+        "horizon_m": 5,
+        "failure_rate": 0.6572254335260116,
+        "point": -11.917223357141244,
+        "lcb": -13.138155285902428,
+        "ucb": -10.528170462176867,
+        "n": 1730,
+        "n_days": 109,
+        "gross_bps": 0.20574331697311862,
+        "win_rate_after_cost": 0.15144508670520232,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 500,
+        "horizon_m": 15,
+        "failure_rate": 0.7901734104046243,
+        "point": -12.00141535675083,
+        "lcb": -13.827421374943192,
+        "ucb": -9.572661534707544,
+        "n": 1730,
+        "n_days": 109,
+        "gross_bps": 0.14012746232084447,
+        "win_rate_after_cost": 0.2421965317919075,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 500,
+        "horizon_m": 30,
+        "failure_rate": 0.8473988439306358,
+        "point": -12.327403707928173,
+        "lcb": -14.822571590433943,
+        "ucb": -10.092695146663766,
+        "n": 1730,
+        "n_days": 109,
+        "gross_bps": -0.08747044413521586,
+        "win_rate_after_cost": 0.2809248554913295,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 1000,
+        "horizon_m": 5,
+        "failure_rate": 0.6540041067761807,
+        "point": -12.533836614363382,
+        "lcb": -15.175474418052366,
+        "ucb": -10.324198703937077,
+        "n": 974,
+        "n_days": 106,
+        "gross_bps": -0.4157368558644612,
+        "win_rate_after_cost": 0.14784394250513347,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 1000,
+        "horizon_m": 15,
+        "failure_rate": 0.7936344969199178,
+        "point": -12.899292759623458,
+        "lcb": -16.1012522156132,
+        "ucb": -9.805130282892353,
+        "n": 974,
+        "n_days": 106,
+        "gross_bps": -0.9002650124261616,
+        "win_rate_after_cost": 0.23203285420944558,
+        "promotable": false
+      },
+      {
+        "level_step_usd": 1000,
+        "horizon_m": 30,
+        "failure_rate": 0.8531827515400411,
+        "point": -14.013495057467972,
+        "lcb": -18.17666124108598,
+        "ucb": -10.483647541490226,
+        "n": 974,
+        "n_days": 106,
+        "gross_bps": -1.7773334197324406,
+        "win_rate_after_cost": 0.27002053388090347,
+        "promotable": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "confidence_threshold": {
+    "description": "Raw direction-score thresholds 0.50-0.95. Threshold is selected on a separate 10% calibration era with at least 250 calls, then scored on the final 30%.",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "test_auc": 0.5231005880256301,
+        "calibration_selected_threshold": {
+          "threshold": 0.55,
+          "calls": 4288,
+          "net_bps": -11.796260556701911
+        },
+        "selected_threshold_test": {
+          "threshold": 0.55,
+          "point": -11.268959995862996,
+          "lcb": -11.835506074000277,
+          "ucb": -10.697162488230763,
+          "n": 12757,
+          "n_days": 109,
+          "gross_bps": 0.616673356702503,
+          "win_rate_after_cost": 0.0949282746727287,
+          "promotable": false
+        },
+        "test_grid": [
+          {
+            "threshold": 0.5,
+            "point": -11.791738751640521,
+            "lcb": -11.951614983912336,
+            "ucb": -11.62639597898066,
+            "n": 156955,
+            "n_days": 109,
+            "gross_bps": 0.2082686899004091,
+            "win_rate_after_cost": 0.09554967984454144,
+            "promotable": false
+          },
+          {
+            "threshold": 0.55,
+            "point": -11.268959995862996,
+            "lcb": -11.835506074000277,
+            "ucb": -10.697162488230763,
+            "n": 12757,
+            "n_days": 109,
+            "gross_bps": 0.616673356702503,
+            "win_rate_after_cost": 0.0949282746727287,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6000000000000001,
+            "point": -13.83358930745026,
+            "lcb": -21.32350992607658,
+            "ucb": -8.422657010340213,
+            "n": 729,
+            "n_days": 87,
+            "gross_bps": -0.008369051266975057,
+            "win_rate_after_cost": 0.05212620027434842,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6500000000000001,
+            "point": -10.86803275125291,
+            "lcb": -23.06243949864555,
+            "ucb": 0.6413744449176468,
+            "n": 45,
+            "n_days": 15,
+            "gross_bps": 1.0797279578161285,
+            "win_rate_after_cost": 0.06666666666666667,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7000000000000002,
+            "point": -20.026348500512203,
+            "lcb": -26.823943431157005,
+            "ucb": -13.228753569867402,
+            "n": 2,
+            "n_days": 2,
+            "gross_bps": -8.026348500512203,
+            "win_rate_after_cost": 0.0,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7500000000000002,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8000000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8500000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9000000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9500000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          }
+        ]
+      },
+      {
+        "horizon_m": 15,
+        "test_auc": 0.5074530687920981,
+        "calibration_selected_threshold": {
+          "threshold": 0.55,
+          "calls": 6080,
+          "net_bps": -10.175187679797533
+        },
+        "selected_threshold_test": {
+          "threshold": 0.55,
+          "point": -11.43045385645284,
+          "lcb": -13.021154225959878,
+          "ucb": -10.14391545809112,
+          "n": 15981,
+          "n_days": 109,
+          "gross_bps": 0.2581040470840478,
+          "win_rate_after_cost": 0.17045241223953445,
+          "promotable": false
+        },
+        "test_grid": [
+          {
+            "threshold": 0.5,
+            "point": -11.829478415245443,
+            "lcb": -12.208743917364288,
+            "ucb": -11.469042022486484,
+            "n": 156945,
+            "n_days": 109,
+            "gross_bps": 0.1706083588112606,
+            "win_rate_after_cost": 0.18874765045079486,
+            "promotable": false
+          },
+          {
+            "threshold": 0.55,
+            "point": -11.43045385645284,
+            "lcb": -13.021154225959878,
+            "ucb": -10.14391545809112,
+            "n": 15981,
+            "n_days": 109,
+            "gross_bps": 0.2581040470840478,
+            "win_rate_after_cost": 0.17045241223953445,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6000000000000001,
+            "point": -10.332898786120348,
+            "lcb": -15.00982437511556,
+            "ucb": -5.3320095935449725,
+            "n": 1135,
+            "n_days": 107,
+            "gross_bps": -1.0407362890480143,
+            "win_rate_after_cost": 0.14713656387665197,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6500000000000001,
+            "point": -12.479081467652062,
+            "lcb": -22.622690271192983,
+            "ucb": 2.2394030892186305,
+            "n": 85,
+            "n_days": 31,
+            "gross_bps": -2.743590764554092,
+            "win_rate_after_cost": 0.058823529411764705,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7000000000000002,
+            "point": -15.647918707566808,
+            "lcb": -23.102854273848198,
+            "ucb": -10.350467502444827,
+            "n": 10,
+            "n_days": 4,
+            "gross_bps": -3.9180950002731807,
+            "win_rate_after_cost": 0.0,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7500000000000002,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8000000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8500000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9000000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9500000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          }
+        ]
+      },
+      {
+        "horizon_m": 30,
+        "test_auc": 0.5030780265080682,
+        "calibration_selected_threshold": {
+          "threshold": 0.55,
+          "calls": 6888,
+          "net_bps": -10.390379010344612
+        },
+        "selected_threshold_test": {
+          "threshold": 0.55,
+          "point": -11.22431158014411,
+          "lcb": -13.370345271184771,
+          "ucb": -9.038256147884855,
+          "n": 21952,
+          "n_days": 109,
+          "gross_bps": 0.27132788473822783,
+          "win_rate_after_cost": 0.21105138483965014,
+          "promotable": false
+        },
+        "test_grid": [
+          {
+            "threshold": 0.5,
+            "point": -11.931180965384247,
+            "lcb": -12.670556760990397,
+            "ucb": -11.264637076829656,
+            "n": 156930,
+            "n_days": 109,
+            "gross_bps": 0.06885143973070584,
+            "win_rate_after_cost": 0.2545211240680558,
+            "promotable": false
+          },
+          {
+            "threshold": 0.55,
+            "point": -11.22431158014411,
+            "lcb": -13.370345271184771,
+            "ucb": -9.038256147884855,
+            "n": 21952,
+            "n_days": 109,
+            "gross_bps": 0.27132788473822783,
+            "win_rate_after_cost": 0.21105138483965014,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6000000000000001,
+            "point": -9.468469172346714,
+            "lcb": -15.175591409423062,
+            "ucb": -2.465762622876686,
+            "n": 4242,
+            "n_days": 107,
+            "gross_bps": 0.7289288153217144,
+            "win_rate_after_cost": 0.16313059877416314,
+            "promotable": false
+          },
+          {
+            "threshold": 0.6500000000000001,
+            "point": -8.56821558647229,
+            "lcb": -18.907754752948627,
+            "ucb": 5.230559847848107,
+            "n": 856,
+            "n_days": 59,
+            "gross_bps": 3.7561211985028957,
+            "win_rate_after_cost": 0.19042056074766356,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7000000000000002,
+            "point": -7.673901587870305,
+            "lcb": -25.472976233014485,
+            "ucb": 21.394944626409494,
+            "n": 158,
+            "n_days": 21,
+            "gross_bps": 5.895023271215196,
+            "win_rate_after_cost": 0.25949367088607594,
+            "promotable": false
+          },
+          {
+            "threshold": 0.7500000000000002,
+            "point": -20.10586655652812,
+            "lcb": -20.10586655652812,
+            "ucb": -20.10586655652812,
+            "n": 1,
+            "n_days": 1,
+            "gross_bps": -8.105866556528118,
+            "win_rate_after_cost": 0.0,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8000000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.8500000000000003,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9000000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          },
+          {
+            "threshold": 0.9500000000000004,
+            "point": null,
+            "lcb": null,
+            "ucb": null,
+            "n": 0,
+            "n_days": 0,
+            "gross_bps": null,
+            "win_rate_after_cost": null,
+            "promotable": false
+          }
+        ]
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "blocked_questions": [
+    {
+      "questions": "Options fair value, IV/skew and tri-market consensus",
+      "missing": "historical strike-level options chain aligned to PM rounds"
+    },
+    {
+      "questions": "Maker toxicity, queue value, cancel policy and sub-second alpha decay",
+      "missing": "actual quote attempts, queue, fills and 50ms-5s markouts"
+    },
+    {
+      "questions": "Price/OI/funding states and liquidation prediction/clusters",
+      "missing": "causal OI and liquidation event histories"
+    },
+    {
+      "questions": "Multi-venue leader and PM overshoot at 1s-60s",
+      "missing": "synchronized event-time prices and PM revisions"
+    },
+    {
+      "questions": "Capacity, portfolio/tail correlation and opportunity auction",
+      "missing": "positive executable strategies plus realized fills and joint PnL"
+    },
+    {
+      "questions": "Alpha stop/restart/decay after promotion",
+      "missing": "a promoted strategy with independent forward outcomes"
+    }
+  ],
+  "promotable_configurations": 0,
+  "capital_authority": false
+}

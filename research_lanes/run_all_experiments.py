@@ -37,20 +37,20 @@ CANONICAL_REPORT = ROOT / "docs" / "active" / "STANDALONE_ALPHA_LAB_COMPLETE_CAM
 
 PROPOSAL_COVERAGE = [
     ("Market disagreement / minority model resolution", "Phase 5 #04; Phase 5B #46-47", "TESTED"),
-    ("Polymarket probability elasticity / acceleration", "Phase 5 #19-20; Phase 5B #43-45,70", "TESTED"),
+    ("Polymarket probability elasticity / acceleration", "Phase 5 #19-20; Phase 5B #43-45,70", "INSUFFICIENT_OR_BLOCKED"),
     ("Polymarket implied volatility / deadline convexity", "Phase 5 #18,21; Phase 5C volatility tests", "TESTED_DIAGNOSTIC"),
-    ("Order-flow surprise / event propagation", "Phase 5 #10-17; Phase 5B #58-68", "TESTED"),
-    ("Book elasticity / replenishment / resiliency", "Phase 5 #15; Phase 5B #59-64,72", "TESTED_DIAGNOSTIC"),
-    ("Liquidity vacuum / cancellation toxicity", "Phase 5B #59-64", "TESTED_DIAGNOSTIC"),
+    ("Order-flow surprise / event propagation", "Phase 5 #10-17; Phase 5B #58-68", "DATA_BLOCKED"),
+    ("Book elasticity / replenishment / resiliency", "Phase 5 #15; Phase 5B #59-64,72", "DATA_BLOCKED"),
+    ("Liquidity vacuum / cancellation toxicity", "Phase 5B #59-64", "DATA_BLOCKED"),
     ("Cross-venue information leader / synchronized shock", "Phase 5 #08; Phase 5B #73-75", "PARTIAL_DATA_BLOCKED"),
     ("Polymarket stale quote / repricing lag", "Phase 5 #19-20; Phase 5B #70,73-74", "PARTIAL_DATA_BLOCKED"),
-    ("Maker replenishment / markout / adverse selection", "Phase 5B #59-64; #88", "PARTIAL_DATA_BLOCKED"),
+    ("Maker replenishment / markout / adverse selection", "Batch 3 hypothetical markout; Phase 5B #59-64", "PARTIAL_DATA_BLOCKED"),
     ("Clock phase alpha", "TIME_PHASE_ALPHA_V1", "TESTED"),
-    ("Uncertainty collapse / information clock", "Phase 5B #48-50,56-57", "TESTED"),
+    ("Uncertainty collapse / information clock", "Phase 5B #48-50,56-57", "PARTIAL_BLOCKED_OR_UNSTABLE"),
     ("Change points / volatility transitions / regime state", "Phase 5B #55,68,82-83", "TESTED_DIAGNOSTIC"),
-    ("False breakout / continuation / exhaustion", "Phase 5 #11-14", "TESTED"),
-    ("Polymarket settlement convexity", "Phase 5 #21", "TESTED"),
-    ("State-value atlas / regime selector", "Phase 5 #27,31; Phase 5B #51,82-83", "PARTIAL_DATA_BLOCKED"),
+    ("False breakout / continuation / exhaustion", "Phase 5 #11-14", "DATA_BLOCKED"),
+    ("Polymarket settlement convexity", "Batch 3 plus Phase 5 #21", "TESTED_DIAGNOSTIC"),
+    ("State-value atlas / regime selector", "STATE_VALUE_ATLAS_V1", "TESTED_UNDERPOWERED"),
     ("Negative alpha / placebo / randomization", "Phase 5 #38-42", "DATA_BLOCKED"),
     ("Counterfactual action and order policy", "Phase 5 #33-35; Phase 5B #76,86", "PARTIAL_DATA_BLOCKED"),
     ("Capacity curve / capital efficiency", "Phase 5 #36; Phase 5B #80-81", "PARTIAL_DATA_BLOCKED"),
@@ -59,21 +59,25 @@ PROPOSAL_COVERAGE = [
     ("Complete-set arbitrage", "POLY_FULLSET_ARB_V1", "TESTED_NEGLIGIBLE"),
     ("Last-seconds convergence / P(flip) / anchor touch", "Phase 5B #48,69-70; Phase 5C", "TESTED_DIAGNOSTIC"),
     ("Market-prior residual fair value", "POLY_MARKET_PRIOR_RESIDUAL_V1", "TESTED"),
-    ("Buy now vs wait", "Phase 5 #33; Phase 5B #76", "TESTED"),
-    ("Two-sided maker / queue fill", "Phase 5B #59-64,88", "DATA_BLOCKED"),
+    ("Buy now vs wait", "WAIT_VS_BUY_V1 oracle and fixed-delay controls", "TESTED_NO_EDGE"),
+    ("Two-sided maker / queue fill", "HEDGED_POLY_MM_V1 and hypothetical markouts", "PARTIAL_DATA_BLOCKED"),
     ("Binance cost-clearance return distribution", "BINANCE_COST_CLEARANCE_V1", "TESTED"),
-    ("Dynamic barriers / MFE-MAE / holding time", "Phase 5C path diagnostics", "TESTED_DIAGNOSTIC"),
-    ("Tradeable / no-trade / extreme selectivity", "VOLATILITY_EXPANSION_V1; Phase 5 #01,27", "TESTED"),
-    ("Funding plus basis carry", "SPOT_PERP_BASIS_V1; carry research", "TESTED"),
+    ("Dynamic barriers / MFE-MAE / holding time", "Phase 5C plus matrix path extensions", "TESTED_NO_EDGE"),
+    ("Tradeable / no-trade / extreme selectivity", "VOLATILITY_EXPANSION_V1; Phase 5 #01,27", "DIAGNOSTIC_NOT_EXECUTABLE"),
+    ("Funding plus basis carry", "SPOT_PERP_BASIS_V1; funding cash-flow audit", "BASIS_TESTED_FUNDING_BLOCKED"),
     ("Cross-exchange funding dispersion", "Recorder exists; independent history gate", "DATA_BLOCKED"),
     ("BTC/ETH/SOL relative value", "Phase 5 #06-07", "DATA_BLOCKED"),
-    ("Liquidation continuation / exhaustion", "Decision-head research; missing executable economics", "TESTED_DIAGNOSTIC"),
+    ("Liquidation continuation / exhaustion", "Decision-head research; missing causal liquidation history", "DATA_BLOCKED"),
     ("Tail-risk / jump-vs-diffusion", "Phase 5C", "TESTED_DIAGNOSTIC"),
-    ("Ensemble disagreement / model-error predictor", "Phase 5B #46-47,79", "TESTED"),
-    ("State calibration / Bayesian updating", "Phase 5B #48,52", "TESTED"),
+    ("Ensemble disagreement / model-error predictor", "Phase 5B #46-47,79", "TESTED_NO_EDGE_OR_UNSTABLE"),
+    ("State calibration / Bayesian updating", "Phase 5B #48,52", "TESTED_NO_EDGE"),
     ("Deribit implied vs realized volatility", "Options research; synchronized chain history insufficient", "DATA_BLOCKED"),
     ("Spot-perpetual basis dislocation", "SPOT_PERP_BASIS_V1", "TESTED"),
     ("Volatility expansion", "VOLATILITY_EXPANSION_V1", "TESTED_DIAGNOSTIC"),
+    ("Compression breakout", "MATRIX_PATH_EXTENSIONS", "TESTED_DIAGNOSTIC"),
+    ("Trend pullback / survival", "MATRIX_PATH_EXTENSIONS", "TESTED_NO_EDGE"),
+    ("Adverse recovery / profit giveback", "MATRIX_PATH_EXTENSIONS", "TESTED_NO_EDGE"),
+    ("Microbasis reversion", "MATRIX_PATH_EXTENSIONS", "TESTED_NO_EDGE"),
 ]
 
 
@@ -205,12 +209,31 @@ def _read_alpha_metrics(run_root: Path) -> dict[str, Any]:
         result["matrix_lanes"] = json.loads(matrix.read_text(encoding="utf-8"))
     if cost.is_file():
         result["cost_clearance"] = json.loads(cost.read_text(encoding="utf-8"))
-    prior = LANES / "polymarket_residual" / "results.json"
-    fullset = LANES / "poly_fullset_arb" / "results.json"
+    prior = run_root / "polymarket_prior_results.json"
+    if not prior.is_file():
+        prior = LANES / "polymarket_residual" / "results.json"
+    fullset = run_root / "polymarket_fullset_results.json"
+    if not fullset.is_file():
+        fullset = LANES / "poly_fullset_arb" / "results.json"
     if prior.is_file():
         result["pm_prior_comparison"] = json.loads(prior.read_text(encoding="utf-8"))
     if fullset.is_file():
         result["pm_fullset"] = json.loads(fullset.read_text(encoding="utf-8"))
+    extra_sources = {
+        "remaining_lanes": (
+            run_root / "remaining_lanes_results.json",
+            LANES / "remaining_lanes_results.json",
+        ),
+        "batch3": (run_root / "batch3_results.json", LANES / "batch3_results.json"),
+        "matrix_path_extensions": (
+            run_root / "matrix_path_extensions_results.json",
+            LANES / "matrix_path_extensions_results.json",
+        ),
+    }
+    for key, candidates in extra_sources.items():
+        source = next((path for path in candidates if path.is_file()), None)
+        if source:
+            result[key] = json.loads(source.read_text(encoding="utf-8"))
     pm_dir = run_root / "polymarket_residual"
     metrics_path = pm_dir / "probability_metrics.csv"
     actions_path = pm_dir / "action_metrics.csv"
@@ -383,6 +406,99 @@ def _render_report(
             "unobserved. This is **not a strategy result**.",
             "",
         ])
+    remaining = alpha.get("remaining_lanes", {})
+    if remaining:
+        atlas = remaining.get("atlas", {})
+        disagreement = remaining.get("disagree", {}).get("bands", [])
+        mfe = remaining.get("mfe_mae", {})
+        impact = remaining.get("impact", {})
+        widest = disagreement[-1] if disagreement else {}
+        lines.extend([
+            "### Disagreement, State Atlas and Path Symmetry",
+            "",
+            f"- State atlas: {atlas.get('n_cells_examined', 0)} cells with at least 30 "
+            f"independent rounds; nominal cells beyond 2c = {atlas.get('n_cells_nominal', 0)}; "
+            f"family-wise significant cells = **{atlas.get('n_cells_significant', 0)}**. "
+            "No atlas cell is approved for use.",
+            f"- In the widest model/market disagreement band, the model wins only "
+            f"{widest.get('model_win_rate', float('nan')):.1%} "
+            f"[{widest.get('lcb', float('nan')):.1%}, {widest.get('ucb', float('nan')):.1%}]. "
+            "Larger disagreement is evidence against the model, not a trade signal.",
+            f"- Five-minute path: mean MFE {mfe.get('mean_mfe_bps', float('nan')):.2f} bps "
+            f"versus mean MAE {mfe.get('mean_mae_bps', float('nan')):.2f} bps. The path is "
+            "symmetric and does not rescue asymmetric barriers after costs.",
+            f"- Flow-impact asymmetry is {impact.get('asymmetry_bps', float('nan')):+.3f} bps, "
+            "far below the 12 bps round trip.",
+            "",
+        ])
+    batch3 = alpha.get("batch3", {})
+    if batch3:
+        waits = batch3.get("wait_vs_buy", {}).get("by_horizon", [])
+        convexity = batch3.get("convexity", {}).get("cells", [])
+        headline = convexity[0] if convexity else {}
+        maker_markout = batch3.get("maker_markout", {})
+        lines.extend([
+            "### Entry Timing, Settlement Sensitivity and Maker Markout",
+            "",
+            "- `WAIT_VS_BUY_V1`: the hindsight-minimum ask is an oracle bound. Every causal "
+            "fixed-delay interval spans zero:",
+        ])
+        for row in waits:
+            lines.append(
+                f"  - wait {row.get('horizon_s')}s: net delta "
+                f"{row.get('fixed_delay_net_delta', float('nan')):+.4f} per share "
+                f"[{row.get('fixed_delay_lcb', float('nan')):+.4f}, "
+                f"{row.get('fixed_delay_ucb', float('nan')):+.4f}]."
+            )
+        lines.extend([
+            f"- Largest settlement-sensitivity point estimate: `{headline.get('cell', '-')}` "
+            f"at {headline.get('delta_cents_per_bp', float('nan')):.3f} cents/BTC-bp; "
+            f"family-wise interval [{headline.get('lcb_cents_per_bp', float('nan')):+.3f}, "
+            f"{headline.get('ucb_cents_per_bp', float('nan')):+.3f}]. This is a risk surface, "
+            "not a direction signal.",
+            f"- Maker markout: `{maker_markout.get('status', 'UNKNOWN')}`. Quotes permit only "
+            "hypothetical-fill markouts; actual fill probability, queue position and "
+            "fill-conditioned toxicity remain missing.",
+            "",
+        ])
+    extensions = alpha.get("matrix_path_extensions", {})
+    if extensions:
+        compression = extensions.get("compression_breakout", {}).get("rows", [])
+        compression_30 = next((row for row in compression if row.get("horizon_m") == 30), {})
+        lines.extend([
+            "### Remaining Causal Matrix Tests",
+            "",
+            f"Chronological 70/30 split; family-adjusted test; declared cost "
+            f"{extensions.get('data', {}).get('cost_bps', float('nan')):.1f} bps.",
+            "",
+            f"- Compression at 30m selects mean absolute movement "
+            f"{compression_30.get('mean_move_bps', float('nan')):.2f} bps with cost-margin "
+            f"family LCB {compression_30.get('move_minus_cost_family_lcb', float('nan')):+.2f} "
+            "bps. This predicts movement only; no direction or executable volatility instrument "
+            "was established.",
+        ])
+        for key, label in (
+            ("trend_pullback", "Trend pullback"),
+            ("trend_survival", "Trend survival"),
+            ("profit_continuation", "Profit continuation"),
+            ("adverse_move_recovery", "Adverse-move recovery"),
+            ("microbasis_reversion", "Microbasis reversion"),
+        ):
+            rows = extensions.get(key, {}).get("rows", [])
+            if rows:
+                best = max(rows, key=lambda row: row.get("net_family_lcb", float("-inf")))
+                lines.append(
+                    f"- {label}: best net {best.get('net_bps', float('nan')):+.2f} bps; "
+                    f"family LCB {best.get('net_family_lcb', float('nan')):+.2f} bps; "
+                    "not promotable."
+                )
+        lines.extend([
+            f"- Funding carry: `{extensions.get('funding_basis_carry', {}).get('status', '-')}` "
+            "because the matrix lacks actual payment timestamps/rates and financing cash flows.",
+            f"- Promotable economic configurations: "
+            f"**{extensions.get('promotable_configurations', 0)}**.",
+            "",
+        ])
     lines.extend([
         "## Proposal Coverage",
         "",
@@ -402,6 +518,10 @@ def _render_report(
         f"- PM settlement rows at copy: {inputs['settlements_rows']:,}",
         f"- PM snapshots SHA-256: `{inputs['snapshots_sha256']}`",
         f"- PM settlements SHA-256: `{inputs['settlements_sha256']}`",
+        f"- Binance matrix rows: {inputs['matrix_rows']:,}",
+        f"- Binance matrix SHA-256 before: `{inputs['matrix_sha256_before']}`",
+        f"- Binance matrix SHA-256 after: `{inputs['matrix_sha256_after']}`",
+        f"- Binance matrix unchanged during run: `{inputs['matrix_unchanged']}`",
         "- Live DuckDB databases were not stopped or copied. Lock-blocked tests fail closed.",
         "",
         "## What To Do Next",
@@ -469,6 +589,8 @@ def main() -> int:
     inputs_dir.mkdir()
     source_snapshots = DATA / "pm_export_snapshots.parquet"
     source_settlements = DATA / "pm_export_settlements.parquet"
+    source_matrix = DATA / "research_matrix_1m.parquet"
+    source_matrix_manifest = DATA / "research_matrix_1m.manifest.json"
     snapshots = inputs_dir / source_snapshots.name
     settlements = inputs_dir / source_settlements.name
     shutil.copy2(source_snapshots, snapshots)
@@ -480,6 +602,14 @@ def main() -> int:
         "settlements_sha256": _sha256(settlements),
         "snapshots_rows": int(len(pd.read_parquet(snapshots, columns=["slug"]))),
         "settlements_rows": int(len(pd.read_parquet(settlements, columns=["slug"]))),
+        "matrix_path": str(source_matrix),
+        "matrix_bytes": source_matrix.stat().st_size,
+        "matrix_rows": int(len(pd.read_parquet(source_matrix, columns=["ts_ms"]))),
+        "matrix_sha256_before": _sha256(source_matrix),
+        "matrix_manifest_sha256_before": _sha256(source_matrix_manifest),
+        "matrix_sha256_after": None,
+        "matrix_manifest_sha256_after": None,
+        "matrix_unchanged": None,
     }
     (run_root / "input_manifest.json").write_text(
         json.dumps(inputs, indent=2) + "\n", encoding="utf-8", newline="\n"
@@ -511,11 +641,33 @@ def main() -> int:
     commands.append(_run("matrix_lanes", [
         python, "research_lanes/run_matrix_lanes.py",
     ], run_root))
+    commands.append(_run("matrix_path_extensions", [
+        python, "research_lanes/run_matrix_path_extensions.py",
+        "--output", str(run_root / "matrix_path_extensions_results.json"),
+    ], run_root))
     commands.append(_run("polymarket_prior_comparison", [
         python, "research_lanes/polymarket_residual/run.py",
+        "--snapshots", str(snapshots),
+        "--settlements", str(settlements),
+        "--output", str(run_root / "polymarket_prior_results.json"),
     ], run_root))
     commands.append(_run("polymarket_fullset_maker", [
         python, "research_lanes/poly_fullset_arb/run.py",
+        "--snapshots", str(snapshots),
+        "--settlements", str(settlements),
+        "--output", str(run_root / "polymarket_fullset_results.json"),
+    ], run_root))
+    commands.append(_run("polymarket_remaining_lanes", [
+        python, "research_lanes/run_remaining_lanes.py",
+        "--snapshots", str(snapshots),
+        "--settlements", str(settlements),
+        "--output", str(run_root / "remaining_lanes_results.json"),
+    ], run_root))
+    commands.append(_run("polymarket_batch3", [
+        python, "research_lanes/run_batch3.py",
+        "--snapshots", str(snapshots),
+        "--settlements", str(settlements),
+        "--output", str(run_root / "batch3_results.json"),
     ], run_root))
     commands.append(_run("polymarket_residual_offset", [
         python, "research/polymarket_market_prior_residual_v1/run.py",
@@ -523,6 +675,32 @@ def main() -> int:
         "--settlements", str(settlements),
         "--output", str(run_root / "polymarket_residual"),
     ], run_root))
+
+    inputs["matrix_sha256_after"] = _sha256(source_matrix)
+    inputs["matrix_manifest_sha256_after"] = _sha256(source_matrix_manifest)
+    inputs["matrix_unchanged"] = bool(
+        inputs["matrix_sha256_before"] == inputs["matrix_sha256_after"]
+        and inputs["matrix_manifest_sha256_before"] == inputs["matrix_manifest_sha256_after"]
+    )
+    (run_root / "input_manifest.json").write_text(
+        json.dumps(inputs, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    integrity_log = run_root / "logs" / "input_integrity.log"
+    integrity_log.write_text(
+        "PASS: matrix and manifest unchanged during campaign\n"
+        if inputs["matrix_unchanged"]
+        else "FAIL: matrix or manifest changed during campaign\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    commands.append({
+        "label": "input_integrity",
+        "command": [],
+        "returncode": 0 if inputs["matrix_unchanged"] else 1,
+        "elapsed_seconds": 0.0,
+        "log": str(integrity_log),
+        "last_line": integrity_log.read_text(encoding="utf-8").strip(),
+    })
 
     phase5_path = _find_one(run_root / "phase5", "suite_summary.json")
     phase5b_path = _find_one(run_root / "phase5b", "suite_summary.json")

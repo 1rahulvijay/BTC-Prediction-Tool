@@ -24,6 +24,7 @@ HEDGED_POLY_MM_V1
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -112,7 +113,17 @@ def hedged_maker_upper_bound(d) -> dict:
 
 
 def main() -> int:
-    d = load_official()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshots", type=Path)
+    parser.add_argument("--settlements", type=Path)
+    parser.add_argument("--output", type=Path, default=LANE / "results.json")
+    args = parser.parse_args()
+    load_kwargs = {}
+    if args.snapshots:
+        load_kwargs["snapshots_path"] = args.snapshots
+    if args.settlements:
+        load_kwargs["settlements_path"] = args.settlements
+    d = load_official(**load_kwargs)
     if d.empty:
         print("no joined rows"); return 1
     print(f"rows={len(d):,}  rounds={d.round_id.nunique():,}  days={d.day.nunique()}")
@@ -141,12 +152,13 @@ def main() -> int:
         print(f"  {k:<24}EV={r['ev']:+.4f}  95%CI[{r['lcb']:+.4f},{r['ucb']:+.4f}]  "
               f"rounds={r['n_rounds']}  {v}")
 
-    (LANE / "results.json").write_text(
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
         json.dumps({"fullset_arb": a, "hedged_maker_upper_bound": m,
                     "n_rows": int(len(d)), "n_rounds": int(d.round_id.nunique()),
-                    "n_days": int(d.day.nunique())}, indent=2, default=float),
+                    "n_days": int(d.day.nunique())}, indent=2, default=float) + "\n",
         encoding="utf-8")
-    print(f"\nwrote {LANE / 'results.json'}")
+    print(f"\nwrote {args.output}")
     return 0
 
 

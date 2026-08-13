@@ -1,129 +1,71 @@
-# Batch 3 — WAIT_VS_BUY_V1 and POLY_SETTLEMENT_CONVEXITY_V1
+# Batch 3 - Entry Timing, Settlement Sensitivity and Maker Markout
 
-Run 2026-08-13 · `research_lanes/run_batch3.py` · 149,382 rows, 923 rounds, 10 days
-Appended; batches 1 and 2 unrevised.
+Validated run: `20260813T063543Z`
 
----
+Canonical report: [Standalone Alpha Laboratory](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md)
 
-## WAIT_VS_BUY_V1 — **ORACLE BOUND, not a strategy**
+Inputs: immutable copies of the paired Polymarket snapshots/official settlements. Authority:
+`RESEARCH_ONLY`.
 
-Best executable ask reachable within the next N seconds of the same round, versus crossing now:
+## Verdict
 
-| wait | n | mean gain | median | % better | % worse | % no future quote |
-|---|---:|---:|---:|---:|---:|---:|
-| 10s | 148,162 | +0.0194 | +0.0080 | 50.4% | 17.1% | 0.8% |
-| 30s | 148,420 | +0.0524 | +0.0200 | 68.4% | 10.7% | 0.6% |
-| 60s | 148,444 | **+0.0833** | +0.0400 | **75.7%** | 8.2% | 0.6% |
+No causal entry-timing rule cleared zero, settlement sensitivity is a risk surface rather than
+a direction signal, and maker profitability remains blocked by missing actual fills and queue
+position.
 
-8.3 cents of apparent improvement from waiting a minute, better three times in four. **Do not
-read this as timing alpha.** Two things make it an upper bound and probably an illusion:
+## Wait Versus Buy
 
-1. **It is an oracle.** This takes the *minimum* ask over the window. A live trader cannot know
-   which second will be cheapest. The realisable number is strictly lower, and nothing here
-   estimates it.
+The minimum future ask is retained only as a hindsight upper bound. It appears to improve by
+1.94c at 10s, 5.24c at 30s and 8.34c at 60s, but no live policy can select the future minimum.
 
-2. **A cheaper ask usually means a less valuable contract.** These are binaries drifting toward
-   0 or 1. If UP is losing, its ask falls — you get a "better price" on something now worth
-   less. The measurement cannot separate genuine timing improvement from the contract moving
-   against you, and the second explanation is sufficient to produce the entire effect.
+The corrected test also evaluates the causal policy "always wait exactly N seconds, then buy at
+the first available ask":
 
-The rising `% better` with horizon (50% → 76%) is consistent with drift, not with timing skill:
-a longer window simply gives more chances for the price to fall somewhere.
+| fixed wait | net delta/share | round-clustered 95% interval |
+|---|---:|---:|
+| 10s | +0.0009 | -0.0001 to +0.0018 |
+| 30s | +0.0023 | -0.0002 to +0.0049 |
+| 60s | +0.0046 | -0.0003 to +0.0093 |
 
-**Verdict: not evidence of entry-timing edge.** A real test conditions on the *outcome* — is the
-later price better *after* adjusting for the changed probability — and compares against a
-committed rule, not a hindsight minimum.
+Every interval spans zero. `WAIT_VS_BUY_V1` therefore has no causal entry-timing edge.
 
----
+## Settlement Sensitivity
 
-## POLY_SETTLEMENT_CONVEXITY_V1 — **clean structural result**
+Each cell fits `change in UP midpoint ~ BTC change in bps`, with whole-round bootstrap intervals
+and a Bonferroni correction across the surface.
 
-Cents of probability per basis point of BTC move, by time remaining and absolute distance from
-the anchor:
+| cell | point cents/BTC-bp | family-wise interval |
+|---|---:|---:|
+| `<60s | 0-3bps` | 0.762 | -0.611 to +2.035 |
+| `5-10m | 0-3bps` | 0.310 | +0.002 to +0.614 |
+| `>10m | 0-3bps` | 0.237 | +0.098 to +0.399 |
+| `>10m | 3-8bps` | 0.197 | +0.030 to +0.408 |
 
-| cell | n | rounds | delta (cents per bp) |
-|---|---:|---:|---:|
-| **<60s \| 0-3bps** | 425 | 225 | **0.7679** |
-| 5-10m \| 0-3bps | 698 | 119 | 0.3100 |
-| >10m \| 0-3bps | 1,524 | 222 | 0.2385 |
-| >10m \| 3-8bps | 1,332 | 186 | 0.1978 |
-| 5-10m \| 3-8bps | 1,057 | 159 | 0.1514 |
-| >10m \| 8-20bps | 811 | 100 | 0.1106 |
-| <60s \| 3-8bps | 481 | 241 | 0.1040 |
-| 2-5m \| 0-3bps | 3,340 | 717 | 0.0801 |
-| 60-120s \| 8-20bps | 426 | 159 | 0.0665 |
-| 5-10m \| 8-20bps | 1,218 | 135 | 0.0490 |
+The final-minute near-anchor point estimate is large but imprecise and not family-wise
+separated. The broader surface confirms that PM prices react to BTC; it does not predict the
+next BTC move. Use it only for exposure, quote-toxicity and sizing research.
 
-The structure is exactly what the contract's payoff implies, which is the reassuring part:
+## Maker Markout Surface
 
-- **Sensitivity peaks near the anchor in the final minute** — 0.77 c/bp at `<60s | 0-3bps`,
-  roughly **7× the next-nearest time bucket at the same distance**.
-- It **decays with distance** at every horizon. Far from the anchor the outcome is close to
-  decided and BTC moves barely reprice it.
-- It **decays with time remaining** at close distance — a move now matters more than the same
-  move with ten minutes left for it to be undone.
+The batch now regenerates the markout table in code. For each snapshot it assumes a resting UP
+bid fills, then marks that hypothetical fill to the first observed UP midpoint at +5s, +15s and
++30s.
 
-Concretely: within a minute of settlement and within 3 bps of the anchor, a **10 bp BTC move
-(~$100 at $100k) reprices the contract by ~7.7 cents.**
+This is an optimistic diagnostic, not maker PnL. Actual fills are not random: they occur when a
+taker chooses to trade against the resting order, which is precisely when adverse selection can
+be worst. The dataset contains no queue position or actual maker-fill event.
 
-### What this is good for, and what it is not
+Representative +30s hypothetical markouts:
 
-This is a **risk and sizing input**, not a signal. It says where the contract is fragile — which
-is where a stale quote is most costly, where adverse selection on a resting maker order is worst,
-and where position size should be smallest for a given probability view.
+| cell | markout | observations |
+|---|---:|---:|
+| `>5m | 3-8bps` | +1.12c | 18,967 |
+| `2-5m | 0-3bps` | +0.55c | 36,998 |
+| `60-120s | 3-8bps` | +0.50c | 6,479 |
+| `2-5m | >8bps` | -0.02c | 8,306 |
 
-It does **not** say BTC will move. Pairing it with a directional forecast reintroduces every
-problem the earlier lanes found: `MARKET_DISAGREEMENT_RESOLUTION_V1` showed the model loses
-disagreements at every magnitude.
+About 0.5c is mechanically explained by marking a bid fill to the midpoint of a one-cent
+spread. `HEDGED_POLY_MM_V1` stays `PARTIAL_DATA_BLOCKED` until real shadow-posted orders produce
+fill-conditioned markouts.
 
-**Where it does connect to a live lane:** `HEDGED_POLY_MM_V1`. The cells above are precisely
-where a resting quote is most toxic. Any maker fill-and-markout study should stratify by this
-surface rather than pooling, because pooled toxicity will average a benign regime with a lethal
-one.
-
-### Caveat
-
-Cell counts are small — 425 rows / 225 rounds in the headline cell. The slopes are OLS fits with
-no interval attached, and the monotone structure across both axes is the main reason to believe
-them, not any single estimate. Ten days again.
-
----
-
-## MAKER_MARKOUT_SURFACE_V1 — partial: the fill half is missing
-
-**No fill data exists.** Confirmed: no fill/maker/order tables in the canonical store, only
-`polymarket_quotes` (2,348 rows). The study as designed cannot run.
-
-What *is* computable is markout **conditional on a hypothetical fill** at the resting bid.
-Cents, positive = favourable:
-
-| cell | +5s | +15s | +30s | n@30s |
-|---|---:|---:|---:|---:|
-| >5m \| 3-8bps | 0.93 | 1.01 | 1.12 | 18,762 |
-| <60s \| 3-8bps | 0.76 | 1.10 | **1.82** | 3,770 |
-| 60-120s \| >8bps | 0.64 | 0.81 | 0.83 | 2,396 |
-| 2-5m \| 0-3bps | 0.56 | 0.56 | 0.61 | 35,583 |
-| 2-5m \| >8bps | 0.42 | 0.25 | **0.06** | 9,105 |
-| <60s \| 0-3bps | 0.69 | 0.65 | **0.14** | 5,940 |
-| <60s \| >8bps | — | — | **−0.51** | 503 |
-
-### Reading it honestly
-
-Most cells sit at **0.5–1.1c and do not erode** — but that is largely mechanical. Buying at the
-bid and marking to mid captures half of a 1c spread, so ~0.5c is the spread itself, not alpha.
-
-Three cells decay toward or below zero: `2-5m | >8bps` (0.42→0.06), `<60s | 0-3bps` (0.69→0.14)
-and `<60s | >8bps` (−0.51). The second is the one `POLY_SETTLEMENT_CONVEXITY_V1` predicted —
-0.77 c/bp sensitivity, the most fragile cell on the surface — and it is where markout decays
-fastest. The two lanes agree, which is mild corroboration for both.
-
-### Why this is still an upper bound
-
-**Real fills are adversely selected and these are not.** A resting bid fills preferentially when
-the market is coming to hit it — i.e. when the contract is about to be worth less. This
-measurement takes every snapshot as an equally likely fill, so it systematically **understates
-toxicity**. True maker markout is worse than every number above, by an unknown amount.
-
-That keeps `HEDGED_POLY_MM_V1` where it was: upper bound favourable, therefore inconclusive.
-The deciding measurement is unchanged — shadow-post real quotes, record which ones actually fill
-and at what queue position, then mark those out. Nothing in the historical data substitutes.
+No result here is approved for serving or capital.

@@ -1,9 +1,12 @@
 import argparse
+import glob
 import json
 import os
 import pandas as pd
 import numpy as np
 import time
+import urllib.parse
+import urllib.request
 
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -326,44 +329,153 @@ def _source_file_identity(paths: dict[str, str]) -> dict[str, dict]:
     return result
 
 
-def _official_ohlc_parity(base_df: pd.DataFrame) -> dict:
-    """Compare aggregate-trade OHLC with a small cached official Binance kline tail."""
-    configured = os.environ.get("BTC_OFFICIAL_1M_PARITY_PATH")
-    candidate = configured or os.path.join(
-        DATA_DIR, "cache", "btcusdt_1m_3d.json"
+def _reference_frame(path: str) -> pd.DataFrame:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    rows = payload.get("klines") if isinstance(payload, dict) else payload
+    reference = pd.DataFrame(rows or [])
+    if reference.empty or "time" not in reference.columns:
+        raise ValueError("reference has no kline rows")
+
+    raw_time = pd.to_numeric(reference["time"], errors="coerce")
+    finite = raw_time.dropna()
+    if finite.empty:
+        raise ValueError("reference has no valid kline timestamps")
+    magnitude = float(finite.abs().median())
+    if magnitude > 1e14:  # Binance Vision switched newer archives to microseconds.
+        reference["ts_ms"] = (raw_time / 1000.0).round().astype("Int64")
+    elif magnitude > 1e11:
+        reference["ts_ms"] = raw_time.round().astype("Int64")
+    else:
+        reference["ts_ms"] = (raw_time * 1000.0).round().astype("Int64")
+    return reference[["ts_ms", "open", "high", "low", "close"]].dropna(
+        subset=["ts_ms"]
     )
-    if not os.path.exists(candidate):
-        return {
-            "available": False,
-            "passed": True,
-            "reason": "official 1m reference cache unavailable",
-            "path": candidate,
+
+
+def _fetch_official_reference(base_df: pd.DataFrame) -> str | None:
+    """Fetch a small official Binance tail aligned to the reconstructed bars."""
+    timestamps = pd.to_numeric(base_df.get("ts_ms"), errors="coerce").dropna()
+    if timestamps.empty:
+        return None
+    end_ms = int(timestamps.max()) + 59_999
+    start_ms = max(int(timestamps.min()), end_ms - (999 * 60_000))
+    params = urllib.parse.urlencode(
+        {
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": 1000,
         }
+    )
+    url = f"https://api.binance.com/api/v3/klines?{params}"
     try:
-        with open(candidate, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        rows = payload.get("klines") if isinstance(payload, dict) else payload
-        reference = pd.DataFrame(rows or [])
-        if reference.empty or "time" not in reference.columns:
-            raise ValueError("reference has no kline rows")
-        reference["ts_ms"] = pd.to_numeric(
-            reference["time"], errors="coerce"
-        ).astype("Int64") * 1000
-        columns = ["ts_ms", "open", "high", "low", "close"]
-        reference = reference[columns].dropna(subset=["ts_ms"])
-        joined = base_df[columns].merge(
-            reference,
-            on="ts_ms",
-            how="inner",
-            suffixes=("_agg", "_official"),
-        )
-        if len(joined) < 100:
-            return {
-                "available": True,
-                "passed": False,
-                "reason": f"only {len(joined)} overlapping minutes",
-                "path": candidate,
+        request = urllib.request.Request(url, headers={"User-Agent": "BTCQuantTrader/1.0"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, list) or len(payload) < 100:
+            return None
+        rows = [
+            {
+                "time": int(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
             }
+            for row in payload
+            if isinstance(row, list) and len(row) >= 5
+        ]
+        if len(rows) < 100:
+            return None
+        cache_path = os.path.join(DATA_DIR, "cache", "btcusdt_1m_parity.json")
+        atomic_write_json(
+            cache_path,
+            {
+                "cache_version": 1,
+                "saved_at": time.time(),
+                "interval": "1m",
+                "source": "binance_spot_rest",
+                "klines": rows,
+            },
+        )
+        return cache_path
+    except Exception as exc:
+        print(f"Official OHLC reference refresh failed: {exc}")
+        return None
+
+
+def _official_ohlc_parity(
+    base_df: pd.DataFrame,
+    *,
+    candidate_paths: list[str] | None = None,
+    allow_fetch: bool = True,
+) -> dict:
+    """Compare reconstructed OHLC with an overlapping official Binance kline cache.
+
+    Historical-cache filenames describe their window, not their freshness. A fixed 3d
+    filename can therefore be older than a newly reconstructed training window. Select
+    an actually overlapping reference and refresh a small official tail only when none
+    of the local caches overlap.
+    """
+    configured = os.environ.get("BTC_OFFICIAL_1M_PARITY_PATH")
+    if configured:
+        candidates = [configured]
+    elif candidate_paths is not None:
+        candidates = list(candidate_paths)
+    else:
+        candidates = glob.glob(os.path.join(DATA_DIR, "cache", "btcusdt_1m_*.json"))
+        candidates.sort(key=_path_mtime, reverse=True)
+
+    columns = ["ts_ms", "open", "high", "low", "close"]
+    base = base_df[columns].copy()
+    base["ts_ms"] = pd.to_numeric(base["ts_ms"], errors="coerce").astype("Int64")
+    base = base.dropna(subset=["ts_ms"])
+    attempts = []
+    joined = pd.DataFrame()
+    candidate = None
+    for path in candidates:
+        if not os.path.exists(path):
+            attempts.append({"path": path, "reason": "missing"})
+            continue
+        try:
+            reference = _reference_frame(path)
+            overlap = base.merge(reference[["ts_ms"]], on="ts_ms", how="inner")
+            attempts.append({"path": path, "overlap_minutes": int(len(overlap))})
+            if len(overlap) >= 100:
+                candidate = path
+                joined = base.merge(
+                    reference,
+                    on="ts_ms",
+                    how="inner",
+                    suffixes=("_agg", "_official"),
+                )
+                break
+        except Exception as exc:
+            attempts.append({"path": path, "reason": str(exc)})
+
+    if candidate is None and not configured and allow_fetch:
+        refreshed = _fetch_official_reference(base)
+        if refreshed:
+            return _official_ohlc_parity(
+                base,
+                candidate_paths=[refreshed],
+                allow_fetch=False,
+            )
+
+    if candidate is None:
+        existing = [row for row in attempts if row.get("overlap_minutes") is not None]
+        best_overlap = max((row["overlap_minutes"] for row in existing), default=0)
+        return {
+            "available": bool(existing),
+            "passed": False,
+            "reason": f"only {best_overlap} overlapping minutes across official references",
+            "path": configured,
+            "references_checked": attempts,
+        }
+
+    try:
         differences = []
         per_field = {}
         for field in ("open", "high", "low", "close"):
@@ -392,6 +504,7 @@ def _official_ohlc_parity(base_df: pd.DataFrame) -> dict:
             "median_limit": median_limit,
             "p99_limit": p99_limit,
             "fields": per_field,
+            "references_checked": attempts,
         }
     except Exception as exc:
         return {
@@ -759,6 +872,20 @@ def selftest():
             changed = frame.iloc[:200].copy()
             changed.loc[0:20, "open"] += 1.0
             assert not _official_ohlc_parity(changed)["passed"]
+
+            # A stale short-window cache must not block a valid longer-window cache.
+            os.environ.pop("BTC_OFFICIAL_1M_PARITY_PATH", None)
+            stale_path = os.path.join(temporary, "stale.json")
+            stale = reference.copy()
+            stale["time"] += 365 * 24 * 60 * 60
+            with open(stale_path, "w", encoding="utf-8") as handle:
+                json.dump({"klines": stale.to_dict("records")}, handle)
+            selected = _official_ohlc_parity(
+                frame.iloc[:200],
+                candidate_paths=[stale_path, reference_path],
+                allow_fetch=False,
+            )
+            assert selected["passed"] and selected["path"] == reference_path
     finally:
         if previous_reference is None:
             os.environ.pop("BTC_OFFICIAL_1M_PARITY_PATH", None)

@@ -1,12 +1,12 @@
 {
   "fullset_arb": {
-    "n_snapshots": 149834,
+    "n_snapshots": 151756,
     "gross_sum_median": 1.01,
     "gross_sum_min": 0.69,
-    "pct_gross_below_1": 0.00388429862381035,
-    "pct_net_below_1": 0.000760841998478316,
+    "pct_gross_below_1": 0.0038548722949998684,
+    "pct_net_below_1": 0.0007512058831281794,
     "best_net_edge": 0.27839500000000006,
-    "median_fee_both_legs": 0.027909000000000003,
+    "median_fee_both_legs": 0.028210000000000006,
     "n_executable": 114,
     "executable_edge_mean": 0.018243834035087735,
     "executable_size_median": 12.524999999999999,
@@ -14,25 +14,25 @@
   },
   "hedged_maker_upper_bound": {
     "bid_up_only": {
-      "ev": -0.0118494667431958,
-      "lcb": -0.04121879933960336,
-      "ucb": 0.016160640458734103,
-      "n_rows": 149834,
-      "n_rounds": 924
+      "ev": -0.014286967236880254,
+      "lcb": -0.04342787463439382,
+      "ucb": 0.015492691893815021,
+      "n_rows": 151756,
+      "n_rounds": 933
     },
     "bid_down_only": {
-      "ev": 0.024560413524300228,
-      "lcb": -0.004058130593592848,
-      "ucb": 0.054485442862785526,
-      "n_rows": 149834,
-      "n_rounds": 924
+      "ev": 0.02696542476080023,
+      "lcb": -0.0034335885094937137,
+      "ucb": 0.05584401259057331,
+      "n_rows": 151756,
+      "n_rounds": 933
     },
     "two_sided_both_filled": {
-      "ev": 0.01271094678110443,
-      "lcb": 0.010720680358042889,
-      "ucb": 0.01573553853355246,
-      "n_rows": 149834,
-      "n_rounds": 924
+      "ev": 0.012678457523919986,
+      "lcb": 0.010683985605132321,
+      "ucb": 0.01570718459924373,
+      "n_rows": 151756,
+      "n_rounds": 933
     },
     "up_spread_median": 0.010000000000000009,
     "up_spread_p25": 0.010000000000000009,
@@ -40,7 +40,7 @@
     "rebate_share_modelled": 0.2,
     "note": "upper bound: no adverse selection, no queue position, guaranteed fill"
   },
-  "n_rows": 149834,
-  "n_rounds": 924,
+  "n_rows": 151756,
+  "n_rounds": 933,
   "n_days": 10
 }

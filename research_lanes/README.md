@@ -1,161 +1,141 @@
-# research_lanes — standalone alpha laboratory
+# Standalone Alpha Laboratory
 
-Isolated economic experiments. Each lane answers one question about whether money is available,
-and must earn its way into the app rather than being wired in because a metric looked good.
+This directory contains isolated economic experiments. A lane must prove positive executable
+net value before it can influence serving, paper trading, sizing or exits.
 
-**Nothing in the serving path may import from here, and no lane may import serving code.**
-Verified in both directions.
+Nothing here is capital authority. Research scripts must not import live decision code, write
+serving artifacts or mutate trading state.
 
-## Status — 12 lanes run 2026-08-13
+## One-Command Campaign
 
-| lane | question | verdict | report |
-|---|---|---|---|
-| `binance_cost_clearance` | does BTC move enough to pay for a trade? | **CLOSE** <30m at taker cost | [REPORT](binance_cost_clearance/REPORT.md) |
-| `volatility_expansion` | which windows move at all? | **PARTIAL** — real, not sufficient | [REPORT](volatility_expansion/REPORT.md) |
-| `spot_perp_basis` | does extreme basis revert past costs? | **CLOSE** — 15x too small | [REPORT](spot_perp_basis/REPORT.md) |
-| `time_phase_alpha` | does clock phase carry structure? | **NO EFFECT** | [REPORT](time_phase_alpha/REPORT.md) |
-| `polymarket_residual` | when is the market's price wrong? | **CLOSE** as taker — model is behind the market | [REPORT](polymarket_residual/REPORT.md) |
-| `poly_fullset_arb` | is YES+NO ever under $1 all-in? | **REAL, NEGLIGIBLE** — $43.82 / 10 days | [REPORT](poly_fullset_arb/REPORT.md) |
-| `hedged_poly_mm` | does maker quoting pay? | **INCONCLUSIVE** — upper bound only, no fill data | [REPORT](poly_fullset_arb/REPORT.md) |
+```powershell
+& 'C:\Users\rahul\AppData\Local\Programs\Python\Python313\python.exe' `
+  research_lanes\run_all_experiments.py --maximum-rows 100000
+```
 
-## What the five lanes say together
+The command runs sequentially in separate child processes so memory is returned after each
+stage. It executes:
 
-1. **Sub-30-minute Binance direction is arithmetically closed at taker cost.** Mean 5m move is
-   8.3 bps against a 12 bps round trip, so a 100%-accurate model still loses 3.7 bps per trade.
-   No classifier improvement reaches this — the constraint is move size, not sign.
+- all 42 frozen Phase 5 packages;
+- all 46 frozen Phase 5B packages;
+- all nine Phase 5C diagnostics;
+- Binance cost clearance, volatility, time-phase, basis and causal path extensions;
+- Polymarket market-prior, residual, complete-set, state-atlas, disagreement, entry-timing,
+  settlement-sensitivity and hypothetical maker-markout lanes.
 
-2. **Volatility filtering reopens it, partly.** Restricting to the top 1% of
-   predicted-volatility windows lifts mean |move| to 21.9 bps (LCB) and drops the break-even
-   accuracy to 77.4%. Possible, versus impossible. Still far above the ~50% directional base
-   rate measured in this data. And ~all of the ranking is available from `rv_15m` alone —
-   the model adds 0.017 AUC.
+Polymarket inputs are copied into the immutable campaign directory and hashed before testing.
+Live DuckDB writers are never stopped or copied. A test that needs a live-locked or missing
+source returns `BLOCKED_DATA` instead of crashing or inventing a proxy.
 
-3. **Two structural hypotheses died cleanly.** Basis reversion is real and 15x too small
-   (0.89 bps vs 12). Clock phase does not separate at all (LCB 8.87 vs UCB 9.10).
+Latest canonical report:
+[Standalone Alpha Laboratory - Complete Campaign](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md)
 
-4. **Polymarket is not bounded by the cost-clearance result — and it still fails as a taker
-   strategy.** With settlement backfilled (149,061 rows, 921 rounds), the app's `p_hold_up` is
-   genuinely informative (Brier 0.183 vs 0.250 for a constant) and **decisively worse than the
-   market's own price** (0.170), CI [-0.0176, -0.0091]. Trading its disagreement loses 1.8-2.7c
-   per share at every threshold — and loses MORE as the required edge grows, which is evidence
-   that a large model-vs-market gap is usually the model being wrong.
+Detailed inventories:
 
-What is NOT closed on that venue: maker economics (zero platform fee plus a rebate pool, and
-the taker fee is what kills the lane above), full-set `Ask_YES + Ask_NO < 1` arbitrage, and the
-residual formulation `logit(p_true) = logit(p_market) + f(X)` — which has never been fitted, and
-is the structurally right move now that the market is measured as the stronger forecaster.
+- [Batch 2](BATCH_2_REPORT.md)
+- [Batch 3](BATCH_3_REPORT.md)
+- [Complete test inventory](TEST_INVENTORY.md)
 
-5. **Full-set arbitrage is real and tiny.** `ask_UP + ask_DOWN` sits at a median 1.0100.
-   Gross parity violations occur in 0.390% of snapshots; after the 2.79c two-leg taker fee only
-   **0.076%** survive — 114 opportunities totalling **$43.82** across ten days at top-of-book.
-   Mechanically sound, worth a background scanner, too small to fund anything.
+## Current Verdict
 
-6. **The maker lane is inconclusive, and its best-looking number is not a strategy result.**
-   The bid side sits ~1.3c below parity with a tight interval — but that PnL does not depend on
-   the outcome at all (both legs held is a complete set worth $1), so the bootstrap measures
-   quote stability, not proven edge. Capturing it needs BOTH legs to fill, which is exactly what
-   quote-only data cannot show. One-sided fills carry full directional risk and both intervals
-   span zero.
+Validated run `20260813T063543Z` executed all 19 campaign stages successfully. Across the 97
+frozen packages and 21 directly summarized named lanes:
 
-   Everything in that lane is an **upper bound**: guaranteed fill, no adverse selection, no
-   queue. Decisive only if it had lost. It did not, so the next step is measuring toxicity —
-   shadow-post quotes, record real fills, and mark out the fill price at +1s/+5s/+30s.
+- zero strategy earned promotion;
+- zero economic configuration had a positive family-adjusted lower bound after declared costs;
+- zero state-atlas cell survived family-wise correction;
+- all causal fixed-delay Polymarket entry intervals spanned zero.
 
----
+The strongest diagnostics are not trades:
 
-## Batch 2 — five further lanes, 2026-08-13
+- volatility expansion predicts movement (AUC 0.765), not direction or an executable payoff;
+- 30-minute compression selects larger absolute moves, but supplies no direction/instrument;
+- spot/perpetual basis and microbasis revert with high hit rates but only about 1 bps gross
+  against a 12 bps optimistic round trip;
+- Polymarket's own price beats the standalone model, especially when they disagree;
+- complete-set arbitrage is mechanically real but totaled only $43.82 of theoretical top-book
+  value over ten recorded days;
+- maker upper bounds cannot be promoted without actual fill, queue and adverse-selection data.
 
-Appended, not revised. Full detail in [BATCH_2_REPORT.md](BATCH_2_REPORT.md).
+## Scientific Status Versus Process Status
 
-| lane | verdict |
-|---|---|
-| `MARKET_DISAGREEMENT_RESOLUTION_V1` | **CLOSE** — model loses disagreements, worse the bigger |
-| `MFE_MAE_DISTRIBUTION_V1` | **CLOSES A CAVEAT** — payoff symmetric, stops/targets don't help |
-| `STATE_VALUE_ATLAS_V1` | **UNDERPOWERED** — no cell separates |
-| `POLY_STALE_QUOTE_V1` | **NO EFFECT**, and barely testable with this capture |
-| `IMPACT_ASYMMETRY_V1` | **REAL, NEGLIGIBLE** — 0.056 bps |
+`PASS` in the master command means the experiment process completed and wrote a report. It does
+not mean the hypothesis passed. Scientific statuses include:
 
-**The standout.** When the model disagrees with the market, it wins less than half the time at
-every magnitude, and less often as the gap widens:
+- `FAIL_NO_EDGE`: measured result did not clear economics;
+- `FAIL_UNSTABLE`: result failed robustness/stability;
+- `INSUFFICIENT_SAMPLE`: correct data exists but the independent sample is too small;
+- `BLOCKED_DATA`: the required causal source or execution outcome does not exist;
+- `DIAGNOSTIC_ONLY`: useful state information with no proven executable payoff.
 
-| \|residual\| | model win rate | 95% CI |
-|---|---:|---|
-| 0.02-0.05 | 0.397 | [0.378, 0.417] |
-| 0.05-0.08 | 0.353 | [0.330, 0.375] |
-| 0.08-0.12 | 0.333 | [0.303, 0.360] |
-| 0.12-0.20 | 0.309 | [0.271, 0.352] |
-| 0.20-1.00 | 0.331 | [0.266, 0.399] |
+## Promotion Rule
 
-No interval touches 0.5. A 15-cent disagreement means the market is right ~7 times in 10. A
-large model-vs-market gap is **evidence against the model**, which is why any residual model
-must anchor on the market price and be regularised hard toward it.
+A candidate remains research-only until all of the following are true:
 
-**A batch-1 caveat is now closed.** `BINANCE_COST_CLEARANCE_V1` left "asymmetric payoffs" open
-as a possible escape. Measured: mean MFE **7.97** bps, mean MAE **7.99** bps, touch-both 2.9%.
-Symmetric. A tight stop with a wide target does not rescue cost clearance.
+1. chronological out-of-sample net EV is positive at executable prices;
+2. the day/round-clustered lower confidence bound is positive;
+3. multiple comparisons are controlled;
+4. fees, spread, slippage, latency and financing are included;
+5. results survive cost/latency stress, regime slices and concentration checks;
+6. the candidate beats a simple baseline and a matched null;
+7. independent forward shadow and paper windows confirm it.
 
-**A method note worth keeping.** The state-value atlas produced five cells with 9-13 cent gaps
-— all with intervals spanning zero, on 37-124 rounds each. They are the largest of 43 noisy
-estimates, so the maximum is biased upward. Point estimates alone would have read as five
-confident edges. None survives its interval.
+Accuracy, AUC, a positive point estimate or an optimistic fill upper bound is not promotion.
 
-## Batch 3 — 2026-08-13
+## Blocked Frontier
 
-[BATCH_3_REPORT.md](BATCH_3_REPORT.md). Appended; batches 1-2 unrevised.
+The main untested frontier requires data the current historical stores do not contain:
 
-| lane | verdict |
-|---|---|
-| `WAIT_VS_BUY_V1` | **ORACLE BOUND** — apparent +8.3c is hindsight plus adverse drift |
-| `POLY_SETTLEMENT_CONVEXITY_V1` | **CLEAN STRUCTURE** — a risk input, not a signal |
+- actual maker fills, queue position and fill-conditioned markouts;
+- synchronized sub-second BTC and Polymarket quote revisions;
+- per-level L2 add/cancel/execute events;
+- actual funding payment timestamps/rates and financing cash flows;
+- synchronized second-venue funding, ETH/SOL relative-value and Deribit chain history;
+- causal liquidation and open-interest event histories.
 
-Waiting 60s appears to improve entry by 8.3c, better 76% of the time. It is not timing alpha:
-the measurement takes the *minimum* ask over the window (an oracle no live trader has), and on
-a binary drifting toward 0 or 1 a cheaper ask usually means a less valuable contract. Drift
-alone explains the whole effect.
+Keep the corresponding recorders running. Historical APIs cannot reconstruct executable PM
+bid/ask ladders or queue events that were never captured.
 
-Convexity is the clean one. Delta peaks at **0.77 cents per bp of BTC** within 60s of settlement
-and 3 bps of the anchor — ~7x the next time bucket at the same distance — and decays
-monotonically in both time and distance. A 10 bp BTC move reprices the contract ~7.7c there.
-That is where a resting maker quote is most toxic, so `HEDGED_POLY_MM_V1`'s fill study must
-stratify by this surface rather than pooling a benign regime with a lethal one.
+No file in this directory authorizes real-money trading.
 
-## Complete test inventory
+## Append-only update - Action-value brief batch (2026-08-13)
 
-[TEST_INVENTORY.md](TEST_INVENTORY.md) lists **every** experiment proposed across both design
-documents: 12 that ran with linked reports, 24 blocked by data the repo has never captured, and
-16 runnable but not yet reached. It also records why the Polymarket atlas **cannot** be
-backfilled from any API — historical executable bid/ask and L2 depth are not published
-products, so only forward recording produces them.
+Seven additional runnable families were executed from the later research briefs using a frozen
+60/10/30 chronological protocol and 12 bps Binance cost. None produced a positive
+family-adjusted after-cost lower bound. Detailed results:
 
-## The bar
+- Runner: `python research_lanes/run_action_value_brief_batch.py`
+- [BRIEF_ACTION_VALUE_BATCH_REPORT_2026-08-13.md](BRIEF_ACTION_VALUE_BATCH_REPORT_2026-08-13.md)
+- `results/action_value_brief_batch_20260813T071004Z.json`
 
-A lane is promotable only when the **lower confidence bound of net EV is positive** — not when
-accuracy looks impressive. Accuracy is not a unit of money.
+The important distinction is unchanged: movement can be forecast (5m AUC 0.770), but the tested
+direction, timing, failure-filter, breakout and position-management policies did not monetize it.
 
-## Required scorecard
+## Append-only update - complete brief coverage (2026-08-13)
 
-Every lane reports the statistic **and an interval built from independent units** — UTC days
-for Binance, rounds for Polymarket, never rows. `common/scorecard.py` and `common/pm_data.py`
-provide the bootstraps; use them rather than re-deriving, because the independence unit is the
-thing most easily got wrong. A row bootstrap will happily report a tight interval around a
-number that means nothing.
+The full proposal-to-evidence crosswalk is in
+[COMPLETE_DISCUSSION_TEST_COVERAGE_2026-08-13.md](COMPLETE_DISCUSSION_TEST_COVERAGE_2026-08-13.md).
+It classifies all 60 questions from the first brief and all 35 sections from the second brief,
+including exact reasons for every test that was not run.
 
-Also required: net EV after costs, behaviour at 1.5x and 2x cost, and a simple baseline the
-lane must beat. Three of the five lanes above were decided by the baseline or the cost screen
-rather than by the model.
+## Append-only update - Multi-engine brief batch (2026-08-13)
 
-## Method note
+The later 40-question multi-engine brief is fully reconciled in
+[MULTI_ENGINE_BRIEF_BATCH_REPORT_2026-08-13.md](MULTI_ENGINE_BRIEF_BATCH_REPORT_2026-08-13.md).
 
-Prefer tests that fit nothing. `binance_cost_clearance` trains no model and could not be
-overfitted, yet it closed more downstream work than any fitted result would have. Two of the
-other four were also settled without a model — by an interval and a cost comparison.
+Five newly answerable families ran in one sequential standalone batch:
 
-## Not yet run
+- recorded PM reference versus causally completed Binance spot and derived perp;
+- strong spot/perp CVD disagreement;
+- funding event behavior and next-rate forecasting;
+- $100/$500/$1,000 psychological-level continuation;
+- direction confidence-threshold economics.
 
-From the proposed set: market-disagreement resolution, probability elasticity, stale-quote
-detection, maker markout surface, order-flow surprise, book elasticity, liquidity
-replenishment, liquidation exhaustion, cross-venue leadership, funding carry and dispersion,
-options IV vs realized, counterfactual order policy, capacity curves, edge half-life.
+No family produced a promotable configuration. The recorded PM reference result is useful for
+input-source integrity, while flow disagreement is useful only as a movement warning. Neither is
+an executable trade edge. All remaining questions have explicit data, execution, evidence or
+design blockers in the report.
 
-Most PM-side lanes are blocked behind the same settlement join. Several microstructure lanes
-need sequenced L2 and tick data rather than the 1-minute matrix.
+- Runner: `python research_lanes/run_multi_engine_brief_batch.py`
+- Result: `results/multi_engine_brief_batch_20260813T072836Z.json`
+- Capital authority: **false**

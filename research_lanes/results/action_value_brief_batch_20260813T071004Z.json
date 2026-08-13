@@ -1,0 +1,969 @@
+{
+  "run": {
+    "created_utc": "2026-08-13T07:10:31.726764+00:00",
+    "matrix": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\research_matrix_1m.parquet",
+    "round_matrix": "C:\\Users\\rahul\\Documents\\BTC-Prediction-Tool\\data\\research\\binance_updown_features.parquet",
+    "rows": 518400,
+    "days": 360,
+    "train_days": 216,
+    "calibration_days": 35,
+    "test_days": 109,
+    "train_end_day": 20533,
+    "calibration_end_day": 20568,
+    "cost_bps": 12.0,
+    "family_size": 64,
+    "family_alpha": 0.00078125,
+    "authority": "RESEARCH_ONLY"
+  },
+  "direct_action_value": {
+    "description": "Chronological HGB return model; WAIT unless calibration-frozen top-5% absolute prediction. Movement variant also requires top-decile P(|move|>12bps).",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "direction_gate_abs_prediction_bps": 0.7805687825154742,
+        "movement_gate_probability": 0.45599350314139925,
+        "movement_auc": 0.7696867680646873,
+        "direct_long_calls": 2804,
+        "direct_short_calls": 3979,
+        "direct": {
+          "point": -12.54619411978936,
+          "lcb": -13.62042333324609,
+          "ucb": -11.39447432281796,
+          "n": 6783,
+          "n_days": 109,
+          "gross_bps": -0.026458368125678085,
+          "win_rate": 0.22335249889429457,
+          "promotable": false
+        },
+        "movement_gated": {
+          "point": -13.570611061299003,
+          "lcb": -15.97437181657179,
+          "ucb": -11.073842912686874,
+          "n": 4136,
+          "n_days": 93,
+          "gross_bps": -0.020660064687372897,
+          "win_rate": 0.28747582205029015,
+          "promotable": false
+        }
+      },
+      {
+        "horizon_m": 15,
+        "direction_gate_abs_prediction_bps": 1.2659788210177108,
+        "movement_gate_probability": 0.6520729969816889,
+        "movement_auc": 0.7112432564592487,
+        "direct_long_calls": 5423,
+        "direct_short_calls": 3254,
+        "direct": {
+          "point": -11.42757422958218,
+          "lcb": -14.201303378706196,
+          "ucb": -8.355487832579247,
+          "n": 8677,
+          "n_days": 100,
+          "gross_bps": -0.9539236707361545,
+          "win_rate": 0.3175060504782759,
+          "promotable": false
+        },
+        "movement_gated": {
+          "point": -10.588390097377548,
+          "lcb": -15.473451549475804,
+          "ucb": -5.31057521920553,
+          "n": 5570,
+          "n_days": 83,
+          "gross_bps": -1.4564928202439131,
+          "win_rate": 0.35529622980251346,
+          "promotable": false
+        }
+      },
+      {
+        "horizon_m": 30,
+        "direction_gate_abs_prediction_bps": 3.0559994217365833,
+        "movement_gate_probability": 0.7477925494764814,
+        "movement_auc": 0.6878761129547726,
+        "direct_long_calls": 4275,
+        "direct_short_calls": 3378,
+        "direct": {
+          "point": -14.072429830397814,
+          "lcb": -19.799086304160305,
+          "ucb": -8.901510716268193,
+          "n": 7653,
+          "n_days": 103,
+          "gross_bps": -1.0486762630169122,
+          "win_rate": 0.3741016594799425,
+          "promotable": false
+        },
+        "movement_gated": {
+          "point": -14.138597216390625,
+          "lcb": -20.798786517003563,
+          "ucb": -6.245116625601862,
+          "n": 4630,
+          "n_days": 80,
+          "gross_bps": -1.686561962676204,
+          "win_rate": 0.3982721382289417,
+          "promotable": false
+        }
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "model_failure_gate": {
+    "description": "Meta-model predicts base-call correctness from a separate calibration-era split; historical only, not a live calibration claim.",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "test_failure_model_auc": 0.5074962851927649,
+        "trust_threshold": 0.544715633694123,
+        "trusted_calls": {
+          "point": -12.111303515183957,
+          "lcb": -14.073506893530377,
+          "ucb": -10.102788878128488,
+          "n": 2819,
+          "n_days": 108,
+          "gross_bps": 0.7244500981815456,
+          "win_rate": 0.24263923377084073,
+          "promotable": false
+        },
+        "ungated_calls": {
+          "point": -12.54619411978936,
+          "lcb": -13.667870946491908,
+          "ucb": -11.34802877583735,
+          "n": 6783,
+          "n_days": 109,
+          "gross_bps": -0.026458368125678085,
+          "win_rate": 0.22335249889429457,
+          "promotable": false
+        },
+        "promotable": false
+      },
+      {
+        "horizon_m": 15,
+        "test_failure_model_auc": 0.5064101345368381,
+        "trust_threshold": 0.5933407089248904,
+        "trusted_calls": {
+          "point": -9.628430268831215,
+          "lcb": -15.335068128192358,
+          "ucb": -3.0822021274864606,
+          "n": 1102,
+          "n_days": 87,
+          "gross_bps": 0.217972166510459,
+          "win_rate": 0.3366606170598911,
+          "promotable": false
+        },
+        "ungated_calls": {
+          "point": -11.42757422958218,
+          "lcb": -14.190075361446574,
+          "ucb": -8.608942192436876,
+          "n": 8677,
+          "n_days": 100,
+          "gross_bps": -0.9539236707361545,
+          "win_rate": 0.3175060504782759,
+          "promotable": false
+        },
+        "promotable": false
+      },
+      {
+        "horizon_m": 30,
+        "test_failure_model_auc": 0.49547731536365625,
+        "trust_threshold": 0.6225265783051721,
+        "trusted_calls": {
+          "point": -14.18708115244443,
+          "lcb": -24.40851593042721,
+          "ucb": -5.036499484098481,
+          "n": 852,
+          "n_days": 85,
+          "gross_bps": -1.9746648324595062,
+          "win_rate": 0.284037558685446,
+          "promotable": false
+        },
+        "ungated_calls": {
+          "point": -14.072429830397814,
+          "lcb": -19.162553832747058,
+          "ucb": -8.812266073608185,
+          "n": 7653,
+          "n_days": 103,
+          "gross_bps": -1.0486762630169122,
+          "win_rate": 0.3741016594799425,
+          "promotable": false
+        },
+        "promotable": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "entry_delay": {
+    "description": "Same frozen signal, deterministic 1/3/5-minute delay, same original exit clock and same round-trip cost.",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "delay_m": 1,
+        "now_net_bps": -12.02645836812568,
+        "delayed_net_bps": -12.087361040377402,
+        "delay_minus_now": {
+          "point": -0.05023648197627457,
+          "lcb": -0.5297520196082919,
+          "ucb": 0.3821835360426923,
+          "n": 6783,
+          "n_days": 109
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 5,
+        "delay_m": 3,
+        "now_net_bps": -12.02645836812568,
+        "delayed_net_bps": -12.049792102902021,
+        "delay_minus_now": {
+          "point": 0.2519043507856351,
+          "lcb": -0.5953021600578418,
+          "ucb": 1.1016084115726468,
+          "n": 6783,
+          "n_days": 109
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 15,
+        "delay_m": 1,
+        "now_net_bps": -12.953923670736156,
+        "delayed_net_bps": -12.973606880391683,
+        "delay_minus_now": {
+          "point": -0.1747221154266774,
+          "lcb": -0.6579008163211845,
+          "ucb": 0.24242068893846985,
+          "n": 8677,
+          "n_days": 100
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 15,
+        "delay_m": 3,
+        "now_net_bps": -12.953923670736156,
+        "delayed_net_bps": -12.958246356023295,
+        "delay_minus_now": {
+          "point": -0.19130291527840698,
+          "lcb": -1.2265458133136853,
+          "ucb": 0.8642330470391177,
+          "n": 8677,
+          "n_days": 100
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 15,
+        "delay_m": 5,
+        "now_net_bps": -12.953923670736156,
+        "delayed_net_bps": -12.872244024117618,
+        "delay_minus_now": {
+          "point": -0.13121123962063722,
+          "lcb": -1.6726693446614127,
+          "ucb": 1.167061804875405,
+          "n": 8677,
+          "n_days": 100
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 30,
+        "delay_m": 1,
+        "now_net_bps": -13.048676263016914,
+        "delayed_net_bps": -12.919900237345317,
+        "delay_minus_now": {
+          "point": 0.536918883691209,
+          "lcb": -0.15748380751064942,
+          "ucb": 1.574303898244697,
+          "n": 7653,
+          "n_days": 103
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 30,
+        "delay_m": 3,
+        "now_net_bps": -13.048676263016914,
+        "delayed_net_bps": -12.796320264462578,
+        "delay_minus_now": {
+          "point": 0.7393657831762012,
+          "lcb": -0.585735962383305,
+          "ucb": 2.057378346710954,
+          "n": 7653,
+          "n_days": 103
+        },
+        "delay_better_with_positive_lcb": false
+      },
+      {
+        "horizon_m": 30,
+        "delay_m": 5,
+        "now_net_bps": -13.048676263016914,
+        "delayed_net_bps": -12.592944278725557,
+        "delay_minus_now": {
+          "point": 0.6436953071561833,
+          "lcb": -0.9857031566108178,
+          "ucb": 2.401091974404442,
+          "n": 7653,
+          "n_days": 103
+        },
+        "delay_better_with_positive_lcb": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "thesis_survival": {
+    "description": "Observed close-to-close survival of test calls; descriptive only and not an exit rule.",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n_calls": 6783,
+        "median_first_minus5bps_or_timeout_m": 4.0,
+        "never_hit_minus5bps_rate": 0.45599292348518355,
+        "checkpoints": [
+          {
+            "minute": 1,
+            "favorable_rate": 0.5049388176323161,
+            "above_cost_rate": 0.0971546513342179,
+            "mean_signed_bps": 0.06111453991832474
+          },
+          {
+            "minute": 2,
+            "favorable_rate": 0.5031696889282029,
+            "above_cost_rate": 0.14860681114551083,
+            "mean_signed_bps": 0.09174554258849944
+          },
+          {
+            "minute": 3,
+            "favorable_rate": 0.4983045849918915,
+            "above_cost_rate": 0.18148311956361493,
+            "mean_signed_bps": 0.023273360368166348
+          },
+          {
+            "minute": 4,
+            "favorable_rate": 0.49756744803184433,
+            "above_cost_rate": 0.20212295444493586,
+            "mean_signed_bps": -0.15277855109289734
+          },
+          {
+            "minute": 5,
+            "favorable_rate": 0.502874834144184,
+            "above_cost_rate": 0.22335249889429457,
+            "mean_signed_bps": -0.026458368125678085
+          }
+        ],
+        "authority": "DIAGNOSTIC_ONLY"
+      },
+      {
+        "horizon_m": 15,
+        "n_calls": 8677,
+        "median_first_minus5bps_or_timeout_m": 4.0,
+        "never_hit_minus5bps_rate": 0.2757865621758672,
+        "checkpoints": [
+          {
+            "minute": 1,
+            "favorable_rate": 0.4961392186239484,
+            "above_cost_rate": 0.09796012446698167,
+            "mean_signed_bps": 0.01783135716951375
+          },
+          {
+            "minute": 2,
+            "favorable_rate": 0.5021320732972225,
+            "above_cost_rate": 0.15097383888440705,
+            "mean_signed_bps": 0.03545251115058971
+          },
+          {
+            "minute": 3,
+            "favorable_rate": 0.499366140371096,
+            "above_cost_rate": 0.1869309669240521,
+            "mean_signed_bps": 0.0021433584807652906
+          },
+          {
+            "minute": 4,
+            "favorable_rate": 0.4967154546502247,
+            "above_cost_rate": 0.21654949867465714,
+            "mean_signed_bps": -0.0970891150671358
+          },
+          {
+            "minute": 5,
+            "favorable_rate": 0.49913564596058546,
+            "above_cost_rate": 0.23475855710499022,
+            "mean_signed_bps": -0.08261436341571349
+          },
+          {
+            "minute": 6,
+            "favorable_rate": 0.5015558372709462,
+            "above_cost_rate": 0.25216088509853635,
+            "mean_signed_bps": -0.17010115831424522
+          },
+          {
+            "minute": 7,
+            "favorable_rate": 0.5014405900656909,
+            "above_cost_rate": 0.26564480811340324,
+            "mean_signed_bps": -0.2057161053699977
+          },
+          {
+            "minute": 8,
+            "favorable_rate": 0.49844416272905384,
+            "above_cost_rate": 0.2776305174599516,
+            "mean_signed_bps": -0.44454255046213964
+          },
+          {
+            "minute": 9,
+            "favorable_rate": 0.4939495217240982,
+            "above_cost_rate": 0.2835081249279705,
+            "mean_signed_bps": -0.6718287092678739
+          },
+          {
+            "minute": 10,
+            "favorable_rate": 0.49406476892935347,
+            "above_cost_rate": 0.28950097960124466,
+            "mean_signed_bps": -0.8966096438508024
+          },
+          {
+            "minute": 11,
+            "favorable_rate": 0.49464100495562985,
+            "above_cost_rate": 0.29964273366370864,
+            "mean_signed_bps": -0.8913846512980086
+          },
+          {
+            "minute": 12,
+            "favorable_rate": 0.4944105105451193,
+            "above_cost_rate": 0.30886251008413046,
+            "mean_signed_bps": -0.8847751157324908
+          },
+          {
+            "minute": 13,
+            "favorable_rate": 0.48991586954016364,
+            "above_cost_rate": 0.31404863432061775,
+            "mean_signed_bps": -0.8652265183806283
+          },
+          {
+            "minute": 14,
+            "favorable_rate": 0.49210556644001385,
+            "above_cost_rate": 0.31773654488878644,
+            "mean_signed_bps": -0.8562436233208698
+          },
+          {
+            "minute": 15,
+            "favorable_rate": 0.4859974645614844,
+            "above_cost_rate": 0.3175060504782759,
+            "mean_signed_bps": -0.9539236707361545
+          }
+        ],
+        "authority": "DIAGNOSTIC_ONLY"
+      },
+      {
+        "horizon_m": 30,
+        "n_calls": 7653,
+        "median_first_minus5bps_or_timeout_m": 4.0,
+        "never_hit_minus5bps_rate": 0.19299621063635175,
+        "checkpoints": [
+          {
+            "minute": 1,
+            "favorable_rate": 0.48974258460734355,
+            "above_cost_rate": 0.09721677773422187,
+            "mean_signed_bps": -0.12972197331670698
+          },
+          {
+            "minute": 2,
+            "favorable_rate": 0.49562263164771986,
+            "above_cost_rate": 0.15261988762576767,
+            "mean_signed_bps": -0.12507852225956803
+          },
+          {
+            "minute": 3,
+            "favorable_rate": 0.49300927740755257,
+            "above_cost_rate": 0.18489481249183326,
+            "mean_signed_bps": -0.25318768498374983
+          },
+          {
+            "minute": 4,
+            "favorable_rate": 0.4940546191036195,
+            "above_cost_rate": 0.21377237684568143,
+            "mean_signed_bps": -0.3817794119376001
+          },
+          {
+            "minute": 5,
+            "favorable_rate": 0.4932706128315693,
+            "above_cost_rate": 0.2310205148307853,
+            "mean_signed_bps": -0.4571501036730595
+          },
+          {
+            "minute": 6,
+            "favorable_rate": 0.49392395139161116,
+            "above_cost_rate": 0.2542793675682739,
+            "mean_signed_bps": -0.47749016962268503
+          },
+          {
+            "minute": 7,
+            "favorable_rate": 0.4913105971514439,
+            "above_cost_rate": 0.262250098000784,
+            "mean_signed_bps": -0.5994395570817473
+          },
+          {
+            "minute": 8,
+            "favorable_rate": 0.4863452240951261,
+            "above_cost_rate": 0.2728341826734614,
+            "mean_signed_bps": -0.8200901810583334
+          },
+          {
+            "minute": 9,
+            "favorable_rate": 0.4813798510388083,
+            "above_cost_rate": 0.2774075525937541,
+            "mean_signed_bps": -1.0334446375537947
+          },
+          {
+            "minute": 10,
+            "favorable_rate": 0.4803345093427414,
+            "above_cost_rate": 0.2834182673461388,
+            "mean_signed_bps": -1.2114656822881662
+          },
+          {
+            "minute": 11,
+            "favorable_rate": 0.4815105187508167,
+            "above_cost_rate": 0.29439435515484125,
+            "mean_signed_bps": -1.3292178384290438
+          },
+          {
+            "minute": 12,
+            "favorable_rate": 0.4852998823990592,
+            "above_cost_rate": 0.2972690448190252,
+            "mean_signed_bps": -1.496363165934381
+          },
+          {
+            "minute": 13,
+            "favorable_rate": 0.4799425062067163,
+            "above_cost_rate": 0.3064157846596106,
+            "mean_signed_bps": -1.5361174034940253
+          },
+          {
+            "minute": 14,
+            "favorable_rate": 0.4807265124787665,
+            "above_cost_rate": 0.3134718411080622,
+            "mean_signed_bps": -1.701497918861615
+          },
+          {
+            "minute": 15,
+            "favorable_rate": 0.4794198353586829,
+            "above_cost_rate": 0.31477851822814584,
+            "mean_signed_bps": -1.766780959073605
+          },
+          {
+            "minute": 16,
+            "favorable_rate": 0.47850516137462434,
+            "above_cost_rate": 0.32026656213249705,
+            "mean_signed_bps": -1.8971205368431485
+          },
+          {
+            "minute": 17,
+            "favorable_rate": 0.4804651770547498,
+            "above_cost_rate": 0.3269306154449236,
+            "mean_signed_bps": -1.9551580187378415
+          },
+          {
+            "minute": 18,
+            "favorable_rate": 0.48268652815889196,
+            "above_cost_rate": 0.32758395400496537,
+            "mean_signed_bps": -1.9778643965733032
+          },
+          {
+            "minute": 19,
+            "favorable_rate": 0.4825558604468836,
+            "above_cost_rate": 0.33477067816542533,
+            "mean_signed_bps": -2.030421328359587
+          },
+          {
+            "minute": 20,
+            "favorable_rate": 0.48752123350320137,
+            "above_cost_rate": 0.33398667189337516,
+            "mean_signed_bps": -2.182311381174333
+          },
+          {
+            "minute": 21,
+            "favorable_rate": 0.4880439043512348,
+            "above_cost_rate": 0.33738403240559256,
+            "mean_signed_bps": -2.1150263027301985
+          },
+          {
+            "minute": 22,
+            "favorable_rate": 0.48477721155102577,
+            "above_cost_rate": 0.34234940546191034,
+            "mean_signed_bps": -2.026518032240396
+          },
+          {
+            "minute": 23,
+            "favorable_rate": 0.4862145563831177,
+            "above_cost_rate": 0.3473147785182282,
+            "mean_signed_bps": -1.9292222731085302
+          },
+          {
+            "minute": 24,
+            "favorable_rate": 0.49144126486345224,
+            "above_cost_rate": 0.35358682869462954,
+            "mean_signed_bps": -1.7855638200780788
+          },
+          {
+            "minute": 25,
+            "favorable_rate": 0.4913105971514439,
+            "above_cost_rate": 0.3578988631909055,
+            "mean_signed_bps": -1.691118957006263
+          },
+          {
+            "minute": 26,
+            "favorable_rate": 0.49091859401541876,
+            "above_cost_rate": 0.3640402456552986,
+            "mean_signed_bps": -1.5676548108137005
+          },
+          {
+            "minute": 27,
+            "favorable_rate": 0.4936626159675944,
+            "above_cost_rate": 0.37005096040768326,
+            "mean_signed_bps": -1.4564075759941073
+          },
+          {
+            "minute": 28,
+            "favorable_rate": 0.49353194825558605,
+            "above_cost_rate": 0.37174964066379196,
+            "mean_signed_bps": -1.3089768073011137
+          },
+          {
+            "minute": 29,
+            "favorable_rate": 0.49679864105579513,
+            "above_cost_rate": 0.3687442832875996,
+            "mean_signed_bps": -1.2238257779361816
+          },
+          {
+            "minute": 30,
+            "favorable_rate": 0.494969293087678,
+            "above_cost_rate": 0.3741016594799425,
+            "mean_signed_bps": -1.0486762630169122
+          }
+        ],
+        "authority": "DIAGNOSTIC_ONLY"
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "position_management": {
+    "description": "Causal checkpoint model chooses HOLD/EXIT/REVERSE. Reverse pays a second 12bps round trip; promotion also requires beating the better static policy.",
+    "rows": [
+      {
+        "horizon_m": 15,
+        "checkpoint_m": 3,
+        "condition": "ADVERSE_AT_CHECKPOINT",
+        "n": 4337,
+        "action_counts": {
+          "HOLD": 2725,
+          "EXIT": 1540,
+          "REVERSE": 72
+        },
+        "policy_net": {
+          "point": -21.173481932237554,
+          "lcb": -24.411759031702413,
+          "ucb": -17.9021262453445,
+          "n": 4337,
+          "n_days": 96
+        },
+        "always_hold_net": {
+          "point": -21.319876507384592,
+          "lcb": -24.765579528097028,
+          "ucb": -18.056984509763687,
+          "n": 4337,
+          "n_days": 96
+        },
+        "always_exit_net": {
+          "point": -22.246366152852186,
+          "lcb": -23.630168969236067,
+          "ucb": -20.989923778194466,
+          "n": 4337,
+          "n_days": 96
+        },
+        "calibration_selected_static": "ALWAYS_HOLD",
+        "selected_static_net": {
+          "point": -21.319876507384592,
+          "lcb": -24.613071571344513,
+          "ucb": -17.83748398987889,
+          "n": 4337,
+          "n_days": 96
+        },
+        "policy_minus_calibration_selected_static": {
+          "point": 0.146394575147038,
+          "lcb": -1.0778306508431295,
+          "ucb": 1.3721803932021077,
+          "n": 4337,
+          "n_days": 96
+        },
+        "promotable": false
+      },
+      {
+        "horizon_m": 15,
+        "checkpoint_m": 3,
+        "condition": "FAVORABLE_AT_CHECKPOINT",
+        "n": 4333,
+        "action_counts": {
+          "HOLD": 2415,
+          "EXIT": 1789,
+          "REVERSE": 129
+        },
+        "policy_net": {
+          "point": -2.659697228657036,
+          "lcb": -5.361702419181512,
+          "ucb": 0.2419236666562052,
+          "n": 4333,
+          "n_days": 99
+        },
+        "always_hold_net": {
+          "point": -1.9851762667729747,
+          "lcb": -5.253417959248792,
+          "ucb": 1.4871513326496189,
+          "n": 4333,
+          "n_days": 99
+        },
+        "always_exit_net": {
+          "point": -2.0502118881194984,
+          "lcb": -3.3108129139644826,
+          "ucb": -0.6605312467099674,
+          "n": 4333,
+          "n_days": 99
+        },
+        "calibration_selected_static": "ALWAYS_HOLD",
+        "selected_static_net": {
+          "point": -1.9851762667729747,
+          "lcb": -5.336039752909187,
+          "ucb": 1.38177303019648,
+          "n": 4333,
+          "n_days": 99
+        },
+        "policy_minus_calibration_selected_static": {
+          "point": -0.6745209618840616,
+          "lcb": -2.3685181033018305,
+          "ucb": 1.002903936791257,
+          "n": 4333,
+          "n_days": 99
+        },
+        "promotable": false
+      },
+      {
+        "horizon_m": 30,
+        "checkpoint_m": 5,
+        "condition": "ADVERSE_AT_CHECKPOINT",
+        "n": 3876,
+        "action_counts": {
+          "HOLD": 2369,
+          "EXIT": 1286,
+          "REVERSE": 221
+        },
+        "policy_net": {
+          "point": -24.687146574720916,
+          "lcb": -28.65233691129573,
+          "ucb": -21.099751880397637,
+          "n": 3876,
+          "n_days": 101
+        },
+        "always_hold_net": {
+          "point": -25.68496004472862,
+          "lcb": -31.12932453158241,
+          "ucb": -20.129446531289208,
+          "n": 3876,
+          "n_days": 101
+        },
+        "always_exit_net": {
+          "point": -24.903368527256443,
+          "lcb": -26.733528509709636,
+          "ucb": -23.08276886369002,
+          "n": 3876,
+          "n_days": 101
+        },
+        "calibration_selected_static": "ALWAYS_HOLD",
+        "selected_static_net": {
+          "point": -25.68496004472862,
+          "lcb": -31.325017512293922,
+          "ucb": -20.353323422070787,
+          "n": 3876,
+          "n_days": 101
+        },
+        "policy_minus_calibration_selected_static": {
+          "point": 0.9978134700077065,
+          "lcb": -2.11770439880267,
+          "ucb": 4.2608984114941,
+          "n": 3876,
+          "n_days": 101
+        },
+        "promotable": false
+      },
+      {
+        "horizon_m": 30,
+        "checkpoint_m": 5,
+        "condition": "FAVORABLE_AT_CHECKPOINT",
+        "n": 3775,
+        "action_counts": {
+          "HOLD": 1939,
+          "EXIT": 1563,
+          "REVERSE": 273
+        },
+        "policy_net": {
+          "point": -0.22127403044251695,
+          "lcb": -4.649696304484291,
+          "ucb": 4.3473153577083945,
+          "n": 3775,
+          "n_days": 99
+        },
+        "always_hold_net": {
+          "point": -2.951200199626746,
+          "lcb": -9.151348565562104,
+          "ucb": 3.498482222793183,
+          "n": 3775,
+          "n_days": 99
+        },
+        "always_exit_net": {
+          "point": -0.04947964490506147,
+          "lcb": -2.176524414709291,
+          "ucb": 2.050431348441719,
+          "n": 3775,
+          "n_days": 99
+        },
+        "calibration_selected_static": "ALWAYS_HOLD",
+        "selected_static_net": {
+          "point": -2.951200199626746,
+          "lcb": -9.023025468888845,
+          "ucb": 2.9875705325370165,
+          "n": 3775,
+          "n_days": 99
+        },
+        "policy_minus_calibration_selected_static": {
+          "point": 2.7299261691842287,
+          "lcb": -1.0619942083583334,
+          "ucb": 6.673013041984505,
+          "n": 3775,
+          "n_days": 99
+        },
+        "promotable": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "breakout_continuation": {
+    "description": "Entry occurs after a 2bps break beyond the prior 60-minute range. Top-decile continuation probability is frozen on calibration data.",
+    "rows": [
+      {
+        "horizon_m": 5,
+        "status": "RAN",
+        "n_test_events": 5852,
+        "continuation_auc": 0.5096101781361988,
+        "calibration_top_decile_gate": 0.48434865728823123,
+        "top_decile_continuation": {
+          "point": -13.908171180132783,
+          "lcb": -16.66251934098905,
+          "ucb": -11.583180127520905,
+          "n": 622,
+          "n_days": 108,
+          "gross_bps": -1.2900113840776612,
+          "win_rate": 0.1414790996784566,
+          "promotable": false
+        }
+      },
+      {
+        "horizon_m": 15,
+        "status": "RAN",
+        "n_test_events": 5852,
+        "continuation_auc": 0.5206177974619808,
+        "calibration_top_decile_gate": 0.5094861089639047,
+        "top_decile_continuation": {
+          "point": -9.579308347131981,
+          "lcb": -14.745492836172765,
+          "ucb": -1.2373957507065447,
+          "n": 521,
+          "n_days": 102,
+          "gross_bps": 2.564686537233148,
+          "win_rate": 0.2706333973128599,
+          "promotable": false
+        }
+      },
+      {
+        "horizon_m": 30,
+        "status": "RAN",
+        "n_test_events": 5852,
+        "continuation_auc": 0.5123369077886994,
+        "calibration_top_decile_gate": 0.4788011304923707,
+        "top_decile_continuation": {
+          "point": -16.704361118278854,
+          "lcb": -22.22158055065782,
+          "ucb": -11.41162380482254,
+          "n": 501,
+          "n_days": 96,
+          "gross_bps": -5.919502342895923,
+          "win_rate": 0.26147704590818366,
+          "promotable": false
+        }
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "minute_spot_perp_leadership": {
+    "description": "One-minute catch-up diagnostic only; it cannot establish sub-second information leadership.",
+    "status": "INSUFFICIENT_RESOLUTION",
+    "data_rows": 129595,
+    "data_days": 91,
+    "spot_perp_same_minute_return_correlation": 0.9919659744819614,
+    "isolated_leader_events": 0,
+    "rows": [
+      {
+        "leader": "SPOT",
+        "shock_gate_bps": 10.3843871536089,
+        "follower": "PERPETUAL_NEXT_MINUTE",
+        "point": null,
+        "lcb": null,
+        "ucb": null,
+        "n": 0,
+        "n_days": 0,
+        "gross_bps": null,
+        "win_rate": null,
+        "promotable": false
+      },
+      {
+        "leader": "PERPETUAL",
+        "shock_gate_bps": 10.51341978746834,
+        "follower": "SPOT_NEXT_MINUTE",
+        "point": null,
+        "lcb": null,
+        "ucb": null,
+        "n": 0,
+        "n_days": 0,
+        "gross_bps": null,
+        "win_rate": null,
+        "promotable": false
+      }
+    ],
+    "promotable_configurations": 0
+  },
+  "blocked_questions": [
+    {
+      "question": "Sub-second Binance/Polymarket repricing, stale quotes and edge half-life",
+      "status": "BLOCKED_DATA",
+      "missing": "synchronized 50ms-1s event-time quotes on both venues"
+    },
+    {
+      "question": "Maker/taker/wait policy, passive-fill markout and cancellation toxicity",
+      "status": "BLOCKED_DATA",
+      "missing": "actual order acknowledgements, queue position, fills and post-fill markouts"
+    },
+    {
+      "question": "Liquidation continuation versus exhaustion",
+      "status": "BLOCKED_DATA",
+      "missing": "historical liquidation events aligned to the matrix"
+    },
+    {
+      "question": "Price/OI/funding positioning state transitions",
+      "status": "BLOCKED_DATA",
+      "missing": "open-interest history and actual funding payment ledger"
+    },
+    {
+      "question": "Multi-venue information leadership and synchronized shocks",
+      "status": "BLOCKED_DATA",
+      "missing": "aligned Binance, Coinbase, Bybit and Polymarket event-time prices"
+    },
+    {
+      "question": "Portfolio allocation and capacity",
+      "status": "BLOCKED_EVIDENCE",
+      "missing": "at least two independently positive-EV strategies and executable depth/fills"
+    }
+  ],
+  "promotable_configurations": 0,
+  "capital_authority": false
+}

@@ -1,0 +1,295 @@
+{
+  "data": {
+    "rows": 518400,
+    "days": 360,
+    "train_days": 251,
+    "test_days": 109,
+    "split_day": 20568,
+    "cost_bps": 12.0,
+    "family_alpha": 0.0025
+  },
+  "compression_breakout": {
+    "status": "DIAGNOSTIC_ONLY",
+    "train_q10_threshold": 0.6877379033583066,
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n": 18195,
+        "n_days": 109,
+        "cost_clearance": 0.11244847485572959,
+        "baseline_clearance": 0.1855053996368386,
+        "mean_move_bps": 5.5435709816904755,
+        "move_minus_cost_family_lcb": -6.229603187687277,
+        "direction_not_predicted": true
+      },
+      {
+        "horizon_m": 15,
+        "n": 18195,
+        "n_days": 109,
+        "cost_clearance": 0.27392140697993955,
+        "baseline_clearance": 0.3726146102137692,
+        "mean_move_bps": 9.733128340791,
+        "move_minus_cost_family_lcb": -2.0508338351365363,
+        "direction_not_predicted": true
+      },
+      {
+        "horizon_m": 30,
+        "n": 18195,
+        "n_days": 109,
+        "cost_clearance": 0.40774938169826874,
+        "baseline_clearance": 0.5089402918498693,
+        "mean_move_bps": 14.090758460264407,
+        "move_minus_cost_family_lcb": 2.293013588635265,
+        "direction_not_predicted": true
+      }
+    ]
+  },
+  "trend_pullback": {
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n": 4137,
+        "n_days": 106,
+        "direction_accuracy": 0.5105148658448151,
+        "gross_bps": 0.7742785729221717,
+        "gross_family_lcb": -0.41072814961087273,
+        "net_bps": -11.22572142707783,
+        "net_family_lcb": -12.410728149610872,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 15,
+        "n": 4137,
+        "n_days": 106,
+        "direction_accuracy": 0.5032632342277013,
+        "gross_bps": 0.41282264837929433,
+        "gross_family_lcb": -1.279234489368983,
+        "net_bps": -11.587177351620706,
+        "net_family_lcb": -13.279234489368983,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 30,
+        "n": 4137,
+        "n_days": 106,
+        "direction_accuracy": 0.4885182499395697,
+        "gross_bps": -0.12245202569212786,
+        "gross_family_lcb": -2.512046275651837,
+        "net_bps": -12.122452025692128,
+        "net_family_lcb": -14.512046275651837,
+        "clears_cost": false
+      }
+    ]
+  },
+  "trend_survival": {
+    "rows": [
+      {
+        "age": "1m",
+        "horizon_m": 5,
+        "n": 6503,
+        "n_days": 108,
+        "direction_accuracy": 0.46516992157465786,
+        "gross_bps": -0.5824964900657201,
+        "gross_family_lcb": -1.2664118902691415,
+        "net_bps": -12.58249649006572,
+        "net_family_lcb": -13.266411890269142,
+        "clears_cost": false
+      },
+      {
+        "age": "2-3m",
+        "horizon_m": 5,
+        "n": 7039,
+        "n_days": 108,
+        "direction_accuracy": 0.45290524222190653,
+        "gross_bps": -0.43733323882047315,
+        "gross_family_lcb": -1.3314824524133684,
+        "net_bps": -12.437333238820473,
+        "net_family_lcb": -13.331482452413368,
+        "clears_cost": false
+      },
+      {
+        "age": "4-6m",
+        "horizon_m": 5,
+        "n": 5992,
+        "n_days": 108,
+        "direction_accuracy": 0.46645527369826434,
+        "gross_bps": -0.1321326524360181,
+        "gross_family_lcb": -1.2531349776447849,
+        "net_bps": -12.132132652436018,
+        "net_family_lcb": -13.253134977644784,
+        "clears_cost": false
+      },
+      {
+        "age": "7m+",
+        "horizon_m": 5,
+        "n": 9862,
+        "n_days": 107,
+        "direction_accuracy": 0.4787061447982154,
+        "gross_bps": -0.5590114217378764,
+        "gross_family_lcb": -1.4894174008425654,
+        "net_bps": -12.559011421737877,
+        "net_family_lcb": -13.489417400842566,
+        "clears_cost": false
+      }
+    ]
+  },
+  "profit_continuation": {
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.453393135725429,
+        "gross_bps": -1.3874648709736472,
+        "gross_family_lcb": -2.5662857358622406,
+        "net_bps": -13.387464870973647,
+        "net_family_lcb": -14.566285735862241,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 15,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.4658736349453978,
+        "gross_bps": -1.9378775261739796,
+        "gross_family_lcb": -3.6344422838854458,
+        "net_bps": -13.93787752617398,
+        "net_family_lcb": -15.634442283885445,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 30,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.4705538221528861,
+        "gross_bps": -2.2205022608303535,
+        "gross_family_lcb": -4.354213301105155,
+        "net_bps": -14.220502260830354,
+        "net_family_lcb": -16.354213301105155,
+        "clears_cost": false
+      }
+    ]
+  },
+  "adverse_move_recovery": {
+    "rows": [
+      {
+        "horizon_m": 5,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.546119344773791,
+        "gross_bps": 1.3874648709736472,
+        "gross_family_lcb": 0.20645081372310542,
+        "net_bps": -10.612535129026353,
+        "net_family_lcb": -11.793549186276895,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 15,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.5337363494539782,
+        "gross_bps": 1.9378775261739796,
+        "gross_family_lcb": 0.15044145301523204,
+        "net_bps": -10.06212247382602,
+        "net_family_lcb": -11.849558546984769,
+        "clears_cost": false
+      },
+      {
+        "horizon_m": 30,
+        "n": 10256,
+        "n_days": 108,
+        "direction_accuracy": 0.5289586583463338,
+        "gross_bps": 2.2205022608303535,
+        "gross_family_lcb": -0.19576647260880464,
+        "net_bps": -9.779497739169646,
+        "net_family_lcb": -12.195766472608804,
+        "clears_cost": false
+      }
+    ]
+  },
+  "microbasis_reversion": {
+    "optimistic_cost_floor_bps": 12.0,
+    "train_p95": -3.2467,
+    "train_p05": -6.1869,
+    "rows": [
+      {
+        "side": "RICH_SHORT_PERP_LONG_SPOT",
+        "horizon_m": 1,
+        "n": 7201,
+        "n_days": 109,
+        "direction_accuracy": 0.8565477017080961,
+        "gross_bps": 0.9254707971170064,
+        "gross_family_lcb": 0.8150561049885808,
+        "net_bps": -11.074529202882994,
+        "net_family_lcb": -11.184943895011418,
+        "clears_cost": false
+      },
+      {
+        "side": "CHEAP_LONG_PERP_SHORT_SPOT",
+        "horizon_m": 1,
+        "n": 4305,
+        "n_days": 104,
+        "direction_accuracy": 0.8457607433217189,
+        "gross_bps": 1.0890560883692317,
+        "gross_family_lcb": 0.9409235617296907,
+        "net_bps": -10.910943911630769,
+        "net_family_lcb": -11.05907643827031,
+        "clears_cost": false
+      },
+      {
+        "side": "RICH_SHORT_PERP_LONG_SPOT",
+        "horizon_m": 3,
+        "n": 7201,
+        "n_days": 109,
+        "direction_accuracy": 0.8659908346063047,
+        "gross_bps": 1.0029303590403438,
+        "gross_family_lcb": 0.8876943645041383,
+        "net_bps": -10.997069640959657,
+        "net_family_lcb": -11.112305635495861,
+        "clears_cost": false
+      },
+      {
+        "side": "CHEAP_LONG_PERP_SHORT_SPOT",
+        "horizon_m": 3,
+        "n": 4305,
+        "n_days": 104,
+        "direction_accuracy": 0.8685249709639954,
+        "gross_bps": 1.1856274840161882,
+        "gross_family_lcb": 1.0244597402981674,
+        "net_bps": -10.814372515983813,
+        "net_family_lcb": -10.975540259701832,
+        "clears_cost": false
+      },
+      {
+        "side": "RICH_SHORT_PERP_LONG_SPOT",
+        "horizon_m": 5,
+        "n": 7201,
+        "n_days": 109,
+        "direction_accuracy": 0.875850576308846,
+        "gross_bps": 1.049544291862852,
+        "gross_family_lcb": 0.9327569132882205,
+        "net_bps": -10.950455708137149,
+        "net_family_lcb": -11.06724308671178,
+        "clears_cost": false
+      },
+      {
+        "side": "CHEAP_LONG_PERP_SHORT_SPOT",
+        "horizon_m": 5,
+        "n": 4305,
+        "n_days": 104,
+        "direction_accuracy": 0.8713124274099884,
+        "gross_bps": 1.2616628367609266,
+        "gross_family_lcb": 1.102897669547076,
+        "net_bps": -10.738337163239073,
+        "net_family_lcb": -10.897102330452924,
+        "clears_cost": false
+      }
+    ]
+  },
+  "funding_basis_carry": {
+    "status": "BLOCKED_DATA",
+    "reason": "The matrix contains funding_velocity but not the actual paid funding rate, payment timestamp, interval or spot financing cash flows. A carry PnL would be fabricated from a transformed feature."
+  },
+  "promotable_configurations": 0,
+  "authority": "RESEARCH_ONLY"
+}

@@ -74,7 +74,13 @@ def load_db_table(
     path = Path(data_dir).resolve() / database
     if not path.is_file():
         raise DataUnavailable(f"required source does not exist: {path}")
-    con = duckdb.connect(str(path), read_only=True)
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+    except duckdb.IOException as exc:
+        raise DataUnavailable(
+            f"evidence database is live-locked; use an immutable snapshot or rerun when its "
+            f"recorder is stopped: {path}"
+        ) from exc
     try:
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
         if table not in tables:

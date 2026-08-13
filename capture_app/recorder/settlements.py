@@ -26,11 +26,14 @@ import asyncio
 import json
 import time
 import urllib.request
+import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 
-from .storage import PartitionWriter, write_status
+from .storage import PartitionWriter, status_dir, write_status
 
 GAMMA = "https://gamma-api.polymarket.com"
 
@@ -45,6 +48,7 @@ SETTLEMENT_SCHEMA = pa.schema([
     ("resolution_source", pa.string()),
     ("closed_ms", pa.int64()),
     ("raw_outcome_prices", pa.string()),
+    ("payload_json", pa.string()),
 ])
 
 CONFLICT_SCHEMA = pa.schema([
@@ -73,6 +77,25 @@ def parse_slug(slug: str) -> tuple[int | None, int | None]:
         elif p.isdigit() and len(p) >= 9:
             anchor = int(p)
     return horizon, anchor
+
+
+def parse_timestamp_ms(value) -> int:
+    """Accept Gamma numeric seconds/ms or ISO-8601 timestamps without inventing zero."""
+    if value in (None, ""):
+        return 0
+    try:
+        number = float(value)
+        if number > 0:
+            return int(number * 1000 if number < 10_000_000_000 else number)
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except (TypeError, ValueError):
+        return 0
 
 
 def resolve_outcome(market: dict) -> tuple[str | None, int | None, str]:
@@ -107,14 +130,24 @@ def resolve_outcome(market: dict) -> tuple[str | None, int | None, str]:
 class SettlementIndex:
     """What has already been written. Makes the fetcher idempotent and history immutable."""
 
-    def __init__(self, state_dir: Path):
+    def __init__(self, state_dir: Path, data_root: Path):
         self.path = state_dir / "settled_index.json"
         self.data: dict[str, int] = {}
-        if self.path.exists():
-            try:
-                self.data = json.loads(self.path.read_text(encoding="utf-8"))
-            except Exception:
-                self.data = {}
+        self._reconcile(data_root)
+
+    def _reconcile(self, data_root: Path) -> None:
+        """Rebuild from durable parquet; JSON is only an acceleration index."""
+        rebuilt: dict[str, int] = {}
+        for path in sorted((data_root / "polymarket_settlement").glob("**/*.parquet")):
+            table = pq.read_table(path, columns=["slug", "horizon", "up_win"])
+            for row in table.to_pylist():
+                key = self.key(str(row["slug"]), int(row["horizon"]))
+                value = int(row["up_win"])
+                if key in rebuilt and rebuilt[key] != value:
+                    raise RuntimeError(f"conflicting durable settlements for {key}")
+                rebuilt[key] = value
+        self.data = rebuilt
+        self._persist()
 
     def key(self, slug: str, horizon) -> str:
         return f"{slug}|{horizon}"
@@ -127,6 +160,9 @@ class SettlementIndex:
 
     def add(self, slug: str, horizon, up_win: int) -> None:
         self.data[self.key(slug, horizon)] = int(up_win)
+        self._persist()
+
+    def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data), encoding="utf-8")
@@ -140,13 +176,31 @@ def fetch_closed(slug_contains: str, limit: int, offset: int = 0) -> list[dict]:
     return [e for e in events if slug_contains in str(e.get("slug", ""))]
 
 
+def fetch_slug(slug: str) -> list[dict]:
+    events = _get(f"{GAMMA}/events?slug={urllib.parse.quote(slug, safe='')}")
+    return events if isinstance(events, list) else []
+
+
+def metadata_candidates(root: Path) -> set[str]:
+    """Exact quoted-market slugs are the authoritative settlement work queue."""
+    slugs = set()
+    for path in (root / "polymarket_market_meta").glob("**/*.parquet"):
+        try:
+            slugs.update(str(value) for value in
+                         pq.read_table(path, columns=["slug"]).column("slug").to_pylist()
+                         if value)
+        except Exception:
+            raise RuntimeError(f"cannot read Polymarket metadata: {path}")
+    return slugs
+
+
 async def poll_settlements(root: Path, stop: asyncio.Event, *,
                            slug_contains: str = "btc-updown",
                            interval_s: int = 300, pages: int = 3,
                            page_size: int = 100) -> None:
     """Poll closed markets and append newly-finalised outcomes. Never rewrites."""
-    state_dir = root.parent / "state"
-    idx = SettlementIndex(state_dir)
+    state_dir = status_dir(root)
+    idx = SettlementIndex(state_dir, root)
     w = PartitionWriter(root, "polymarket_settlement", SETTLEMENT_SCHEMA,
                         max_rows=200, max_seconds=60)
     wc = PartitionWriter(root, "polymarket_settlement_conflict", CONFLICT_SCHEMA,
@@ -154,15 +208,33 @@ async def poll_settlements(root: Path, stop: asyncio.Event, *,
     stats = {"written": 0, "skipped_known": 0, "unresolved": 0, "conflicts": 0, "errors": 0}
 
     while not stop.is_set():
+        poll_succeeded = False
         try:
-            for page in range(pages):
-                events = await asyncio.to_thread(
-                    fetch_closed, slug_contains, page_size, page * page_size)
+            candidates = []
+            now_s = int(time.time())
+            for slug in sorted(metadata_candidates(root)):
+                horizon, anchor = parse_slug(slug)
+                if horizon and anchor and anchor + horizon * 60 <= now_s and not idx.has(slug, horizon):
+                    candidates.append(slug)
+            batches = []
+            if candidates:
+                for slug in candidates:
+                    batches.append(await asyncio.to_thread(fetch_slug, slug))
+            else:
+                # Bootstrap only. Client-side filtering of a global feed is not sufficient for
+                # quote/outcome joins once exact captured slugs exist.
+                for page in range(pages):
+                    batches.append(await asyncio.to_thread(
+                        fetch_closed, slug_contains, page_size, page * page_size))
+            for events in batches:
                 for ev in events:
                     slug = str(ev.get("slug") or "")
                     horizon, anchor = parse_slug(slug)
+                    if not slug or not horizon or not anchor:
+                        stats["unresolved"] += 1
+                        continue
                     for mk in (ev.get("markets") or []):
-                        winner, up_win, why = resolve_outcome(mk)
+                        winner, up_win, _why = resolve_outcome(mk)
                         if winner is None:
                             stats["unresolved"] += 1
                             continue
@@ -186,20 +258,39 @@ async def poll_settlements(root: Path, stop: asyncio.Event, *,
                             "anchor_ts": int(anchor) if anchor else 0,
                             "outcome": winner, "up_win": int(up_win),
                             "resolution_source": "polymarket_gamma",
-                            "closed_ms": int(float(mk.get("closedTime") or 0) or 0),
+                            "closed_ms": parse_timestamp_ms(
+                                mk.get("closedTime") or ev.get("closedTime") or ev.get("endDate")
+                            ),
                             "raw_outcome_prices": str(mk.get("outcomePrices") or ""),
+                            "payload_json": json.dumps(
+                                {"event": ev, "market": mk}, separators=(",", ":"),
+                                sort_keys=True,
+                            ),
                         })
+                        # A crash must never leave an index entry without its outcome row.
+                        w.flush()
                         idx.add(slug, horizon, up_win)
                         stats["written"] += 1
+            poll_succeeded = True
         except Exception as exc:                                   # noqa: BLE001
             stats["errors"] += 1
             stats["last_error"] = str(exc)[:200]
         w.flush(); wc.flush()
-        write_status(root, "polymarket_settlement",
-                     {**stats, "rows": stats["written"], "files": w.files_written,
-                      "indexed_rounds": len(idx.data)})
+        if stats["written"] or stats["skipped_known"]:
+            stats["last_data_utc"] = time.time()
+        if poll_succeeded:
+            stats["last_success_utc"] = time.time()
+            stats["last_error"] = None
+        write_status(root, "polymarket_settlement", {
+            **stats, "rows": len(idx.data), "files": w.files_written,
+            "indexed_rounds": len(idx.data),
+        })
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval_s)
         except asyncio.TimeoutError:
             pass
     w.flush(); wc.flush()
+    write_status(root, "polymarket_settlement", {
+        **stats, "rows": len(idx.data), "files": w.files_written,
+        "indexed_rounds": len(idx.data), "stopped_cleanly": True,
+    })

@@ -10,7 +10,9 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
+from statistics import NormalDist
 import sys
 from pathlib import Path
 
@@ -24,11 +26,27 @@ from common.scorecard import day_block_bootstrap, day_index  # noqa: E402
 
 REPO = LANES.parent
 TAKER_COEF = 0.07
+FAMILY_ALPHA = 0.05
+ATLAS_EDGE_FLOOR = 0.02
 
 
 def _fee(p):
     p = np.asarray(p, float)
     return TAKER_COEF * p * (1.0 - p)
+
+
+def _wilson_interval(successes: int, total: int, alpha: float) -> tuple[float, float]:
+    """Wilson score interval, including the all-win and all-loss boundary cases."""
+    if total <= 0:
+        return float("nan"), float("nan")
+    probability = successes / total
+    z = NormalDist().inv_cdf(1 - alpha / 2)
+    denominator = 1 + z * z / total
+    center = (probability + z * z / (2 * total)) / denominator
+    radius = z / denominator * np.sqrt(
+        probability * (1 - probability) / total + z * z / (4 * total * total)
+    )
+    return float(max(0.0, center - radius)), float(min(1.0, center + radius))
 
 
 # ------------------------------------------------------------------ 1. state value atlas
@@ -46,24 +64,48 @@ def state_value_atlas(d) -> dict:
                          labels=["<<-15", "-15..-5", "flat", "5..15", ">>15"])
     x["b_px"] = pd.cut(x["p_market"], [0, .35, .45, .55, .65, 1],
                        labels=["<35c", "35-45c", "45-55c", "55-65c", ">65c"])
-    g = x.groupby(["b_time", "b_dist", "b_px"], observed=True)
-    cells = []
-    for key, sub in g:
-        n_rounds = sub["round_id"].nunique()
-        if n_rounds < 30:                       # too few independent outcomes to read
+    candidates = []
+    for key, sub in x.groupby(["b_time", "b_dist", "b_px"], observed=True):
+        by_round = sub.groupby("round_id", sort=False).agg(
+            settled_up=("settled_up", "first"),
+            p_market=("p_market", "mean"),
+        )
+        if len(by_round) < 30:                  # too few independent outcomes to read
             continue
-        realized = float(sub["settled_up"].mean())
-        market = float(sub["p_market"].mean())
+        candidates.append((key, sub.copy(), by_round))
+
+    cells = []
+    family_size = len(candidates)
+    for key, sub, by_round in candidates:
+        realized = float(by_round["settled_up"].mean())
+        market = float(by_round["p_market"].mean())
         gap = realized - market
-        b = round_bootstrap(sub["settled_up"].to_numpy(float) - sub["p_market"].to_numpy(float),
-                            sub["round_id"].to_numpy(), np.mean, n_boot=400)
+        successes = int(by_round["settled_up"].sum())
+        nominal_y = _wilson_interval(successes, len(by_round), FAMILY_ALPHA)
+        adjusted_y = _wilson_interval(successes, len(by_round), FAMILY_ALPHA / family_size)
+        nominal_lcb, nominal_ucb = nominal_y[0] - market, nominal_y[1] - market
+        adjusted_lcb, adjusted_ucb = adjusted_y[0] - market, adjusted_y[1] - market
+        nominal = nominal_lcb > ATLAS_EDGE_FLOOR or nominal_ucb < -ATLAS_EDGE_FLOOR
+        adjusted = (
+            adjusted_lcb > ATLAS_EDGE_FLOOR
+            or adjusted_ucb < -ATLAS_EDGE_FLOOR
+        )
         cells.append({"cell": " | ".join(map(str, key)), "n_rows": len(sub),
-                      "n_rounds": int(n_rounds), "realized": realized, "market": market,
-                      "gap": gap, "lcb": b["lcb"], "ucb": b["ucb"],
-                      "beats_fee": bool(abs(b["lcb"]) > 0.02 and np.sign(b["lcb"]) == np.sign(b["ucb"]))})
+                      "n_rounds": int(len(by_round)), "realized": realized, "market": market,
+                      "gap": gap,
+                      "nominal_lcb": nominal_lcb, "nominal_ucb": nominal_ucb,
+                      "adjusted_lcb": adjusted_lcb,
+                      "adjusted_ucb": adjusted_ucb,
+                      "nominal_beats_2c": bool(nominal),
+                      "beats_fee": bool(adjusted)})
     cells.sort(key=lambda c: -abs(c["gap"]))
     return {"n_cells_examined": len(cells),
+            "n_cells_nominal": sum(c["nominal_beats_2c"] for c in cells),
             "n_cells_significant": sum(c["beats_fee"] for c in cells),
+            "multiple_testing": (
+                "Round-equal Wilson outcome interval with Bonferroni family-wise alpha=0.05"
+            ),
+            "family_significant_cells": [c for c in cells if c["beats_fee"]],
             "top": cells[:8]}
 
 
@@ -156,17 +198,28 @@ def impact_asymmetry() -> dict:
 
 
 def main() -> int:
-    d = load_official()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshots", type=Path)
+    parser.add_argument("--settlements", type=Path)
+    parser.add_argument("--output", type=Path, default=LANES / "remaining_lanes_results.json")
+    args = parser.parse_args()
+    load_kwargs = {}
+    if args.snapshots:
+        load_kwargs["snapshots_path"] = args.snapshots
+    if args.settlements:
+        load_kwargs["settlements_path"] = args.settlements
+    d = load_official(**load_kwargs)
     res = {}
     print(f"PM rows={len(d):,} rounds={d.round_id.nunique():,} days={d.day.nunique()}\n")
 
     print("[1/5] STATE_VALUE_ATLAS_V1"); res["atlas"] = state_value_atlas(d)
     a = res["atlas"]
-    print(f"  cells with >=30 rounds: {a['n_cells_examined']}   significant beyond fee: "
-          f"{a['n_cells_significant']}")
+    print(f"  cells with >=30 rounds: {a['n_cells_examined']}   nominal beyond 2c: "
+          f"{a['n_cells_nominal']}   family-wise significant: {a['n_cells_significant']}")
     for c in a["top"][:6]:
         print(f"    {c['cell']:<34} rounds={c['n_rounds']:>4} realized={c['realized']:.3f} "
-              f"market={c['market']:.3f} gap={c['gap']:+.3f} [{c['lcb']:+.3f},{c['ucb']:+.3f}]")
+              f"market={c['market']:.3f} gap={c['gap']:+.3f} "
+              f"adj=[{c['adjusted_lcb']:+.3f},{c['adjusted_ucb']:+.3f}]")
 
     print("\n[2/5] MARKET_DISAGREEMENT_RESOLUTION_V1"); res["disagree"] = disagreement_resolution(d)
     for r in res["disagree"]["bands"]:
@@ -191,9 +244,9 @@ def main() -> int:
           f"sell-heavy {i['sell_heavy_move_bps']:+.3f} (LCB {i['sell_lcb']:+.3f}) | "
           f"asymmetry {i['asymmetry_bps']:+.3f}")
 
-    (LANES / "remaining_lanes_results.json").write_text(
-        json.dumps(res, indent=2, default=float), encoding="utf-8")
-    print(f"\nwrote {LANES / 'remaining_lanes_results.json'}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(res, indent=2, default=float) + "\n", encoding="utf-8")
+    print(f"\nwrote {args.output}")
     return 0
 
 

@@ -26,6 +26,8 @@ from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL_PATH = Path(__file__).with_name("frozen_protocol.json")
 DEFAULT_DB = ROOT / "data" / "execution_layer.duckdb"
+DEFAULT_SNAPSHOTS = ROOT / "data" / "pm_export_snapshots.parquet"
+DEFAULT_SETTLEMENTS = ROOT / "data" / "pm_export_settlements.parquet"
 DEFAULT_OUTPUT = (
     ROOT / "data" / "research" / "polymarket_market_prior_residual_v1" / "latest"
 )
@@ -207,7 +209,15 @@ class OffsetLogit:
         return _clip_probability(_sigmoid(offset_values + design @ self.coefficients))
 
 
-def _load_data(db_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _load_data(
+    db_path: Path,
+    snapshots_path: Path | None = None,
+    settlements_path: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if snapshots_path is not None or settlements_path is not None:
+        if snapshots_path is None or settlements_path is None:
+            raise ValueError("both snapshot and settlement Parquet paths are required")
+        return pd.read_parquet(snapshots_path), pd.read_parquet(settlements_path)
     connection = duckdb.connect(str(db_path), read_only=True)
     snapshots = connection.execute("SELECT * FROM pm_round_snapshots").fetchdf()
     settlements = connection.execute("SELECT * FROM pm_round_settlements").fetchdf()
@@ -773,9 +783,15 @@ def render_report(
     return "\n".join(lines) + "\n"
 
 
-def run(db_path: Path, output: Path) -> dict[str, Any]:
+def run(
+    db_path: Path,
+    output: Path,
+    *,
+    snapshots_path: Path | None = None,
+    settlements_path: Path | None = None,
+) -> dict[str, Any]:
     protocol = _load_protocol()
-    snapshots, settlements = _load_data(db_path)
+    snapshots, settlements = _load_data(db_path, snapshots_path, settlements_path)
     frame, counts = build_checkpoint_frame(snapshots, settlements, protocol)
     if len(frame) < int(protocol["validation"]["minimum_training_rounds"]):
         raise RuntimeError(
@@ -809,8 +825,12 @@ def run(db_path: Path, output: Path) -> dict[str, Any]:
         "code_commit": code_commit,
         "code_dirty": code_dirty,
         "checkpoint_dataset_sha256": _frame_sha256(frame),
-        "database_path": str(db_path),
-        "database_bytes": db_path.stat().st_size,
+        "database_path": str(db_path) if snapshots_path is None else None,
+        "database_bytes": db_path.stat().st_size if snapshots_path is None else None,
+        "snapshots_path": str(snapshots_path) if snapshots_path is not None else None,
+        "settlements_path": str(settlements_path) if settlements_path is not None else None,
+        "snapshots_sha256": _sha256(snapshots_path) if snapshots_path is not None else None,
+        "settlements_sha256": _sha256(settlements_path) if settlements_path is not None else None,
         "counts": counts,
         "folds": folds,
         "output_files": sorted(path.name for path in output.iterdir()),
@@ -864,13 +884,22 @@ def selftest() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--snapshots", type=Path)
+    parser.add_argument("--settlements", type=Path)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
     if args.selftest:
         selftest()
         return 0
-    run(args.db.resolve(), args.output.resolve())
+    snapshots_path = args.snapshots.resolve() if args.snapshots else None
+    settlements_path = args.settlements.resolve() if args.settlements else None
+    run(
+        args.db.resolve(),
+        args.output.resolve(),
+        snapshots_path=snapshots_path,
+        settlements_path=settlements_path,
+    )
     return 0
 
 

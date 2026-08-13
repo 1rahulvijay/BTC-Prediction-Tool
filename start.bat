@@ -64,7 +64,7 @@ REM must restore 0.98. Existing derived sources already exceed 900d, so that lat
 REM can rebuild from local coverage; files are cached and reused by all builders afterwards.
 REM Main direction learners remain capped to a representative 40k samples because the measured
 REM endpoint-direction ceiling is ~coin-flip; specialist path/risk heads consume the full matrix.
-set "BTC_HISTORICAL_DAYS=30"
+if not defined BTC_HISTORICAL_DAYS set "BTC_HISTORICAL_DAYS=30"
 REM A retrain builds its in-memory sequences from the full requested window. Frozen launchers
 REM override this to a small serving-only warm-up; start.bat must never inherit that override.
 set "BTC_SERVING_WARMUP_DAYS=%BTC_HISTORICAL_DAYS%"
@@ -105,7 +105,13 @@ REM A holdout is MANDATORY — code clamps this to [0.50, 0.98]. 0.95 = "use alm
 REM data" (operator 2026-06-14, wanted ~100%) while keeping ~5% recent rows to keep the
 REM expected-drop/up bands honest. Literal 1.0 would make the bands too narrow + backtest
 REM in-sample, so it is intentionally not allowed.
-set "BTC_TRAIN_SPLIT_FRAC=0.95"
+REM The 30d smoke uses 95/5 so the untouched tail can exercise the 1,000-row gate. Longer
+REM windows, including 900d, use 98/2 automatically. A pre-set value remains an explicit
+REM operator override; changing BTC_HISTORICAL_DAYS is otherwise the only required edit.
+if not defined BTC_TRAIN_SPLIT_FRAC (
+    set "BTC_TRAIN_SPLIT_FRAC=0.98"
+    if %BTC_HISTORICAL_DAYS% LEQ 30 set "BTC_TRAIN_SPLIT_FRAC=0.95"
+)
 REM === EVALUATE -> FULL REFIT -> LIVE SHADOW =============================
 REM The 98%% candidate must pass its untouched 2%% tail before a second model is fit on
 REM all rows. The full-data model is staged, reloaded, smoke-tested, then installed as a

@@ -53,8 +53,19 @@ unchanged, now with the reason established rather than assumed.
 | `STATE_VALUE_ATLAS_V1` | UNDERPOWERED | [link](BATCH_2_REPORT.md) |
 | `POLY_STALE_QUOTE_V1` | NO EFFECT, barely testable | [link](BATCH_2_REPORT.md) |
 | `IMPACT_ASYMMETRY_V1` | REAL, NEGLIGIBLE — 0.056 bps | [link](BATCH_2_REPORT.md) |
+| `WAIT_VS_BUY_V1` | NO CAUSAL EDGE — fixed-delay intervals span zero | [link](BATCH_3_REPORT.md) |
+| `POLY_SETTLEMENT_CONVEXITY_V1` | STRUCTURAL RISK SURFACE, not a signal | [link](BATCH_3_REPORT.md) |
+| `MAKER_MARKOUT_SURFACE_V1` | PARTIAL — hypothetical fills only | [link](BATCH_3_REPORT.md) |
+| `COMPRESSION_BREAKOUT_V1` | MOVEMENT DIAGNOSTIC — no direction or executable instrument | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
+| `TREND_PULLBACK_V1` | NO EDGE after 12 bps cost | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
+| `TREND_SURVIVAL_HAZARD_V1` | NO EDGE after 12 bps cost | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
+| `ADVERSE_MOVE_RECOVERY_V1` | GROSS effect, NO NET EDGE | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
+| `PROFIT_CONTINUATION_GIVEBACK_V1` | NO EDGE after 12 bps cost | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
+| `MICROBASIS_REVERSION_V1` | HIGH HIT RATE, about 1 bps gross, NO NET EDGE | [master report](../docs/active/STANDALONE_ALPHA_LAB_COMPLETE_CAMPAIGN_2026-08-13.md) |
 
-Twelve lanes. **None produced a positive lower bound on net EV.**
+Twenty-one named lanes now have direct results. **None produced a positive lower bound on
+executable net EV.** The complete campaign also executed all 42 Phase 5, all 46 Phase 5B and
+all nine Phase 5C packages; their row-by-row statuses are in the master report.
 
 ---
 
@@ -87,6 +98,7 @@ These need capture the repo has never taken. No amount of analysis substitutes.
 | `FUNDING_OI_CROWDING_V1` | same |
 | `HAWKES_EVENT_INTENSITY_V1` | event-time arrivals |
 | `MARK_INDEX_LAST_DISLOCATION_V1` | mark and index series separately; matrix has basis only |
+| `FUNDING_BASIS_CARRY_V1` | actual paid rate/timestamp/interval and spot financing cash flows; `funding_velocity` is not a payment ledger |
 
 ## Lanes NOT run — runnable, not yet done
 
@@ -94,15 +106,6 @@ No blocker; simply not reached.
 
 | lane | note |
 |---|---|
-| `FUNDING_BASIS_CARRY_V1` | matrix has `funding_velocity`; needs the real funding schedule, not an assumed 8h cycle |
-| `MICROBASIS_REVERSION_V1` | narrower variant of `SPOT_PERP_BASIS_V1`, which found 0.89 bps against a 12 bps cost — likely closed by the same arithmetic |
-| `COMPRESSION_BREAKOUT_V1` | `compression_ratio` present; overlaps `VOLATILITY_EXPANSION_V1` |
-| `TREND_PULLBACK_V1` | matrix sufficient |
-| `TREND_SURVIVAL_HAZARD_V1` | matrix sufficient |
-| `ADVERSE_MOVE_RECOVERY_V1` | matrix sufficient; partly bounded by the symmetric MFE/MAE result |
-| `PROFIT_CONTINUATION_GIVEBACK_V1` | matrix sufficient |
-| `WAIT_VS_BUY_V1` | PM data sufficient — within-round future ask is computable |
-| `POLY_SETTLEMENT_CONVEXITY_V1` | PM data sufficient — ∂²P/∂BTC² from `distance_bps` and `up_mid` |
 | `CAPACITY_CURVE_V1` | needs a positive-EV strategy first; nothing has qualified |
 | `ALPHA_DECAY_EARLY_WARNING_V1` | same |
 | `ALPHA_PORTFOLIO_V1` | same — nothing to allocate between |
@@ -115,9 +118,11 @@ No blocker; simply not reached.
 
 ## Honest summary
 
-Twelve lanes ran. **Zero produced a positive lower bound on net EV.**
+Twenty-one named lanes ran directly, plus the 97 frozen Phase 5/5B/5C packages. **Zero produced
+a positive lower bound on executable net EV.**
 
-Two were closed by arithmetic that no model can reach (cost clearance, basis reversion). Two by
+Several were closed by arithmetic that no model can reach (cost clearance, basis and microbasis
+reversion). Two by
 a baseline the model failed to beat (Polymarket residual, disagreement resolution). One by an
 interval that did not separate (time phase). Three are data-starved rather than negative
 (atlas, stale quote, and the maker lane's fill question). The rest were closed by cost screens.
@@ -133,3 +138,64 @@ history, liquidations, open interest. One more day of analysis produces none of 
 2. Shadow-post maker quotes and record real fills with markouts at +1s/+5s/+30s. That single
    measurement decides `HEDGED_POLY_MM_V1`, which is currently the only lane whose upper bound
    has not already failed.
+
+---
+
+## Append-only update - 2026-08-13 action-value brief batch
+
+This section appends the results requested by the two later action-value research briefs. It
+does not rewrite the inventory above. Full methods and per-test values are in
+[BRIEF_ACTION_VALUE_BATCH_REPORT_2026-08-13.md](BRIEF_ACTION_VALUE_BATCH_REPORT_2026-08-13.md).
+
+| lane | verdict |
+|---|---|
+| `DIRECT_LONG_SHORT_WAIT_V1` | FAIL_NO_EDGE - top-5% model calls lost after 12 bps at 5m/15m/30m |
+| `MOVEMENT_GATED_DIRECTION_V1` | FAIL_NO_EDGE - movement AUC 0.688-0.770, but gated direction remained negative |
+| `HISTORICAL_MODEL_FAILURE_GATE_V1` | FAIL_NO_EDGE - failure-gate AUC 0.495-0.507 |
+| `BINANCE_FIXED_DELAY_ENTRY_V1` | FAIL_UNSTABLE - all 1m/3m/5m delay intervals crossed zero |
+| `THESIS_SURVIVAL_CLOCK_V1` | DIAGNOSTIC_ONLY - median first -5 bps close was 4m |
+| `CHECKPOINT_HOLD_EXIT_REVERSE_V1` | FAIL_NO_EDGE - all policy and lift lower bounds were negative |
+| `BREAKOUT_CONTINUATION_FAILURE_V1` | FAIL_NO_EDGE - AUC 0.510-0.521 and negative net value |
+| `MINUTE_SPOT_PERP_LEADERSHIP_V1` | INSUFFICIENT_RESOLUTION - same-minute return correlation 0.992; zero isolated events |
+
+This update supersedes only the earlier status line that listed historical `ERROR_PREDICTOR_V1`
+and `EV_LONG_EV_SHORT_EV_WAIT_V1` as not reached. Their historical versions have now run and
+failed. A **live** error predictor still requires independently resolved forward strategy calls.
+
+Batch result: **0 promotable configurations; capital authority remains false.**
+
+---
+
+## Append-only update - multi-engine brief batch (2026-08-13)
+
+Five additional answerable families from the 40-question multi-engine brief were executed with
+chronological splits, 12 bps Binance cost and family-adjusted day-clustered intervals.
+
+| lane | verdict |
+|---|---|
+| `RECORDED_REFERENCE_SOURCE_BASIS_V1` | DIAGNOSTIC_ONLY - the recorded PM reference tracked official outcomes better than causal Binance minute spot/perp near expiry; exact rule oracle is not archived |
+| `SPOT_PERP_FLOW_DISAGREEMENT_V1` | FAIL_NO_EDGE - disagreement predicted larger movement, not its direction |
+| `FUNDING_EVENT_AND_RATE_V1` | FAIL_NO_EDGE - next-rate model lost to the naive baseline; event arms were negative and underpowered |
+| `PSYCHOLOGICAL_LEVEL_CONTINUATION_V1` | FAIL_NO_EDGE - $100/$500/$1,000 continuation lost after cost |
+| `CONFIDENCE_THRESHOLD_ECONOMICS_V1` | FAIL_NO_EDGE - AUC 0.503-0.523 and every selected threshold was negative |
+
+Full methods, values and all 40 question statuses are in
+[MULTI_ENGINE_BRIEF_BATCH_REPORT_2026-08-13.md](MULTI_ENGINE_BRIEF_BATCH_REPORT_2026-08-13.md).
+
+Canonical result: `results/multi_engine_brief_batch_20260813T072836Z.json`.
+
+Batch result: **0 promotable configurations; capital authority remains false.**
+
+---
+
+## Append-only update - complete discussion reconciliation (2026-08-13)
+
+Every proposal in the two later research briefs is now explicitly classified in
+[COMPLETE_DISCUSSION_TEST_COVERAGE_2026-08-13.md](COMPLETE_DISCUSSION_TEST_COVERAGE_2026-08-13.md).
+
+- Brief A: 60 of 60 questions classified.
+- Brief B: 35 of 35 sections classified.
+- Every non-run has an exact data, execution, evidence or design prerequisite.
+- No undocumented runnable proposal remains from those two briefs.
+
+This is a coverage result, not a profitability result. Promotable configurations remain zero.

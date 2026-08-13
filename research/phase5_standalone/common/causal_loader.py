@@ -20,6 +20,21 @@ class SchemaUnavailable(RuntimeError):
     pass
 
 
+def connect_read_only(path: Path):
+    """Open an evidence database or fail closed when its live writer owns the file.
+
+    DuckDB uses an exclusive process lock on Windows. A research campaign must not crash, stop
+    the recorder, or copy a potentially inconsistent database when that lock is active.
+    """
+    try:
+        return duckdb.connect(str(path), read_only=True)
+    except duckdb.IOException as exc:
+        raise DataUnavailable(
+            f"evidence database is live-locked; use an immutable snapshot or rerun when its "
+            f"recorder is stopped: {path}"
+        ) from exc
+
+
 @dataclass(slots=True)
 class LoadedData:
     frame: pd.DataFrame
@@ -60,7 +75,7 @@ def _source_columns(path: Path, table: str | None) -> list[str]:
                 "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()]
         finally:
             con.close()
-    con = duckdb.connect(str(path), read_only=True)
+    con = connect_read_only(path)
     try:
         return [row[1] for row in con.execute(f"PRAGMA table_info({_quote(table)})").fetchall()]
     finally:
@@ -82,7 +97,7 @@ def _load_query(
         relation = "read_parquet(?)"
         params = [str(path)]
     else:
-        con = duckdb.connect(str(path), read_only=True)
+        con = connect_read_only(path)
         relation = _quote(table)
         params = []
     try:
@@ -194,4 +209,3 @@ def selftest(tmp_path: Path) -> None:
     loaded = load_source(tmp_path, {"source": "btc_matrix", "required_columns": ["close"]},
                          maximum_rows=20)
     assert len(loaded.frame) == 20 and loaded.causal_summary["monotonic"]
-

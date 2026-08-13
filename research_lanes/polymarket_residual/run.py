@@ -20,6 +20,7 @@ FEES
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -40,7 +41,17 @@ def taker_fee(price: np.ndarray) -> np.ndarray:
 
 
 def main() -> int:
-    df = load_official()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snapshots", type=Path)
+    parser.add_argument("--settlements", type=Path)
+    parser.add_argument("--output", type=Path, default=LANE / "results.json")
+    args = parser.parse_args()
+    load_kwargs = {}
+    if args.snapshots:
+        load_kwargs["snapshots_path"] = args.snapshots
+    if args.settlements:
+        load_kwargs["settlements_path"] = args.settlements
+    df = load_official(**load_kwargs)
     if df.empty:
         print("no joined rows")
         return 1
@@ -113,8 +124,9 @@ def main() -> int:
            "n_days": int(d.day.nunique()), "base_rate_up": float(y.mean()),
            "brier_market": bm, "brier_model": bd, "brier_improvement": bs,
            "by_threshold": rows}
-    (LANE / "results.json").write_text(json.dumps(out, indent=2, default=float), encoding="utf-8")
-    print(f"\nwrote {LANE / 'results.json'}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(out, indent=2, default=float) + "\n", encoding="utf-8")
+    print(f"\nwrote {args.output}")
     return 0
 
 

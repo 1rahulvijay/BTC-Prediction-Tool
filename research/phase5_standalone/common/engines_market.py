@@ -7,7 +7,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from .causal_loader import DataUnavailable, SchemaUnavailable, load_source
+from .causal_loader import DataUnavailable, SchemaUnavailable, connect_read_only, load_source
 from .cost_model import polymarket_fee_per_share
 from .engine_types import EngineContext, EngineResult
 from .matched_controls import (matched_nonoverlapping_random_actions,
@@ -426,7 +426,7 @@ def run_l2_capacity(context: EngineContext) -> EngineResult:
     database = context.data_dir / "polymarket_l2.duckdb"
     if not database.is_file():
         raise DataUnavailable(f"missing {database}")
-    con = duckdb.connect(str(database), read_only=True)
+    con = connect_read_only(database)
     try:
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
         required = {"pm_l2_book_levels", "pm_l2_book_summaries"}
@@ -454,7 +454,7 @@ def run_ledger(context: EngineContext) -> EngineResult:
     database = context.data_dir / "opportunity_ledger.duckdb"
     if not database.is_file():
         raise DataUnavailable(f"missing {database}")
-    con = duckdb.connect(str(database), read_only=True)
+    con = connect_read_only(database)
     try:
         decisions = con.execute("SELECT count(*) FROM opportunity_decisions").fetchone()[0]
         outcomes = con.execute("SELECT count(*) FROM opportunity_outcomes").fetchone()[0]
