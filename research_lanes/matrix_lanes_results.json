@@ -1,0 +1,74 @@
+{
+  "volatility_expansion": {
+    "auc": 0.7646805727705136,
+    "auc_baseline_rv15": 0.7481985303113451,
+    "base_rate": 0.1855053996368386,
+    "top_decile_hit": 0.5189550812360625,
+    "top_decile_lift": 2.7975200843318513,
+    "acc_lcb": 0.5816557146946859,
+    "n_test": 156955,
+    "n_test_days": 109,
+    "train_days": 251
+  },
+  "time_phase": {
+    "overall_mean_abs_bps": 8.740152872040971,
+    "by_minute_of_quarter": {
+      "0": 9.27,
+      "1": 9.24,
+      "2": 9.18,
+      "3": 9.03,
+      "4": 8.92,
+      "5": 8.77,
+      "6": 8.62,
+      "7": 8.34,
+      "8": 8.18,
+      "9": 7.95,
+      "10": 8.16,
+      "11": 8.44,
+      "12": 8.66,
+      "13": 9.01,
+      "14": 9.33
+    },
+    "hottest_bucket": 14,
+    "hot_mean": 9.32965908971249,
+    "hot_lcb": 8.87153140575138,
+    "rest_mean": 8.698046155350792,
+    "rest_ucb": 9.10207508672111,
+    "separated": false,
+    "n_days": 360
+  },
+  "spot_perp_basis": {
+    "5m": {
+      "rich_reversion_bps": 0.684642852183305,
+      "rich_lcb": 0.6153944378474291,
+      "n_rich": 25924,
+      "cheap_reversion_bps": 0.6586578935185186,
+      "cheap_lcb": 0.6062329013160309,
+      "n_cheap": 25920,
+      "rich_clears_cost": false,
+      "cheap_clears_cost": false
+    },
+    "15m": {
+      "rich_reversion_bps": 0.7985523106002161,
+      "rich_lcb": 0.7154492878752534,
+      "n_rich": 25924,
+      "cheap_reversion_bps": 0.7779790393518519,
+      "cheap_lcb": 0.7074963940756613,
+      "n_cheap": 25920,
+      "rich_clears_cost": false,
+      "cheap_clears_cost": false
+    },
+    "30m": {
+      "rich_reversion_bps": 0.8860819907407407,
+      "rich_lcb": 0.792410362094341,
+      "n_rich": 25920,
+      "cheap_reversion_bps": 0.8708932986111111,
+      "cheap_lcb": 0.8009770622656432,
+      "n_cheap": 25920,
+      "rich_clears_cost": false,
+      "cheap_clears_cost": false
+    },
+    "p95_basis_bps": -3.2574,
+    "p05_basis_bps": -6.1177
+  }
+}
