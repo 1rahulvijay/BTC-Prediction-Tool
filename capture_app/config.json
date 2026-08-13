@@ -8,6 +8,8 @@
   "streams": {
     "binance_depth": true,
     "binance_trades": true,
-    "polymarket_book": true
-  }
+    "polymarket_book": true,
+    "polymarket_settlement": true
+  },
+  "settlement_poll_seconds": 300
 }

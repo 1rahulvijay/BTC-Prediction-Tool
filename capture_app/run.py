@@ -25,6 +25,7 @@ sys.path.insert(0, str(APP))
 from recorder.storage import (  # noqa: E402
     dir_size_bytes, enforce_cap, is_archived, mark_archived, partitions, write_status,
 )
+from recorder.settlements import poll_settlements  # noqa: E402
 from recorder.streams import binance_depth, binance_trades, polymarket_books  # noqa: E402
 
 CONFIG = json.loads((APP / "config.json").read_text(encoding="utf-8"))
@@ -51,6 +52,12 @@ async def _record() -> int:
         tasks.append(binance_trades(sym, DATA, stop))
     if CONFIG.get("streams", {}).get("polymarket_book", True):
         tasks.append(polymarket_books(DATA, stop))
+    # Settlements run in the SAME process as the quotes deliberately. Two jobs with independent
+    # lifetimes are what produced 916 rounds of quotes and 6,725 settlements with a zero-row
+    # intersection.
+    if CONFIG.get("streams", {}).get("polymarket_settlement", True):
+        tasks.append(poll_settlements(
+            DATA, stop, interval_s=int(CONFIG.get("settlement_poll_seconds", 300))))
 
     async def janitor():
         """Enforce the disk cap on a schedule, and shout if it cannot."""
@@ -80,7 +87,8 @@ def status() -> int:
         return 1
     now, bad = time.time(), []
     print(f"{'stream':<22}{'rows':>12}{'files':>8}{'gaps':>7}{'age':>9}  state")
-    for name in ("binance_depth", "binance_trades", "polymarket_book"):
+    for name in ("binance_depth", "binance_trades", "polymarket_book",
+                 "polymarket_settlement"):
         p = STATE / f"{name}.json"
         if not p.exists():
             print(f"{name:<22}{'-':>12}{'-':>8}{'-':>7}{'-':>9}  NEVER_STARTED")

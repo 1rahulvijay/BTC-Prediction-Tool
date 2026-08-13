@@ -67,6 +67,44 @@ Alerting — this is the part that matters:
 */15 * * * * cd /opt/btc && python3 capture_app/run.py --status || <notify>
 ```
 
+## Settlements are recorded by the SAME process as the quotes
+
+This is not an implementation detail — it is the reason the fetcher lives here rather than in a
+separate job.
+
+The project previously ran a quote recorder and a settlement fetcher at different times. Result:
+**916 rounds of quotes across ten days, 6,725 officially settled rounds across a different twenty
+days, and an anchor intersection of exactly zero.** Both halves existed. Neither was usable,
+because a residual model needs the price *and* the outcome for the same round.
+
+Two processes with independent lifetimes will eventually diverge. One process cannot.
+
+### Terminal outcomes are write-once
+
+A settlement is a fact. Once recorded it is never rewritten, and re-fetching the same round is a
+no-op. Protection is structural, not conventional:
+
+- a persisted index of `(slug, horizon)` already written, which survives restart
+- append-only partitions
+- if upstream later reports a **different** outcome for a round already recorded, the fetcher
+  writes a row to `polymarket_settlement_conflict` and **keeps the original**. It never applies
+  the change silently.
+
+This repo has already had a defect where a prediction writer could flip `resolved` back to
+`FALSE` on a settled row. The lesson taken here is that terminal state needs a mechanism, not a
+convention.
+
+### It refuses to guess
+
+A market can be *closed* without being *finalised*. Only a clean 1/0 `outcomePrices` pair is
+accepted as a settlement. Anything else — mid prices like `0.62/0.38`, wrong arity, unexpected
+labels — is counted as unresolved and retried later. Recording a guess as an outcome would
+poison the research set in a way no downstream statistic could detect.
+
+Verified offline (Gamma is unreachable from the dev machine, so this is logic-tested, not
+live-tested): 13 checks covering slug parsing, six refusal paths, and write-once persistence
+across restart.
+
 ## Why sequenced diffs and not `depth20` snapshots
 
 A snapshot shows a level went 50 → 30. It cannot say whether 20 was **cancelled** or **traded**.
@@ -119,7 +157,7 @@ than modelling:
 | stream | unblocks |
 |---|---|
 | `binance_depth` + `binance_trades` | fill inference — the measurement that decides `HEDGED_POLY_MM_V1`, the only lane whose upper bound has not failed. Also order-flow surprise, book elasticity, replenishment, vacuum distance, cancellation toxicity |
-| `polymarket_book` | the state-value atlas (currently underpowered at 10 days), any second-era check, executable size for full-set arb |
+| `polymarket_book` + `polymarket_settlement` | the state-value atlas (underpowered at 10 days), the residual re-run, any second-era check, executable size for full-set arb. **Recorded together, which is the fix for the zero-intersection failure** |
 
 ## Configuration
 
