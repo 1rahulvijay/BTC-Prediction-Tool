@@ -99,6 +99,26 @@ Symmetric. A tight stop with a wide target does not rescue cost clearance.
 estimates, so the maximum is biased upward. Point estimates alone would have read as five
 confident edges. None survives its interval.
 
+## Batch 3 — 2026-08-13
+
+[BATCH_3_REPORT.md](BATCH_3_REPORT.md). Appended; batches 1-2 unrevised.
+
+| lane | verdict |
+|---|---|
+| `WAIT_VS_BUY_V1` | **ORACLE BOUND** — apparent +8.3c is hindsight plus adverse drift |
+| `POLY_SETTLEMENT_CONVEXITY_V1` | **CLEAN STRUCTURE** — a risk input, not a signal |
+
+Waiting 60s appears to improve entry by 8.3c, better 76% of the time. It is not timing alpha:
+the measurement takes the *minimum* ask over the window (an oracle no live trader has), and on
+a binary drifting toward 0 or 1 a cheaper ask usually means a less valuable contract. Drift
+alone explains the whole effect.
+
+Convexity is the clean one. Delta peaks at **0.77 cents per bp of BTC** within 60s of settlement
+and 3 bps of the anchor — ~7x the next time bucket at the same distance — and decays
+monotonically in both time and distance. A 10 bp BTC move reprices the contract ~7.7c there.
+That is where a resting maker quote is most toxic, so `HEDGED_POLY_MM_V1`'s fill study must
+stratify by this surface rather than pooling a benign regime with a lethal one.
+
 ## Complete test inventory
 
 [TEST_INVENTORY.md](TEST_INVENTORY.md) lists **every** experiment proposed across both design

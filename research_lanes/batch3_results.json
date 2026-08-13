@@ -1,0 +1,127 @@
+{
+  "wait_vs_buy": {
+    "by_horizon": [
+      {
+        "horizon_s": 10,
+        "n": 148162,
+        "mean_improvement": 0.019381062620644974,
+        "median_improvement": 0.008,
+        "pct_improved": 0.5036244111175605,
+        "pct_ask_rose": 0.17054305422443003,
+        "pct_no_future_quote": 0.008166981296273981
+      },
+      {
+        "horizon_s": 30,
+        "n": 148420,
+        "mean_improvement": 0.052366332030723634,
+        "median_improvement": 0.020000000000000018,
+        "pct_improved": 0.683822934914432,
+        "pct_ask_rose": 0.10689933971162915,
+        "pct_no_future_quote": 0.006439865579520959
+      },
+      {
+        "horizon_s": 60,
+        "n": 148444,
+        "mean_improvement": 0.08325375225674328,
+        "median_improvement": 0.040000000000000036,
+        "pct_improved": 0.7571744226779122,
+        "pct_ask_rose": 0.08197030530031527,
+        "pct_no_future_quote": 0.006279203652381144
+      }
+    ]
+  },
+  "convexity": {
+    "cells": [
+      {
+        "cell": "<60s | 0-3bps",
+        "n": 425,
+        "n_rounds": 225,
+        "delta_cents_per_bp": 0.7679358279323265
+      },
+      {
+        "cell": "5-10m | 0-3bps",
+        "n": 698,
+        "n_rounds": 119,
+        "delta_cents_per_bp": 0.31004327343425286
+      },
+      {
+        "cell": ">10m | 0-3bps",
+        "n": 1524,
+        "n_rounds": 222,
+        "delta_cents_per_bp": 0.23846651435248453
+      },
+      {
+        "cell": ">10m | 3-8bps",
+        "n": 1332,
+        "n_rounds": 186,
+        "delta_cents_per_bp": 0.1978351642893616
+      },
+      {
+        "cell": "5-10m | 3-8bps",
+        "n": 1057,
+        "n_rounds": 159,
+        "delta_cents_per_bp": 0.15136651804106402
+      },
+      {
+        "cell": ">10m | 8-20bps",
+        "n": 811,
+        "n_rounds": 100,
+        "delta_cents_per_bp": 0.11056299028320386
+      },
+      {
+        "cell": "<60s | 3-8bps",
+        "n": 481,
+        "n_rounds": 241,
+        "delta_cents_per_bp": 0.10402693586564682
+      },
+      {
+        "cell": "2-5m | 0-3bps",
+        "n": 3340,
+        "n_rounds": 717,
+        "delta_cents_per_bp": 0.08014485618622888
+      },
+      {
+        "cell": "60-120s | 8-20bps",
+        "n": 426,
+        "n_rounds": 159,
+        "delta_cents_per_bp": 0.0665339908992949
+      },
+      {
+        "cell": "2-5m | 8-20bps",
+        "n": 1493,
+        "n_rounds": 288,
+        "delta_cents_per_bp": 0.06563311227946723
+      },
+      {
+        "cell": "60-120s | 3-8bps",
+        "n": 818,
+        "n_rounds": 352,
+        "delta_cents_per_bp": 0.062258346565749356
+      },
+      {
+        "cell": "5-10m | 8-20bps",
+        "n": 1218,
+        "n_rounds": 135,
+        "delta_cents_per_bp": 0.04895030245242984
+      },
+      {
+        "cell": "5-10m | >20bps",
+        "n": 316,
+        "n_rounds": 34,
+        "delta_cents_per_bp": 0.0411634484894643
+      },
+      {
+        "cell": "60-120s | 0-3bps",
+        "n": 704,
+        "n_rounds": 307,
+        "delta_cents_per_bp": 0.02810901942152404
+      },
+      {
+        "cell": "2-5m | 3-8bps",
+        "n": 2725,
+        "n_rounds": 597,
+        "delta_cents_per_bp": 0.003277788719884151
+      }
+    ]
+  }
+}
