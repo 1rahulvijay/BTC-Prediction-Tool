@@ -54,7 +54,32 @@ python capture_app/run.py --disk                    # usage and partition list
 python capture_app/run.py --archive-older-than 24   # mark partitions deletable
 ```
 
-systemd:
+### Deploy to GCP
+
+```bash
+bash capture_app/deploy_gcp.sh create     # VM + service + status cron
+bash capture_app/deploy_gcp.sh status     # remote --status, plus df
+bash capture_app/deploy_gcp.sh logs
+bash capture_app/deploy_gcp.sh destroy
+```
+
+It uploads **`capture_app/` only** — the trading app is never copied to the box.
+
+**The script refuses to build a billed instance.** Always Free e2-micro requires *all* of:
+`e2-micro` (not e2-small), region `us-west1`/`us-central1`/`us-east1`, ≤30 GB **pd-standard**
+(SSD is not free), one instance/month. Miss any one and it silently becomes billable, so the
+zone is checked before anything is created:
+
+```
+$ CAPTURE_ZONE=europe-west1-b bash capture_app/deploy_gcp.sh create
+REFUSING: zone europe-west1-b is outside the Always Free regions...
+It would be billed.
+```
+
+Inbound market data is not charged. Archiving to a GCS bucket **in the same region** is free;
+uploading to another cloud is egress and will cost.
+
+systemd (if deploying by hand):
 
 ```ini
 [Unit]
