@@ -4,6 +4,12 @@ This program records public market data for later research, testing, feature con
 model training. It is deliberately independent of the trading application: no model imports,
 API secrets, order placement or live-capital path.
 
+The core `start.bat` does not launch the legacy DuckDB recorder set by default. Run this capture
+application independently. This application is an archival/training source; it does not publish
+the core app's local low-latency `data/pm_live_quotes.json` compatibility bridge. Executable
+Polymarket paper-entry gates therefore remain unavailable unless that bridge is deliberately
+provided or the core is later wired to a direct equivalent.
+
 ## Recorded Dataset
 
 Every row has a local receive timestamp. Exchange/source timestamps are retained separately.

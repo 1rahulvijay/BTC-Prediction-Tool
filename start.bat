@@ -2,9 +2,8 @@
 setlocal EnableExtensions DisableDelayedExpansion
 set "PROJECT_ROOT=%~dp0"
 cd /d "%PROJECT_ROOT%"
-REM Keep preflight, trainers, recorders and Uvicorn on one interpreter. If a project virtual
-REM environment exists it wins; otherwise the operator's PATH Python remains the explicit
-REM fallback. start_recorders_once.ps1 consumes the same BTC_PYTHON_EXE value.
+REM Keep preflight, trainers and Uvicorn on one interpreter. If a project virtual environment
+REM exists it wins; otherwise the operator's PATH Python remains the explicit fallback.
 if not defined BTC_PYTHON_EXE if exist "%PROJECT_ROOT%.venv\Scripts\python.exe" set "BTC_PYTHON_EXE=%PROJECT_ROOT%.venv\Scripts\python.exe"
 if not defined BTC_PYTHON_EXE set "BTC_PYTHON_EXE=python.exe"
 if exist "%BTC_PYTHON_EXE%" for %%I in ("%BTC_PYTHON_EXE%") do set "PATH=%%~dpI;%PATH%"
@@ -139,15 +138,14 @@ REM post-boot -> the live price freezes and predictions lag ~30s until it finish
 REM only (not needed for live serving). Run it on demand instead: POST /api/backtest when the box is
 REM idle, or set BTC_RUN_STARTUP_BACKTEST=1 here for a one-off validated boot.
 if not defined BTC_RUN_STARTUP_BACKTEST set "BTC_RUN_STARTUP_BACKTEST=0"
-REM This launcher starts forward recorders, so stale/missing evidence must be visible as a
-REM DO_NOT_TRUST blocker in the UI. This does not enable real orders.
+REM Recorder health remains visible because the separate capture application owns forward data.
+REM Missing/stale evidence must still be a DO_NOT_TRUST blocker. This does not enable real orders.
 if not defined BTC_EVIDENCE_MODE set "BTC_EVIDENCE_MODE=1"
-REM All ten standalone forward recorders are enabled by default and started exactly once by
-REM backend\start_recorders_once.ps1. To disable one deliberately, set its BTC_SKIP_* flag to 1
-REM before launch: PM_RECORDER, PM_L2_RECORDER, MICROSTRUCTURE_RECORDER, VENUE_COLLECTOR,
-REM BINANCE_L2_RECORDER, BTC_TICK_RECORDER, HF_CROSSING_RECORDER, CROSS_WINDOW_RECORDER,
-REM DERIBIT_CHAIN_RECORDER, or BINANCE_FUNDING_RECORDER. Recorders have no credentials and
-REM cannot submit orders.
+REM The dedicated capture_app owns archival/training collection. Legacy DuckDB recorders are NOT
+REM started by the core launcher unless explicitly requested for compatibility. One remaining
+REM compatibility consumer is the local pm_live_quotes.json bridge used by executable Polymarket
+REM paper-entry gates; capture_app does not publish that low-latency local file.
+if not defined BTC_START_LEGACY_RECORDERS set "BTC_START_LEGACY_RECORDERS=0"
 REM Backtest window: recent N rows (faster) or 0 = full historical replay (heavy on a laptop).
 if not defined BTC_BACKTEST_MAX_ROWS set "BTC_BACKTEST_MAX_ROWS=12000"
 REM Specialist-head move buckets in dollars (big-move/up/down/drop/activity). Each horizon has
@@ -718,11 +716,13 @@ if errorlevel 2 (
 
 echo Starting BTC Quantum Trader...
 
-REM Start all ten standalone forward collectors once. The PowerShell helper detects existing
-REM Python writers, skips duplicates, runs missing collectors hidden, and redirects
-REM stdout/stderr to data\*.log. Individual BTC_SKIP_* flags remain supported.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%backend\start_recorders_once.ps1"
-if errorlevel 1 echo [recorder] Recorder launcher failed - app startup will continue.
+if "%BTC_START_LEGACY_RECORDERS%"=="1" (
+    echo [recorder] Legacy local recorder compatibility mode enabled.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%backend\start_recorders_once.ps1"
+    if errorlevel 1 echo [recorder] Legacy recorder launcher failed - app startup will continue.
+) else (
+    echo [recorder] External capture_app owns recording; no legacy recorder processes started.
+)
 
 REM === TRADE-FEATURE BACKFILL (incremental) ==============================
 REM Updates data\trade_features_backfill.parquet BEFORE the app starts so the

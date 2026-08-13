@@ -147,9 +147,9 @@ python backend\venues\binance_l2_recorder.py --selftest
 python backend\venues\rl_data_readiness.py
 ```
 
-The default archive is `data/binance_l2.duckdb` with a 10 GB size cap. `start.bat` launches one
-hidden instance through `backend/start_recorders_once.ps1`; set
-`BTC_SKIP_BINANCE_L2_RECORDER=1` only when disk or network constraints require it.
+The legacy archive is `data/binance_l2.duckdb` with a 10 GB size cap. `start.bat` no longer launches
+it by default because `capture_app` owns collection. It is available only through explicit legacy
+compatibility mode: `BTC_START_LEGACY_RECORDERS=1`.
 
 Capability boundary:
 
@@ -187,6 +187,7 @@ refreshes settled funding. It preserves exchange settlement time separately from
 time, audits the fixed 8-hour schedule for holes, counts sign changes and writes independent
 heartbeats to `data/funding.duckdb`.
 
-`start.bat` enables it by default through `backend/start_recorders_once.ps1`. Set
-`BTC_SKIP_BINANCE_FUNDING_RECORDER=1` only for a deliberate opt-out. The recorder has no
-credentials or order route, and collected rows do not prove a profitable carry strategy.
+`start.bat` no longer enables this legacy recorder by default because `capture_app` owns funding
+collection. `BTC_START_LEGACY_RECORDERS=1` restores it for compatibility, and
+`BTC_SKIP_BINANCE_FUNDING_RECORDER=1` can then exclude it. The recorder has no credentials or
+order route, and collected rows do not prove a profitable carry strategy.

@@ -248,9 +248,10 @@ stale artifacts as current, create a false completion marker, or partially swap 
 
 ## Forward Recorder Inventory
 
-`start.bat` calls `backend/start_recorders_once.ps1`. It matches the exact Python executable and
-absolute script path, skips an already-running duplicate, starts missing processes hidden, and
-redirects each process to its own stdout/stderr log. The ten enabled recorder families are:
+The independent `capture_app` now owns archival/training collection. `start.bat` does not launch
+the ten legacy DuckDB recorders by default. `BTC_START_LEGACY_RECORDERS=1` remains an explicit
+compatibility mode for consumers that still require legacy local outputs. The recorder families
+tracked by health are:
 
 | Recorder | Evidence captured |
 |---|---|
