@@ -474,6 +474,9 @@ if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_specialist_source_provenance.py"
 python backend\tests\test_specialist_source_provenance.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
+set "BTC_SELFTEST_CURRENT=python backend\tests\test_persistence_keeper_refit.py"
+python backend\tests\test_persistence_keeper_refit.py >nul 2>&1
+if errorlevel 1 goto :selftest_failed_c
 set "BTC_SELFTEST_CURRENT=python backend\tests\test_feature_contract_optional.py"
 python backend\tests\test_feature_contract_optional.py >nul 2>&1
 if errorlevel 1 goto :selftest_failed_c
@@ -750,8 +753,9 @@ if "%BTC_SKIP_BACKFILL%"=="1" (
     if errorlevel 1 echo [0/3c] Cross-venue build failed - continuing.
 )
 echo [0/3] c2. Rebuilding the 1m research matrix to the BTC_HISTORICAL_DAYS window. This is
-echo          the SINGLE knob that drives ALL specialist heads (big-move/up/down/drop/activity):
-echo          current window=%BTC_HISTORICAL_DAYS% days. Every requested head uses this source window.
+echo          the SINGLE knob for MATRIX-BACKED heads (big-move/up/down/drop/activity/quantiles):
+echo          current matrix window=%BTC_HISTORICAL_DAYS% days. P(Hold) and round-state use their own
+echo          explicitly hashed archives; exact source bytes are recorded in each manifest.
 echo          only when the matrix coverage and source mtimes are already valid:
 set "BTC_HEAD_RETRAIN_COMPLETE=0"
 python backend\build_research_matrix.py --days %BTC_HISTORICAL_DAYS%

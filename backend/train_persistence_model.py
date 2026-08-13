@@ -44,14 +44,16 @@ OUT_PATH = os.path.join(
     os.environ.get("BTC_MODEL_OUTPUT_DIR") or os.path.join(DATA_DIR, "saved_models"),
     "persistence_model.pkl",
 )
-HEAD_VERSION = "2026-07-03-keeper-dual-perhorizon-iso-prodrefit"   # train_heads.py retrains when this changes
+HEAD_VERSION = "2026-08-13-keeper-gated-own-split-prodrefit"   # train_heads.py retrains when this changes
 
 FEATURES = ["abs_distance_pct", "seconds_left", "vol_60s_pct", "horizon", "dist_vol_ratio"]
-# Volatility KEEPERS — validated to LIFT P(hold) (+0.0135 AUC overall, +0.027 on the late
-# T3 subset; phold_keeper_test.py). Trained as a SECOND model saved alongside the base one;
-# the live serve path keeps using the base model until the keepers are plumbed into
-# price_to_beat (no breakage). Joined from research_matrix_1m.parquet at the current minute.
+# Volatility KEEPERS are an optional challenger beside the base model. The challenger is saved
+# and served only when the current untouched test tail improves both overall and late-window AUC.
+# A historical positive experiment cannot override a negative result on the publication dataset.
+# Values are causally joined from the previous closed research-matrix minute.
 KEEPERS = ["rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude"]
+KEEPER_MIN_AUC_LIFT = 0.0
+KEEPER_MIN_LATE_AUC_LIFT = 0.0
 
 
 def _add_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -89,6 +91,33 @@ def _fit_iso_by_horizon(clf, ca: pd.DataFrame, feat_cols, min_rows=2000):
         iso_h.fit(raw[m], yca[m])
         out[int(h)] = iso_h
     return out
+
+
+def _keeper_is_promotable(*, keeper_auc: float, base_auc: float,
+                           keeper_late_auc: float, base_late_auc: float) -> bool:
+    """Serve an optional keeper challenger only when both measured targets improve."""
+    values = np.asarray([keeper_auc, base_auc, keeper_late_auc, base_late_auc], dtype=float)
+    if not np.isfinite(values).all():
+        return False
+    return bool(
+        keeper_auc - base_auc > KEEPER_MIN_AUC_LIFT
+        and keeper_late_auc - base_late_auc > KEEPER_MIN_LATE_AUC_LIFT
+    )
+
+
+def _production_fit_cal(frame: pd.DataFrame, split_frac: float):
+    """Build a purged production fit/cal split from this frame's own time span."""
+    wins = np.sort(frame["window_start_ms"].unique())
+    if len(wins) < 2:
+        empty = frame.iloc[0:0].copy()
+        return empty, empty, None
+    frac = min(max(float(split_frac), 0.5), 0.98)
+    cut_idx = min(max(int(len(wins) * frac), 1), len(wins) - 1)
+    cut = int(wins[cut_idx])
+    label_end_ms = frame["window_start_ms"] + frame["horizon"].astype("int64") * 60_000
+    fit = frame[(frame["window_start_ms"] < cut) & (label_end_ms <= cut)]
+    cal = frame[frame["window_start_ms"] >= cut]
+    return fit, cal, cut
 
 
 def _join_keepers(df: pd.DataFrame) -> pd.DataFrame | None:
@@ -163,10 +192,34 @@ def _train_keeper_model(df: pd.DataFrame, base_clf, base_iso):
     print(f"\n[keeper] joined={len(kdf):,}  test={len(te):,}")
     print(f"[keeper] AUC  base={bauc:.4f}  base+keepers={kauc:.4f}  lift={kauc-bauc:+.4f}")
     print(f"[keeper] T3 late (<=120s): base={bauc_l:.4f}  base+keepers={kauc_l:.4f}  lift={kauc_l-bauc_l:+.4f}")
-    return {"clf_keeper": kclf, "iso_keeper": kiso, "iso_keeper_by_horizon": kiso_by_horizon,
-            "features_keeper": KF,
-            "keeper_test_auc": float(kauc), "keeper_base_auc": float(bauc),
-            "keeper_test_auc_late": float(kauc_l), "keeper_base_auc_late": float(bauc_l)}
+    promoted = _keeper_is_promotable(
+        keeper_auc=kauc,
+        base_auc=bauc,
+        keeper_late_auc=kauc_l,
+        base_late_auc=bauc_l,
+    )
+    result = {
+        "keeper_promoted": promoted,
+        "keeper_test_auc": float(kauc),
+        "keeper_base_auc": float(bauc),
+        "keeper_test_auc_late": float(kauc_l),
+        "keeper_base_auc_late": float(bauc_l),
+    }
+    if not promoted:
+        result["keeper_rejection_reason"] = (
+            "optional keeper failed the non-regression gate on overall and/or late-window AUC"
+        )
+        print("[keeper] REJECTED: optional keeper failed the non-regression gate; "
+              "the validated base P(Hold) model will be served.")
+        return result
+    result.update({
+        "clf_keeper": kclf,
+        "iso_keeper": kiso,
+        "iso_keeper_by_horizon": kiso_by_horizon,
+        "features_keeper": KF,
+    })
+    print("[keeper] PROMOTED: challenger improved both overall and late-window AUC.")
+    return result
 
 
 def main():
@@ -281,8 +334,7 @@ def main():
     # Gate miss -> serve the measured candidate unchanged. Disable with BTC_HEAD_REFIT_ALL=0.
     refit_on_all = bool(auc >= 0.70 and os.environ.get("BTC_HEAD_REFIT_ALL", "1") != "0")
     if refit_on_all:
-        fit_p = df[df["window_start_ms"] < ca_cut]
-        cal_p = df[df["window_start_ms"] >= ca_cut]
+        fit_p, cal_p, _ = _production_fit_cal(df, _sf)
         clf = HistGradientBoostingClassifier(
             max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
             l2_regularization=0.1, random_state=42, validation_fraction=0.1)
@@ -292,21 +344,41 @@ def main():
         iso_by_horizon = _fit_iso_by_horizon(clf, cal_p, FEATURES)
         print(f"\n[refit] production rotation: fit={len(fit_p):,} rows (incl. old cal span), "
               f"iso on freshest {len(cal_p):,} rows; candidate TEST metrics above are the record.")
-        if keeper_extra:
+        if keeper_extra.get("keeper_promoted", False):
             kdf = _join_keepers(df)
             if kdf is not None and len(kdf) >= 50_000:
                 KF = keeper_extra["features_keeper"]
-                kfit = kdf[kdf["window_start_ms"] < ca_cut]
-                kcal = kdf[kdf["window_start_ms"] >= ca_cut]
-                kclf = HistGradientBoostingClassifier(
-                    max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
-                    l2_regularization=0.1, random_state=42, validation_fraction=0.1)
-                kclf.fit(kfit[KF].values, kfit["label"].values)
-                kiso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
-                kiso.fit(kclf.predict_proba(kcal[KF].values)[:, 1], kcal["label"].values)
-                keeper_extra.update({"clf_keeper": kclf, "iso_keeper": kiso,
-                                     "iso_keeper_by_horizon": _fit_iso_by_horizon(kclf, kcal, KF)})
-                print("[refit] keeper twin rotated on the same fit/cal windows.")
+                # The keeper join often covers a much shorter span than persistence_dataset.
+                # Derive its boundary from its own windows; reusing the base cutoff can leave
+                # every keeper row on the calibration side and zero rows available to fit.
+                kfit, kcal, _ = _production_fit_cal(kdf, _sf)
+                valid_refit = (
+                    len(kfit) >= 1_000
+                    and len(kcal) >= 1_000
+                    and kfit["label"].nunique() >= 2
+                    and kcal["label"].nunique() >= 2
+                )
+                if valid_refit:
+                    kclf = HistGradientBoostingClassifier(
+                        max_iter=300, max_leaf_nodes=31, learning_rate=0.05,
+                        l2_regularization=0.1, random_state=42, validation_fraction=0.1)
+                    kclf.fit(kfit[KF].values, kfit["label"].values)
+                    kiso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+                    kiso.fit(kclf.predict_proba(kcal[KF].values)[:, 1], kcal["label"].values)
+                    keeper_extra.update({"clf_keeper": kclf, "iso_keeper": kiso,
+                                         "iso_keeper_by_horizon": _fit_iso_by_horizon(kclf, kcal, KF)})
+                    print(f"[refit] keeper twin rotated on its own fit/cal windows "
+                          f"(fit={len(kfit):,}, cal={len(kcal):,}).")
+                else:
+                    for key in ("clf_keeper", "iso_keeper", "iso_keeper_by_horizon",
+                                "features_keeper"):
+                        keeper_extra.pop(key, None)
+                    keeper_extra["keeper_promoted"] = False
+                    keeper_extra["keeper_rejection_reason"] = (
+                        "keeper production refit had insufficient rows or class diversity"
+                    )
+                    print(f"[refit] keeper twin ABSTAINED: invalid production split "
+                          f"(fit={len(kfit):,}, cal={len(kcal):,}); base model preserved.")
 
     bundle = {"clf": clf, "iso": iso, "iso_by_horizon": iso_by_horizon, "features": FEATURES,
               "trained_rows": int(len(tr)), "test_auc": float(auc), "version": HEAD_VERSION,
@@ -324,7 +396,8 @@ def main():
     finally:
         if os.path.exists(_tmp):
             os.remove(_tmp)
-    print(f"\nSaved -> {OUT_PATH}  (keeper model: {'yes' if keeper_extra else 'no'}; "
+    print(f"\nSaved -> {OUT_PATH}  "
+          f"(keeper model: {'yes' if keeper_extra.get('keeper_promoted', False) else 'no'}; "
           f"production refit: {'yes' if refit_on_all else 'NO -- candidate served'})")
 
 

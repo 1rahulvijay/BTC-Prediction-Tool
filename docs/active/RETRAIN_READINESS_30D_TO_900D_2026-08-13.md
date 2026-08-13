@@ -448,3 +448,92 @@ No finite audit can prove that no undiscovered bug exists. No software validatio
 accuracy or profit. The valid claim is narrower: all exercised code, data, transaction, accounting,
 identity, publication, and launcher gates passed, and the expensive model fits are now the next
 step rather than another code change.
+
+## Actual 30-Day Attempt And Persistence Fix - 2026-08-13
+
+The first real 30-day full-pipeline attempt progressed beyond every preflight and startup invariant,
+reused the validated 43,200-row matrix, and trained multiple specialist heads. It then found a real
+bug in the optional persistence keeper's production-refit path.
+
+### What passed before the failure
+
+- startup invariant suite: passed;
+- training lease and recorder launch: passed;
+- matrix identity: `READY TO RETRAIN`;
+- transactional specialist staging: active and isolated from the incumbent bundle;
+- selectivity: P(big move) AUC `0.737`, tradability AUC `0.798`, invalidation AUC `0.733`;
+- signed 80% bands: 5m raw/CQR coverage `79.3%/76.1%`, 15m `80.3%/81.3%`;
+- base P(Hold): test AUC `0.7365` on `726,642` untouched snapshots;
+- P(Hold) at calibrated threshold `>=0.93`: `97.5%` realized hold, `17.2%` coverage;
+- P(Hold) 5m/15m at `>=0.93`: `96.4%` / `98.5%` realized hold;
+- path forecaster: 5m touch AUCs `0.779/0.830`, 15m `0.737/0.784`;
+- supported round-state heads kept their predeclared gates; unsupported heads remained shadow/off;
+- big-move test AUC: 5m `0.722`, 15m `0.695`;
+- big-drop 5m test AUC observed before the supplied log ended: `0.750`.
+
+These are held-out model diagnostics, not proof of executable profit.
+
+### Failure and root cause
+
+The optional keeper challenger measured worse than the base model on the current untouched tail:
+
+```text
+overall AUC: base 0.7353, keeper 0.7342, lift -0.0012
+late AUC:    base 0.8249, keeper 0.8148, lift -0.0101
+```
+
+Despite that regression, the old trainer still attempted to refit the keeper. The base persistence
+archive spans roughly 1,305 days, while keeper features come from the current 30-day research
+matrix. The refit reused the base archive's time cutoff against the shorter keeper frame, assigning
+all joined keeper rows to calibration and zero rows to fit. Scikit-learn correctly rejected the
+`(0, 11)` fit matrix.
+
+### Corrections
+
+1. The keeper is now an optional challenger with a hard promotion rule: both overall and
+   late-window untouched-tail AUC must improve. Equal, negative, or non-finite lift abstains.
+2. A rejected keeper records diagnostics and `keeper_promoted=false` but saves no keeper estimator.
+   Serving therefore uses the validated base P(Hold) model.
+3. Keeper production refit derives its split from the keeper frame's own time span.
+4. Base and keeper production fit rows are purged when their outcomes cross into calibration.
+5. Production keeper refit also checks minimum rows and both-class support; invalid input abstains
+   instead of crashing the mandatory base artifact.
+6. `HEAD_VERSION` was bumped so the corrected persistence artifact must be rebuilt.
+7. A new launcher invariant, `test_persistence_keeper_refit.py`, covers the gate, the exact observed
+   regression, independent source spans, non-empty fit/cal partitions, and purge arithmetic.
+8. Launcher text now distinguishes matrix-backed 30/900-day heads from P(Hold) and round-state,
+   whose own archives are hashed explicitly in artifact provenance.
+
+### Safety behavior verified
+
+The original specialist transaction completed with failure, removed its staging directory, wrote
+no 30-day completion marker, released the training lease, and did not modify the live persistence
+artifact. The incumbent remained dated 2026-08-04. Main-ensemble training did not start against the
+incomplete specialist bundle.
+
+### Real-data regression run
+
+The corrected persistence trainer was then executed separately against all `14,658,527` snapshots
+with output directed to an isolated disposable directory. It completed with:
+
+```text
+base test AUC        0.7364633345
+production refit     yes
+keeper promoted      false
+keeper estimator     absent
+integrity reload     passed
+exit code             0
+```
+
+Python compilation, Pyflakes, the 19-check causal/purged test, specialist provenance, model-serving
+risk contract, model-bundle completeness, and the new keeper-refit regression test passed after the
+fix. The whole backend and capture app also passed `compileall`; `git diff --check` passed. Finally,
+the complete launcher suite was rerun with `BTC_SELFTEST_ONLY=1` and all invariant groups `a` through
+`m` passed against the corrected tree.
+
+### Required retry
+
+The failed transaction was deliberately not resumed in place. Commit the exact fix so provenance is
+clean, then run `start.bat` again. Cached matrix and backfills will be reused. Require the 30-day
+completion marker, strict identity validation, atomic bundle swap, and main-ensemble completion
+before considering the smoke successful or changing the requested window to 900 days.

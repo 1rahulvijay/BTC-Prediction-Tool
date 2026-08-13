@@ -11,9 +11,9 @@ Heads:
   • versioned (retrain on version change): selectivity, signed_quantile, persistence(keeper)
   • legacy (retrain only if missing — no version tag): beat, magnitude, path, fingerprints
 
-The heads fit on ALL available research-matrix days (the whole window) with their own small
-calibration holdouts (CQR / isotonic) — that is their "use ~all the data" equivalent; they
-cannot use 100% because the calibration split is mandatory (same reason the ensemble caps at 0.98).
+Matrix-backed heads fit on the requested research-matrix window. Persistence and round-state use
+their own explicitly attested archives. Every source file is hashed into the artifact manifest,
+and each trainer preserves a temporal calibration tail rather than using 100% for estimator fit.
 
 Crash-safe: one head failing never blocks the others or the app boot.
 

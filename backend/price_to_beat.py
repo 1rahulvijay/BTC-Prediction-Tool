@@ -2066,9 +2066,9 @@ class PriceToBeatTracker:
                         "horizon": float(rnd.get("horizon", 5) or 5),
                         "dist_vol_ratio": dist_vol_ratio,
                     }
-                    # Keeper model (validated +0.019 AUC on the late T3 region): use it when the
-                    # live volatility keepers are available this tick; else fall back to the base
-                    # 5-feature model — never breaks if keepers/keeper-model absent.
+                    # Use the optional keeper challenger only when the published bundle contains
+                    # one that passed its current overall + late-window improvement gates.
+                    # Otherwise serve the base five-feature model.
                     _feats, _clf, _iso, _src = mdl["features"], mdl["clf"], mdl["iso"], "base"
                     _kp = self._last_keepers
                     _kf = ("rv_15m", "rv_30m", "rv_60m", "vpin", "compression_ratio", "shock_magnitude")
