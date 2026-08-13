@@ -86,3 +86,44 @@ one.
 Cell counts are small — 425 rows / 225 rounds in the headline cell. The slopes are OLS fits with
 no interval attached, and the monotone structure across both axes is the main reason to believe
 them, not any single estimate. Ten days again.
+
+---
+
+## MAKER_MARKOUT_SURFACE_V1 — partial: the fill half is missing
+
+**No fill data exists.** Confirmed: no fill/maker/order tables in the canonical store, only
+`polymarket_quotes` (2,348 rows). The study as designed cannot run.
+
+What *is* computable is markout **conditional on a hypothetical fill** at the resting bid.
+Cents, positive = favourable:
+
+| cell | +5s | +15s | +30s | n@30s |
+|---|---:|---:|---:|---:|
+| >5m \| 3-8bps | 0.93 | 1.01 | 1.12 | 18,762 |
+| <60s \| 3-8bps | 0.76 | 1.10 | **1.82** | 3,770 |
+| 60-120s \| >8bps | 0.64 | 0.81 | 0.83 | 2,396 |
+| 2-5m \| 0-3bps | 0.56 | 0.56 | 0.61 | 35,583 |
+| 2-5m \| >8bps | 0.42 | 0.25 | **0.06** | 9,105 |
+| <60s \| 0-3bps | 0.69 | 0.65 | **0.14** | 5,940 |
+| <60s \| >8bps | — | — | **−0.51** | 503 |
+
+### Reading it honestly
+
+Most cells sit at **0.5–1.1c and do not erode** — but that is largely mechanical. Buying at the
+bid and marking to mid captures half of a 1c spread, so ~0.5c is the spread itself, not alpha.
+
+Three cells decay toward or below zero: `2-5m | >8bps` (0.42→0.06), `<60s | 0-3bps` (0.69→0.14)
+and `<60s | >8bps` (−0.51). The second is the one `POLY_SETTLEMENT_CONVEXITY_V1` predicted —
+0.77 c/bp sensitivity, the most fragile cell on the surface — and it is where markout decays
+fastest. The two lanes agree, which is mild corroboration for both.
+
+### Why this is still an upper bound
+
+**Real fills are adversely selected and these are not.** A resting bid fills preferentially when
+the market is coming to hit it — i.e. when the contract is about to be worth less. This
+measurement takes every snapshot as an equally likely fill, so it systematically **understates
+toxicity**. True maker markout is worse than every number above, by an unknown amount.
+
+That keeps `HEDGED_POLY_MM_V1` where it was: upper bound favourable, therefore inconclusive.
+The deciding measurement is unchanged — shadow-post real quotes, record which ones actually fill
+and at what queue position, then mark those out. Nothing in the historical data substitutes.
