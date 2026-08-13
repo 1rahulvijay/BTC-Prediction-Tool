@@ -14,7 +14,7 @@ Verified in both directions.
 | `volatility_expansion` | which windows move at all? | **PARTIAL** — real, not sufficient | [REPORT](volatility_expansion/REPORT.md) |
 | `spot_perp_basis` | does extreme basis revert past costs? | **CLOSE** — 15x too small | [REPORT](spot_perp_basis/REPORT.md) |
 | `time_phase_alpha` | does clock phase carry structure? | **NO EFFECT** | [REPORT](time_phase_alpha/REPORT.md) |
-| `polymarket_residual` | when is the market's price wrong? | **BLOCKED** — zero data overlap | [REPORT](polymarket_residual/REPORT.md) |
+| `polymarket_residual` | when is the market's price wrong? | **CLOSE** as taker — model is behind the market | [REPORT](polymarket_residual/REPORT.md) |
 
 ## What the five lanes say together
 
@@ -31,13 +31,17 @@ Verified in both directions.
 3. **Two structural hypotheses died cleanly.** Basis reversion is real and 15x too small
    (0.89 bps vs 12). Clock phase does not separate at all (LCB 8.87 vs UCB 9.10).
 
-4. **The one venue not bounded by any of this is dark.** Polymarket has a binary payoff, so
-   the cost-clearance result says nothing about it — and its quote snapshots and its official
-   settlements were recorded in **non-overlapping** date ranges. Zero joinable rows.
+4. **Polymarket is not bounded by the cost-clearance result — and it still fails as a taker
+   strategy.** With settlement backfilled (149,061 rows, 921 rounds), the app's `p_hold_up` is
+   genuinely informative (Brier 0.183 vs 0.250 for a constant) and **decisively worse than the
+   market's own price** (0.170), CI [-0.0176, -0.0091]. Trading its disagreement loses 1.8-2.7c
+   per share at every threshold — and loses MORE as the required edge grows, which is evidence
+   that a large model-vs-market gap is usually the model being wrong.
 
-The single highest-value action from this batch is not a model. It is backfilling Gamma
-settlement for the 10 days where PM snapshots already exist, and keeping both recorders running
-together from now on.
+What is NOT closed on that venue: maker economics (zero platform fee plus a rebate pool, and
+the taker fee is what kills the lane above), full-set `Ask_YES + Ask_NO < 1` arbitrage, and the
+residual formulation `logit(p_true) = logit(p_market) + f(X)` — which has never been fitted, and
+is the structurally right move now that the market is measured as the stronger forecaster.
 
 ## The bar
 
