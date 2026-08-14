@@ -2,6 +2,10 @@
 
 Date: 2026-08-13
 
+Recorder process ownership, raw-capture coverage and the boundary between captured Parquet and
+production training are documented in
+[RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md](RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md).
+
 ## Scope
 
 This pass repaired the failed 30-day research-matrix build and validated the exact startup,

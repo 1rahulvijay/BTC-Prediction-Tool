@@ -1,5 +1,10 @@
 # Data Collectors — unified registry (2026-06-13)
 
+Current launcher ownership and the legacy-bridge boundary are defined in
+[RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md](RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md).
+This file remains the detailed collector registry; where historical startup wording differs, the
+2026-08-14 ownership document is authoritative.
+
 Every place the system collects + saves data, built to ONE consistent pattern. Two kinds:
 **offline builders** (run on demand from archived data, no laptop uptime) and **live recorders**
 (write to DuckDB while serving). All offline builders share the same shape so they're interchangeable

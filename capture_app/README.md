@@ -10,6 +10,9 @@ the core app's local low-latency `data/pm_live_quotes.json` compatibility bridge
 Polymarket paper-entry gates therefore remain unavailable unless that bridge is deliberately
 provided or the core is later wired to a direct equivalent.
 
+The canonical process-ownership, compatibility, startup and training-boundary record is
+[`docs/active/RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md`](../docs/active/RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md).
+
 ## Recorded Dataset
 
 Every row has a local receive timestamp. Exchange/source timestamps are retained separately.
@@ -183,7 +186,7 @@ index cannot hide a missing outcome. Conflicting durable outcomes stop startup.
 
 ## Verification Performed on 2026-08-13
 
-Deterministic suite: 16/16 passed.
+Deterministic suite: 21/21 passed on 2026-08-14.
 
 - cross-hour partitioning;
 - failed-write buffer recovery;

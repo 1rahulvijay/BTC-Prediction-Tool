@@ -5,6 +5,9 @@ Updated: 2026-08-13
 Core launcher: `start.bat`
 Capture launcher: `python capture_app/run.py --record`
 
+Canonical detailed record:
+[RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md](RECORDER_OWNERSHIP_AND_CORE_STARTUP_2026-08-14.md).
+
 ## Current ownership
 
 `start.bat` no longer starts the ten legacy DuckDB recorder processes by default. The independent
