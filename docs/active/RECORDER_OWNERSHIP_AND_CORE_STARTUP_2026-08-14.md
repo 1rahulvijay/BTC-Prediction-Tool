@@ -133,8 +133,10 @@ Only an unambiguous final `1/0` result is accepted as settlement truth.
 
 Storage writes use temporary files, `fsync` and atomic rename. Failed writes return detached rows
 to memory. Completed hours can be compacted and uploaded to GCS with content hashes, CRC32C,
-manifests and immutable catalog pointers. Local deletion is permitted only after verified archival
-and outside protected recent hours.
+manifests and immutable catalog pointers. The default GCS policy keeps routinely downloaded data
+in Standard storage; Coldline/Archive is explicit opt-in. Local deletion is permitted only after
+verified archival and outside protected recent hours. See
+[`capture_app/GCP_COST_AND_STORAGE_POLICY_2026-08-14.md`](../../capture_app/GCP_COST_AND_STORAGE_POLICY_2026-08-14.md).
 
 ## Current Compatibility Boundary
 

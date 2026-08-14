@@ -2,6 +2,10 @@
 
 Date: 2026-08-13
 
+Storage-policy update (2026-08-14): monthly laptop retrieval now defaults to Standard storage with
+no lifecycle transitions. Coldline/Archive is opt-in through `CAPTURE_STORAGE_POLICY=archive`.
+See [GCP_COST_AND_STORAGE_POLICY_2026-08-14.md](GCP_COST_AND_STORAGE_POLICY_2026-08-14.md).
+
 ## Objective
 
 Run the read-only capture service continuously at the lowest cost that preserves event ordering,

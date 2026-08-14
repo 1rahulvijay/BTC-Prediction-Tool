@@ -186,7 +186,7 @@ index cannot hide a missing outcome. Conflicting durable outcomes stop startup.
 
 ## Verification Performed on 2026-08-13
 
-Deterministic suite: 21/21 passed on 2026-08-14.
+Deterministic suite: 24/24 passed on 2026-08-14.
 
 - cross-hour partitioning;
 - failed-write buffer recovery;
@@ -214,8 +214,12 @@ long-running capture.
 ## Deployment
 
 ```bash
-CAPTURE_GCS_BUCKET=YOUR-GLOBALLY-UNIQUE-BUCKET \
+CAPTURE_STORAGE_POLICY=download-monthly \
+  CAPTURE_GCS_BUCKET=YOUR-GLOBALLY-UNIQUE-BUCKET \
   bash capture_app/deploy_gcp.sh bucket-create
+
+CAPTURE_GCS_BUCKET=YOUR-GLOBALLY-UNIQUE-BUCKET \
+  bash capture_app/deploy_gcp.sh bucket-policy
 
 CAPTURE_GCS_BUCKET=YOUR-GLOBALLY-UNIQUE-BUCKET \
   bash capture_app/deploy_gcp.sh create
@@ -226,14 +230,16 @@ bash capture_app/deploy_gcp.sh destroy
 ```
 
 `bucket-create` creates or hardens a private regional Standard bucket with uniform bucket-level
-access, public-access prevention, and default lifecycle transitions Standard -> Coldline at 90
-days -> Archive at 365 days. Change those ages only through
-`CAPTURE_COLDLINE_AFTER_DAYS`/`CAPTURE_ARCHIVE_AFTER_DAYS`, with the latter strictly greater. These
-defaults keep actively scanned research data out of retrieval-charged archival storage. GCS
-supports these lifecycle transitions, but minimum-duration, retrieval and operation charges still
-apply; review the current [storage class](https://cloud.google.com/storage/docs/storage-classes),
+access and public-access prevention. `CAPTURE_STORAGE_POLICY=download-monthly` is the default and
+clears lifecycle transitions so routinely downloaded data does not incur cold-tier retrieval or
+minimum-duration charges. `CAPTURE_STORAGE_POLICY=archive` explicitly enables Standard -> Coldline
+at 90 days -> Archive at 365 days; the transition ages remain configurable through
+`CAPTURE_COLDLINE_AFTER_DAYS`/`CAPTURE_ARCHIVE_AFTER_DAYS`. Inspect the real bucket with
+`deploy_gcp.sh bucket-policy`. See
+[GCP_COST_AND_STORAGE_POLICY_2026-08-14.md](GCP_COST_AND_STORAGE_POLICY_2026-08-14.md) and review
+current [storage class](https://cloud.google.com/storage/docs/storage-classes),
 [lifecycle](https://cloud.google.com/storage/docs/lifecycle), and
-[pricing](https://cloud.google.com/storage/pricing) documentation.
+[pricing](https://cloud.google.com/storage/pricing) documentation before deployment.
 
 The script uploads only `capture_app/`, runs `--selftest`, and configures systemd to run the tests
 before every service start. When a bucket is supplied, it verifies that bucket before VM creation,

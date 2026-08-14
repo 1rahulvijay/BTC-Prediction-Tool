@@ -7,6 +7,7 @@
 #   CAPTURE_GCS_BUCKET=globally-unique-name bash capture_app/deploy_gcp.sh bucket-create
 #   bash capture_app/deploy_gcp.sh status     # remote --status
 #   bash capture_app/deploy_gcp.sh logs       # tail the service
+#   bash capture_app/deploy_gcp.sh bucket-policy # inspect current bucket settings
 #   bash capture_app/deploy_gcp.sh destroy    # delete the VM
 #
 # FREE-TIER CONSTRAINTS THAT ARE EASY TO GET WRONG. Google's Always Free e2-micro is free ONLY
@@ -29,6 +30,7 @@ IMAGE_PROJECT="debian-cloud"
 GCS_BUCKET="${CAPTURE_GCS_BUCKET:-}"
 GCS_PREFIX="${CAPTURE_GCS_PREFIX:-btc-capture}"
 GCS_LOCATION="${CAPTURE_GCS_LOCATION:-${ZONE%-*}}"
+STORAGE_POLICY="${CAPTURE_STORAGE_POLICY:-download-monthly}"
 COLDLINE_AFTER_DAYS="${CAPTURE_COLDLINE_AFTER_DAYS:-90}"
 ARCHIVE_AFTER_DAYS="${CAPTURE_ARCHIVE_AFTER_DAYS:-365}"
 PYTH_KEY="${PYTH_API_KEY:-}"
@@ -92,22 +94,32 @@ validate_days() {
   fi
 }
 
+validate_storage_policy() {
+  case "${STORAGE_POLICY}" in
+    download-monthly|archive) ;;
+    *)
+      echo "REFUSING: CAPTURE_STORAGE_POLICY must be download-monthly or archive."
+      exit 1
+      ;;
+  esac
+}
+
 bucket_create() {
   if [[ -z "${GCS_BUCKET}" ]]; then
     echo "REFUSING: set CAPTURE_GCS_BUCKET to a globally unique bucket name."
     exit 1
   fi
-  validate_days CAPTURE_COLDLINE_AFTER_DAYS "${COLDLINE_AFTER_DAYS}"
-  validate_days CAPTURE_ARCHIVE_AFTER_DAYS "${ARCHIVE_AFTER_DAYS}"
-  if (( ARCHIVE_AFTER_DAYS <= COLDLINE_AFTER_DAYS )); then
-    echo "REFUSING: archive transition must be later than coldline transition."
-    exit 1
-  fi
-  project="$(selected_project)"
-  require_billing "${project}"
-  lifecycle="$(mktemp)"
-  trap 'rm -f "${lifecycle:-}"' EXIT
-  cat >"${lifecycle}" <<JSON
+  validate_storage_policy
+  lifecycle=""
+  if [[ "${STORAGE_POLICY}" == "archive" ]]; then
+    validate_days CAPTURE_COLDLINE_AFTER_DAYS "${COLDLINE_AFTER_DAYS}"
+    validate_days CAPTURE_ARCHIVE_AFTER_DAYS "${ARCHIVE_AFTER_DAYS}"
+    if (( ARCHIVE_AFTER_DAYS <= COLDLINE_AFTER_DAYS )); then
+      echo "REFUSING: archive transition must be later than coldline transition."
+      exit 1
+    fi
+    lifecycle="$(mktemp)"
+    cat >"${lifecycle}" <<JSON
 {
   "rule": [
     {
@@ -121,20 +133,50 @@ bucket_create() {
   ]
 }
 JSON
+  fi
+  project="$(selected_project)"
+  require_billing "${project}"
+  trap 'rm -f "${lifecycle:-}"' EXIT
   if gc storage buckets describe "gs://${GCS_BUCKET}" >/dev/null 2>&1; then
     echo "bucket gs://${GCS_BUCKET} already exists; updating guarded settings"
-    gc storage buckets update "gs://${GCS_BUCKET}" \
-      --uniform-bucket-level-access --public-access-prevention \
-      --lifecycle-file="${lifecycle}"
+    if [[ "${STORAGE_POLICY}" == "archive" ]]; then
+      gc storage buckets update "gs://${GCS_BUCKET}" \
+        --uniform-bucket-level-access --public-access-prevention \
+        --default-storage-class=STANDARD --lifecycle-file="${lifecycle}"
+    else
+      gc storage buckets update "gs://${GCS_BUCKET}" \
+        --uniform-bucket-level-access --public-access-prevention \
+        --default-storage-class=STANDARD --clear-lifecycle
+    fi
   else
     echo "creating private regional bucket gs://${GCS_BUCKET} in ${GCS_LOCATION}"
-    gc storage buckets create "gs://${GCS_BUCKET}" \
-      --project="${project}" --location="${GCS_LOCATION}" \
-      --default-storage-class=STANDARD --uniform-bucket-level-access \
-      --public-access-prevention --lifecycle-file="${lifecycle}"
+    create_args=(
+      --project="${project}" --location="${GCS_LOCATION}"
+      --default-storage-class=STANDARD --uniform-bucket-level-access
+      --public-access-prevention
+    )
+    if [[ "${STORAGE_POLICY}" == "archive" ]]; then
+      create_args+=(--lifecycle-file="${lifecycle}")
+    fi
+    gc storage buckets create "gs://${GCS_BUCKET}" "${create_args[@]}"
   fi
-  echo "configured Standard -> Coldline (${COLDLINE_AFTER_DAYS}d) -> Archive (${ARCHIVE_AFTER_DAYS}d)"
-  echo "Billing must be enabled on ${project}; lifecycle transitions and reads can incur charges."
+  if [[ "${STORAGE_POLICY}" == "archive" ]]; then
+    echo "configured archive policy: Standard -> Coldline (${COLDLINE_AFTER_DAYS}d) -> Archive (${ARCHIVE_AFTER_DAYS}d)"
+    echo "Coldline/Archive reads incur retrieval fees and minimum storage durations."
+  else
+    echo "configured download-monthly policy: Standard storage with no lifecycle transitions"
+    echo "No automatic deletion is configured. Download, verify, then delete deliberately."
+  fi
+  echo "Billing must be enabled on ${project}; storage, operations and network transfer can incur charges."
+}
+
+bucket_policy() {
+  if [[ -z "${GCS_BUCKET}" ]]; then
+    echo "REFUSING: set CAPTURE_GCS_BUCKET to the bucket name."
+    exit 1
+  fi
+  gc storage buckets describe "gs://${GCS_BUCKET}" \
+    --format="yaml(name,location,storageClass,lifecycle_config,uniform_bucket_level_access,public_access_prevention)"
 }
 
 case "${ZONE}" in
@@ -297,6 +339,7 @@ destroy() { gc compute instances delete "${NAME}" --zone="${ZONE}" --quiet; }
 
 case "${1:-}" in
   bucket-create) bucket_create ;;
+  bucket-policy) bucket_policy ;;
   create) create ;;
   status) status ;;
   logs) logs ;;
