@@ -600,6 +600,13 @@ jobs:
       - name: PM fair-value wiring actually logs (a silent except cannot hide a dead strategy)
         run: python backend/tests/test_pm_fair_value_wiring.py
 
+      # Every fee reader in price_to_beat.py used `float(quote.get("fee_rate") or 0.07)`, so an
+      # explicit 0.0 - what the recorder writes for a fee-free market - was falsy and got repriced
+      # at the full crypto taker fee, while the neighbouring `fees_enabled is not False` read the
+      # same market as fee-free. The error direction was conservative, so no bad trade exposed it.
+      - name: Bridge quote fee fidelity (an explicit 0.0 rate is not a missing rate)
+        run: python backend/tests/test_pm_quote_fee_rate_fidelity.py
+
       - name: Model vote identity, committed accuracy, restart restore, and metrics regime
         run: python backend/tests/test_model_metrics_integrity.py
 

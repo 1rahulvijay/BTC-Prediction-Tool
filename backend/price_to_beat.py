@@ -31,6 +31,7 @@ import os
 import database
 import decision_champion
 import round_state_panel
+from polymarket_fee import DEFAULT_CRYPTO_TAKER_FEE_RATE
 from polymarket_paper import calibrated_fair_value as _pm_fv
 from polymarket_paper import calibration_loader as _pm_cal_loader
 from trade_forecast import live_forecaster as complete_trade_forecaster
@@ -112,22 +113,35 @@ def _active_head_identity() -> dict:
             continue
         path = os.path.join(model_dir, filename)
         try:
-            mtime = os.path.getmtime(path)
-            cache_key = (path, mtime)
-            # The IN-MEMORY sha wins. Re-hashing `path` describes whatever is on disk now,
-            # which under freeze mode is not what produced the prediction being recorded.
+            # The IN-MEMORY sha wins, and it is answered WITHOUT touching the filesystem.
+            # Re-hashing `path` describes whatever is on disk now, which under freeze mode is
+            # not what produced the prediction being recorded. Statting the path first made the
+            # served identity depend on a file it does not need: if the artifact is moved,
+            # deleted, or briefly unreadable while this process keeps serving the bundle it
+            # already deserialized, every row recorded {"error": ...} instead of the sha of the
+            # model that actually ran - losing exactly the binding this identity exists to
+            # preserve. A fresh clone (data/ is gitignored) hit the same path.
             served = bundle.get("_artifact_sha256")
-            identity = None if served else _HEAD_IDENTITY_CACHE.get(cache_key)
-            if identity is None:
-                from verified_io import file_sha256
-                identity = {
-                    "sha256": served or file_sha256(path),
-                    "sha_source": "deserialized" if served else "path_rehash",
+            if served:
+                result[label] = {
+                    "sha256": str(served),
+                    "sha_source": "deserialized",
                     "version": str(bundle.get("version") or bundle.get("model_version") or ""),
                     "label_basis": str(bundle.get("label_basis") or ""),
                 }
-                if not served:
-                    _HEAD_IDENTITY_CACHE[cache_key] = identity
+                continue
+            mtime = os.path.getmtime(path)
+            cache_key = (path, mtime)
+            identity = _HEAD_IDENTITY_CACHE.get(cache_key)
+            if identity is None:
+                from verified_io import file_sha256
+                identity = {
+                    "sha256": file_sha256(path),
+                    "sha_source": "path_rehash",
+                    "version": str(bundle.get("version") or bundle.get("model_version") or ""),
+                    "label_basis": str(bundle.get("label_basis") or ""),
+                }
+                _HEAD_IDENTITY_CACHE[cache_key] = identity
             result[label] = dict(identity)
         except Exception as exc:
             result[label] = {"error": str(exc)}
@@ -589,6 +603,19 @@ def _window_quality(horizon, window_start_ms):
         return None
 
 
+def _quote_fee_rate(quote) -> float:
+    """Fee rate carried by a bridge quote, treating ABSENT and an explicit 0.0 as different facts.
+
+    A market with fees disabled reports fee_rate 0.0 - the recorder writes exactly that, coupled
+    to fees_enabled=False - and 0.0 is falsy, so `float(quote.get("fee_rate") or DEFAULT)` silently
+    reprices a fee-free market at the full crypto taker fee. Only a MISSING field may fall back to
+    the default, which is the rule `fees_enabled is not False` already applies to its own field;
+    the two must not disagree about what a fee-free market is. The rate itself is never restated
+    here - it comes from polymarket_fee, the canonical source."""
+    rate = (quote or {}).get("fee_rate")
+    return DEFAULT_CRYPTO_TAKER_FEE_RATE if rate is None else float(rate)
+
+
 def _market_quote_for_round(round_data, now_ms):
     """Return a fresh executable quote for this round, or None.
 
@@ -649,7 +676,7 @@ def _market_quote_for_round(round_data, now_ms):
             "spread": spread,
             "depth": float(quote.get(f"{prefix}_top_ask_size") or 0.0),
             "fees_enabled": quote.get("fees_enabled") is not False,
-            "fee_rate": float(quote.get("fee_rate") or 0.07),
+            "fee_rate": _quote_fee_rate(quote),
             "age_seconds": round(max(0.0, float(now_ms) / 1000.0 - quote_ts), 3),
         }
     except Exception:
@@ -916,7 +943,7 @@ def _leader_quote(round_data, now_ms):
         ask, bid = float(quote[f"{pfx}_ask"]), float(quote[f"{pfx}_bid"])
         if not (0.0 <= bid <= ask < 1.0) or ask <= 0.0:
             return None
-        fee_rate = float(quote.get("fee_rate") or 0.07)
+        fee_rate = _quote_fee_rate(quote)
         fee = round(fee_rate * ask * (1.0 - ask), 5) if quote.get("fees_enabled") is not False else 0.0
         return {"side": side, "ask": ask, "bid": bid, "fee": fee,
                 "spread": round(ask - bid, 4),
@@ -974,7 +1001,7 @@ def _live_share_prices_for_round(round_data, now_ms):
         age = float(now_ms) / 1000.0 - quote_ts
         if abs(age) > 5.0:
             return None
-        fee_rate = float(quote.get("fee_rate") or 0.07)
+        fee_rate = _quote_fee_rate(quote)
         fees_enabled = quote.get("fees_enabled") is not False
         sides = {}
         for side, prefix in (("UP", "up"), ("DOWN", "down")):
@@ -1106,7 +1133,7 @@ def _side_quote(round_data, now_ms, side):
         ask, bid = float(quote[f"{pfx}_ask"]), float(quote[f"{pfx}_bid"])
         if not (0.0 <= bid <= ask < 1.0):
             return None
-        rate = float(quote.get("fee_rate") or 0.07)
+        rate = _quote_fee_rate(quote)
         fees_on = quote.get("fees_enabled") is not False
         fee_in = round(rate * ask * (1 - ask), 5) if fees_on else 0.0
         return {"side": side, "ask": ask, "bid": bid, "fee": fee_in,
