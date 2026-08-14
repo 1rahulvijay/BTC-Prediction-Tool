@@ -58,6 +58,7 @@ from features import (
     atr as compute_atr,
 )
 from model_verifier import PerModelVerifier
+import price_to_beat as price_to_beat_module
 from price_to_beat import PriceToBeatTracker, persistence_model_status
 from open_position_action_recorder import recorder as open_position_action_recorder
 import round_state_panel
@@ -88,6 +89,7 @@ from ab_testing import ABTestRunner, ModelVariant
 from decision_snapshot import build as _build_decision_snapshot
 import target_contract as _target_contract
 from polymarket_client import PolymarketClient
+from polymarket_quote_adapter import PolymarketQuoteAdapter
 from polymarket_verifier import PolymarketVerifier
 from fsr_ppo_strategy import FSRPPOStrategy
 from binance_paper import BinancePaperService
@@ -744,6 +746,18 @@ chainlink_client = ChainlinkRESTClient()
 
 # Polymarket
 polymarket_client = PolymarketClient()
+
+# Executable Polymarket pricing, served from THIS process's books.
+#
+# price_to_beat used to read data/pm_live_quotes.json, published by the detached legacy
+# recorder. That recorder is no longer started by default (BTC_START_LEGACY_RECORDERS=0), so
+# without this the core has no executable Polymarket price and must abstain on every
+# book-edge decision. The adapter is read-only over polymarket_client and cannot place orders.
+#
+# Installing it does not bypass any check: price_to_beat re-validates anchor, age and prices on
+# whatever the adapter returns, and the adapter itself refuses unsynchronized, crossed,
+# one-sided, stale or ambiguously-labelled markets rather than guessing.
+price_to_beat_module.set_quote_adapter(PolymarketQuoteAdapter(polymarket_client))
 
 model = MultiModelEnsemble()
 cascade_monitor = CascadeMonitor()

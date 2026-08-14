@@ -458,6 +458,9 @@ jobs:
       - name: Optional model heads abstain without weakening present-artifact checks
         run: python backend/tests/test_feature_contract_optional.py
 
+      - name: In-process Polymarket quote adapter matches the file-bridge contract
+        run: python backend/tests/test_polymarket_quote_adapter.py
+
       - name: Forward-evidence startup wait is bounded and fail-closed
         run: python backend/wait_for_forward_evidence.py --selftest
 

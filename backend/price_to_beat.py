@@ -446,6 +446,40 @@ _PM_QUOTES = None
 _PM_QUOTES_MTIME = -2.0
 _PM_QUOTES_CHECKED = 0.0
 
+# In-process quote source, installed by the backend at startup (see server.py). When present it
+# is tried BEFORE the pm_live_quotes.json bridge, because the legacy recorder that publishes
+# that file is no longer started by default (BTC_START_LEGACY_RECORDERS=0, commit 6e74b03).
+#
+# Both sources feed the SAME validation below. The adapter does not get a shortcut: a quote it
+# returns is re-checked for exact anchor, freshness and price sanity exactly like a file-sourced
+# one. A second source must not become a second standard.
+_QUOTE_ADAPTER = None
+
+
+def set_quote_adapter(adapter) -> None:
+    """Install (or clear, with None) the in-process Polymarket quote source.
+
+    Kept as an explicit setter rather than an import of `server.polymarket_client` so this
+    module stays importable by trainers and research scripts that never build a live client.
+    """
+    global _QUOTE_ADAPTER
+    _QUOTE_ADAPTER = adapter
+
+
+def _adapter_quote(round_data):
+    """Ask the in-process adapter for this exact round. Never raises into the pricing path."""
+    adapter = _QUOTE_ADAPTER
+    if adapter is None:
+        return None
+    try:
+        return adapter.quote_for_round(
+            round_data.get("horizon"), round_data.get("window_start")
+        )
+    except Exception:
+        # A broken quote source must degrade to "no executable price", which the caller already
+        # handles as abstention, not to an exception that takes down the round card.
+        return None
+
 
 def _load_fade_model():
     """FADE ENTRY head: P(this touch reverts to the anchor TP before the 2x stop) -- the HONEST
@@ -556,31 +590,39 @@ def _window_quality(horizon, window_start_ms):
 
 
 def _market_quote_for_round(round_data, now_ms):
-    """Return a fresh executable quote from the recorder's atomic JSON bridge.
+    """Return a fresh executable quote for this round, or None.
 
-    Matching fails closed on horizon, exact clock anchor, and quote age. The JSON bridge
-    avoids sharing the recorder's DuckDB writer lock with the backend process.
+    Two sources, one standard. The in-process adapter (backed by the backend's own
+    PolymarketClient books) is tried first; the legacy `pm_live_quotes.json` bridge published by
+    the detached recorder is the fallback for compatibility mode. Whichever supplies the quote,
+    the SAME checks below apply: horizon, exact clock anchor, quote age, and price sanity.
+
+    Order matters only for availability, never for trust. The file bridge is checked second
+    because its publisher is no longer started by default, so on a normal boot it is absent or
+    stale - and a stale file cannot pass the anchor and age checks anyway.
     """
     global _PM_QUOTES, _PM_QUOTES_MTIME, _PM_QUOTES_CHECKED
     import json
     import time
-    now = time.time()
-    if not _PM_QUOTES_CHECKED or now - _PM_QUOTES_CHECKED >= 0.5:
-        _PM_QUOTES_CHECKED = now
-        try:
-            data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "data")
-            path = os.path.join(data_dir, "pm_live_quotes.json")
-            mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
-            if mt != _PM_QUOTES_MTIME:
-                _PM_QUOTES_MTIME = mt
-                if mt >= 0:
-                    with open(path, "r", encoding="utf-8") as f:
-                        _PM_QUOTES = json.load(f)
-        except Exception:
-            _PM_QUOTES = None
-    payload = _PM_QUOTES or {}
-    quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
+    quote = _adapter_quote(round_data)
+    if quote is None:
+        now = time.time()
+        if not _PM_QUOTES_CHECKED or now - _PM_QUOTES_CHECKED >= 0.5:
+            _PM_QUOTES_CHECKED = now
+            try:
+                data_dir = os.environ.get("BTC_DATA_DIR") or os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)), "data")
+                path = os.path.join(data_dir, "pm_live_quotes.json")
+                mt = os.path.getmtime(path) if os.path.exists(path) else -1.0
+                if mt != _PM_QUOTES_MTIME:
+                    _PM_QUOTES_MTIME = mt
+                    if mt >= 0:
+                        with open(path, "r", encoding="utf-8") as f:
+                            _PM_QUOTES = json.load(f)
+            except Exception:
+                _PM_QUOTES = None
+        payload = _PM_QUOTES or {}
+        quote = (payload.get("markets") or {}).get(str(int(round_data.get("horizon") or 0)))
     if not quote:
         return None
     try:
