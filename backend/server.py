@@ -6142,6 +6142,9 @@ def _system_health_snapshot() -> dict:
     recorders["model_metrics"] = model_metrics_logger.status(stale_after_s=120.0)
     recorders["model_metrics"]["required"] = True
     polymarket_feed = polymarket_client.status()
+    # Socket health is not quote health. polymarket_feed above says the websocket is alive;
+    # this says whether an executable price can actually be produced from it.
+    polymarket_quotes = price_to_beat_module.quote_source_health()
     feed_protocols = {
         "binance_spot": ws_client.health_snapshot(),
         "binance_futures": futures_ws_client.health_snapshot(),
@@ -6179,6 +6182,12 @@ def _system_health_snapshot() -> dict:
         blockers.extend(
             f"polymarket:{reason}"
             for reason in polymarket_feed.get("blockers", ())
+        )
+        # Gated by the same switch as the feed itself: during warm-up no round is publishable
+        # yet, and that is not a fault. Under the production requirement it is.
+        blockers.extend(
+            f"polymarket_quotes:{reason}"
+            for reason in polymarket_quotes.get("blockers", ())
         )
     if os.getenv(
         "BTC_REQUIRE_PROTOCOL_HEALTH",
@@ -6221,6 +6230,7 @@ def _system_health_snapshot() -> dict:
         "feeds": feeds,
         "feed_protocols": feed_protocols,
         "polymarket_feed": polymarket_feed,
+        "polymarket_quotes": polymarket_quotes,
         "recorders": recorders,
         "forward_protocols": forward_readiness,
         "evidence_collection": evidence_health,

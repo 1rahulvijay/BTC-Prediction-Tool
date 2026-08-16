@@ -296,13 +296,28 @@ class PolymarketQuoteAdapter:
         return accepted, rejected
 
     def quote_for_round(self, horizon: Any, window_start_ms: Any) -> dict | None:
-        """Exact-identity lookup. The caller names the round; no nearest-match is ever returned."""
+        """Exact-identity lookup. The caller names the round; no nearest-match is ever returned.
+
+        This is the live pricing path, hit once per round per tick, so it resolves the slug
+        first and builds only the market that matches. Going through quotes_by_round() would
+        summarize every tracked book - each a full Decimal sum over its ladder - to return one
+        of them.
+        """
         try:
             key = (int(horizon), int(window_start_ms) // 1000)
         except (TypeError, ValueError):
             return None
-        accepted, _ = self.quotes_by_round()
-        return accepted.get(key)
+        now = float(self.clock())
+        for market in self._distinct_markets():
+            # Slug parsing is a regex over a short string; book summarization is not. Filter on
+            # the cheap check before doing the expensive one.
+            if parse_round_slug(market.get("slug")) != key:
+                continue
+            quote, _reason = self.build_round_quote(market, now)
+            # Slugs are unique per round, so the first match is the only match. Returning here
+            # rather than collecting keeps one bad duplicate from masking a good book.
+            return quote
+        return None
 
     def quote_payload(self) -> dict:
         """Emit the `pm_live_quotes.json` v2 payload shape, keyed by horizon string.

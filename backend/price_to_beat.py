@@ -480,6 +480,41 @@ def set_quote_adapter(adapter) -> None:
     _QUOTE_ADAPTER = adapter
 
 
+def quote_source_health() -> dict:
+    """What the executable-quote path can actually serve right now.
+
+    SOCKET HEALTH IS NOT QUOTE HEALTH. PolymarketClient.status() can report connected, healthy,
+    books arriving and a clean parse rate while every round is refused for a metadata reason -
+    a missing tick size, an unsynchronized book, an ambiguous outcome label. Without this, that
+    state renders green in the UI while the core silently abstains on every Polymarket decision,
+    which is the exact "process existence is not data health" failure the recorder-ownership
+    boundary was written to prevent.
+
+    `blockers` is empty when no adapter is installed: that is legacy compatibility mode, where
+    the file bridge is the intended source and its absence is already reported elsewhere.
+    """
+    adapter = _QUOTE_ADAPTER
+    if adapter is None:
+        return {
+            "source": "file_bridge", "adapter_installed": False,
+            "acceptable_rounds": 0, "live_rounds": {}, "blockers": [],
+        }
+    try:
+        report = adapter.diagnostics()
+    except Exception as exc:
+        # A health probe that raises must report a blocker, never an absence of blockers.
+        return {
+            "source": "in_process", "adapter_installed": True,
+            "acceptable_rounds": 0, "live_rounds": {},
+            "blockers": ["quote_diagnostics_failed"], "error": str(exc)[:200],
+        }
+    live = report.get("live_rounds") or {}
+    return {
+        "source": "in_process", "adapter_installed": True, **report,
+        "blockers": [] if live else ["no_executable_round"],
+    }
+
+
 def _adapter_quote(round_data):
     """Ask the in-process adapter for this exact round. Never raises into the pricing path."""
     adapter = _QUOTE_ADAPTER

@@ -511,6 +511,111 @@ def test_server_installs_the_adapter_on_the_live_client() -> None:
     assert call.args[0].id == "polymarket_client", "adapter must wrap the live client"
 
 
+# -- health surface -------------------------------------------------------------------------
+
+def test_health_reports_no_executable_round_when_every_market_is_refused() -> None:
+    """The failure this exists to catch: socket green, quotes zero, nobody told."""
+    # A market the adapter must refuse (no tick size), with perfectly healthy books.
+    client, _ = _standard(tick_size=None)
+    with _QuoteSources(adapter=_adapter(client)) as module:
+        health = module.quote_source_health()
+        assert health["adapter_installed"] is True
+        assert health["source"] == "in_process"
+        assert health["acceptable_rounds"] == 0
+        assert health["live_rounds"] == {}
+        assert health["blockers"] == ["no_executable_round"]
+        assert health["reject_counts"] == {adapter_module.REJECT_TICK: 1}
+
+
+def test_health_is_clear_when_a_round_is_publishable() -> None:
+    client, _ = _standard()
+    with _QuoteSources(adapter=_adapter(client)) as module:
+        health = module.quote_source_health()
+        assert health["blockers"] == []
+        assert health["acceptable_rounds"] == 1
+        assert health["live_rounds"]["5m"]["anchor_ts"] == ANCHOR
+
+
+def test_health_does_not_blame_compatibility_mode() -> None:
+    """No adapter installed means the file bridge is the intended source, not a fault."""
+    with _QuoteSources(adapter=None) as module:
+        health = module.quote_source_health()
+        assert health["adapter_installed"] is False
+        assert health["source"] == "file_bridge"
+        assert health["blockers"] == []
+
+
+def test_health_probe_that_raises_reports_a_blocker() -> None:
+    class Exploding:
+        def diagnostics(self):
+            raise RuntimeError("client went away")
+
+    with _QuoteSources(adapter=Exploding()) as module:
+        health = module.quote_source_health()
+        # A probe that fails must never look like a probe that found nothing wrong.
+        assert health["blockers"] == ["quote_diagnostics_failed"]
+        assert "client went away" in health["error"]
+
+
+def test_server_surfaces_quote_health_and_gates_it() -> None:
+    """Static check that server.py reports and blocks on quote health, not just feed health."""
+    import ast
+
+    source = (BACKEND / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "quote_source_health"
+    ]
+    assert len(calls) == 1, "server must consult the pricing path's own health exactly once"
+
+    keys = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "polymarket_quotes" in keys, "health payload must expose the quote source"
+    assert any(
+        "polymarket_quotes:" in value for value in keys
+    ), "quote-health blockers must be prefixed and surfaced"
+
+
+# -- hot-path cost --------------------------------------------------------------------------
+
+def test_round_lookup_only_summarizes_the_matching_market() -> None:
+    """quote_for_round is the live pricing path; it must not summarize every tracked book."""
+    counted: list[str] = []
+
+    class CountingBook(L2Book):
+        def summary(self):
+            counted.append(self.asset_id)
+            return super().summary()
+
+    def counting_book(asset: str, bid: float, ask: float) -> L2Book:
+        book = CountingBook(asset)
+        book.load_snapshot(
+            [{"price": str(bid), "size": "10"}], [{"price": str(ask), "size": "10"}],
+            recv_ts_ns=int((NOW - 0.1) * 1e9),
+        )
+        return book
+
+    markets, books = [], {}
+    for index in range(6):
+        anchor = ANCHOR + index * 300
+        up, down = f"U{index}", f"D{index}"
+        markets.append(_market(slug=f"bitcoin-updown-5m-{anchor}", yes_token=up, no_token=down))
+        books[up] = counting_book(up, 0.48, 0.52)
+        books[down] = counting_book(down, 0.47, 0.51)
+
+    counted.clear()
+    quote = _adapter(FakeClient(markets, books)).quote_for_round(5, ANCHOR * 1000)
+    assert quote is not None
+    # Exactly the two legs of the requested round - not all twelve books.
+    assert sorted(counted) == ["D0", "U0"], f"summarized {len(counted)} books: {sorted(counted)}"
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
