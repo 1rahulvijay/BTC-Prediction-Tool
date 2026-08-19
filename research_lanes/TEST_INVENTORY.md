@@ -199,3 +199,42 @@ Every proposal in the two later research briefs is now explicitly classified in
 - No undocumented runnable proposal remains from those two briefs.
 
 This is a coverage result, not a profitability result. Promotable configurations remain zero.
+
+---
+
+# Batch 4 — Trade-Economics Lanes (appended 2026-08-14)
+
+Full write-up: `BATCH_4_REPORT.md`. Blocked-lane register: `CANNOT_RUN_INVENTORY.md`.
+
+| Lane | Units | Verdict |
+|---|---|---|
+| `DIRECT_PNL_DISTRIBUTION_V1` | 10 UTC days / 1,053 rounds | no action survives; selective bounds were artifacts |
+| `PM_PROBABILITY_SURFACE_V1` | 9 UTC days / 244 pairs | not established; structure is NOT riskless |
+
+Running total: **23 lanes, 0 with a positive lower bound on net EV.**
+
+## Two artifacts caught in this batch
+
+Both lanes first reported a positive lower bound. Both were false, for different reasons.
+
+1. **Bet-count inflation.** 2,048 "profitable" snapshots were 94 rounds observed ~22 times.
+   Collapsing to one bet per round exposed losses the snapshot view hid. Combined with a 332:1
+   loss-to-gain ratio at a 0.997 entry, EV at the 95% upper bound on the loss rate is −2.19c
+   to −4.89c. A day-block bootstrap does not fix this: it corrects day-level dependence, not a
+   position re-counted within a day, and it cannot resample a loss that never occurred.
+
+2. **Look-ahead entry selection.** Choosing each pair's cheapest quote (`idxmin`) inflated the
+   result by **+18.47c per bet** — 13× the causal effect — and flipped the verdict from
+   "POSITIVE" to "not established".
+
+## Structural finding
+
+Same-expiry PM rounds do **not** share a settlement reference: 5m settles on
+`chainlink_btc_usd_twap_30s`, 15m on `chainlink_btc_usd_twap_60s`. 217 of 246 pairs settle at
+different expiry prices, and the cross-strike-impossible state is observed. Any cross-horizon
+"arbitrage" carries TWAP basis risk and is not riskless.
+
+## Data ceiling measured
+
+PM snapshot coverage is 11 dates in two clusters with a five-week hole (2026-07-05 → 2026-08-08).
+Bounds rest on 9–10 independent days, not 3,336 rounds. Binance L2 is 31 sessions / 31.4 hours.

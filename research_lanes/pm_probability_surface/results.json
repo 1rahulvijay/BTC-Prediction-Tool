@@ -1,0 +1,58 @@
+{
+  "lane": "PM_PROBABILITY_SURFACE_V1",
+  "structure": "long UP on lower strike + DOWN on higher strike, same expiry second",
+  "observations": 23872,
+  "distinct_pairs": 244,
+  "utc_days": 9,
+  "settlement_references": {
+    "5m": [
+      "chainlink_btc_usd_twap_30s",
+      "unrecorded"
+    ],
+    "15m": [
+      "chainlink_btc_usd_twap_60s",
+      "unrecorded"
+    ]
+  },
+  "riskless_if_shared_reference": false,
+  "payoff_zero_states": {
+    "all_observations": 154,
+    "distinct_pairs": 1,
+    "note": "payoff 0 is impossible under a shared settlement price; it occurs because the 5m leg settles on a 30s TWAP and the 15m leg on a 60s TWAP"
+  },
+  "cost": {
+    "median": 1.4054,
+    "min": 0.2014,
+    "frac_below_1": 0.0294
+  },
+  "profit_cents_all_observations": {
+    "mean": 0.7683,
+    "lcb95": -8.933,
+    "ucb95": 9.7773,
+    "n_days": 9
+  },
+  "profit_cents_first_quote_per_pair": {
+    "mean": 1.385,
+    "lcb95": -7.2232,
+    "ucb95": 11.4346,
+    "n_days": 9,
+    "n_bets": 244
+  },
+  "profit_cents_cost_below_1_rule": {
+    "mean": 12.2199,
+    "lcb95": -3.1747,
+    "ucb95": 25.418,
+    "n_days": 7,
+    "n_bets": 20
+  },
+  "hindsight_bias_check": {
+    "cheapest_quote_per_pair_mean": 19.8547,
+    "causal_first_quote_mean": 1.385,
+    "inflation_cents": 18.4697,
+    "note": "selecting the cheapest quote per pair is not executable; the gap is the size of the look-ahead bias it introduces"
+  },
+  "capacity": {
+    "median_shares_min_leg": 73.8,
+    "median_dollar_profit_per_pair": -3.4514
+  }
+}
