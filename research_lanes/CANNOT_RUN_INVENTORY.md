@@ -114,3 +114,81 @@ instead of 10.
 Before adding a lane to the queue, state its **independence unit count**, not its row count. If
 that number is below roughly 30, the lane produces a number and not evidence, and it belongs in
 Category A until the data exists.
+
+---
+
+# Revision 2 — 2026-08-14, after Batch 5
+
+Batch 5 ran every lane that had enough independent units. Two entries above were **wrong** and
+are corrected here rather than edited in place, so the error stays visible.
+
+## Correction 1 — Deribit was filed as blocked without being looked at
+
+`OPTIONS_GAMMA_PRESSURE_V1` was placed in Category C ("instrument does not exist here") with the
+note that the archive was unassessed. It was assessed:
+
+```
+deribit_chain_snapshots   1,110,700 rows
+  columns include strike, expiry_ts_ms, option_type, underlying_price,
+                  open_interest, mark_iv_pct, bid/ask  -> gamma exposure IS computable
+  span   2026-07-31 -> 2026-08-13
+  94 strikes, 22 expiries, 940,114 rows carrying open interest
+```
+
+The instrument data exists and is rich. **But the span is 5 UTC days.**
+
+So the lane moves from Category C to **Category A**: not "no data" but "5 independence units,
+below the ~30 threshold". Mechanically runnable, statistically meaningless. Running it would
+produce a gamma surface and a number, and the number would not be evidence.
+
+**Unblocked by:** continued Deribit capture. `capture_app` already defines a `deribit_options`
+stream, so this comes free once it runs.
+
+## Correction 2 — `ROUND_TO_ROUND_TRANSFER_V1` was queued on a false premise
+
+Recorded in `round_to_round_transfer/REPORT.md`. `pm_round_settlements` carries prices only for
+rounds that were also snapshotted (`anchor_price`/`expiry_btc` NULL for 2,283 of 3,336), so it is
+not an independent price history. Direction rules get 19 days; anything price-derived gets 10.
+
+## Now-run lanes (moved out of "runnable, not yet run")
+
+| Lane | Where it ran | Units | Verdict |
+|---|---|---|---|
+| `PATH_ASYMMETRY_V1` | 1m matrix | 30 days | effect REAL (p=0.008), +0.86 bps vs 12 bps hurdle |
+| `COMPETING_RISKS_V1` | 1m matrix | 30 days | all 16 TP/SL cells −11.5 to −12.6 bps |
+| `REGIME_EXIT_HAZARD_V1` | 1m matrix | 30 days | hazard 4× predictable; gating worsens economics |
+| `NEXT_ROUND_OPENING_V1` | PM snapshots | 10 days | no positive bound in any window |
+| `EXIT_EDGE_DECAY_V1` | PM snapshots | 10 days | hold vs exit is a wash at every point |
+| `ROUND_TO_ROUND_TRANSFER_V1` | PM settlements | 19 days | 0 of 24 rules clear hurdle |
+
+## Nothing runnable remains
+
+Every lane proposed across all batches is now in one of three states: **run** (29 of them),
+**blocked on data that does not exist**, or **blocked on a profitable strategy existing first**.
+
+There is no further research that current data can support. This is the meaningful output of the
+exercise: the queue is not short of ideas, it is short of independent observations.
+
+## `TRADE_ELIGIBILITY_V1` — deliberately not run
+
+It is a supervised wrapper over Batch 4's realized-net-PnL target: predict P(net PnL > 0) and
+trade only where the lower bound is positive. It was left unrun on purpose.
+
+Batch 4 measured that target directly and found no action with a positive bound at any
+selectivity, and the apparent exceptions were bet-count artifacts. Training a classifier on a
+target whose best realisable value is negative would produce a model, a ROC curve, and a
+selection rule — all describing a losing trade with more decimal places.
+
+**Unblocked by:** any lane first showing a positive lower bound on realized net PnL.
+
+## What unblocks the largest number of lanes
+
+One thing, and it is not a research decision:
+
+```
+enable GCP billing  ->  bash capture_app/deploy_gcp.sh create  ->  wait 4-8 weeks
+```
+
+That single action moves 9 Category-A lanes toward runnable, converts the 5-day Deribit sample
+into a usable one, and is the only route to the maker/queue/cost lanes that attack the binding
+constraint. Nothing in the research queue substitutes for it.

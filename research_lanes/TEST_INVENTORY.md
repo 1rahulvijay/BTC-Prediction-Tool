@@ -271,3 +271,33 @@ Two checks killed it:
 direction: `anchor_price`/`expiry_btc` are NULL for 2,283 of 3,336 rounds, and the 1,053 priced
 rounds are exactly the snapshotted ones. Direction rules get 19 days; anything price-derived
 gets 10.
+
+## Batch 5 — every remaining runnable lane (appended 2026-08-14)
+
+Write-up: `BATCH_5_REPORT.md` · Runner: `run_batch5.py` · Raw: `batch5_results.json`
+
+| Lane | Units | Verdict |
+|---|---|---|
+| `PATH_ASYMMETRY_V1` | 30 days | asymmetry REAL (family-wise p=0.008/0.000), +0.86 bps vs 12 bps hurdle |
+| `COMPETING_RISKS_V1` | 30 days | all 16 TP/SL cells net −11.5 to −12.6 bps; gross within ±0.5 bps of zero |
+| `REGIME_EXIT_HAZARD_V1` | 30 days | exit 4x predictable (0.077 vs 0.300); gating WORSENS economics |
+| `NEXT_ROUND_OPENING_V1` | 10 days | no positive lower bound in any opening window |
+| `EXIT_EDGE_DECAY_V1` | 10 days | hold vs exit indistinguishable at every point in the round |
+
+Running total: **29 lanes, 0 tradeable edges.**
+
+### The result changed shape
+
+Two effects are now statistically established AND survive multiplicity correction, and both are
+economically dead. That is more informative than absence: predictability is being found; edge is
+not, because cost is the binding constraint.
+
+- 5m mean |move| ~5 bps against a 12 bps round trip.
+- ORACLE bound (mean |move| minus cost, i.e. what a PERFECT direction model earns) is
+  **negative at 5m and 15m**, and only +2.47 bps at 30m (LCB +0.728) - the single positive
+  economic bound in 29 lanes, and it requires perfect foresight to collect.
+- Therefore no directional model can fix 5m/15m. The ceiling is below the floor. This is
+  arithmetic, not modelling.
+
+Remaining routes attack cost rather than accuracy: maker rebates, queue position, longer
+horizons, or a cheaper venue. All need capture_app data that does not exist yet.

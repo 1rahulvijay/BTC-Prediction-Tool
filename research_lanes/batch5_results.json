@@ -1,0 +1,664 @@
+{
+  "PATH_ASYMMETRY_V1": {
+    "lane": "PATH_ASYMMETRY_V1",
+    "horizons": {
+      "5m": {
+        "utc_days": 30,
+        "hurdle_bps": 12.0,
+        "rows": [
+          {
+            "state": "unconditional",
+            "n": 43195,
+            "mfe_bps": 5.15,
+            "mae_bps": 5.115,
+            "ratio": 1.0069,
+            "net_bps": 0.0353,
+            "net_lcb95": -0.2111
+          },
+          {
+            "state": "rv_15m low tercile",
+            "n": 14255,
+            "mfe_bps": 2.756,
+            "mae_bps": 2.534,
+            "ratio": 1.0878,
+            "net_bps": 0.2226,
+            "net_lcb95": -0.0058
+          },
+          {
+            "state": "rv_15m high tercile",
+            "n": 14255,
+            "mfe_bps": 7.9,
+            "mae_bps": 8.018,
+            "ratio": 0.9852,
+            "net_bps": -0.1184,
+            "net_lcb95": -0.6074
+          },
+          {
+            "state": "vpin_15m low tercile",
+            "n": 14255,
+            "mfe_bps": 7.078,
+            "mae_bps": 6.877,
+            "ratio": 1.0293,
+            "net_bps": 0.2017,
+            "net_lcb95": -0.2771
+          },
+          {
+            "state": "vpin_15m high tercile",
+            "n": 14255,
+            "mfe_bps": 3.773,
+            "mae_bps": 3.687,
+            "ratio": 1.0234,
+            "net_bps": 0.0862,
+            "net_lcb95": -0.2247
+          },
+          {
+            "state": "compression_ratio low tercile",
+            "n": 14255,
+            "mfe_bps": 4.053,
+            "mae_bps": 4.326,
+            "ratio": 0.9369,
+            "net_bps": -0.2731,
+            "net_lcb95": -0.6643
+          },
+          {
+            "state": "compression_ratio high tercile",
+            "n": 14255,
+            "mfe_bps": 5.766,
+            "mae_bps": 5.554,
+            "ratio": 1.0383,
+            "net_bps": 0.2125,
+            "net_lcb95": -0.2033
+          },
+          {
+            "state": "cvd_5m low tercile",
+            "n": 14255,
+            "mfe_bps": 5.397,
+            "mae_bps": 5.549,
+            "ratio": 0.9727,
+            "net_bps": -0.1514,
+            "net_lcb95": -0.5326
+          },
+          {
+            "state": "cvd_5m high tercile",
+            "n": 14255,
+            "mfe_bps": 5.753,
+            "mae_bps": 5.552,
+            "ratio": 1.0361,
+            "net_bps": 0.2005,
+            "net_lcb95": -0.1277
+          },
+          {
+            "state": "shock_magnitude low tercile",
+            "n": 14255,
+            "mfe_bps": 3.732,
+            "mae_bps": 3.944,
+            "ratio": 0.9465,
+            "net_bps": -0.2111,
+            "net_lcb95": -0.4882
+          },
+          {
+            "state": "shock_magnitude high tercile",
+            "n": 14255,
+            "mfe_bps": 5.866,
+            "mae_bps": 5.583,
+            "ratio": 1.0508,
+            "net_bps": 0.2838,
+            "net_lcb95": -0.0311
+          }
+        ],
+        "states_clearing_hurdle": [],
+        "multiplicity": {
+          "observed_best": 0.2838,
+          "null_best_median": 0.1743,
+          "null_best_p95": 0.2464,
+          "p_value_family_wise": 0.008,
+          "survives": true
+        }
+      },
+      "15m": {
+        "utc_days": 30,
+        "hurdle_bps": 12.0,
+        "rows": [
+          {
+            "state": "unconditional",
+            "n": 43185,
+            "mfe_bps": 9.785,
+            "mae_bps": 9.708,
+            "ratio": 1.008,
+            "net_bps": 0.0774,
+            "net_lcb95": -0.6368
+          },
+          {
+            "state": "rv_15m low tercile",
+            "n": 14251,
+            "mfe_bps": 5.969,
+            "mae_bps": 5.106,
+            "ratio": 1.1691,
+            "net_bps": 0.8631,
+            "net_lcb95": 0.263
+          },
+          {
+            "state": "rv_15m high tercile",
+            "n": 14251,
+            "mfe_bps": 14.27,
+            "mae_bps": 14.814,
+            "ratio": 0.9632,
+            "net_bps": -0.5448,
+            "net_lcb95": -1.9463
+          },
+          {
+            "state": "vpin_15m low tercile",
+            "n": 14251,
+            "mfe_bps": 12.913,
+            "mae_bps": 12.818,
+            "ratio": 1.0074,
+            "net_bps": 0.0951,
+            "net_lcb95": -1.2579
+          },
+          {
+            "state": "vpin_15m high tercile",
+            "n": 14251,
+            "mfe_bps": 7.534,
+            "mae_bps": 7.14,
+            "ratio": 1.0551,
+            "net_bps": 0.3933,
+            "net_lcb95": -0.3568
+          },
+          {
+            "state": "compression_ratio low tercile",
+            "n": 14251,
+            "mfe_bps": 8.014,
+            "mae_bps": 8.378,
+            "ratio": 0.9566,
+            "net_bps": -0.3635,
+            "net_lcb95": -1.394
+          },
+          {
+            "state": "compression_ratio high tercile",
+            "n": 14251,
+            "mfe_bps": 10.548,
+            "mae_bps": 10.331,
+            "ratio": 1.0211,
+            "net_bps": 0.2175,
+            "net_lcb95": -0.9498
+          },
+          {
+            "state": "cvd_5m low tercile",
+            "n": 14251,
+            "mfe_bps": 10.443,
+            "mae_bps": 10.4,
+            "ratio": 1.0042,
+            "net_bps": 0.0438,
+            "net_lcb95": -0.8684
+          },
+          {
+            "state": "cvd_5m high tercile",
+            "n": 14251,
+            "mfe_bps": 10.403,
+            "mae_bps": 10.371,
+            "ratio": 1.0031,
+            "net_bps": 0.0321,
+            "net_lcb95": -0.7241
+          },
+          {
+            "state": "shock_magnitude low tercile",
+            "n": 14251,
+            "mfe_bps": 7.532,
+            "mae_bps": 7.792,
+            "ratio": 0.9667,
+            "net_bps": -0.2598,
+            "net_lcb95": -1.0605
+          },
+          {
+            "state": "shock_magnitude high tercile",
+            "n": 14251,
+            "mfe_bps": 10.8,
+            "mae_bps": 10.259,
+            "ratio": 1.0527,
+            "net_bps": 0.541,
+            "net_lcb95": -0.307
+          }
+        ],
+        "states_clearing_hurdle": [],
+        "multiplicity": {
+          "observed_best": 0.8631,
+          "null_best_median": 0.4308,
+          "null_best_p95": 0.5751,
+          "p_value_family_wise": 0.0,
+          "survives": true
+        }
+      }
+    }
+  },
+  "COMPETING_RISKS_V1": {
+    "lane": "COMPETING_RISKS_V1",
+    "horizon_min": 15,
+    "utc_days": 30,
+    "cost_bps": 12.0,
+    "grid": [
+      {
+        "tp_bps": 5,
+        "sl_bps": 5,
+        "p_tp_first": 0.4229,
+        "p_sl_first": 0.4366,
+        "p_neither": 0.1405,
+        "gross_bps": -0.0623,
+        "net_bps": -12.0623,
+        "net_lcb95": -12.1729
+      },
+      {
+        "tp_bps": 5,
+        "sl_bps": 10,
+        "p_tp_first": 0.5085,
+        "p_sl_first": 0.2566,
+        "p_neither": 0.235,
+        "gross_bps": -0.4087,
+        "net_bps": -12.4087,
+        "net_lcb95": -12.5824
+      },
+      {
+        "tp_bps": 5,
+        "sl_bps": 20,
+        "p_tp_first": 0.5486,
+        "p_sl_first": 0.0945,
+        "p_neither": 0.3569,
+        "gross_bps": -0.627,
+        "net_bps": -12.627,
+        "net_lcb95": -12.8886
+      },
+      {
+        "tp_bps": 5,
+        "sl_bps": 30,
+        "p_tp_first": 0.5553,
+        "p_sl_first": 0.0381,
+        "p_neither": 0.4066,
+        "gross_bps": -0.6708,
+        "net_bps": -12.6708,
+        "net_lcb95": -12.9501
+      },
+      {
+        "tp_bps": 10,
+        "sl_bps": 5,
+        "p_tp_first": 0.2495,
+        "p_sl_first": 0.5224,
+        "p_neither": 0.2282,
+        "gross_bps": 0.2046,
+        "net_bps": -11.7954,
+        "net_lcb95": -11.9537
+      },
+      {
+        "tp_bps": 10,
+        "sl_bps": 10,
+        "p_tp_first": 0.3055,
+        "p_sl_first": 0.3125,
+        "p_neither": 0.382,
+        "gross_bps": -0.1376,
+        "net_bps": -12.1376,
+        "net_lcb95": -12.3948
+      },
+      {
+        "tp_bps": 10,
+        "sl_bps": 20,
+        "p_tp_first": 0.3332,
+        "p_sl_first": 0.1164,
+        "p_neither": 0.5504,
+        "gross_bps": -0.3956,
+        "net_bps": -12.3956,
+        "net_lcb95": -12.7487
+      },
+      {
+        "tp_bps": 10,
+        "sl_bps": 30,
+        "p_tp_first": 0.3387,
+        "p_sl_first": 0.0475,
+        "p_neither": 0.6138,
+        "gross_bps": -0.4578,
+        "net_bps": -12.4578,
+        "net_lcb95": -12.8451
+      },
+      {
+        "tp_bps": 20,
+        "sl_bps": 5,
+        "p_tp_first": 0.0951,
+        "p_sl_first": 0.5579,
+        "p_neither": 0.3469,
+        "gross_bps": 0.4405,
+        "net_bps": -11.5595,
+        "net_lcb95": -11.7684
+      },
+      {
+        "tp_bps": 20,
+        "sl_bps": 10,
+        "p_tp_first": 0.1178,
+        "p_sl_first": 0.3372,
+        "p_neither": 0.5449,
+        "gross_bps": 0.141,
+        "net_bps": -11.859,
+        "net_lcb95": -12.1775
+      },
+      {
+        "tp_bps": 20,
+        "sl_bps": 20,
+        "p_tp_first": 0.13,
+        "p_sl_first": 0.1275,
+        "p_neither": 0.7425,
+        "gross_bps": -0.1139,
+        "net_bps": -12.1139,
+        "net_lcb95": -12.5024
+      },
+      {
+        "tp_bps": 20,
+        "sl_bps": 30,
+        "p_tp_first": 0.1329,
+        "p_sl_first": 0.0527,
+        "p_neither": 0.8144,
+        "gross_bps": -0.17,
+        "net_bps": -12.17,
+        "net_lcb95": -12.5945
+      },
+      {
+        "tp_bps": 30,
+        "sl_bps": 5,
+        "p_tp_first": 0.0414,
+        "p_sl_first": 0.5648,
+        "p_neither": 0.3938,
+        "gross_bps": 0.4979,
+        "net_bps": -11.5021,
+        "net_lcb95": -11.7326
+      },
+      {
+        "tp_bps": 30,
+        "sl_bps": 10,
+        "p_tp_first": 0.051,
+        "p_sl_first": 0.3428,
+        "p_neither": 0.6063,
+        "gross_bps": 0.1962,
+        "net_bps": -11.8038,
+        "net_lcb95": -12.1501
+      },
+      {
+        "tp_bps": 30,
+        "sl_bps": 20,
+        "p_tp_first": 0.0566,
+        "p_sl_first": 0.1299,
+        "p_neither": 0.8135,
+        "gross_bps": -0.048,
+        "net_bps": -12.048,
+        "net_lcb95": -12.472
+      },
+      {
+        "tp_bps": 30,
+        "sl_bps": 30,
+        "p_tp_first": 0.0582,
+        "p_sl_first": 0.0538,
+        "p_neither": 0.888,
+        "gross_bps": -0.0984,
+        "net_bps": -12.0984,
+        "net_lcb95": -12.5619
+      }
+    ],
+    "combos_with_positive_lcb": [],
+    "note": "long-only geometry with no directional signal; measures whether any TP/SL shape is profitable on its own before any model is applied",
+    "best_net_bps": -11.5021
+  },
+  "REGIME_EXIT_HAZARD_V1": {
+    "lane": "REGIME_EXIT_HAZARD_V1",
+    "windows": {
+      "5m": {
+        "utc_days": 30,
+        "rows": [
+          {
+            "condition": "unconditional",
+            "n": 43195,
+            "p_regime_changes": 0.2224,
+            "lcb95": 0.1981,
+            "ucb95": 0.2446
+          },
+          {
+            "condition": "regime age <= 5m",
+            "n": 11846,
+            "p_regime_changes": 0.2998,
+            "lcb95": 0.2826,
+            "ucb95": 0.3146
+          },
+          {
+            "condition": "regime age 6-30m",
+            "n": 19206,
+            "p_regime_changes": 0.2665,
+            "lcb95": 0.2526,
+            "ucb95": 0.2801
+          },
+          {
+            "condition": "regime age > 30m",
+            "n": 12143,
+            "p_regime_changes": 0.0771,
+            "lcb95": 0.0613,
+            "ucb95": 0.098
+          }
+        ],
+        "hazard_spread_across_ages": 0.2227,
+        "economics": {
+          "gated_abs_move_minus_cost_bps": -6.1372,
+          "gated_lcb95": -7.5716,
+          "ungated_abs_move_minus_cost_bps": -6.1114,
+          "ungated_lcb95": -6.8144,
+          "note": "|move| minus round trip is the ORACLE bound - a perfect direction model's ceiling. Negative means no model can profit in this state."
+        }
+      },
+      "15m": {
+        "utc_days": 30,
+        "rows": [
+          {
+            "condition": "unconditional",
+            "n": 43185,
+            "p_regime_changes": 0.4045,
+            "lcb95": 0.3644,
+            "ucb95": 0.4394
+          },
+          {
+            "condition": "regime age <= 5m",
+            "n": 11844,
+            "p_regime_changes": 0.5494,
+            "lcb95": 0.5386,
+            "ucb95": 0.5601
+          },
+          {
+            "condition": "regime age 6-30m",
+            "n": 19198,
+            "p_regime_changes": 0.4775,
+            "lcb95": 0.4574,
+            "ucb95": 0.4972
+          },
+          {
+            "condition": "regime age > 30m",
+            "n": 12143,
+            "p_regime_changes": 0.1479,
+            "lcb95": 0.1202,
+            "ucb95": 0.185
+          }
+        ],
+        "hazard_spread_across_ages": 0.4015,
+        "economics": {
+          "gated_abs_move_minus_cost_bps": -1.8266,
+          "gated_lcb95": -4.2145,
+          "ungated_abs_move_minus_cost_bps": -1.7927,
+          "ungated_lcb95": -3.0261,
+          "note": "|move| minus round trip is the ORACLE bound - a perfect direction model's ceiling. Negative means no model can profit in this state."
+        }
+      },
+      "30m": {
+        "utc_days": 30,
+        "rows": [
+          {
+            "condition": "unconditional",
+            "n": 43170,
+            "p_regime_changes": 0.4263,
+            "lcb95": 0.3832,
+            "ucb95": 0.4658
+          },
+          {
+            "condition": "regime age <= 5m",
+            "n": 11833,
+            "p_regime_changes": 0.5657,
+            "lcb95": 0.5511,
+            "ucb95": 0.5796
+          },
+          {
+            "condition": "regime age 6-30m",
+            "n": 19194,
+            "p_regime_changes": 0.4987,
+            "lcb95": 0.4724,
+            "ucb95": 0.5247
+          },
+          {
+            "condition": "regime age > 30m",
+            "n": 12143,
+            "p_regime_changes": 0.1761,
+            "lcb95": 0.1399,
+            "ucb95": 0.2226
+          }
+        ],
+        "hazard_spread_across_ages": 0.3896,
+        "economics": {
+          "gated_abs_move_minus_cost_bps": 2.238,
+          "gated_lcb95": -1.0457,
+          "ungated_abs_move_minus_cost_bps": 2.4709,
+          "ungated_lcb95": 0.7279,
+          "note": "|move| minus round trip is the ORACLE bound - a perfect direction model's ceiling. Negative means no model can profit in this state."
+        }
+      }
+    }
+  },
+  "NEXT_ROUND_OPENING_V1": {
+    "rows": [
+      {
+        "window": "0-5s after open",
+        "action": "BUY_UP",
+        "n": 2172,
+        "n_days": 10,
+        "mean_cents": -2.6188,
+        "lcb95": -4.8607,
+        "ucb95": -0.2024
+      },
+      {
+        "window": "0-5s after open",
+        "action": "BUY_DOWN",
+        "n": 2172,
+        "n_days": 10,
+        "mean_cents": -1.8774,
+        "lcb95": -4.2948,
+        "ucb95": 0.3579
+      },
+      {
+        "window": "5-10s after open",
+        "action": "BUY_UP",
+        "n": 2178,
+        "n_days": 9,
+        "mean_cents": -3.4978,
+        "lcb95": -6.5303,
+        "ucb95": -0.4702
+      },
+      {
+        "window": "5-10s after open",
+        "action": "BUY_DOWN",
+        "n": 2178,
+        "n_days": 9,
+        "mean_cents": -0.9568,
+        "lcb95": -3.9731,
+        "ucb95": 2.0845
+      },
+      {
+        "window": "10-30s after open",
+        "action": "BUY_UP",
+        "n": 8783,
+        "n_days": 9,
+        "mean_cents": -2.7398,
+        "lcb95": -4.736,
+        "ucb95": -0.646
+      },
+      {
+        "window": "10-30s after open",
+        "action": "BUY_DOWN",
+        "n": 8783,
+        "n_days": 9,
+        "mean_cents": -1.6322,
+        "lcb95": -3.7224,
+        "ucb95": 0.3827
+      },
+      {
+        "window": "30-60s after open",
+        "action": "BUY_UP",
+        "n": 13388,
+        "n_days": 9,
+        "mean_cents": -3.3259,
+        "lcb95": -4.9138,
+        "ucb95": -1.7481
+      },
+      {
+        "window": "30-60s after open",
+        "action": "BUY_DOWN",
+        "n": 13388,
+        "n_days": 9,
+        "mean_cents": -0.9077,
+        "lcb95": -2.4854,
+        "ucb95": 0.6926
+      },
+      {
+        "window": "60-120s after open",
+        "action": "BUY_UP",
+        "n": 26667,
+        "n_days": 9,
+        "mean_cents": -3.4146,
+        "lcb95": -4.8571,
+        "ucb95": -1.8166
+      },
+      {
+        "window": "60-120s after open",
+        "action": "BUY_DOWN",
+        "n": 26667,
+        "n_days": 9,
+        "mean_cents": -0.5753,
+        "lcb95": -2.1559,
+        "ucb95": 0.879
+      }
+    ],
+    "positive_lcb": []
+  },
+  "EXIT_EDGE_DECAY_V1": {
+    "rows": [
+      {
+        "seconds_left": "0-30s",
+        "n": 4351,
+        "n_days": 9,
+        "hold_minus_exit_cents": -0.9953,
+        "lcb95": -3.551,
+        "ucb95": 0.7731
+      },
+      {
+        "seconds_left": "30-60s",
+        "n": 8894,
+        "n_days": 9,
+        "hold_minus_exit_cents": -0.4682,
+        "lcb95": -1.6256,
+        "ucb95": 1.0159
+      },
+      {
+        "seconds_left": "60-120s",
+        "n": 22748,
+        "n_days": 9,
+        "hold_minus_exit_cents": -0.2884,
+        "lcb95": -1.0922,
+        "ucb95": 1.124
+      },
+      {
+        "seconds_left": "120-300s",
+        "n": 77214,
+        "n_days": 9,
+        "hold_minus_exit_cents": -1.0547,
+        "lcb95": -1.8431,
+        "ucb95": 0.2932
+      }
+    ],
+    "note": "positive means holding to settlement beat selling at the bid; it is a comparison of two exits, not evidence that entering was profitable"
+  }
+}
