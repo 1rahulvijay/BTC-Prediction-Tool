@@ -1,5 +1,11 @@
 # Standalone Alpha Laboratory - Complete Campaign
 
+> **CURRENCY NOTICE (added 2026-08-14).** The campaign below covers lanes through Batch 3 and is
+> pinned to run `20260813T065407Z`. It is NOT the full record. Eight further lanes ran on
+> 2026-08-14 (Batches 4 and 5) and are appended at the end of this file; the authoritative
+> registers are `TEST_INVENTORY.md` (run) and `CANNOT_RUN_INVENTORY.md` (blocked).
+> The executive verdict below - no strategy earned promotion - is unchanged by them.
+
 Run: `20260813T065407Z`
 
 Git: `0f7f5a4920ed48d2d0b43193ff73b354ec759f9e` (dirty)
@@ -292,3 +298,47 @@ Every distinct proposal in the three supplied reviews is mapped below. A proposa
 ```
 
 No result in this report authorizes real-money trading.
+
+---
+
+# Appendix - Batches 4 and 5 (2026-08-14)
+
+Appended, not merged: the campaign table above is left exactly as it was recorded.
+
+Reports: `BATCH_4_REPORT.md`, `BATCH_5_REPORT.md`, `round_to_round_transfer/REPORT.md`.
+Blocked-lane register: `CANNOT_RUN_INVENTORY.md`.
+
+| Lane | Units | Verdict |
+|---|---|---|
+| `DIRECT_PNL_DISTRIBUTION_V1` | 10 UTC days | no action survives; selective bounds were bet-count artifacts |
+| `PM_PROBABILITY_SURFACE_V1` | 9 UTC days | not established; structure is NOT riskless (30s vs 60s TWAP) |
+| `ROUND_TO_ROUND_TRANSFER_V1` | 19 UTC days | 0 of 24 rules clear the cost hurdle |
+| `PATH_ASYMMETRY_V1` | 30 UTC days | asymmetry REAL (family-wise p=0.008/0.000), +0.86 bps vs 12 bps hurdle |
+| `COMPETING_RISKS_V1` | 30 UTC days | all 16 TP/SL cells net -11.5 to -12.6 bps |
+| `REGIME_EXIT_HAZARD_V1` | 30 UTC days | exit 4x predictable; gating WORSENS economics |
+| `NEXT_ROUND_OPENING_V1` | 10 UTC days | no positive lower bound in any opening window |
+| `EXIT_EDGE_DECAY_V1` | 10 UTC days | hold vs exit indistinguishable throughout the round |
+
+**Running total: 29 lanes, 0 tradeable edges.**
+
+## What these eight added beyond another negative
+
+Two effects are now statistically established AND survive multiplicity correction, and both are
+economically dead. Predictability is being found; edge is not, because cost binds.
+
+The ORACLE bound - mean |move| minus round trip, the ceiling a PERFECT direction model could
+reach - is **negative at 5m and 15m** and only +2.471 bps at 30m (LCB +0.728). At the horizons
+this project actually trades, the ceiling is below the floor. That is arithmetic, not modelling,
+and no directional model can change it.
+
+## Three measurement artifacts caught and documented
+
+Each produced an apparent edge; each was removed by a different check, and none would have been
+caught by the day-block bootstrap alone.
+
+1. **Bet-count inflation** - 94 rounds counted as 2,048 snapshots; a 332:1 payoff whose EV lives
+   in an unobserved tail. Fix: collapse to the bet, then rule-of-three on the loss rate.
+2. **Look-ahead entry selection** - cheapest-quote-per-pair inflated the result by +18.47c,
+   13x the causal effect. Fix: every entry rule must be a nameable causal decision.
+3. **Multiple comparisons** - the best of 24 swept rules reached 55% when noise routinely
+   reaches 54-58%. Fix: max-statistic permutation, labels shuffled within UTC day.

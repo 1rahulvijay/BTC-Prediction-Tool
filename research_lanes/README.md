@@ -139,3 +139,29 @@ design blockers in the report.
 - Runner: `python research_lanes/run_multi_engine_brief_batch.py`
 - Result: `results/multi_engine_brief_batch_20260813T072836Z.json`
 - Capital authority: **false**
+
+## Current registers (updated 2026-08-14)
+
+Read these two first; everything else is a snapshot of a moment.
+
+| File | What it holds |
+|---|---|
+| `TEST_INVENTORY.md` | every lane that has RUN, with its verdict and independence-unit count |
+| `CANNOT_RUN_INVENTORY.md` | every lane that CANNOT run, the blocker, and what removes it |
+
+Batch reports, newest first: `BATCH_5_REPORT.md`, `BATCH_4_REPORT.md`, `BATCH_3_REPORT.md`,
+`BATCH_2_REPORT.md`. Per-lane detail lives in `<lane>/REPORT.md`.
+
+`LATEST_RESULTS.md` is the Batch 1-3 campaign document; it carries a currency notice and an
+appendix pointing at the later batches.
+
+**Status: 29 lanes run, 0 tradeable edges.** Nothing further is runnable on current data - the
+queue is short of independent observations, not ideas. `CANNOT_RUN_INVENTORY.md` names the single
+action that unblocks the largest set.
+
+### The standing rule
+
+Before adding a lane, state its **independence unit count**, not its row count. Below ~30 units a
+lane produces a number, not evidence. Three separate artifacts in Batch 4-5 each produced an
+apparent edge that survived a naive bootstrap; see the batch reports for the checks that removed
+them.
