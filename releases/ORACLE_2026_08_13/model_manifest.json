@@ -1,0 +1,261 @@
+{
+ "artifact_summary": {
+  "as_deployed": 25,
+  "changed_since_deployment": 0,
+  "serviceable": 12,
+  "total": 25
+ },
+ "artifacts": [
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.856789+00:00",
+   "name": "accuracies.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "e5455d531529c6a6c44f0b40f972dbbbac7bc9ccdd97ac47a6f2865e708488cb",
+   "size_bytes": 940,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:21:18.815590+00:00",
+   "name": "activity_keeper_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "f2d50876e1f6c16007675af07bf15539711981aabca0bd44c5106301a675ec12",
+   "size_bytes": 19420245,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.897562+00:00",
+   "name": "architecture_version.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "0eabc24cb4cffbe50d09cb825644a16ceedaca8dad41459a9991a28d7d19f46d",
+   "size_bytes": 114,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:13:01.867019+00:00",
+   "name": "bigdrop_keeper_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "4a27140688bcb891d274b92f16abe2af1ee03172292ab90b9822daa060ccd6db",
+   "size_bytes": 18605102,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:10:09.367700+00:00",
+   "name": "bigmove_keeper_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "c2120d06772dda9e7951ac75c27a4d0484811d79f22f3e1b9a7ed2c6f9f4fcdf",
+   "size_bytes": 18531777,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:21:30.490641+00:00",
+   "name": "champion_meta_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "7c63f9f09fb5b95c8ecdc5364f0e58c06304f00510fa4d7eb796ab1689f1c71e",
+   "size_bytes": 8912,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.865423+00:00",
+   "name": "class_priors.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "93ef75ba753e76b8f863cbc87127b22b80362dbe428d3f2af8142a79f511186a",
+   "size_bytes": 82,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:21:22.265212+00:00",
+   "name": "complete_trade_btc_path.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "942fdf7641d2ad3b079d455c6dc17f77dcb681d2df1d30807fded396ea22dd0b",
+   "size_bytes": 8086027,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:21:03.508505+00:00",
+   "name": "complete_trade_execution_heads.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "e04c4f0924a73c67a68bdbbd0faeb60e811300f9b908b3e45a225254764ec14b",
+   "size_bytes": 2474655,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-07-26T11:20:02.684376+00:00",
+   "name": "complete_trade_share_path.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: manifest missing 'feature_semantics_version'",
+   "serviceable": false,
+   "sha256": "5066630055fec100db996f8508ac5afd88feeb39dfb7be0112c795576e6f4fe7",
+   "size_bytes": 44405062,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.856789+00:00",
+   "name": "conformal_residuals.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "c6759b058c1effd923ebed39f50f442d8c5178cf9e5ba17b2bcc6dc085f18827",
+   "size_bytes": 152,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:18:38.006948+00:00",
+   "name": "directional_keeper_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "799d46482e1c2cf699eb37ffd559160cee966582ab3b5b9325cc609e70076ebe",
+   "size_bytes": 34801674,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-08-04T02:29:29.257503+00:00",
+   "name": "fade_model.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "3140aa8ac00d4abb37aeb99508a713c045e73c4b94d4fe835a9552fb10c60693",
+   "size_bytes": 4243710,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "feature_reference.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "334a0f63da434275b58658b3e789e3b010b78e5edc1c38cf3471e5dc3d042ec0",
+   "size_bytes": 14313,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "feature_reference_names.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "8c929c34f610b388b616b1973ef478a930d55e4acd4595a68f62b6569a3d0646",
+   "size_bytes": 1134,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:23:31.410424+00:00",
+   "name": "magnitude_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "4f30a17260d81d7dc66b9f5f57e4a0f2cae79d5cdf42f550e0d269bdeadfe809",
+   "size_bytes": 594214,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "model_feature_schema.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "ed945a8fedafd6bdea787526608eb52de2fa356ad11459e12e41594fdb1d46e6",
+   "size_bytes": 1223,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.862197+00:00",
+   "name": "move_size_stats.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "16bcf990fff1d4a4982bf9d0b5cc291ce91da8b7a44d6e50de73cc7aba64c3a3",
+   "size_bytes": 561,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:07:03.562583+00:00",
+   "name": "path_forecaster.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "bf31a7e9eb015ca450f8dba4508bf30a32978759cfcf96963b23f67ab6344c0d",
+   "size_bytes": 23075501,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:24:44.942190+00:00",
+   "name": "path_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "6c53aa5ec1f514797ebc54a1c22a34aa3aa450a2302e2a103eb9fe807d1d1178",
+   "size_bytes": 2661777,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:04:55.230489+00:00",
+   "name": "persistence_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "5fb46ba6240153ba58ef44748c2352d12a5c2d3745098c314cc8d96a5630c5a6",
+   "size_bytes": 1108194,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:07:14.062256+00:00",
+   "name": "round_state_heads.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "1e60743e63eca4c09064227930f4f8f5c0c5fa13950c0034311c9f4cc5812793",
+   "size_bytes": 16844105,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T16:59:04.587812+00:00",
+   "name": "selectivity_models.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "39554e86391a1cddda7bfa34359dccedcf53ae3a1b84b8d8a5940f48893a6649",
+   "size_bytes": 6711894,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": true,
+   "mtime_utc": "2026-08-13T17:00:00.909116+00:00",
+   "name": "signed_quantile_model.pkl",
+   "refusal": null,
+   "serviceable": true,
+   "sha256": "6ebec20d3a47dc81870f697171308334ba87dd621c22b501ce9f4a47f653e93b",
+   "size_bytes": 1441615,
+   "state": "AS_DEPLOYED"
+  },
+  {
+   "has_provenance_manifest": false,
+   "mtime_utc": "2026-07-03T00:22:25.897562+00:00",
+   "name": "stackers.pkl",
+   "refusal": "MODEL_UNAVAILABLE_UNKNOWN_IDENTITY: no manifest - provenance unprovable",
+   "serviceable": false,
+   "sha256": "85e340a2e90b6b25fb8f2279ec67e7d621fe27fceeea6118b9d4521965ea3ba9",
+   "size_bytes": 2791839,
+   "state": "AS_DEPLOYED"
+  }
+ ],
+ "release_id": "ORACLE_2026_08_13"
+}

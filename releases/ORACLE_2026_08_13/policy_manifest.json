@@ -1,0 +1,21 @@
+{
+ "feature_semantics_version": 5,
+ "note": "These are TODAY's constants. They are recorded so a later drift is visible; they are not evidence of what the constants were on 2026-07-04.",
+ "polymarket_fair_value_benchmark": {
+  "capital_authority": false,
+  "entry_margin": 0.02,
+  "eval_window_s": [
+   20,
+   32
+  ],
+  "evidence_status": "UNVALIDATED_FORWARD",
+  "exit_margin": 0.02,
+  "historical_economic_claim": "RETRACTED",
+  "max_seconds_left": 120,
+  "min_seconds_left": 15,
+  "stop_drop": 0.1,
+  "strategy_id": "PM_CALIBRATED_FAIR_VALUE_FORWARD_BENCHMARK_V1"
+ },
+ "release_id": "ORACLE_2026_08_13",
+ "training_semantics_version": 3
+}

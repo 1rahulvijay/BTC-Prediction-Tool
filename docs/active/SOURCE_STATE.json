@@ -192,7 +192,7 @@
   },
   "source_digests": {
     ".github/workflows/invariants.yml": "0086f1991abc9a9ed06c22e9aa2193a0752609724e5033cb36c7f4a04b6dcfb2",
-    "backend/audit/freeze_oracle_release.py": "2692aa475fa8667b3812c58e1a36a597a7a52ac592e6d8812ffb15e0bea5f95c",
+    "backend/audit/freeze_oracle_release.py": "c166f0922b2b13b5d7f3670b8f3e0c57a1a4d9cc171165237759f09d5850bd24",
     "backend/auto_finetune.py": "258db4812bddd5bb6a8e30695eca0cf416f2bb65c4f87b6bd8301dc61eed01b2",
     "backend/features.py": "3fda9238456461b8142e28c5d04e241fcbb3ac8608d26a2e0812a9c4eda5ae8f",
     "backend/model.py": "5f417bed9e94690881108c1905eb26869c82f1cdc65c46e682159b70848877ba",

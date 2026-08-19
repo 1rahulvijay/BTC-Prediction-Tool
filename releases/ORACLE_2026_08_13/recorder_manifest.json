@@ -1,0 +1,101 @@
+{
+ "note": "Per-table coverage, gaps and clock skew are measured separately by backend/audit/build_oracle_data_manifest.py.",
+ "release_id": "ORACLE_2026_08_13",
+ "stores": [
+  {
+   "mtime_utc": "2026-08-09T10:12:14.481842+00:00",
+   "size_bytes": 428617728,
+   "store": "analytics.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:22:18.090347+00:00",
+   "size_bytes": 3325308928,
+   "store": "binance_l2.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-06T08:49:10.180602+00:00",
+   "size_bytes": 12288,
+   "store": "binance_paper.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T17:25:20.546306+00:00",
+   "size_bytes": 12288,
+   "store": "binance_paper_competition_500.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:29:34.665777+00:00",
+   "size_bytes": 205271040,
+   "store": "btc_ticks.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:16:02.839217+00:00",
+   "size_bytes": 37761024,
+   "store": "complete_trade_forecast.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T10:25:55.074940+00:00",
+   "size_bytes": 3420160,
+   "store": "cross_window.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:28:11.041942+00:00",
+   "size_bytes": 896282624,
+   "store": "deribit_options.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-03T06:45:48.375489+00:00",
+   "size_bytes": 798720,
+   "store": "evidence_health.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T17:31:58.314723+00:00",
+   "size_bytes": 86781952,
+   "store": "execution_layer.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-09T15:10:04.832684+00:00",
+   "size_bytes": 5255168,
+   "store": "funding.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T06:08:42.844892+00:00",
+   "size_bytes": 28848128,
+   "store": "microstructure.duckdb"
+  },
+  {
+   "mtime_utc": "2026-07-04T09:32:57.411331+00:00",
+   "size_bytes": 94908416,
+   "store": "model_metrics.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:28:52.962965+00:00",
+   "size_bytes": 2047619072,
+   "store": "multi_venue.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:15:00.815514+00:00",
+   "size_bytes": 669265920,
+   "store": "open_position_actions.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:14:29.515205+00:00",
+   "size_bytes": 5255168,
+   "store": "opportunity_ledger.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-03T22:58:19.711159+00:00",
+   "size_bytes": 5517312,
+   "store": "polymarket_crossings.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-14T15:25:42.383157+00:00",
+   "size_bytes": 3144953856,
+   "store": "polymarket_crossings_hf.duckdb"
+  },
+  {
+   "mtime_utc": "2026-08-13T19:28:42.836205+00:00",
+   "size_bytes": 5070139392,
+   "store": "polymarket_l2.duckdb"
+  }
+ ]
+}

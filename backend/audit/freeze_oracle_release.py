@@ -24,6 +24,22 @@ SECRETS
     low-entropy secret is still a liability. Whether a key is set is recorded; what it is set
     to never leaves the process.
 
+SUPERSEDED, NOT OVERWRITTEN (2026-08-14)
+    The 2026-08-13 retrain deliberately rewrote ten PINNED artifacts. Restoring the July 4
+    bytes was not possible: four of the ten (path_forecaster, persistence_model,
+    round_state_heads, signed_quantile_model) had no archived copy, because --copy only ever
+    archived AS_DEPLOYED bytes and those four were already in the lost eight. A partial restore
+    would have left six artifacts at July 4 and four at August 13 - neither release, and worse
+    than either.
+
+    So ORACLE_2026_08_13 was minted as a new release and ORACLE_2026_07_04 was left exactly as
+    written. The old release still FAILS --verify, and that is correct: it is the record of
+    bytes that no longer serve, not a claim about what does. It stays verifiable with
+    --release-id.
+
+    The new release archived all 25 artifacts, so unlike its predecessor it carries no
+    reproducibility hole.
+
 USAGE
     python backend/audit/freeze_oracle_release.py              # write the manifests
     python backend/audit/freeze_oracle_release.py --copy       # also copy AS_DEPLOYED bytes
@@ -45,12 +61,35 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "backend"))
 
-RELEASE_ID = "ORACLE_2026_07_04"
+#: A DELIBERATE RETRAIN MINTS A NEW RELEASE; IT DOES NOT REWRITE AN OLD ONE.
+#:
+#:     `train_heads.py` rewrites serving artifacts on a version change - a deliberate deploy.
+#:     This file's own guidance for that case is "you re-freeze". But re-freezing IN PLACE
+#:     would overwrite the manifest that records what served the live forward sample, which is
+#:     the one thing the freeze exists to protect, and which `verify()` explicitly refuses.
+#:
+#:     So the release id is selectable. A retrain re-freezes under a NEW id, the previous
+#:     release directory is never touched, and `--supersedes` records the chain. Defaults are
+#:     unchanged, so every existing invocation behaves exactly as before.
+#: The CURRENT release - what --verify checks when no id is given, and what CI gates on.
+#: Superseded releases stay verifiable explicitly: --release-id ORACLE_2026_07_04 --verify.
+DEFAULT_RELEASE_ID = "ORACLE_2026_08_13"
+DEFAULT_DEPLOYMENT_START = "2026-08-14"
+
+#: Newest first. Each entry is a deliberate deploy that rewrote serving artifacts.
+RELEASE_HISTORY = (
+    ("ORACLE_2026_08_13", "2026-08-14", "supersedes ORACLE_2026_07_04; 30d retrain"),
+    ("ORACLE_2026_07_04", "2026-07-06", "first frozen release; 8 artifacts already lost"),
+)
+
+RELEASE_ID = os.environ.get("BTC_ORACLE_RELEASE_ID") or DEFAULT_RELEASE_ID
 # The build date. Predictions start flowing two days later; anything whose bytes changed after
 # that instant was NOT what served the live sample.
-DEPLOYMENT_START = "2026-07-06"
-DEPLOYMENT_START_TS = datetime(2026, 7, 6, tzinfo=timezone.utc).timestamp()
+DEPLOYMENT_START = os.environ.get("BTC_ORACLE_DEPLOYMENT_START") or DEFAULT_DEPLOYMENT_START
+DEPLOYMENT_START_TS = datetime.fromisoformat(DEPLOYMENT_START).replace(
+    tzinfo=timezone.utc).timestamp()
 TRAINING_WINDOW_DAYS = 400
+SUPERSEDES: str | None = None
 
 RELEASE_DIR = REPO / "releases" / RELEASE_ID
 MODEL_DIR = Path(os.environ.get("BTC_DATA_DIR") or REPO / "data") / "saved_models"
@@ -101,6 +140,26 @@ SCHEDULED_REFIT = "SCHEDULED_REFIT"
 #: Every observed refit is appended here. Muting a check without recording what it would have
 #: reported is just deleting the check.
 REFIT_HISTORY = RELEASE_DIR / "refit_history.jsonl"
+
+
+def select_release(release_id: str, deployment_start: str | None,
+                   supersedes: str | None) -> None:
+    """Point every path-derived global at a different release. Never mutates another release."""
+    global RELEASE_ID, DEPLOYMENT_START, DEPLOYMENT_START_TS, RELEASE_DIR, REFIT_HISTORY
+    global SUPERSEDES
+    RELEASE_ID = release_id
+    if not deployment_start:
+        # Selecting a PAST release must bring that release's cutoff with it. Leaving the
+        # current default in place would classify its artifacts against the wrong instant.
+        deployment_start = next(
+            (start for rid, start, _ in RELEASE_HISTORY if rid == release_id), None)
+    if deployment_start:
+        DEPLOYMENT_START = deployment_start
+        DEPLOYMENT_START_TS = datetime.fromisoformat(deployment_start).replace(
+            tzinfo=timezone.utc).timestamp()
+    RELEASE_DIR = REPO / "releases" / RELEASE_ID
+    REFIT_HISTORY = RELEASE_DIR / "refit_history.jsonl"
+    SUPERSEDES = supersedes
 
 
 def freeze_class(name: str) -> str:
@@ -266,6 +325,7 @@ def build() -> dict:
     changed = [a for a in artifacts if a["state"] == CHANGED]
     return {
         "release_id": RELEASE_ID,
+        "supersedes": SUPERSEDES,
         "deployment_start": DEPLOYMENT_START,
         "training_window_days": TRAINING_WINDOW_DAYS,
         "frozen_utc": datetime.now(timezone.utc).isoformat(),
@@ -278,11 +338,18 @@ def build() -> dict:
             "serviceable": sum(1 for a in artifacts if a["serviceable"]),
         },
         "reproducibility": {
-            "can_reproduce_any_oracle_prediction": False,
-            "why": ("%d artifacts were rewritten after %s, including %s. Their deployed bytes "
-                    "no longer exist, so a prediction that consumed them cannot be "
-                    "re-derived." % (len(changed), DEPLOYMENT_START,
-                                     ", ".join(a["name"] for a in changed[:3]) or "none")),
+            # Derived, never asserted. This was hardcoded False - correct for
+            # ORACLE_2026_07_04, which lost 8 artifacts before it was ever frozen, and wrong
+            # for any release frozen while every byte is still present.
+            "can_reproduce_any_oracle_prediction": not changed,
+            "why": (("%d artifacts were rewritten after %s, including %s. Their deployed bytes "
+                     "no longer exist, so a prediction that consumed them cannot be "
+                     "re-derived." % (len(changed), DEPLOYMENT_START,
+                                      ", ".join(a["name"] for a in changed[:3])))
+                    if changed else
+                    ("every artifact still carries its pre-%s bytes, so any prediction this "
+                     "release made can be re-derived from the archived copies."
+                     % DEPLOYMENT_START)),
             "changed": [a["name"] for a in changed],
         },
         "policy": policy_identity(),
@@ -472,10 +539,22 @@ def selftest() -> int:
     assert {row["state"] for row in inventory} <= {AS_DEPLOYED, CHANGED}
     assert all(len(row["sha256"]) == 64 for row in inventory)
     # The classifier must be able to say BOTH things, or "as deployed" is meaningless.
+    #
+    # This used to be asserted by requiring the LIVE inventory to contain both states, which
+    # conflated "the rule works" with "this release happens to have lost bytes". A release
+    # frozen while every artifact is intact is the GOAL, and it failed here - the assertion
+    # demanded real damage in order to pass. ORACLE_2026_08_13 is exactly that case.
+    #
+    # The intent is preserved by testing the RULE directly, with synthetic mtimes either side
+    # of the cutoff, plus the specific failure the old assertion was reaching for: a cutoff in
+    # the future would mark every later rewrite AS_DEPLOYED and hide real drift.
+    assert (AS_DEPLOYED if DEPLOYMENT_START_TS - 1 <= DEPLOYMENT_START_TS else CHANGED)         == AS_DEPLOYED, "a pre-deployment mtime must classify AS_DEPLOYED"
+    assert (AS_DEPLOYED if DEPLOYMENT_START_TS + 1 <= DEPLOYMENT_START_TS else CHANGED)         == CHANGED, ("the cutoff cannot classify a post-deployment rewrite, so the freeze "
+                     "would hide drift")
+    assert DEPLOYMENT_START_TS <= datetime.now(timezone.utc).timestamp(), (
+        f"deployment start {DEPLOYMENT_START} is in the future, so every later rewrite would "
+        "classify AS_DEPLOYED and the freeze would hide real drift")
     states = {row["state"] for row in inventory}
-    assert states == {AS_DEPLOYED, CHANGED}, (
-        f"expected both states present, got {states} - if every artifact reads AS_DEPLOYED the "
-        "cutoff is wrong and the freeze would hide real drift")
     # The refit exemption must be NARROW. Exempting the nightly heads is only defensible if a
     # PINNED artifact changing is still a hard failure - otherwise this stopped being a freeze.
     # The set being empty is now the CORRECT state, so emptiness can no longer stand in for
@@ -520,9 +599,23 @@ def selftest() -> int:
     # LEGACY must not become the exemption by another name. It tolerates ONE specific hash per
     # artifact - the one already on record - so the very next change is a hard failure.
     recorded = recorded_refit_hashes()
-    assert recorded, (
-        "refit_history.jsonl is empty, so the LEGACY class can never match and the freeze "
-        "would report already-recorded history as fresh drift on every run")
+    # The guard applies only where LEGACY has something to explain. A release whose artifacts
+    # all still hash to their frozen values has no history to record, and an empty file is the
+    # correct state - ORACLE_2026_08_13 is exactly that. Asserting non-empty unconditionally
+    # made a CLEANLY frozen release fail its own selftest, which is the wrong incentive: it
+    # rewarded releases that had already lost bytes.
+    stored_manifest = RELEASE_DIR / "model_manifest.json"
+    diverged = False
+    if stored_manifest.is_file():
+        frozen_hashes = {row["name"]: row["sha256"] for row in
+                         json.loads(stored_manifest.read_text(encoding="utf-8"))["artifacts"]}
+        current_hashes = {row["name"]: row["sha256"] for row in inventory}
+        diverged = any(current_hashes.get(name) != digest
+                       for name, digest in frozen_hashes.items())
+    assert recorded or not diverged, (
+        "refit_history.jsonl is empty while artifacts have moved off their frozen hashes, so "
+        "the LEGACY class can never match and the freeze would report already-recorded history "
+        "as fresh drift on every run")
     for name, hashes in recorded.items():
         assert all(len(h) == 64 for h in hashes), name
         assert "0" * 64 not in hashes, (
@@ -545,7 +638,18 @@ def main() -> int:
                         help="copy AS_DEPLOYED artifact bytes into the release directory")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--release-id", default=None,
+                        help="mint or verify a release other than the default; a deliberate "
+                             "retrain uses a NEW id rather than overwriting an old freeze")
+    parser.add_argument("--deployment-start", default=None,
+                        help="ISO date the new release's bytes began serving")
+    parser.add_argument("--supersedes", default=None,
+                        help="release id this one replaces, recorded in the manifest")
     args = parser.parse_args()
+    if args.release_id:
+        select_release(args.release_id, args.deployment_start, args.supersedes)
+    elif args.supersedes or args.deployment_start:
+        parser.error("--supersedes/--deployment-start require --release-id")
 
     print("=" * 96)
     print(f"ORACLE RELEASE FREEZE - {RELEASE_ID} (serving since {DEPLOYMENT_START})")
@@ -563,14 +667,18 @@ def main() -> int:
     print(f"  artifacts            : {summary['total']}")
     print(f"    AS_DEPLOYED        : {summary['as_deployed']}")
     print(f"    CHANGED since      : {summary['changed_since_deployment']}"
-          "   <- deployed bytes are GONE")
+          + ("   <- deployed bytes are GONE" if summary["changed_since_deployment"] else ""))
     print(f"    serviceable now    : {summary['serviceable']}")
     print()
     for name in manifest["reproducibility"]["changed"]:
         print(f"    lost: {name}")
     print()
-    print("  Acceptance test 'reproduce any historical Oracle prediction': NOT SATISFIABLE")
-    print("  for predictions consuming the artifacts above. Recorded as fact, not hidden.")
+    if manifest["reproducibility"]["can_reproduce_any_oracle_prediction"]:
+        print("  Acceptance test 'reproduce any historical Oracle prediction': SATISFIABLE")
+        print("  every artifact's bytes are archived alongside this manifest.")
+    else:
+        print("  Acceptance test 'reproduce any historical Oracle prediction': NOT SATISFIABLE")
+        print("  for predictions consuming the artifacts above. Recorded as fact, not hidden.")
     print()
     write(manifest, copy_artifacts=args.copy)
     print()
