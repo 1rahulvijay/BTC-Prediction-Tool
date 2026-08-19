@@ -238,3 +238,36 @@ different expiry prices, and the cross-strike-impossible state is observed. Any 
 
 PM snapshot coverage is 11 dates in two clusters with a five-week hole (2026-07-05 → 2026-08-08).
 Bounds rest on 9–10 independent days, not 3,336 rounds. Binance L2 is 31 sessions / 31.4 hours.
+
+## ROUND_TO_ROUND_TRANSFER_V1 (appended 2026-08-14)
+
+Write-up: `round_to_round_transfer/REPORT.md`.
+
+| Lane | Units | Verdict |
+|---|---|---|
+| `ROUND_TO_ROUND_TRANSFER_V1` | 19 UTC days / 2,470 5m pairs | 0 of 24 rules clear the cost hurdle |
+
+Running total: **24 lanes, 0 with a positive lower bound on net EV.**
+
+Round-to-round direction is a coin flip at both horizons and across horizons. Closest rule
+(5m reversion on the last settled 15m) is 2.89 pp short of the 0.5235 hurdle.
+
+### Third artifact caught, and the first requiring a multiplicity correction
+
+`5m reversion after run>=3` first showed accuracy 0.6196, LCB 0.5466, clearing the hurdle.
+Two checks killed it:
+
+- **More data reversed it.** A price filter needed by only two rules had cut the sample for all
+  the others. Removing it took the rule from n=163/0.6196 to n=619/0.4879 - across 50%, not
+  merely smaller.
+- **It is what chance produces.** 24 rules at 5% means ~1 false winner is expected. A
+  max-statistic permutation (labels shuffled within UTC day, family re-scored, 2,000 draws)
+  gives best-under-null median 0.5404 and p95 0.5818 against an observed best of 0.5508 -
+  family-wise p = 0.2985. In a family this size an apparent 55% rule IS the null.
+
+### Correction to a previously recorded claim
+
+`pm_round_settlements` was described as escaping the snapshot hole. It does so only for
+direction: `anchor_price`/`expiry_btc` are NULL for 2,283 of 3,336 rounds, and the 1,053 priced
+rounds are exactly the snapshotted ones. Direction rules get 19 days; anything price-derived
+gets 10.

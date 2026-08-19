@@ -1,0 +1,346 @@
+{
+  "lane": "ROUND_TO_ROUND_TRANSFER_V1",
+  "breakeven_win_rate": 0.5235,
+  "breakeven_note": "buy at ask 0.50 + half of the observed 1.21c spread, plus 0.07*a*(1-a) taker fee",
+  "horizons": {
+    "5m": {
+      "rounds_total": 2494,
+      "adjacent_pairs": 2470,
+      "utc_days": 19,
+      "p_up": 0.4944,
+      "mean_abs_margin_bps": 4.78,
+      "priced_rounds": 790,
+      "rules": [
+        {
+          "rule": "5m base rate: always UP",
+          "n": 2470,
+          "n_days": 19,
+          "accuracy": 0.4931,
+          "lcb95": 0.4764,
+          "ucb95": 0.5119,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -4.714
+        },
+        {
+          "rule": "5m base rate: always DOWN",
+          "n": 2470,
+          "n_days": 19,
+          "accuracy": 0.5069,
+          "lcb95": 0.4881,
+          "ucb95": 0.5236,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -3.548
+        },
+        {
+          "rule": "5m MOMENTUM: repeat prev side",
+          "n": 2470,
+          "n_days": 19,
+          "accuracy": 0.4984,
+          "lcb95": 0.4793,
+          "ucb95": 0.518,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -4.42
+        },
+        {
+          "rule": "5m REVERSION: oppose prev side",
+          "n": 2470,
+          "n_days": 19,
+          "accuracy": 0.5016,
+          "lcb95": 0.482,
+          "ucb95": 0.5207,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -4.153
+        },
+        {
+          "rule": "5m momentum, |margin| 0-5bps",
+          "n": 487,
+          "n_days": 10,
+          "accuracy": 0.5113,
+          "lcb95": 0.4538,
+          "ucb95": 0.565,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -6.978
+        },
+        {
+          "rule": "5m reversion, |margin| 0-5bps",
+          "n": 487,
+          "n_days": 10,
+          "accuracy": 0.4887,
+          "lcb95": 0.435,
+          "ucb95": 0.5462,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -8.857
+        },
+        {
+          "rule": "5m momentum, |margin| 5-15bps",
+          "n": 275,
+          "n_days": 9,
+          "accuracy": 0.48,
+          "lcb95": 0.428,
+          "ucb95": 0.5271,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -9.553
+        },
+        {
+          "rule": "5m reversion, |margin| 5-15bps",
+          "n": 275,
+          "n_days": 9,
+          "accuracy": 0.52,
+          "lcb95": 0.4729,
+          "ucb95": 0.572,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -5.065
+        },
+        {
+          "rule": "5m momentum after run>=2",
+          "n": 1228,
+          "n_days": 18,
+          "accuracy": 0.5033,
+          "lcb95": 0.4751,
+          "ucb95": 0.5341,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -4.845
+        },
+        {
+          "rule": "5m reversion after run>=2",
+          "n": 1228,
+          "n_days": 18,
+          "accuracy": 0.4967,
+          "lcb95": 0.4659,
+          "ucb95": 0.5249,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -5.769
+        },
+        {
+          "rule": "5m momentum after run>=3",
+          "n": 619,
+          "n_days": 18,
+          "accuracy": 0.4879,
+          "lcb95": 0.4444,
+          "ucb95": 0.5333,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.911
+        },
+        {
+          "rule": "5m reversion after run>=3",
+          "n": 619,
+          "n_days": 18,
+          "accuracy": 0.5121,
+          "lcb95": 0.4667,
+          "ucb95": 0.5556,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -5.688
+        },
+        {
+          "rule": "5m momentum after run>=4",
+          "n": 304,
+          "n_days": 18,
+          "accuracy": 0.4934,
+          "lcb95": 0.4479,
+          "ucb95": 0.5344,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.568
+        },
+        {
+          "rule": "5m reversion after run>=4",
+          "n": 304,
+          "n_days": 18,
+          "accuracy": 0.5066,
+          "lcb95": 0.4656,
+          "ucb95": 0.5521,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -5.79
+        }
+      ]
+    },
+    "15m": {
+      "rounds_total": 842,
+      "adjacent_pairs": 821,
+      "utc_days": 18,
+      "p_up": 0.4869,
+      "mean_abs_margin_bps": 9.531,
+      "priced_rounds": 263,
+      "rules": [
+        {
+          "rule": "15m base rate: always UP",
+          "n": 821,
+          "n_days": 18,
+          "accuracy": 0.4872,
+          "lcb95": 0.4561,
+          "ucb95": 0.5194,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -6.745
+        },
+        {
+          "rule": "15m base rate: always DOWN",
+          "n": 821,
+          "n_days": 18,
+          "accuracy": 0.5128,
+          "lcb95": 0.4806,
+          "ucb95": 0.5439,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -4.297
+        },
+        {
+          "rule": "15m MOMENTUM: repeat prev side",
+          "n": 821,
+          "n_days": 18,
+          "accuracy": 0.4896,
+          "lcb95": 0.4539,
+          "ucb95": 0.5293,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -6.968
+        },
+        {
+          "rule": "15m REVERSION: oppose prev side",
+          "n": 821,
+          "n_days": 18,
+          "accuracy": 0.5104,
+          "lcb95": 0.4707,
+          "ucb95": 0.5461,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -5.284
+        },
+        {
+          "rule": "15m momentum, |margin| 5-15bps",
+          "n": 118,
+          "n_days": 9,
+          "accuracy": 0.4492,
+          "lcb95": 0.3701,
+          "ucb95": 0.5544,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -15.343
+        },
+        {
+          "rule": "15m reversion, |margin| 5-15bps",
+          "n": 118,
+          "n_days": 9,
+          "accuracy": 0.5508,
+          "lcb95": 0.4456,
+          "ucb95": 0.6299,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.79
+        },
+        {
+          "rule": "15m momentum after run>=2",
+          "n": 403,
+          "n_days": 18,
+          "accuracy": 0.4963,
+          "lcb95": 0.4522,
+          "ucb95": 0.5382,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.135
+        },
+        {
+          "rule": "15m reversion after run>=2",
+          "n": 403,
+          "n_days": 18,
+          "accuracy": 0.5037,
+          "lcb95": 0.4618,
+          "ucb95": 0.5478,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -6.173
+        },
+        {
+          "rule": "15m momentum after run>=3",
+          "n": 202,
+          "n_days": 18,
+          "accuracy": 0.495,
+          "lcb95": 0.427,
+          "ucb95": 0.5541,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -9.653
+        },
+        {
+          "rule": "15m reversion after run>=3",
+          "n": 202,
+          "n_days": 18,
+          "accuracy": 0.505,
+          "lcb95": 0.4459,
+          "ucb95": 0.573,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.768
+        },
+        {
+          "rule": "15m momentum after run>=4",
+          "n": 101,
+          "n_days": 17,
+          "accuracy": 0.5446,
+          "lcb95": 0.4519,
+          "ucb95": 0.6241,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -7.163
+        },
+        {
+          "rule": "15m reversion after run>=4",
+          "n": 101,
+          "n_days": 17,
+          "accuracy": 0.4554,
+          "lcb95": 0.3759,
+          "ucb95": 0.5481,
+          "hurdle": 0.5235,
+          "clears_hurdle": false,
+          "edge_vs_hurdle_pp": -14.761
+        }
+      ]
+    }
+  },
+  "cross_horizon": [
+    {
+      "rule": "5m momentum on last settled 15m",
+      "n": 2428,
+      "n_days": 18,
+      "accuracy": 0.4852,
+      "lcb95": 0.4666,
+      "ucb95": 0.5054,
+      "hurdle": 0.5235,
+      "clears_hurdle": false,
+      "edge_vs_hurdle_pp": -5.695
+    },
+    {
+      "rule": "5m reversion on last settled 15m",
+      "n": 2428,
+      "n_days": 18,
+      "accuracy": 0.5148,
+      "lcb95": 0.4946,
+      "ucb95": 0.5334,
+      "hurdle": 0.5235,
+      "clears_hurdle": false,
+      "edge_vs_hurdle_pp": -2.893
+    }
+  ],
+  "multiplicity": {
+    "rules_scored": 24,
+    "observed_best_accuracy": 0.5508,
+    "null_best_median": 0.5404,
+    "null_best_p95": 0.5818,
+    "p_value_family_wise": 0.2985,
+    "survives": false,
+    "method": "labels shuffled within UTC day, whole rule family re-scored, 2000 draws"
+  }
+}
